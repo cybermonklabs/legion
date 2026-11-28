@@ -703,14 +703,14 @@ func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, http.RoundTripper) {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
-	transport, err := dispatchCredential(context.Background(), cfg, "", getenvOf(map[string]string{
+	transport, err := dispatchCredential(context.Background(), cfg, "", "", getenvOf(map[string]string{
 		cipherclient.BrokerURLVar: r.broker.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
 		cipherclient.MachineTokenFileVar: subject,
 	}), quietLogger())
 	if err != nil {
 		r.t.Fatalf("the daemon's boot under dispatch_token_broker: %v", err)
 	}
-	return daemonDispatchClient(cfg, transport), transport
+	return daemonDispatchClient(cfg, transport, ""), transport
 }
 
 // sharedDaemonClient is the daemon's Dispatch client of project P as boot builds it without
@@ -719,11 +719,11 @@ func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, 
 func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch.HTTPClient {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenFile: sharedTokenFile}
-	transport, err := dispatchCredential(context.Background(), cfg, r.dispatch.token, getenvOf(nil), quietLogger())
+	transport, err := dispatchCredential(context.Background(), cfg, r.dispatch.token, "", getenvOf(nil), quietLogger())
 	if err != nil {
 		r.t.Fatalf("the daemon's boot without dispatch_token_broker: %v", err)
 	}
-	return daemonDispatchClient(cfg, transport)
+	return daemonDispatchClient(cfg, transport, "")
 }
 
 // otherProjectDaemonClient is the daemon's client built from the same pieces (cipherclient's

@@ -98,22 +98,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-)
-
-const (
-	// codeProjectScope refuses a project-scoped caller a write whose target resolves to no
-	// project or to nothing. An object of a private project that the credential does not name
-	// gets the same refusal, as an object that does not exist.
-	codeProjectScope = "PROJECT_SCOPE"
-	// codeProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
-	// deployment rather than to any one project.
-	codeProjectScopeDeployment = "PROJECT_SCOPE_DEPLOYMENT"
-	// codeSessionScope refuses a caller whose credential proved one session a write addressed
-	// to another session's own rows.
-	codeSessionScope = "SESSION_SCOPE"
 )
 
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
@@ -165,28 +152,52 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // Postgres will not read as a uuid.
 type projectResolver func(ctx context.Context, q queryer, r *http.Request) (project string, private bool, err error)
 
-// projectResolverFor is the resolver a route's address calls for, read from the shape of its
-// pattern, and whether the pattern names an object at all. Every row the table classes
-// scopeProject has one; undecidableWrites holds the table to that and register refuses to
-// mount a table that breaks it, so a mounted scopeProject row always resolves.
-func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
-	switch {
-	case addresses(pattern, "/api/v1/issues/{key}"):
+// resolverOf is the resolver of the object a route's path names (routeRow.ProjectOf), and whether
+// it names one at all. Every row the table classes scopeProject names one; undecidableWrites
+// holds the table to that and register refuses to mount a table that breaks it, so a mounted
+// scopeProject row always resolves.
+func (s *server) resolverOf(of projectPath) (projectResolver, bool) {
+	switch of {
+	case projectPathIssue:
 		return s.projectOfIssue, true
-	case addresses(pattern, "/api/v1/projects/{key}"):
+	case projectPathProject:
 		return s.projectOfProject, true
-	case addresses(pattern, "/api/v1/artifacts/{id}"):
+	case projectPathArtifact:
 		return s.projectOfArtifact, true
-	case addresses(pattern, "/api/v1/asks/{id}"):
+	case projectPathAsk:
 		return s.projectOfAsk, true
-	case addresses(pattern, "/api/v1/comments/{id}"):
+	case projectPathComment:
 		return s.projectOfComment, true
-	case addresses(pattern, "/api/v1/messages/{id}"):
+	case projectPathMessage:
 		return s.projectOfMessage, true
-	case addresses(pattern, "/api/v1/results/{id}"):
+	case projectPathResult:
 		return s.projectOfCheckResult, true
 	}
 	return nil, false
+}
+
+// projectPathOf is the object a /api/v1 pattern names, read from its shape, which routes() copies
+// onto a v1 route's ProjectOf column (v1Route): the issue of /api/v1/issues/{key}, the project of
+// /api/v1/projects/{key}, and the artifact, ask, comment, message or check result of
+// /api/v1/<kind>/{id}, each with anything under it.
+func projectPathOf(pattern string) projectPath {
+	switch {
+	case addresses(pattern, "/api/v1/issues/{key}"):
+		return projectPathIssue
+	case addresses(pattern, "/api/v1/projects/{key}"):
+		return projectPathProject
+	case addresses(pattern, "/api/v1/artifacts/{id}"):
+		return projectPathArtifact
+	case addresses(pattern, "/api/v1/asks/{id}"):
+		return projectPathAsk
+	case addresses(pattern, "/api/v1/comments/{id}"):
+		return projectPathComment
+	case addresses(pattern, "/api/v1/messages/{id}"):
+		return projectPathMessage
+	case addresses(pattern, "/api/v1/results/{id}"):
+		return projectPathResult
+	}
+	return projectPathNone
 }
 
 // secondProjectResolverFor is the resolver of a second project that a route's write is appended
@@ -195,8 +206,8 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 // of another project can put in another project than the result's own issue
 // (projectOfRetractedCheck). Asking it here, before the keyed layer and the handler, gives a check
 // of a private project the answer of a result that does not exist, header and stored key alike.
-func (s *server) secondProjectResolverFor(pattern string) projectResolver {
-	if pattern == "/api/v1/results/{id}/retract" {
+func (s *server) secondProjectResolverFor(route apiRoute) projectResolver {
+	if route.ProjectOf == projectPathResult {
 		return projectOfRetractedCheck
 	}
 	return nil
@@ -314,7 +325,7 @@ func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string
 		return "", false, err
 	}
 	if project == "" {
-		return "", false, errorf(http.StatusForbidden, codeProjectScope,
+		return "", false, errorf(apicode.ProjectScope,
 			"this request's credential names project %s, and the check's issue %s belongs to no project", caller, checkIssue)
 	}
 	return project, private, nil
@@ -376,10 +387,10 @@ func unaddressed(err error) bool {
 // fails closed, and an object of a private project that the credential does not name gets that
 // same refusal.
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	switch route.WriteClass {
+	switch route.Scope {
 	case scopeProject:
-		resolve, addressed := s.projectResolverFor(route.Pattern)
-		second := s.secondProjectResolverFor(route.Pattern)
+		resolve, addressed := s.resolverOf(route.ProjectOf)
+		second := s.secondProjectResolverFor(route)
 		if !addressed {
 			// Nothing mounts such a row: undecidableWrites names it and register refuses the
 			// table holding it. A project-scoped caller is refused it here all the same, so
@@ -391,7 +402,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 					handler(w, r)
 					return
 				}
-				s.writeHandlerError(w, outsideProjectScopeError(covers))
+				s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 			}
 		}
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -408,7 +419,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			credential := access.Credential{Listed: []string{covers}, Restricted: resultsOnlyRequest(r)}
 			belongsTo, private, err := resolve(r.Context(), s.deps.Store.Pool, r)
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			// An object that belongs to no project, a row that is not there, or an id Postgres
@@ -417,17 +428,17 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 			// caller cannot tell it from an id nobody holds. The check does not hide which ids
 			// exist, and it does not claim to (the file comment).
 			if belongsTo == "" || !access.CredentialCovers(credential, belongsTo, private) {
-				s.writeHandlerError(w, outsideProjectScopeError(covers))
+				s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 				return
 			}
 			if second != nil {
 				checkProject, checkPrivate, err := second(r.Context(), s.deps.Store.Pool, r)
 				if err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				if checkProject == "" || !access.CredentialCovers(credential, checkProject, checkPrivate) {
-					s.writeHandlerError(w, outsideProjectScopeError(covers))
+					s.writeHandlerError(w, r, outsideProjectScopeError(covers))
 					return
 				}
 			}
@@ -440,7 +451,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 				handler(w, r)
 				return
 			}
-			writeError(w, codeProjectScopeDeployment, http.StatusForbidden, fmt.Sprintf(
+			writeError(w, r, apicode.ProjectScopeDeployment, fmt.Sprintf(
 				"this request's credential names project %s, and %s %s belongs to the deployment rather than to a project",
 				covers, route.Method, route.Pattern))
 		}
@@ -463,7 +474,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 // whose project turned private after withinProjectScope, so each answers as for a target that does
 // not exist. Each writes this one value through writeHandlerError, so the answers cannot drift.
 func outsideProjectScopeError(covers string) *apiError {
-	return errorf(http.StatusForbidden, codeProjectScope,
+	return errorf(apicode.ProjectScope,
 		"this request's credential names project %s, and this write resolves to no project", covers)
 }
 
@@ -485,34 +496,61 @@ func outsideProjectScopeError(covers string) *apiError {
 // declares any, the caller holds them. A row that declares none is open to every authenticated
 // caller, and this check refuses a session other than the one it proved as it always did.
 //
-// Every other row returns the handler unchanged, so no route it does not cover pays for it.
+// Every other row returns the handler unchanged, so no route it does not cover pays for it. A
+// /api/v2 row whose path names a session for one kind of object alone, or whose body names
+// several, is held by gateV2Authorities (sessionAddressing) to the session the credential proved,
+// and there the row's OAuth scopes exempt nothing (refusesSessionOtherThanProved): the agent
+// marks of PATCH /api/v2/me/marks/{kind}/{id} and PATCH /api/v2/me/marks need the person scope,
+// and a broker token of one session that holds it is still refused 403 SESSION_SCOPE for another
+// session's agent mark (c-authority of dispatch://INFRA-4071).
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
 		return handler
 	}
-	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
-		proved, provedOne := s.callerSession(r)
-		if !provedOne {
-			handler(w, r)
-			return
-		}
-		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
-			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
-				"this request's credential acts for session %s; %s %s writes into session %s",
-				proved, route.Method, route.Pattern, addressed))
+		if s.refusesAnotherSession(w, r, route, r.PathValue(route.SessionPath)) {
 			return
 		}
 		handler(w, r)
 	}
 }
 
+// refusesAnotherSession holds one session a route's write goes into, addressed, to the rule
+// withinSessionScope's comment gives: on a row that declares no OAuth scopes it refuses as
+// refusesSessionOtherThanProved does, and on a row that declares any it writes nothing and
+// reports false.
+func (s *server) refusesAnotherSession(w http.ResponseWriter, r *http.Request, route apiRoute, addressed string) bool {
+	return len(route.OAuthScopes) == 0 && s.refusesSessionOtherThanProved(w, r, route, addressed)
+}
+
+// refusesSessionOtherThanProved holds one session a route's write goes into, addressed, to the
+// session the caller's credential proved, whatever OAuth scopes the row declares: it answers 403
+// SESSION_SCOPE and reports true when the credential proved a session other than addressed, and
+// otherwise writes nothing and reports false. A credential that proves no session (callerSession)
+// is held to none. gateV2Authorities holds each session a /api/v2 body names to it
+// (sessionAddressing), and refusesAnotherSession holds a path's session to it on a row that
+// declares no OAuth scopes.
+func (s *server) refusesSessionOtherThanProved(w http.ResponseWriter, r *http.Request, route apiRoute, addressed string) bool {
+	proved, provedOne := s.callerSession(r)
+	if !provedOne || addressed == proved {
+		return false
+	}
+	writeError(w, r, apicode.SessionScope, fmt.Sprintf(
+		"this request's credential acts for session %s; %s %s writes into session %s",
+		proved, route.Method, route.Pattern, addressed))
+	return true
+}
+
 // addressesOneSession answers whether route is a write to the rows of the one session its path
-// names: the scopeSession rows whose pattern carries {session_id}. The other scopeSession rows
-// address no session of their own — the `me` token rows are the calling person's, and the two
-// message rows are held to the session their delivery attempt names.
+// names: the scopeSession rows whose path names a session (routeRow.SessionPath; a v1 route's
+// {session_id}). The other scopeSession rows name no session by their path alone: the caller's own
+// `me` rows (its tokens, snoozes, read marks, Inbox and issue states) write the person's rows, the
+// message rows (the accept and the reply, and /api/v2's delivery state and replies) are held to the
+// session their delivery attempt names, and the agent marks of PATCH /api/v2/me/marks and
+// /me/marks/{kind}/{id} are held to the proved session by gateV2Authorities (sessionAddressing),
+// as withinSessionScope's comment says.
 func addressesOneSession(route apiRoute) bool {
-	return route.WriteClass == scopeSession && strings.Contains(route.Pattern, "{session_id}")
+	return route.Scope == scopeSession && route.SessionPath != ""
 }
 
 // writeNeedsASignedInPerson refuses every write by a caller whose broker-issued credential names
@@ -551,8 +589,8 @@ func addressesOneSession(route apiRoute) bool {
 // shared token and a broker token that does name a person each reach the handler as before, at
 // the cost of the one header read brokerCredentialActor makes.
 //
-// The decision is signInRequired's, which whoami answers as sign_in_required, so a client reads
-// it from Dispatch rather than guessing it from the shape of who it is.
+// The decision is signInRequired's, which whoami and getMeV2 answer as sign_in_required, so a
+// client reads it from Dispatch rather than guessing it from the shape of who it is.
 func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		service, required := s.signInRequired(r)
@@ -560,15 +598,15 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 			handler(w, r)
 			return
 		}
-		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.SignInRequired, fmt.Sprintf(
 			"this request's credential acts for service %s and no person, so there is nobody to "+
 				"record this write under; run `agent-secrets login` on this machine and try again",
 			service))
 	}
 }
 
-// signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
-// answers as sign_in_required: whether r presents a broker-issued token that resolved, may write,
+// signInRequired is the decision writeNeedsASignedInPerson refuses a write on and both whoami
+// and getMeV2 answer: whether r presents a broker-issued token that resolved, may write,
 // and names a service and no person, and whose project scope is not one under which such a token
 // writes as its service (writesAsItsService), which is a machine nobody has signed in on, and the
 // service that token names. Every other caller answers false: a credential that is no broker
@@ -605,14 +643,14 @@ func writesAsItsService(credential *model.Credential) bool {
 	return credential != nil && slices.Contains(writingServiceScopes, credential.ProjectScope)
 }
 
-// undecidableWrites names every mutating route the project check cannot decide: one whose
-// declaration states no class, and one classed scopeProject whose address names no object to
-// resolve. Every other class is decided: scopeDeployment and scopeProjectInBody by the class
-// itself, scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by
-// writing nothing at all. TestEveryMutatingRouteIsClassed walks the table through it, and
-// register refuses to mount a table it names anything in, so a route added later cannot be left
-// undecided. The other direction the map beside the table needed, a class naming no route, cannot
-// happen now: a class is a field of the route's own declaration.
+// undecidableWrites names every mutating route the project check cannot decide: one that states no
+// write class - a route file in its declaration's WriteClass, a routeRow in its Scope column - and
+// one classed scopeProject whose path names no object to resolve (ProjectOf). Every other class is
+// decided: scopeDeployment and scopeProjectInBody by the class itself, scopeSession by
+// withinSessionScope and the handlers behind it, and scopeNoWrite by writing nothing at all.
+// TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
+// table it names anything in, so a route added later cannot be left undecided. A class naming no
+// route cannot happen: a class is a field of the route's own declaration or row.
 func (s *server) undecidableWrites(routes []apiRoute) []string {
 	var undecidable []string
 	for _, route := range routes {
@@ -620,14 +658,18 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 			continue
 		}
 		name := route.Method + " " + route.Pattern
-		switch route.WriteClass {
+		switch route.Scope {
 		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
-			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
+			if _, addressed := s.resolverOf(route.ProjectOf); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")
 			}
 		default:
-			undecidable = append(undecidable, name+": no write class (routeDecl.WriteClass)")
+			source := "routeDecl.WriteClass"
+			if route.columns {
+				source = "its Scope column"
+			}
+			undecidable = append(undecidable, name+": no write class ("+source+")")
 		}
 	}
 	return undecidable

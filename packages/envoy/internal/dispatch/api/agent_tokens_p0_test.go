@@ -14,6 +14,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -223,7 +224,7 @@ func TestReadAndP0NeverShareAToken(t *testing.T) {
 			if response.Code >= http.StatusInternalServerError {
 				t.Fatalf("status=%d body=%s, want 400 and never a 5xx", response.Code, response.Body.String())
 			}
-			requireRefused(t, response, http.StatusBadRequest, codeTokenScopesInput)
+			requireRefused(t, response, http.StatusBadRequest, apicode.TokenScopesInput.V1Name())
 		})
 	}
 	requireTokensUnchanged(t, handler, before)

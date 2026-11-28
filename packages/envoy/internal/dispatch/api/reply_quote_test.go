@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -461,7 +463,8 @@ func TestAReplyToABlockStoresTheWordsItQuotes(t *testing.T) {
 // an occurrence past its last match are 404 TARGET_NOT_FOUND; a word the block holds twice, with
 // no occurrence, is 409 TARGET_AMBIGUOUS, which names the count and asks for an occurrence. No
 // refused write stores a reply. The control: each route then takes the quote it was refused once
-// it names the occurrence.
+// it names the occurrence. Each route's /api/v2 successor answers the same, and every refusal it
+// answers is one its row declares.
 func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newQuoteHandler(t)
@@ -477,6 +480,17 @@ func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 		"body": quotedTwice, "target": "session:" + quoteSession, "delivery": "btw",
 	}, "alice").ID
 	direct := createdID(t, postAgentMessage(t, handler, quoteSession, map[string]any{"body": quotedTwice, "delivery": "btw"}, "alice"))
+	// A delivery attempt takes one answer, so the /api/v2 replies answer attempts of their own.
+	commentV2 := decodeMentionedComment(t, postMentionedComment(t, handler, issue, map[string]any{
+		"body": quotedTwice, "mentions": []map[string]any{{"target": "session:" + quoteSession}},
+	})).ID
+	targetedV2 := createIssueMessage(t, handler, issue, map[string]any{
+		"body": quotedTwice, "target": "session:" + quoteSession, "delivery": "btw",
+	}, "alice").ID
+	declared := map[string][]apicode.Refusal{}
+	for _, route := range servedAt(apiV2, (&server{}).routes()) {
+		declared[route.Method+" "+route.Pattern] = route.Refusals
+	}
 
 	routes := []struct {
 		route, code, field string
@@ -503,6 +517,28 @@ func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 		{"POST /api/v1/agents/{session_id}/messages", "INVALID_MESSAGE", "in_reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
 			input["in_reply_to"], input["delivery"] = direct, "btw"
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/"+quoteSession+"/messages", input, "alice")
+		}},
+		{"POST /api/v2/issues/{key}/comments", "INVALID_COMMENT", "reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			input["reply_to"] = comment
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue+"/comments", input, "alice")
+		}},
+		{"POST /api/v2/artifacts/{id}/comments", "INVALID_COMMENT", "reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			input["reply_to"] = documentComment
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v2/artifacts/"+document+"/comments", input, "alice")
+		}},
+		{"POST /api/v2/comments/{id}/replies", "INVALID_COMMENT", "reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			return bearerRequest(t, handler, http.MethodPost, "/api/v2/comments/"+commentV2+"/replies", callbackAs(quoteSession, input))
+		}},
+		{"POST /api/v2/issues/{key}/messages", "INVALID_MESSAGE", "in_reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			input["in_reply_to"] = message
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue+"/messages", input, "alice")
+		}},
+		{"POST /api/v2/messages/{id}/replies", "INVALID_MESSAGE", "in_reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			return bearerRequest(t, handler, http.MethodPost, "/api/v2/messages/"+targetedV2+"/replies", callbackAs(quoteSession, input))
+		}},
+		{"POST /api/v2/agents/{session_id}/messages", "INVALID_MESSAGE", "in_reply_to_block", func(t *testing.T, input map[string]any) *httptest.ResponseRecorder {
+			input["in_reply_to"], input["delivery"] = direct, "btw"
+			return dispatchRequest(t, handler, http.MethodPost, "/api/v2/agents/"+quoteSession+"/messages", input, "alice")
 		}},
 	}
 	refusals := []struct {
@@ -551,6 +587,11 @@ func TestAReplyQuoteIsRefusedWhereTheBlockDoesNotHoldIt(t *testing.T) {
 				}
 				if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil || response.Code != refusal.status || answer.Code != code {
 					t.Fatalf("%s: status=%d body=%s, want %d %s", refusal.name, response.Code, response.Body.String(), refusal.status, code)
+				}
+				if refusals, v2 := declared[strings.Replace(route.route, "/api/v2", "", 1)]; v2 && !slices.ContainsFunc(refusals, func(declared apicode.Refusal) bool {
+					return declared.Code.Name() == code && declared.Code.Status() == refusal.status
+				}) {
+					t.Fatalf("%s: answered %d %s, which the row of %s does not declare", refusal.name, refusal.status, code, route.route)
 				}
 				if opens := strings.ReplaceAll(refusal.opens, "{field}", route.field); opens != "" && !strings.HasPrefix(answer.Error, opens+" ") {
 					t.Fatalf("%s: the refusal says %q, want it to open with %q", refusal.name, answer.Error, opens)

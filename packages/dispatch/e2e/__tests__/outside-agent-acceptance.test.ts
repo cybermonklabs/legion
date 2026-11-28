@@ -1827,7 +1827,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 invalid request origin, which the rows name; and with neither, the rows read UNKNOWN naming both",
+      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 ORIGIN_REFUSED, which the rows name; and with neither, the rows read UNKNOWN naming both",
       async () => {
         const [byCookie, otherOrigin, neither] = await runStandIns(
           browserRun({ ownerByCookie: true }),
@@ -1865,10 +1865,10 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           stdout: otherOrigin.stdout,
         }).toMatchObject({ verdicts: { unlisted: "UNKNOWN", public: "UNKNOWN", T5: "UNKNOWN" } });
         expect(rowsOf(otherOrigin.stdout).get("unlisted")?.got).toContain(
-          "refused 403 invalid request origin"
+          "refused 403 ORIGIN_REFUSED"
         );
         expect(rowsOf(otherOrigin.stdout).get("public")?.got).toContain(
-          "exited 1 (403 invalid request origin)"
+          "exited 1 (403 ORIGIN_REFUSED)"
         );
         expect(existsSync(join(otherOrigin.state, "workflow-args"))).toBe(false);
         // Neither a command nor the session: each owner row names both.

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
@@ -1006,7 +1007,7 @@ func TestOnlyAResultsTokenWritesTheRoute(t *testing.T) {
 func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 	t.Run("a public project", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
-		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
+		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, apicode.ProjectScope.Name())
 	})
 	t.Run("a public project whose default repository is the run's", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
@@ -1015,7 +1016,7 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 				t.Fatalf("set %s's default repository to %s: status=%d body=%s", set.project, set.repository, written.Code, written.Body.String())
 			}
 		}
-		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, codeProjectScope)
+		rig.refusedWith(t, rig.post(t, "OTHER", rig.token(nil), passOf(probeCheck)), http.StatusForbidden, apicode.ProjectScope.Name())
 	})
 }
 
@@ -1410,7 +1411,7 @@ func TestACouldNotRunResultIsStored(t *testing.T) {
 func TestTheReadIsRefusedToAResultsToken(t *testing.T) {
 	rig := newSpecResultsRig(t)
 	response := rig.serve(rig.caller.presenting(t, http.MethodGet, "/api/v1/projects/"+specResultsProject+"/results?commit="+specResultsCommit, rig.token(nil), nil))
-	if why := notTheGatesRefusal(response, codeResultsOnlyToken, ""); why != "" {
-		t.Fatalf("the read %s, want 403 %s", why, codeResultsOnlyToken)
+	if why := notTheGatesRefusal(response, apicode.ResultsOnlyToken.Name(), ""); why != "" {
+		t.Fatalf("the read %s, want 403 %s", why, apicode.ResultsOnlyToken.Name())
 	}
 }

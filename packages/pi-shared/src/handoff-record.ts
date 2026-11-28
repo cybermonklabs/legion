@@ -152,13 +152,16 @@ export const pathJj: JjRunner = async (args, cwd) => {
  * The pane's Dispatch as its `dispatch` command reaches it: `file` is the session's envoy.json (the
  * one its plugin hands its shell as `ENVOY_CONFIG_FILE`), read again on each call with `env`, so a
  * file that moved its server takes effect without a restart. A pane whose Dispatch is off throws
- * why. `session` is the session this pane acts as, which a broker trade writes under.
+ * why. `session` is the session this pane acts as, which a broker trade writes under. `userAgent`
+ * is what the read names its program as: this module ships in both plugins, so the plugin that
+ * calls says which it is.
  */
 export function paneLatestHandoff(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string,
+  userAgent: string,
   fetchImpl: typeof fetch = fetch
 ): LatestHandoff {
   return async (issue, word) => {
@@ -166,28 +169,29 @@ export function paneLatestHandoff(
     if (!dispatch.enabled) {
       throw new Error(`Dispatch is off for this pane: ${dispatch.error ?? dispatch.notice}`);
     }
-    return new DispatchClient(dispatch.url, dispatch.credential, fetchImpl).latestHandoff(
-      issue,
-      word
-    );
+    return new DispatchClient(dispatch.url, dispatch.credential, fetchImpl, {
+      userAgent,
+    }).latestHandoff(issue, word);
   };
 }
 
 /** What a completion by `role` reports in the pane while the issue stands at `phase`
  * (`findHandoffReport` with the pane's environment `env` and its Dispatch,
- * `paneLatestHandoff(file, env, cwd, session)`), as each harness's `legion` tool asks it. */
+ * `paneLatestHandoff(file, env, cwd, session, userAgent)`), as each harness's `legion` tool asks
+ * it. */
 export function paneHandoffReport(
   file: SessionConfigFile,
   env: NodeJS.ProcessEnv,
   cwd: string,
-  session: string
+  session: string,
+  userAgent: string
 ): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
   return (phase, role) =>
     findHandoffReport({
       phase,
       role,
       env,
-      latestHandoff: paneLatestHandoff(file, env, cwd, session),
+      latestHandoff: paneLatestHandoff(file, env, cwd, session, userAgent),
     });
 }
 

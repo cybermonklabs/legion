@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -152,14 +153,14 @@ func TestAConsentedTokenActsWithTheScopesItsPersonApproved(t *testing.T) {
 			t.Fatalf("%s: inbox = %d %s, want %d", row.name, inbox.Code, inbox.Body.String(), row.inbox)
 		}
 		if row.inbox == http.StatusForbidden {
-			if code, _ := refusalOf(t, inbox); code != codeScopeRequired {
-				t.Fatalf("%s: inbox refusal = %s, want %s", row.name, code, codeScopeRequired)
+			if code, _ := refusalOf(t, inbox); code != apicode.OAuthScopeRequired.V1Name() {
+				t.Fatalf("%s: inbox refusal = %s, want %s", row.name, code, apicode.OAuthScopeRequired.V1Name())
 			}
 		}
 
 		reviewed := rig.serve(caller.presenting(t, http.MethodPost, review, token, reviewBody))
-		if code, _ := refusalOf(t, reviewed); reviewed.Code != http.StatusForbidden || code != codeScopeRequired {
-			t.Fatalf("%s: review = %d %s, want 403 %s", row.name, reviewed.Code, reviewed.Body.String(), codeScopeRequired)
+		if code, _ := refusalOf(t, reviewed); reviewed.Code != http.StatusForbidden || code != apicode.OAuthScopeRequired.V1Name() {
+			t.Fatalf("%s: review = %d %s, want 403 %s", row.name, reviewed.Code, reviewed.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 	}
 

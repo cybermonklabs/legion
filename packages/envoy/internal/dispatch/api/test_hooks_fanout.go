@@ -48,7 +48,7 @@ const (
 	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the owner locks'
 	// (store.OwnerLockNamespace, "OWNR"), the owner lock gate's (store.OwnerLockGateNamespace,
 	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
-	// the issue dependencies'
+	// a person's marks' (personMarksLockNamespace, "MARK"), the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies) and the boot's repository rename pass's
 	// (store.repoRenameLockNamespace, "RNAM"). The second key is the listening connection's
@@ -481,7 +481,8 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 	case hookQuiesceDocuments:
 		if err := s.deps.Docs.Quiesce(ctx); err != nil {
 			answer := &errorAnswer{header: http.Header{}}
-			s.writeHandlerError(answer, err)
+			// A peer's notification carries no request; the hook answers that failure as /api/v1.
+			s.writeHandlerError(answer, nil, err)
 			return answer.status, answer.body.Bytes()
 		}
 	case hookPublishFrame:

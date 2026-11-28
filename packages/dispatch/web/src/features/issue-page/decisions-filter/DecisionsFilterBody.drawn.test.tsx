@@ -2220,6 +2220,7 @@ test("a decision the reader sent a Change on says so, leaves the review list and
       markdown_tree: displayTree(markdown),
       token: "token",
       version: 1,
+      unsettled: false,
     })
   );
   const view = renderBody(whole);

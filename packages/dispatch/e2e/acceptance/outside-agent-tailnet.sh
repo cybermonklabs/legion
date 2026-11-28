@@ -719,9 +719,9 @@ owner_by_browser() {
       return
       ;;
     *)
-      # Dispatch's refusal names its code, or, where its body holds none (the router's own, such as
-      # 403 `invalid request origin` for a cookie write whose Origin is not the origin called), its
-      # words, which hold no link.
+      # Dispatch's refusal names its code (403 ORIGIN_REFUSED for a cookie write whose Origin is not
+      # the origin called), or, where a body holds none (a proxy's, or a Dispatch from before the
+      # router named its codes), its words, which hold no link.
       each=$(json_field code "$answer")
       [ -n "$each" ] || each=$(json_field error "$words" | tr -cd 'A-Za-z0-9_ ')
       printf '%s %s\n' "$status" "$each" >"$out"

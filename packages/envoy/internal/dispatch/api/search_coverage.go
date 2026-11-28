@@ -4,16 +4,17 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 )
 
-// searchCoverage answers GET /api/v1/search/coverage: how much of what meaning search ranks has a
-// current vector from the embedder search embeds its queries with, and how many items each kind
-// search covers nothing of holds (embedqueue.Coverage), read in one statement from the
-// counts the writes keep, so every number reads one snapshot. The identity is Deps.Embedder's, the
-// client cmd/dispatch builds and never wraps for search, so it is the identity search filters
-// candidates by; with no embedder configured it is empty, the report's identity, place and model
-// are null and nothing counts as current.
+// searchCoverage answers GET /api/v1/search/coverage and GET /api/v2/search-coverage: how much of
+// what meaning search ranks has a current vector from the embedder search embeds its queries with,
+// and how many items each kind search covers nothing of holds (embedqueue.Coverage), read in one
+// statement from the counts the writes keep, so every number reads one snapshot. The identity is
+// Deps.Embedder's, the client cmd/dispatch builds and never wraps for search, so it is the identity
+// search filters candidates by; with no embedder configured it is empty, the report's identity,
+// place and model are null and nothing counts as current.
 //
 // The statement runs under a statement_timeout of its own (embedqueue.CoverageStatementTimeout,
 // 10 s), which ends it while the caller still waits - the coverage probe waits 30 s - and holds
@@ -36,16 +37,16 @@ func (s *server) searchCoverage(w http.ResponseWriter, r *http.Request) {
 	report, err := embedqueue.Coverage(r.Context(), s.deps.Store, identity)
 	switch {
 	case errors.Is(err, embedqueue.ErrCoverageTimedOut):
-		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_TIMEOUT",
+		s.writeHandlerError(w, r, errorf(apicode.SearchCoverageTimeout,
 			"the search coverage statement ran past its %s bound, so nothing was counted; try again later", embedqueue.CoverageStatementTimeout()))
 	case errors.Is(err, embedqueue.ErrCoverageNotFilled):
-		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_NOT_FILLED",
+		s.writeHandlerError(w, r, errorf(apicode.SearchCoverageNotFilled,
 			"%s; try again later", embedqueue.ErrCoverageNotFilled))
 	case errors.Is(err, embedqueue.ErrCoverageFoldBehind):
-		s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "SEARCH_COVERAGE_FOLD_BEHIND",
+		s.writeHandlerError(w, r, errorf(apicode.SearchCoverageFoldBehind,
 			"%s; try again later", embedqueue.ErrCoverageFoldBehind))
 	case err != nil:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	default:
 		WriteJSON(w, http.StatusOK, report)
 	}

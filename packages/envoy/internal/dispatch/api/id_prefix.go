@@ -5,12 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -29,18 +28,19 @@ import (
 // name, which the dashboard draws as the characters it is, so it has none. A first line is a cut,
 // which the table holds no row of, so the ten candidates at most are read where they stand
 // (shapeBuilt).
-func writeAmbiguousID(w http.ResponseWriter, ambiguous *refs.ErrPrefixAmbiguous, trees bool) {
+func writeAmbiguousID(w http.ResponseWriter, r *http.Request, ambiguous *refs.ErrPrefixAmbiguous) {
 	candidates := ambiguous.Candidates
-	shapeBuilt(trees, func(reader *displayTreeReader) {
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
 		for index := range candidates {
 			if candidate := &candidates[index]; candidate.Kind != "artifact" {
 				reader.text(&candidate.FirstLineTree, candidate.FirstLine)
 			}
 		}
 	})
-	WriteJSON(w, http.StatusConflict, map[string]any{
+	code, status := refusalPair(r, apicode.IDAmbiguous)
+	WriteJSON(w, status, map[string]any{
 		"error":      ambiguous.Error(),
-		"code":       contracts.IDAmbiguous,
+		"code":       code,
 		"candidates": candidates,
 	})
 }
@@ -77,8 +77,8 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // write is the caller's to make and the handler that then makes it read one value and cannot
 // disagree about which object the path named (project_scope.go). What each route's wildcards
 // name, which routes name none of the five kinds, and what 404 each route answers for an id it
-// does not hold is its declaration's ID; a route that states none, whose pattern carries no id,
-// is returned unwrapped and pays nothing.
+// does not hold is the route's IDs column, which a route file fills from its declaration's ID; a
+// route whose pattern carries no id is returned unwrapped and pays nothing.
 //
 // A value that is no id written short (text.IsIDPrefix — at least eight hex digits and hyphens,
 // never a whole uuid) is left as written with no query, so a whole id, a slug, a numbered id, a
@@ -97,7 +97,7 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // (SetPathValue). A prefix two items or more carry is 409 ID_AMBIGUOUS. One nothing carries is
 // the 404 that route answers for a whole id of its kind that names no item (idRoute.NotFound),
 // so a short id fails where a whole one fails; the one route that answers no 404 for an id it
-// does not hold keeps that answer (notFoundNone). Either way the handler never runs, which is
+// does not hold keeps that answer (idRoute.NoNotFound). Either way the handler never runs, which is
 // where this differs from a whole id on a request that is malformed besides: the whole id would
 // reach the handler and be refused for that other reason first, and the prefix is refused here.
 //
@@ -105,10 +105,10 @@ func canonicalizeUUIDPath(r *http.Request, name string) {
 // an authenticated one, and its refusal is written further in, by the keyed layer for a keyed
 // write and by the handler for any other.
 func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
-	if route.ID == nil {
+	if route.IDs == nil {
 		return handler
 	}
-	entry := *route.ID
+	entry := *route.IDs
 	return func(w http.ResponseWriter, r *http.Request) {
 		canonicalizeUUIDPath(r, "id")
 		var id, blockID string
@@ -140,17 +140,18 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// item reserved for another author is no candidate (refs.ResolvePrefix), and whether
 		// a direct message's first line is listed among the candidates: a person reads any,
 		// and a bearer the conversations the session it names in ?session= is in, the claim
-		// the message routes already read.
+		// the message routes already read. A route the decoder reads names the session it
+		// decoded (requestSession, R4); every other route reads it off the raw query, as it
+		// always did: a route of the v1 table, a test hook at either version, or a row of the
+		// INFRA-979 tree.
 		who := actor.Recorded()
-		viewer := refs.Viewer{
-			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), Origins: s.deps.Origins,
-		}
+		viewer := refs.Viewer{Human: human, Session: requestSession(r), Origins: s.deps.Origins}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {
 				scope.IssueKey = r.PathValue("key")
 			}
-			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, who, viewer, itemNotFound(entry.NotFound, id)) {
+			if !s.resolvePathValue(w, r, "id", entry.Kind, scope, id, who, viewer, itemNotFound(entry, id)) {
 				return
 			}
 		}
@@ -161,12 +162,12 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 			// route answers for that {id} rather than for its block.
 			document, err := s.documentRefKey(r.Context(), r.PathValue("id"))
 			if err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			if document != "" {
 				scope := refs.Scope{Document: document}
-				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, who, viewer, entry.BlockNotFound) {
+				if !s.resolvePathValue(w, r, "block_id", "block", scope, blockID, who, viewer, prefixNotFound{code: entry.BlockNotFound}) {
 					return
 				}
 			}
@@ -175,12 +176,20 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 	}
 }
 
+// prefixNotFound is what a route answers a prefix nothing carries: the 404 of code, or none at all
+// where none is set, the value then left as written for the handler to answer for.
+type prefixNotFound struct {
+	code apicode.Code
+	none bool
+}
+
 // resolvePathValue rewrites the path value `name`, written as the prefix of an id of kind, to
 // the whole id it names within scope for who, and reports whether the request may go on: false
-// once it has written the answer itself. notFound is the 404 code this route answers for an id of
-// that kind it does not hold, and notFoundNone the route that answers no 404 for one, whose value
-// is then left as written for the handler to answer for. It is the one caller of wholeID that has
-// a route code, so it is the one that writes a 404.
+// once it has written the answer itself. notFound is what this route answers for an id of that
+// kind it does not hold: its 404, or none, either for the route that answers no 404 for one
+// (NoNotFound) or for a value that can start no uuid (itemNotFound), the value then left as
+// written for the handler to answer for. It is the one caller of wholeID that has a route code,
+// so it is the one that writes a 404.
 func (s *server) resolvePathValue(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -189,7 +198,7 @@ func (s *server) resolvePathValue(
 	prefix string,
 	who model.Actor,
 	viewer refs.Viewer,
-	notFound string,
+	notFound prefixNotFound,
 ) bool {
 	whole, err := s.wholeID(r.Context(), kind, scope, prefix, who, viewer)
 	if err != nil {
@@ -197,10 +206,10 @@ func (s *server) resolvePathValue(
 		return false
 	}
 	if whole == "" {
-		if notFound == notFoundNone {
+		if notFound.none {
 			return true
 		}
-		writeError(w, notFound, http.StatusNotFound, fmt.Sprintf("no %s whose id starts with %q", kind, prefix))
+		writeError(w, r, notFound.code, fmt.Sprintf("no %s whose id starts with %q", kind, prefix))
 		return false
 	}
 	r.SetPathValue(name, whole)
@@ -237,14 +246,15 @@ func (s *server) wholeID(
 func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err error) {
 	var ambiguous *refs.ErrPrefixAmbiguous
 	if errors.As(err, &ambiguous) {
-		writeAmbiguousID(w, ambiguous, wantsDisplayTrees(r))
+		writeAmbiguousID(w, r, ambiguous)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
-// itemNotFound is the 404 an item prefix that names nothing gets on a route whose own is
-// notFound: that answer where the value can start a uuid, and notFoundNone where it cannot.
+// itemNotFound is the answer an item prefix that names nothing gets on the route entry
+// describes: the route's own 404 where the value can start a uuid, and none where it cannot or
+// where the route answers no 404 for an id it does not hold (NoNotFound).
 //
 // A value text.IsIDPrefix accepts can still be no prefix of any id: one longer than a uuid, or
 // one writing a hyphen where a uuid has a hex digit — `a061-e3f2-…`, the spelling with a hyphen
@@ -253,11 +263,11 @@ func (s *server) writeIDPrefixError(w http.ResponseWriter, r *http.Request, err 
 // it can start no id, not because no item carries it, so it is left as written and the route
 // reads it as it always did; refs.ResolvePrefix answers both as no match, and refs.CanStartUUID
 // is the rule its uuidRange tells the two apart by.
-func itemNotFound(notFound, prefix string) string {
-	if !refs.CanStartUUID(prefix) {
-		return notFoundNone
+func itemNotFound(entry idRoute, prefix string) prefixNotFound {
+	if entry.NoNotFound || !refs.CanStartUUID(prefix) {
+		return prefixNotFound{none: true}
 	}
-	return notFound
+	return prefixNotFound{code: entry.NotFound}
 }
 
 // documentRefKey is the ref_key of the document id names, the address refs.Scope holds a

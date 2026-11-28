@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -51,6 +52,17 @@ var (
 	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true, false)
 	listIssuesQueryAtCut      = issueSummaryQuery(false, false, true, true)
 	listIssuesPageQueryAtCut  = issueSummaryQuery(false, true, true, true)
+)
+
+// The four texts of GET /api/v2/issues and GET /api/v2/projects/{key}/issues, as the four above
+// are /api/v1's, over the filters of /api/v2 (issueListFiltersV2): the same joins, order and
+// page cut, so the two versions answer the same rows for the same filters. /api/v2 answers no
+// listing at a cut (v2AsOf), so it has no text for one.
+var (
+	listIssuesV2Query           = issueListingQuery(issueListFiltersV2, issuePriorityFilterTermsV2, issueListFiltersV2Parameters, false, false, true, false)
+	listPinnedIssuesV2Query     = issueListingQuery(issueListFiltersV2, issuePriorityFilterTermsV2, issueListFiltersV2Parameters, true, false, true, false)
+	listIssuesV2PageQuery       = issueListingQuery(issueListFiltersV2, issuePriorityFilterTermsV2, issueListFiltersV2Parameters, false, true, true, false)
+	listPinnedIssuesV2PageQuery = issueListingQuery(issueListFiltersV2, issuePriorityFilterTermsV2, issueListFiltersV2Parameters, true, true, true, false)
 )
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
@@ -93,7 +105,17 @@ var (
 // (prioritiesLiveAtCutTerm) in place of priority_nodes, which keeps only the present state, and
 // reads no component member (issueComponentsTermsAtCut).
 func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
-	parameter := 18
+	return issueListingQuery(issueListFilters, issuePriorityFilterTerms, issueListFiltersParameters, pinned, paged, readAdvances, atCut)
+}
+
+// issueListingQuery is issueSummaryQuery over filters, the where clause of `matched`, which
+// binds parameters $1 to $parameters, and priorityTerms, the priority filter's terms over the same
+// project arm (issuePriorityFilterTermsOver): the pinned login and the page bind the parameters
+// after them. /api/v1 passes issueListFilters and issuePriorityFilterTerms, /api/v2
+// issueListFiltersV2 and issuePriorityFilterTermsV2, so the two versions run one statement shape
+// and differ in their filters alone.
+func issueListingQuery(filters, priorityTerms string, parameters int, pinned, paged, readAdvances, atCut bool) string {
+	parameter := parameters + 1
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -103,7 +125,7 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
-		` + issueListFilters + `
+		` + filters + `
 	), filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from (select array_agg(address) as addresses from matched) m
@@ -119,10 +141,10 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		filteredTerms = `filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
-		` + issueListFilters + `
+		` + filters + `
 	)`
 	}
-	query := `with recursive ` + filterTerms + `, ` + issuePriorityFilterTerms + `, ` + filteredTerms
+	query := `with recursive ` + filterTerms + `, ` + priorityTerms + `, ` + filteredTerms
 	advancesColumns := issueAdvancesColumns
 	terms := componentsTerms + `, ` + refs.IssueRepoTerms + `, ` + refs.IssuePriorityTerms
 	if readAdvances {
@@ -190,7 +212,15 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins). $16 and $17 are the two strings of the label filter's map (labelFoldMap),
 // and the parameters after them are the pinned login and the page.
-const issueListFilters = `where ` + issueListProjectFilter + `
+const issueListFilters = `where ` + issueListProjectFilter + issueListFilterTerms
+
+// issueListFiltersParameters is the last parameter issueListFilters binds.
+const issueListFiltersParameters = 17
+
+// issueListFilterTerms are the filters $2 to $13, $15 (`own`) and the label filter's map at $16
+// and $17, which both versions' listings write alike; $14 between them is the move read's gate
+// and no filter.
+const issueListFilterTerms = `
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
@@ -207,13 +237,30 @@ const issueListFilters = `where ` + issueListProjectFilter + `
 		           or ($12::boolean and i.key not in (select key from advancing))))
 		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
 
+// issueListFiltersV2 are the filters of GET /api/v2/issues (R1.3, R1.5): issueListFilters with
+// the project a list ($1, any of the projects named, and the empty list every project, since the
+// list across projects has no default one: issueListProjectFilterV2), $4 and $18 the updated_at
+// window [updated_from, updated_to) as $9 and $10 are closed_at's, and $19 the keys an external
+// reference resolved to (ref=), null where the request named no reference and the empty list for
+// one that resolved to none. $14 is the gate on the move read, $15 `own`, and $16 and $17 the
+// label filter's map, as in issueListFilters.
+const issueListFiltersV2 = `where ` + issueListProjectFilterV2 + issueListFilterTerms + `
+		  and ($18::timestamptz is null or i.updated_at < $18)
+		  and ($19::text[] is null or i.key = any($19::text[]))`
+
+// issueListFiltersV2Parameters is the last parameter issueListFiltersV2 binds.
+const issueListFiltersV2Parameters = 19
+
 // issueListProjectFilter and issueListOpenFilter are the project ($1) and `open` ($6) arms of
 // issueListFilters, over `issues i`, each written once: `matched` reads them, and so does the
 // priority filter's `priority_candidates` (issuePriorityFilterTerms), which must hold every issue
 // those two arms let through, so an arm widened for the one is widened for the other.
+// issueListProjectFilterV2 is /api/v2's project arm, $1 a list of projects, which
+// issueListFiltersV2 and its `priority_candidates` (issuePriorityFilterTermsV2) read alike.
 const (
-	issueListProjectFilter = `($1 = '' or i.project_key = $1)`
-	issueListOpenFilter    = `(not $6::boolean or i.closed_at is null)`
+	issueListProjectFilter   = `($1 = '' or i.project_key = $1)`
+	issueListProjectFilterV2 = `(cardinality($1::text[]) = 0 or i.project_key = any($1::text[]))`
+	issueListOpenFilter      = `(not $6::boolean or i.closed_at is null)`
 )
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
@@ -444,25 +491,35 @@ func advancesOriginTerms(relations, keys string) string {
 	)`
 }
 
-// issuePriorityFilterTerms answer the listing's `priority` query key by the priority each issue
-// resolves to (J1 of dispatch://INFRA-5793), as terms computed once per request rather than a
-// read per row (issueListFilters says why): $7 is the levels the request named and $8 whether it
-// asked for the issues with none. An issue with a priority of its own resolves to it, which
-// `matched` tests on its row, so the walk climbs only from `priority_candidates`, the issues with
-// none of their own that `matched` can keep: it reads two of matched's own arms, the project ($1)
-// and `open` ($6), as the same text (issueListProjectFilter, issueListOpenFilter), so it holds
-// every such issue whatever the other filters cut, and a project's listing climbs from that
+// issuePriorityFilterTermsOver writes the terms that answer the listing's `priority` query key by
+// the priority each issue resolves to (J1 of dispatch://INFRA-5793), as terms computed once per
+// request rather than a read per row (issueListFilters says why): $7 is the levels the request
+// named and $8 whether it asked for the issues with none. An issue with a priority of its own
+// resolves to it, which `matched` tests on its row, so the walk climbs only from
+// `priority_candidates`, the issues with none of their own that `matched` can keep: it reads two
+// of matched's own arms, the project ($1, projectFilter, the version's own) and `open` ($6), as
+// the same text (issueListProjectFilter or issueListProjectFilterV2, issueListOpenFilter), so it
+// holds every such issue whatever the other filters cut, and a project's listing climbs from that
 // project's issues alone. The read is gated on the request naming a priority at all: the clause
 // holds no column, so the planner makes it a one-time filter, and a listing that names none climbs
 // from no issue and pays for no walk of the filter. `priority_inherited` is
 // refs.IssuePriorityTermsOver those candidates, the one rule every issue read resolves a priority
 // by: a row for each candidate that takes a priority from an issue above it, with that priority,
 // and none for a candidate that resolves none.
-var issuePriorityFilterTerms = `priority_candidates as (
+func issuePriorityFilterTermsOver(projectFilter string) string {
+	return `priority_candidates as (
 		select i.key from issues i
 		where (cardinality($7::smallint[]) > 0 or $8::boolean) and i.priority is null
-		  and ` + issueListProjectFilter + ` and ` + issueListOpenFilter + `
+		  and ` + projectFilter + ` and ` + issueListOpenFilter + `
 	), ` + refs.IssuePriorityTermsOver("priority_candidates", "priority_inherited")
+}
+
+// issuePriorityFilterTerms are the priority filter's terms of /api/v1's listing, and
+// issuePriorityFilterTermsV2 those of /api/v2's, each over its version's project arm.
+var (
+	issuePriorityFilterTerms   = issuePriorityFilterTermsOver(issueListProjectFilter)
+	issuePriorityFilterTermsV2 = issuePriorityFilterTermsOver(issueListProjectFilterV2)
+)
 
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around
 // the three `advances` columns the text was built with: either the relation read's
@@ -542,6 +599,10 @@ func issueSummaryJoins(readAdvances bool) string {
 }
 
 const (
+	// maxRepoLabel16 bounds a `label` filter value that names a repository (repoLabelPrefix):
+	// the prefix, an owner of up to 39 characters, a slash and a name of up to 100, GitHub's own
+	// limits.
+	maxRepoLabel16 = len(repoLabelPrefix) + 39 + 1 + 100
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
@@ -588,7 +649,7 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 		case "0", "1", "2", "3":
 			priorities = append(priorities, int16(value[0]-'0'))
 		default:
-			return nil, false, errorf(http.StatusBadRequest, "INVALID_PRIORITY", "priority filter values must be 0 to 3 or %s, got %q", unsetPriorityFilter, raw)
+			return nil, false, errorf(apicode.InvalidPriority, "priority filter values must be 0 to 3 or %s, got %q", unsetPriorityFilter, raw)
 		}
 	}
 	return priorities, unset, nil
@@ -611,7 +672,7 @@ func parseAdvancesFilter(values []string) (ids []string, none, some bool, err er
 		case anyAdvancesFilter:
 			some = true
 		case "":
-			return nil, false, false, errorf(http.StatusBadRequest, "INVALID_ADVANCES",
+			return nil, false, false, errorf(apicode.InvalidAdvances,
 				"advances filter values must be a priority id, %s or %s, got %q", noAdvancesFilter, anyAdvancesFilter, raw)
 		default:
 			ids = append(ids, value)
@@ -752,16 +813,54 @@ func labelFoldMap(labels []string) (from, to string) {
 	return fromRunes.String(), toRunes.String()
 }
 
+// normalizeIssueLabels holds the labels a caller names to a caller's limits (callerLabelLimit).
 func normalizeIssueLabels(values []string) ([]string, error) {
-	if len(values) > contracts.MaxIssueLabels {
-		return nil, countExceededError("LABELS_INPUT", "labels", len(values), contracts.MaxIssueLabels)
+	return normalizeLabels(values, callerLabelLimit)
+}
+
+// labelLimit is what one label is held to, by its lower-cased key: the most UTF-16 units it may
+// run to, with no bound where that is 0, and whether it counts toward contracts.MaxIssueLabels.
+// Every limit bounds the empty key, the blank label every write and filter refuses.
+type labelLimit func(key string) (units int, counted bool)
+
+// callerLabelLimit is a caller's limits: every label counts, and runs to contracts.IssueLabelMax
+// units.
+func callerLabelLimit(string) (int, bool) {
+	return contracts.IssueLabelMax, true
+}
+
+// labelFilterLimit holds a `label` filter value to a caller's limits, except one that names a
+// repository (repoLabelPrefix), which runs to maxRepoLabel16 units: the repo: label an import
+// through the default project wrote is held to no caller's 40 but to this bound, and it exists
+// so that its repository stays filterable.
+func labelFilterLimit(key string) (int, bool) {
+	if strings.HasPrefix(key, repoLabelPrefix) {
+		return maxRepoLabel16, true
+	}
+	return contracts.IssueLabelMax, true
+}
+
+// normalizeLabels trims values and folds them case-insensitively, keeping each label's first
+// spelling. It refuses a blank label, one past the units its limit gives it, and more than
+// contracts.MaxIssueLabels values that their limits count, counted before the fold as they always
+// were.
+func normalizeLabels(values []string, limit labelLimit) ([]string, error) {
+	counted := 0
+	for _, value := range values {
+		if _, counts := limit(strings.ToLower(strings.TrimSpace(value))); counts {
+			counted++
+		}
+	}
+	if counted > contracts.MaxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, contracts.MaxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
-		if length := itemblocks.Units16(label); length == 0 || length > contracts.IssueLabelMax {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", contracts.IssueLabelMax)
+		units, _ := limit(strings.ToLower(label))
+		if length := itemblocks.Units16(label); length == 0 || (units > 0 && length > units) {
+			return nil, errorf(apicode.LabelsInput, "each label must be 1 to %d characters", units)
 		}
 		key := labelKey(label)
 		if _, duplicate := seen[key]; duplicate {
@@ -792,9 +891,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	project := strings.TrimSpace(query.Get("project"))
 	statuses := parseStatusFilter(query["status"])
 	parent := strings.TrimSpace(query.Get("parent"))
-	labels, err := normalizeIssueLabels(query["label"])
+	labels, err := normalizeLabels(query["label"], labelFilterLimit)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	for index, label := range labels {
@@ -807,7 +906,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("updated_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("updated_since")))
 		if err != nil {
-			writeError(w, "INVALID_UPDATED_SINCE", http.StatusBadRequest, "updated_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidUpdatedSince, "updated_since must be an RFC3339 timestamp")
 			return
 		}
 		updatedSince = &parsed
@@ -816,7 +915,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("closed_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_since")))
 		if err != nil {
-			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, "closed_since must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidClosedSince, "closed_since must be an RFC3339 timestamp")
 			return
 		}
 		closedSince = &parsed
@@ -825,7 +924,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if query.Has("closed_before") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_before")))
 		if err != nil {
-			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, "closed_before must be an RFC3339 timestamp")
+			writeError(w, r, apicode.InvalidClosedBefore, "closed_before must be an RFC3339 timestamp")
 			return
 		}
 		closedBefore = &parsed
@@ -834,27 +933,27 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// microsecond are a valid window, not a backwards one, and the statement answers whatever
 	// stored times fall between their rounded values (none, unless the lower bound is whole).
 	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
-		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
+		writeError(w, r, apicode.InvalidClosedWindow, "closed_since must be before closed_before")
 		return
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	advances, noAdvances, anyAdvances, err := parseAdvancesFilter(query["advances"])
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	routeStatus, err := parseRouteStatusFilter(query.Get("route_status"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	page, err := parseIssuePage(query)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A route matters only while there is work to reach, so the route_status filter reads open
@@ -890,62 +989,12 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	case inSQL:
 		listQuery = listIssuesPageQuery
 	}
-	var issues []model.IssueSummary
-	total := 0
 	if inSQL {
 		arguments = append(arguments, page.limit, page.offset)
-		issues, total, err = s.scanIssuePage(r.Context(), listQuery, arguments)
-	} else {
-		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
 	}
-	if err != nil {
-		s.writeHandlerError(w, err)
+	issues, total, ok := s.readIssueListing(w, r, listQuery, arguments, inSQL, routeStatus)
+	if !ok {
 		return
-	}
-	if atCut {
-		// At a cut the listing reads no route roster, and the request carries no route_status
-		// (refuseListingFilterAtCut), so the page is cut in SQL whenever it is paged.
-		prefix := ""
-		if inSQL {
-			prefix = "/issues"
-		}
-		if err := s.issueSummariesAtTheCut(r.Context(), issues, prefix); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	} else if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
-		judged := routeStatus != "" && routeStatus != model.RouteUnknown
-		var roster routeRoster
-		if judged {
-			// A filter for a judged state cannot be cut from an answer it could not read: a failed
-			// read of the stored answer is the database's failure and is answered as one, and only
-			// a listener that did not answer is the listener's.
-			if roster, err = s.readRouteRoster(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		} else {
-			roster = s.routeRosterOrUnknown(r.Context())
-		}
-		if judged && !roster.answered {
-			// No route can be judged, so a filter for a judged state refuses rather than answer
-			// a list that would read as "every route reaches someone" (or "nobody's does").
-			if roster.reason == model.RouteReasonRefilling {
-				writeEnvoyRefilling(w, roster.retryAfter)
-				return
-			}
-			writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable,
-				"the Envoy listener did not answer, so Dispatch cannot tell which routes reach a live session; route_status=unknown lists the routed issues")
-			return
-		}
-		for index := range issues {
-			issues[index].IssueRouteReach = roster.reach(issues[index].Route)
-		}
-	}
-	if routeStatus != "" {
-		issues = slices.DeleteFunc(issues, func(issue model.IssueSummary) bool {
-			return issue.RouteStatus == nil || *issue.RouteStatus != routeStatus
-		})
 	}
 	if inSQL {
 		WriteJSON(w, http.StatusOK, page.holding(issues, total))
@@ -958,6 +1007,76 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, issues)
+}
+
+// readIssueListing is the listing both versions of GET issues read once each has parsed its
+// query into a statement and its arguments: the rows listQuery answers - one page and the count
+// of every row the filters match where inSQL, the statement cutting the page, and every matching
+// row otherwise - each routed row's reach read from the Envoy roster, and the rows whose route
+// does not stand in routeStatus left out where the request names one. A route_status read cuts
+// its page itself from what is left, since that filter runs here, after the read. It writes a
+// refusal itself and answers false.
+func (s *server) readIssueListing(
+	w http.ResponseWriter, r *http.Request, listQuery string, arguments []any, inSQL bool, routeStatus string,
+) ([]model.IssueSummary, int, bool) {
+	var issues []model.IssueSummary
+	total := 0
+	var err error
+	if inSQL {
+		issues, total, err = s.scanIssuePage(r.Context(), listQuery, arguments)
+	} else {
+		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
+	}
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return nil, 0, false
+	}
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		// At a cut the listing reads no route roster, and the request carries no route_status
+		// (refuseListingFilterAtCut), so the page is cut in SQL whenever it is paged.
+		prefix := ""
+		if inSQL {
+			prefix = "/issues"
+		}
+		if err := s.issueSummariesAtTheCut(r.Context(), issues, prefix); err != nil {
+			s.writeHandlerError(w, r, err)
+			return nil, 0, false
+		}
+	} else if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
+		judged := routeStatus != "" && routeStatus != model.RouteUnknown
+		var roster routeRoster
+		if judged {
+			// A filter for a judged state cannot be cut from an answer it could not read: a failed
+			// read of the stored answer is the database's failure and is answered as one, and only
+			// a listener that did not answer is the listener's.
+			if roster, err = s.readRouteRoster(r.Context()); err != nil {
+				s.writeHandlerError(w, r, err)
+				return nil, 0, false
+			}
+		} else {
+			roster = s.routeRosterOrUnknown(r.Context())
+		}
+		if judged && !roster.answered {
+			// No route can be judged, so a filter for a judged state refuses rather than answer
+			// a list that would read as "every route reaches someone" (or "nobody's does").
+			if roster.reason == model.RouteReasonRefilling {
+				writeEnvoyRefilling(w, r, roster.retryAfter)
+				return nil, 0, false
+			}
+			writeError(w, r, apicode.EnvoyUnavailable,
+				"the Envoy listener did not answer, so Dispatch cannot tell which routes reach a live session; route_status=unknown lists the routed issues")
+			return nil, 0, false
+		}
+		for index := range issues {
+			issues[index].IssueRouteReach = roster.reach(issues[index].Route)
+		}
+	}
+	if routeStatus != "" {
+		issues = slices.DeleteFunc(issues, func(issue model.IssueSummary) bool {
+			return issue.RouteStatus == nil || *issue.RouteStatus != routeStatus
+		})
+	}
+	return issues, total, true
 }
 
 // issueSummaryRow holds one listing row as the statement answers it. Scanning and resolving are
@@ -1099,7 +1218,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	trees := wantsDisplayTrees(r)
 	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), trees)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what
@@ -1107,7 +1226,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	// At a cut the read reads no roster, which keeps no past state (issueAtTheCut).
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
 		if err := s.issueAtTheCut(r.Context(), &read, trees); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	} else if read.Route != nil || issueClaimSession(read.Claim) != "" {
@@ -1167,6 +1286,36 @@ type issueDetail struct {
 	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
+// issueReadParts are the parts of an issue's read beyond its row, its progress, its external
+// links and its artifacts: GET /api/v1/issues/{key} reads every one of them
+// (everyIssueReadPart), and GET /api/v2/issues/{key} only those its include= names (the route
+// map's J3), so a read that names none costs no blocks, ask, child, comment count, gate or
+// backlink statement.
+type issueReadParts struct {
+	blocks, openAsks, children, commentCount, designGates, referencedByCount bool
+}
+
+// everyIssueReadPart is every part of an issue's read, GET /api/v1/issues/{key}'s.
+var everyIssueReadPart = issueReadParts{
+	blocks: true, openAsks: true, children: true, commentCount: true, designGates: true, referencedByCount: true,
+}
+
+// issueRead is what readIssueParts read of one issue: its row with its external links, its
+// progress, its artifacts with every version, review and approval request, and each part parts
+// named; a part it did not name is left at its zero value.
+type issueRead struct {
+	issue             model.Issue
+	progress          model.IssueProgress
+	blocks            []string
+	artifacts         []model.Artifact
+	asks              []model.Ask
+	replies           map[string]model.AskLastReply
+	children          []model.IssueChild
+	commentCount      int
+	designGates       []issueDesignGate
+	referencedByCount int
+}
+
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, issueBlocksStatement, loadArtifacts, queryOwnerAsks with
 // issueOpenAsksOf, issueChildrenStatement with scanIssueChildren, issueCommentCountStatement and
@@ -1176,11 +1325,34 @@ type issueDetail struct {
 // At a cut it does not read the design gates or the issue's backlink count, which keep no history
 // and which the answer leaves out (issueAtTheCut).
 func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
-	var read issueDetail
+	parts, err := s.readIssueParts(ctx, who, key, everyIssueReadPart)
+	if err != nil {
+		return issueDetail{}, err
+	}
+	read := issueDetail{
+		Issue: parts.issue, Blocks: parts.blocks, Progress: parts.progress, CommentCount: parts.commentCount,
+		Children: parts.children, DesignGates: parts.designGates, ReferencedByCount: parts.referencedByCount,
+	}
+	// The approvals are read by the second batch, so their reasons are registered after it,
+	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
+	// texts and the attachment's reason are one query of the stored trees, and what it did not
+	// hold is stored on a goroutine of its own, beside the rest of the request.
+	reader := s.readDisplayTrees(ctx, trees)
+	read.Artifacts = artifactReads(parts.artifacts, reader)
+	read.OpenAsks = issueOpenAsksOf(parts.asks, parts.replies, reader)
+	if read.Issue.Components.Mode == "none" {
+		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
+	}
+	reader.resolve()
+	return read, nil
+}
+
+// readIssueParts is the database work of an issue's read, both versions': its two batches, the
+// first queuing the parts that name the issue's key alone, the second what only the first's
+// answers name, each read as who may see it. A key no issue carries answers pgx.ErrNoRows.
+func (s *server) readIssueParts(ctx context.Context, who model.Actor, key string, parts issueReadParts) (issueRead, error) {
+	var read issueRead
 	var links []model.ExternalLink
-	var artifacts []model.Artifact
-	var asks []model.Ask
-	var replies map[string]model.AskLastReply
 	issueCounts := map[string]int{}
 	missing := false
 
@@ -1191,7 +1363,7 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 			missing = true
 			return nil
 		}
-		read.Issue, read.Progress = issue, progress
+		read.issue, read.progress = issue, progress
 		return err
 	})
 	first.Queue(issueExternalLinksStatement, key).Query(func(rows pgx.Rows) error {
@@ -1199,60 +1371,62 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 		links = scanned
 		return err
 	})
-	first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
-		return row.Scan(&read.Blocks)
-	})
+	if parts.blocks {
+		first.Queue(issueBlocksStatement, key).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&read.blocks)
+		})
+	}
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
-		artifacts = scanned
+		read.artifacts = scanned
 		return err
 	})
-	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
-		scannedAsks, scannedReplies, err := scanAskReads(rows)
-		asks, replies = scannedAsks, scannedReplies
-		return err
-	})
-	first.Queue(issueChildrenStatement, key).Query(func(rows pgx.Rows) error {
-		scanned, err := scanIssueChildren(rows)
-		read.Children = scanned
-		return err
-	})
-	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
-		return row.Scan(&read.CommentCount)
-	})
-	if _, atCut := asof.CutFrom(ctx); !atCut {
-		first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
-			scanned, err := scanIssueDesignGates(rows)
-			read.DesignGates = scanned
+	if parts.openAsks {
+		first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
+			scannedAsks, scannedReplies, err := scanAskReads(rows)
+			read.asks, read.replies = scannedAsks, scannedReplies
 			return err
 		})
+	}
+	if parts.children {
+		first.Queue(issueChildrenStatement, key).Query(func(rows pgx.Rows) error {
+			scanned, err := scanIssueChildren(rows)
+			read.children = scanned
+			return err
+		})
+	}
+	// At a cut the read reads neither the design gates nor the issue's backlink count, which keep
+	// no history and which the answer leaves out (issueAtTheCut).
+	_, atCut := asof.CutFrom(ctx)
+	if parts.designGates && !atCut {
+		first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
+			scanned, err := scanIssueDesignGates(rows)
+			read.designGates = scanned
+			return err
+		})
+	}
+	if parts.commentCount {
+		first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&read.commentCount)
+		})
+	}
+	if parts.referencedByCount && !atCut {
 		if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
-			return issueDetail{}, err
+			return issueRead{}, err
 		}
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
-		return issueDetail{}, err
+		return issueRead{}, err
 	}
 	if missing {
-		return issueDetail{}, pgx.ErrNoRows
+		return issueRead{}, pgx.ErrNoRows
 	}
-	read.Issue.ExternalLinks = links
-	read.ReferencedByCount = issueCounts[read.Issue.Key]
+	read.issue.ExternalLinks = links
+	read.referencedByCount = issueCounts[read.issue.Key]
 
-	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
-		return issueDetail{}, err
+	if err := s.readIssueDetails(ctx, who, artifactPointers(read.artifacts), askReadPointers(read.asks)); err != nil {
+		return issueRead{}, err
 	}
-	// The approvals are read by the second batch, so their reasons are registered after it,
-	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
-	// texts and the attachment's reason are one query of the stored trees, and what it did not
-	// hold is stored on a goroutine of its own, beside the rest of the request.
-	reader := s.readDisplayTrees(ctx, trees)
-	read.Artifacts = artifactReads(artifacts, reader)
-	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
-	if read.Issue.Components.Mode == "none" {
-		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
-	}
-	reader.resolve()
 	return read, nil
 }
 

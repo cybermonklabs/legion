@@ -12,14 +12,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back. A
-// thread stays in the Inbox, read or not, until they dismiss it, as an email stays until it is
-// archived: reading it and pressing Mark all read leave it there, and this route alone takes it
-// out. A new write by somebody else brings a dismissed thread back, unread; the person's own reply
-// does not, so a reply they send from the Dismissed view leaves the thread there.
+// POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back, and so
+// do PATCH /api/v2/me/marks and PATCH /api/v2/me/marks/{kind}/{id} through this file's work
+// (dismissInboxThreads, dismissInboxThreadsIn). A thread stays in the Inbox, read or not, until
+// they dismiss it, as an email stays until it is archived: reading it and pressing Mark all read
+// leave it there, and a dismissal alone takes it out. A new write by somebody else brings a
+// dismissed thread back, unread; the person's own reply does not, so a reply they send from the
+// Dismissed view leaves the thread there.
 //
 // It is a file of its own rather than a third act in api/inbox_read.go: that file's subject is the
 // read mark and the lock order written on markInboxReadThreads, which this route takes without
@@ -402,18 +406,18 @@ func parseInboxDismissRows(values []string) (inboxDismissRows, error) {
 	for _, value := range values {
 		row := strings.TrimSpace(value)
 		if strings.HasPrefix(row, inboxDismissAskPrefix) {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"an ask is answered or snoozed, not dismissed; threads takes %s<id> and %s<id>",
 				inboxDismissReplyPrefix, inboxDismissAgentPrefix)
 		}
 		kind, id, found := strings.Cut(row, ":")
 		if !found || (kind+":" != inboxDismissReplyPrefix && kind+":" != inboxDismissAgentPrefix) {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"threads takes %s<id> and %s<id>", inboxDismissReplyPrefix, inboxDismissAgentPrefix)
 		}
 		parsed, err := uuid.Parse(id)
 		if err != nil {
-			return rows, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return rows, errorf(apicode.InvalidQuery,
 				"%s%s names no thread: the id must be a uuid", kind, ":"+id)
 		}
 		if kind+":" == inboxDismissReplyPrefix {
@@ -521,7 +525,7 @@ func inboxDismissSeenByRow(
 			row = inboxDismissAgentPrefix + named.roots[0]
 		}
 		if row == "" {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return nil, errorf(apicode.InvalidQuery,
 				"seen_replies names %s, which threads does not: it takes one entry per row"+
 					" threads names", key)
 		}
@@ -544,7 +548,7 @@ func readInboxDismissSeenEntry(
 ) error {
 	value, carried := drawn[row]
 	if !carried {
-		return errorf(http.StatusBadRequest, "INVALID_QUERY",
+		return errorf(apicode.InvalidQuery,
 			"seen_replies leaves %s out: a dismissal carries what the page drew in every row"+
 				" threads names", row)
 	}
@@ -557,11 +561,11 @@ func readInboxDismissSeenEntry(
 // inboxDismissSeenRefused is that refusal, and inboxDismissSeenNoReply the one an id that is not
 // a uuid answers, whichever field of whichever kind carried it.
 func inboxDismissSeenRefused(row, takes string) error {
-	return errorf(http.StatusBadRequest, "INVALID_QUERY", "seen_replies[%s] %s", row, takes)
+	return errorf(apicode.InvalidQuery, "seen_replies[%s] %s", row, takes)
 }
 
 func inboxDismissSeenNoReply(row, field string) error {
-	return errorf(http.StatusBadRequest, "INVALID_QUERY",
+	return errorf(apicode.InvalidQuery,
 		"seen_replies[%s].%s names no reply: a reply the page drew is named by its id, a uuid",
 		row, field)
 }
@@ -574,12 +578,12 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	var input inboxDismissRequest
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows, err := parseInboxDismissRows(input.Threads)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Which form the body is, read once here and once in the transaction's own read
@@ -587,7 +591,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	// the server to decide whether the filters narrow the named rows or name rows of their own.
 	named := rows.named()
 	if named && (input.DismissThrough != nil || input.narrows()) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"name threads or the list's filters with dismiss_through, not both")
 		return
 	}
@@ -595,19 +599,19 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 	// holds a row to nothing, and under the list's filters the read that chooses the rows draws
 	// them (readInboxDismissThreads), the server standing in for the page there.
 	if input.SeenReplies != nil && input.Restore {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"a restore clears the marks and takes no seen_replies")
 		return
 	}
 	if input.SeenReplies != nil && !named {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"seen_replies goes with threads: under the list's filters the server draws the rows"+
 				" itself and holds each of them to what it drew")
 		return
 	}
 	if named && !input.Restore {
 		if err := readInboxDismissSeen(&rows, input.SeenReplies); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -619,22 +623,22 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 		// matched against, read as every mark on these routes is read (RFC3339, no further ahead of
 		// the server clock than a minute) and carried on as the caller's own text.
 		if input.DismissThrough == nil {
-			writeError(w, "INVALID_STATE", http.StatusBadRequest, "dismiss_through is required")
+			writeError(w, r, apicode.InvalidState, "dismiss_through is required")
 			return
 		}
 		if _, err := parseAgentStateCutoff("dismiss_through", input.DismissThrough); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		scope, err = parseInboxReadScope(input.inboxThreadFilters)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	dismissed, events, err := s.dismissInboxThreads(r.Context(), actor, inboxDismissPlanOf(input), rows, scope)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -668,7 +672,6 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {
-	login := model.CanonicalLogin(actor.ID)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -677,11 +680,33 @@ func (s *server) dismissInboxThreads(
 	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the dismissal's statements: %w", err)
 	}
+	// Step 0 of the lock order (markInboxReadThreads): the caller's marks lock, beside every other
+	// mark-all and dismissal.
+	if err := lockPersonMarks(ctx, tx, model.CanonicalLogin(actor.ID), marksBesideTheInbox); err != nil {
+		return 0, nil, err
+	}
+	changed, events, err := s.dismissInboxThreadsIn(ctx, tx, actor, plan, rows, scope)
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.commitInboxMarks(ctx, tx, changed, events)
+}
+
+// dismissInboxThreadsIn is the dismissal's work in tx, up to the events it appends: it reads the
+// rows it changes, takes their owners and the roots of the Agent threads it marks, and writes the
+// marks, answering how many threads it changed and the events, not yet appended, that announce
+// them. Its caller appends them in the lock order's last step and commits: dismissInboxThreads in
+// a transaction of its own (commitInboxMarks), and writeMarksIn, a write of several of the
+// caller's marks under /api/v2, in the one transaction of all of them.
+func (s *server) dismissInboxThreadsIn(
+	ctx context.Context, tx pgx.Tx, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
+) (int, []model.Event, error) {
+	login := model.CanonicalLogin(actor.ID)
 	read, err := readInboxDismissThreads(ctx, tx, actor, login, plan, rows, scope)
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := lockInboxReadOwners(ctx, tx, read); err != nil {
+	if err := lockInboxReadOwners(ctx, tx, read, store.LockOwnersShared); err != nil {
 		return 0, nil, err
 	}
 	if !plan.restore && len(read.agentRoots) > 0 {
@@ -733,7 +758,7 @@ func (s *server) dismissInboxThreads(
 			events = append(events, userAgentStateEvent(actor, session))
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, changed, events)
+	return changed, events, nil
 }
 
 // readInboxDismissThreads reads both kinds of row this request changes, each list sorted so the

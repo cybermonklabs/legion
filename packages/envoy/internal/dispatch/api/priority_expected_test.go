@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/lockwaittest"
@@ -54,8 +55,8 @@ func TestPriorityPatchExpected(t *testing.T) {
 		acts, events := len(readPriorityHistory(t, handler, id)), priorityUpdates(t)
 		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+id, body, "alice")
 		code, text := refusalOf(t, response)
-		if response.Code != http.StatusConflict || code != codePriorityChanged {
-			t.Fatalf("%s: status=%d code=%s error=%.300q, want 409 %s", what, response.Code, code, text, codePriorityChanged)
+		if response.Code != http.StatusConflict || code != apicode.PriorityChanged.V1Name() {
+			t.Fatalf("%s: status=%d code=%s error=%.300q, want 409 %s", what, response.Code, code, text, apicode.PriorityChanged.V1Name())
 		}
 		for _, quote := range quotes {
 			if !strings.Contains(text, quote) {
@@ -152,9 +153,9 @@ func TestPriorityPatchExpected(t *testing.T) {
 			before := readTestPriority(t, handler, id)
 			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/"+id, body, "alice")
 			code, text := refusalOf(t, response)
-			if response.Code != http.StatusBadRequest || code != codePriorityInput {
+			if response.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 				t.Fatalf("expected.%s with no %s written: status=%d code=%s error=%.300q, want 400 %s",
-					name, name, response.Code, code, text, codePriorityInput)
+					name, name, response.Code, code, text, apicode.PriorityInput.V1Name())
 			}
 			if !strings.Contains(text, "expected."+name) || !strings.Contains(text, "writes no "+name) {
 				t.Fatalf("expected.%s with no %s written is refused with %q, want it to say the write writes no %s",
@@ -167,9 +168,9 @@ func TestPriorityPatchExpected(t *testing.T) {
 		}
 		missing := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/no-such-priority",
 			map[string]any{"title": "Anything", "expected": map[string]any{"title": "Nothing"}}, "alice")
-		if code, text := refusalOf(t, missing); missing.Code != http.StatusNotFound || code != codePriorityNotFound {
+		if code, text := refusalOf(t, missing); missing.Code != http.StatusNotFound || code != apicode.PriorityNotFound.V1Name() {
 			t.Fatalf("an expected on an id no priority carries: status=%d code=%s error=%q, want 404 %s",
-				missing.Code, code, text, codePriorityNotFound)
+				missing.Code, code, text, apicode.PriorityNotFound.V1Name())
 		}
 	})
 
@@ -242,8 +243,8 @@ func TestPriorityPatchExpected(t *testing.T) {
 		}
 		loser := responses[1-winner]
 		code, text := refusalOf(t, loser)
-		if loser.Code != http.StatusConflict || code != codePriorityChanged {
-			t.Fatalf("the second write: status=%d code=%s error=%q, want 409 %s", loser.Code, code, text, codePriorityChanged)
+		if loser.Code != http.StatusConflict || code != apicode.PriorityChanged.V1Name() {
+			t.Fatalf("the second write: status=%d code=%s error=%q, want 409 %s", loser.Code, code, text, apicode.PriorityChanged.V1Name())
 		}
 		if want := `title is now "` + titles[winner] + `"`; !strings.Contains(text, want) {
 			t.Fatalf("the second write is refused with %q, want it to name %s", text, want)

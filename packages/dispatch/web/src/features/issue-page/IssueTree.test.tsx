@@ -827,6 +827,7 @@ function readDecisionsText() {
     markdown: decision.text,
     token: "sha256:decisions-text",
     version: null,
+    unsettled: true,
   });
 }
 

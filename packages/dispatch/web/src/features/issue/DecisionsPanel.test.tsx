@@ -176,6 +176,7 @@ function spyDecisionsText() {
       markdown: DECISIONS_TEXT,
       markdown_tree: displayTree(DECISIONS_TEXT),
       token: "token",
+      unsettled: false,
       version: 1,
     })
   );

@@ -10,15 +10,7 @@ import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
 import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
-import { shownPictureLine } from "../dispatch-picture-tools";
-import {
-  oversizePictureText,
-  PICTURE_SHOWN_MAX_BYTES,
-  PICTURE_SNIFF_BYTES,
-  readPictureHead,
-  sniffPictureType,
-  toolImage,
-} from "../dispatch-pictures";
+import { PICTURE_SNIFF_BYTES, readPictureHead } from "../dispatch-pictures";
 import { messageFor } from "../errors";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
@@ -64,104 +56,7 @@ import {
   uploadedFile,
 } from "./stored-text";
 import { artifactNameExistsProblem, artifactUnderName, uploadKindOf } from "./upload-checks";
-
-/**
- * dispatch_doc_read of an uploaded file or image. Dispatch serves a file's content only as the
- * bytes of one of its versions (its `/text` route answers a file 400 NOT_DOCUMENT), so this reads
- * the version asked for, or the latest. A picture a model takes (an image artifact whose bytes are
- * a PNG, JPEG, GIF or WebP of at most `PICTURE_SHOWN_MAX_BYTES`) comes back as an image block with
- * its name, type, version and size as the text, then the line naming it by its address
- * (`dispatch://<owner>/artifact/<slug>@v<N>`, `owner` an issue key, a project key or
- * `agent/<session id>`) as `dispatch_read` does, which a host reads back from a transcript; a
- * larger picture is described without its bytes being fetched when Dispatch states its size. Any
- * other file comes back as text when it is UTF-8, and is described with the route that serves its
- * bytes when it is not. The header names the version read by its hash, on the line under its
- * first: the latest version's `Document token:` line, as a document read prints its token, which
- * the upload of the next version names as its precondition; a named version's `Content: sha256:`
- * line, as a named document version's read prints its hash. It goes in the header, never after
- * the text, so the text after the header is the stored file unchanged, a leading byte order mark
- * included (the decoder keeps it), and a script or patch read back ends where the file ends. The
- * dispatch command changes two things, as it does for every output it prints: it adds one line
- * feed after a file that ends without one, and under Claude Code or Codex it cuts an output past
- * 25,000 characters and writes the whole of it to a file it names (`fitOutput` in
- * dispatch-cli.ts). Dispatch states both beside the version in the artifact's
- * version list, so no other read is made for them, and a Dispatch or a version that states none
- * prints no line: such a Dispatch takes no token on a file's upload. A file carries no anchors or
- * approval, so nothing else is read. A picture is shown whatever `shown` holds, and joins it
- * under its address, so the session's later reads name it instead of sending it. At `read`'s
- * cut, the version is the one that stood then.
- */
-async function readUploadedFile(
-  client: DispatchClient,
-  artifact: Artifact,
-  details: Record<string, unknown>,
-  requested: number | undefined,
-  owner: string,
-  shown: Set<string> | undefined,
-  read: AsOfRead = {}
-): Promise<DispatchToolResult> {
-  const versions = artifact.versions ?? [];
-  const latest = Math.max(0, ...versions.map((version) => version.number));
-  const number = requested ?? latest;
-  const of = number === latest ? "" : ` of ${latest}`;
-  const bytesRoute = `GET /api/v1/artifacts/${artifact.id}/versions/${number} serves its bytes.`;
-  const stated = versions.find((version) => version.number === number);
-  const hashLine =
-    requested === undefined
-      ? stated?.token === undefined
-        ? ""
-        : `\nDocument token: ${stated.token}`
-      : stated?.sha256 === undefined
-        ? ""
-        : `\nContent: sha256:${stated.sha256}`;
-  const tooLarge = (mime: string, bytes: number): DispatchToolResult => ({
-    text:
-      `${oversizePictureText(artifact.name, bytes)}, so dispatch doc-read cannot show this ` +
-      `uploaded ${mime} picture (version ${number}${of}). ${bytesRoute}${hashLine}`,
-    details,
-  });
-  if (
-    artifact.kind === "image" &&
-    stated?.size !== undefined &&
-    stated.size > PICTURE_SHOWN_MAX_BYTES
-  ) {
-    return tooLarge(stated.mime ?? "image", stated.size);
-  }
-  const file = await client.fileVersion(artifact.id, number, read);
-  const size = `${file.bytes.length.toLocaleString("en-US")} bytes`;
-  if (artifact.kind === "image") {
-    const image = toolImage(file.bytes);
-    if (image !== undefined) {
-      const address = `dispatch://${owner}/artifact/${artifact.slug}@v${number}`;
-      shown?.add(address);
-      return {
-        text:
-          `Picture ${artifact.name}: ${image.mimeType}, version ${number}${of}, ${size}.${hashLine}\n` +
-          shownPictureLine(1, address, artifact.name, image.mimeType, file.bytes.length),
-        details,
-        images: [image],
-      };
-    }
-    if (sniffPictureType(file.bytes) !== undefined) return tooLarge(file.mime, file.bytes.length);
-  }
-  let text: string;
-  try {
-    // ignoreBOM keeps a leading byte order mark as text, so the text encodes back to the stored
-    // bytes.
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(file.bytes);
-  } catch {
-    return {
-      text:
-        `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
-        `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}${hashLine}`,
-      details,
-    };
-  }
-  return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.${hashLine}\n\n${text}`,
-    details,
-  };
-}
+import { readUploadedFile } from "./uploaded-file";
 
 /** How many characters of a block's text `dispatch doc-read --blocks` shows: enough to tell blocks
  *  apart without printing the document twice. */
@@ -418,7 +313,15 @@ export async function docReadCommand(
           : { issue: resolved.issue?.key },
     };
   }
-  if (resolved.artifact.kind === "file" || resolved.artifact.kind === "image") {
+  // A document made from a file (a plan first sent as a .txt, then as Markdown under its name,
+  // INFRA-4071 R15) keeps the file's versions, and Dispatch serves each of them as its bytes, as
+  // it serves a file's. Only a version stored as bytes carries sha256 in the artifact's list of
+  // versions (the contract model.Version.SHA256 states in packages/envoy), so such a version is
+  // read as a file is; every other version of a document is read as its text.
+  const storedAsBytes =
+    version !== undefined &&
+    resolved.artifact.versions?.find((entry) => entry.number === version)?.sha256 !== undefined;
+  if (resolved.artifact.kind === "file" || resolved.artifact.kind === "image" || storedAsBytes) {
     const { artifact } = resolved;
     return readUploadedFile(
       client,
@@ -581,6 +484,14 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
   };
 }
 
+/** What an upload's answer calls the kind Dispatch stored it as, before the stored word itself:
+ *  a writer who meant a document reads at once that it became a file. */
+const STORED_KIND_WORDS: Readonly<Record<Artifact["kind"], string>> = {
+  doc: "a document",
+  file: "a file",
+  image: "a picture",
+};
+
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, documentOwner, issue, newClient } = context;
@@ -624,7 +535,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // AskGate's, else the Markdown file's it checked once the flags were read, `runDispatchCli`),
   // copied once into a plain buffer of their own, which a Blob takes; the file is read here only
   // where the caller holds none of its bytes.
-  const file = path === undefined ? undefined : uploadedFile(input.cwd, path);
+  const file = path === undefined ? undefined : uploadedFile(input.cwd, path, name);
   const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
   const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
   // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
@@ -695,9 +606,12 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     if (held !== undefined) {
       // The kind Dispatch would store this upload as decides what the refusal may advise: an
       // upload of another kind than the name holds is refused under that name whatever it
-      // carries, so it is told to take another name. Only a path that is not Markdown has bytes
-      // to read, and only their first PICTURE_SNIFF_BYTES decide.
-      const kind = await uploadKindOf(path, (named) =>
+      // carries, so it is told to take another name, save a Markdown upload over an issue's
+      // plan, Verification document or decisions document held as a file or a picture, which
+      // Dispatch takes as that artifact's next version and makes a document, so it is told to
+      // send --force (artifactNameExistsProblem). Only a path that is not Markdown has bytes to
+      // read, and only their first PICTURE_SNIFF_BYTES decide.
+      const kind = await uploadKindOf(name, path, input.cwd, (named) =>
         input.uploadBytes === undefined
           ? readPictureHead(resolvePath(input.cwd, named))
           : Promise.resolve(input.uploadBytes.subarray(0, PICTURE_SNIFF_BYTES))
@@ -749,7 +663,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     text: [
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
-        : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+        : `Uploaded ${result.artifact.name} as version ${result.version.number}, ${STORED_KIND_WORDS[result.artifact.kind]} (kind ${result.artifact.kind}; artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
       ...reordered,
       ...adviceLines,
     ].join("\n"),
@@ -814,7 +728,10 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
   let bytes: Uint8Array | undefined;
   if (content === undefined && path !== undefined) {
     try {
-      bytes = await documentFileBytes(uploadedFile(cwd, path), uploadBytes);
+      bytes = await documentFileBytes(
+        uploadedFile(cwd, path, optionalString(args, "name")),
+        uploadBytes
+      );
     } catch (error) {
       // The call checks the file the same way before it asks anything, and throws this.
       return {

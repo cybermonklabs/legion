@@ -179,7 +179,7 @@ func readPriorityPlans(t *testing.T, served *server, plans *explainedStatements,
 	plans.take(t)
 	// The route reads with an empty list when the request names no project, never nil, which
 	// pgx would send as null.
-	body, err := served.readPriorities(context.Background(), []string{}, summary)
+	body, _, err := served.readPriorities(context.Background(), []string{}, summary)
 	if err != nil {
 		t.Fatalf("read the priorities (summary %t): %v", summary, err)
 	}

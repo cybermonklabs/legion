@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -161,7 +161,7 @@ type replyRowPlan struct {
 // first indexing (refs.PlanItemIndex) and none after it, and either way it is no new fact of this
 // request.
 func (s *server) planReplyBlock(
-	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field string, code apicode.Code,
 	quote *string, occurrence *int,
 ) (refs.ItemRepair, *namedBlock, error) {
 	repair, err := refs.PlanItemIfOwed(ctx, tx, kind, itemID, s.deps.Origins)
@@ -175,7 +175,7 @@ func (s *server) planReplyBlock(
 		return refs.ItemRepair{}, nil, err
 	}
 	if !found {
-		return refs.ItemRepair{}, nil, errorf(http.StatusBadRequest, code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
+		return refs.ItemRepair{}, nil, errorf(code, "%s %s is not a block of %s %s", field, blockID, kind, itemID)
 	}
 	block := &namedBlock{kind: kind, node: node, item: itemID, id: blockID, excerpt: excerpt}
 	if quote == nil {
@@ -199,16 +199,16 @@ func (s *server) planReplyBlock(
 // the reply names, so neither stands without the other; a quote holds some text, as an anchor's
 // does (resolveAnchor); and an occurrence counts from 0. Each message opens with the field it is
 // about. It is nil for a request that may name them.
-func replyQuoteRefusal(code, field string, block, quote *string, occurrence *int) error {
+func replyQuoteRefusal(code apicode.Code, field string, block, quote *string, occurrence *int) error {
 	switch {
 	case occurrence != nil && quote == nil:
-		return errorf(http.StatusBadRequest, code, "occurrence requires quote, the words whose matches it counts")
+		return errorf(code, "occurrence requires quote, the words whose matches it counts")
 	case quote != nil && block == nil:
-		return errorf(http.StatusBadRequest, code, "quote requires %s, the block whose words it quotes", field)
+		return errorf(code, "quote requires %s, the block whose words it quotes", field)
 	case quote != nil && *quote == "":
-		return errorf(http.StatusBadRequest, code, "quote must not be empty")
+		return errorf(code, "quote must not be empty")
 	case occurrence != nil && *occurrence < 0:
-		return errorf(http.StatusBadRequest, code, "occurrence must be 0 or more: it counts the quote's matches from 0")
+		return errorf(code, "occurrence must be 0 or more: it counts the quote's matches from 0")
 	}
 	return nil
 }
@@ -236,15 +236,15 @@ func (block *namedBlock) setQuote(text string, quote *string, occurrence *int) e
 		block.quote, block.occurrence = quote, occurrence
 		return nil
 	case errors.As(err, &ambiguous):
-		return errorf(http.StatusConflict, "TARGET_AMBIGUOUS",
+		return errorf(apicode.TargetAmbiguous,
 			"quote %q matches %d places in block %s of %s %s; send occurrence, counted from 0, to name one",
 			*quote, len(ambiguous.Candidates), block.id, block.kind, block.item)
 	case errors.As(err, &missing) && missing.Matches > 0:
-		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND",
+		return errorf(apicode.TargetNotFound,
 			"occurrence %d is past the last of the %d matches of quote %q in block %s of %s %s, counted from 0",
 			*occurrence, missing.Matches, *quote, block.id, block.kind, block.item)
 	case errors.As(err, &missing):
-		return errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "quote %q is not in the text of block %s of %s %s", *quote, block.id, block.kind, block.item)
+		return errorf(apicode.TargetNotFound, "quote %q is not in the text of block %s of %s %s", *quote, block.id, block.kind, block.item)
 	}
 	return fmt.Errorf("find the quote in block %s of %s %s: %w", block.id, block.kind, block.item, err)
 }

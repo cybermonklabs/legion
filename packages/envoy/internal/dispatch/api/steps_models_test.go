@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The models of a step record. set_model is the model its role set its agent to. answers is each
@@ -161,7 +163,7 @@ func TestAStepWriteRefusesAnswersOutsideTheirRules(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := uuid.NewString()
-			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, codeStepInput, row.refusal)
+			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, contracts.StepInputCode, row.refusal)
 			if held, listed := rawStepRecords(t, handler, issue)[id]; listed {
 				t.Fatalf("the refused write of %s left the record %s, want none", row.name, asJSON(t, held))
 			}

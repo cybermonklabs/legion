@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -56,7 +56,7 @@ func (p threadPosition) cursor() string { return p.activity() + "," + p.id }
 // Each caller supplies its allowed person values, so a route never ignores an unsupported one.
 func parseThreadPage(query url.Values, people ...string) (*threadPage, error) {
 	invalid := func(key string) error {
-		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be %s", key, threadPageValues(key, people))
+		return errorf(apicode.InvalidQuery, "%s must be %s", key, threadPageValues(key, people))
 	}
 	for _, key := range []string{"order", "limit", "before", "author", "person"} {
 		if len(query[key]) > 1 {
@@ -71,7 +71,7 @@ func parseThreadPage(query url.Values, people ...string) (*threadPage, error) {
 			if key == "person" && len(people) == 0 {
 				return nil, invalid(key)
 			}
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be absent without order=activity; with it, %s", key, threadPageValues(key, people))
+			return nil, errorf(apicode.InvalidQuery, "%s must be absent without order=activity; with it, %s", key, threadPageValues(key, people))
 		}
 		return nil, nil
 	}

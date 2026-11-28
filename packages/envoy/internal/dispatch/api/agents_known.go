@@ -1,17 +1,18 @@
 package api
 
 import (
-	"fmt"
+	"context"
 	"net/http"
 	"slices"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// knownSession is one session GET /api/v1/agents/known found a record of. Title is the title the
-// registry copy holds for it, and null where that copy does not list the session or lists it
-// with no title: no table of Dispatch's own keeps a session's title.
+// knownSession is one session GET /api/v1/agents/known and GET /api/v2/known-sessions found a
+// record of. Title is the title the registry copy holds for it, and null where that copy does not
+// list the session or lists it with no title: no table of Dispatch's own keeps a session's title.
 type knownSession struct {
 	SessionID string  `json:"session_id"`
 	Title     *string `json:"title"`
@@ -104,55 +105,82 @@ func (s *server) listKnownSessions(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	asked := r.URL.Query()["id"]
+	sessions, err := s.knownSessionsOf(r.Context(), r.URL.Query()["id"])
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, knownSessions{Sessions: sessions})
+}
+
+// knownSessionsOf is the work GET /api/v1/agents/known and GET /api/v2/known-sessions
+// (listKnownSessionsV2) both do once each has read its caller as the acting person: asked held to
+// the rule listKnownSessions describes, each refusal 400 INVALID_QUERY naming id, and then the
+// sessions of asked Dispatch holds any record of, in the order asked, each once, [] for none.
+func (s *server) knownSessionsOf(ctx context.Context, asked []string) ([]knownSession, error) {
 	switch {
 	case len(asked) == 0:
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
+		return nil, errorf(apicode.InvalidQuery,
 			"id is required: name each session id asked about in an id parameter of its own, 1 to %d of them",
-			contracts.KnownSessionsMax))
-		return
+			contracts.KnownSessionsMax)
 	case len(asked) > contracts.KnownSessionsMax:
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
-			"id names at most %d session ids (%d named)", contracts.KnownSessionsMax, len(asked)))
-		return
+		return nil, errorf(apicode.InvalidQuery,
+			"id names at most %d session ids (%d named)", contracts.KnownSessionsMax, len(asked))
 	}
 	ids := make([]string, 0, len(asked))
 	for _, id := range asked {
 		if len(id) > knownSessionIDMax {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
+			return nil, errorf(apicode.InvalidQuery,
 				"id names a session id of %d bytes, and no reference in text names one longer than %d",
-				len(id), knownSessionIDMax))
-			return
+				len(id), knownSessionIDMax)
 		}
 		if !text.IsSessionID(id) {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
+			return nil, errorf(apicode.InvalidQuery,
 				"id %q is not a session id: one is not empty and holds no whitespace, no control "+
-					"character and none of the characters that end a reference in text", id))
-			return
+					"character and none of the characters that end a reference in text", id)
 		}
 		if !slices.Contains(ids, id) {
 			ids = append(ids, id)
 		}
 	}
 
-	rows, err := s.deps.Store.Pool.Query(r.Context(), knownSessionsStatement, ids)
+	rows, err := s.deps.Store.Pool.Query(ctx, knownSessionsStatement, ids)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
-	answer := knownSessions{Sessions: []knownSession{}}
+	sessions := []knownSession{}
 	for rows.Next() {
 		var session knownSession
 		if err := rows.Scan(&session.SessionID, &session.Title); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
-		answer.Sessions = append(answer.Sessions, session)
+		sessions = append(sessions, session)
 	}
-	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+	return sessions, rows.Err()
+}
+
+// knownSessionsV2Query is GET /api/v2/known-sessions's query: the session ids asked about, as GET
+// /api/v1/agents/known takes them, and the page of the answer.
+type knownSessionsV2Query struct {
+	pageQuery
+	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
+	// session id (text.IsSessionID) of at most knownSessionIDMax bytes.
+	ID []string `query:"id"`
+}
+
+// listKnownSessionsV2 answers GET /api/v2/known-sessions: the sessions GET /api/v1/agents/known
+// answers (knownSessionsOf), to the callers it admits (actingPerson behind the row's person
+// scope), as one page of the list envelope.
+func (s *server) listKnownSessionsV2(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	WriteJSON(w, http.StatusOK, answer)
+	query := v2Query[knownSessionsV2Query](r)
+	sessions, err := s.knownSessionsOf(r.Context(), query.ID)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, pageOf(sessions, query.pageQuery))
 }

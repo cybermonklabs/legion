@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -10,7 +12,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Resolve a comment thread.",
 	Handler:     (*server).resolveComment,
+	Successor:   successorIs(http.MethodPut, "/comments/{id}/state"),
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "comment", NotFound: "NOT_FOUND"},
+	ID:          &idRoute{Kind: "comment", NotFound: apicode.NotFound},
 	Shape:       routeShape{Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 })

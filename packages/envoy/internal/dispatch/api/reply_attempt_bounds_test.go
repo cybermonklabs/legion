@@ -39,29 +39,35 @@ func TestAnAttemptNumberAReplyNamesAboveTheColumnsRangeIsNotFoundNotAFault(t *te
 	}
 	message := decodeBody[model.Message](t, created)
 
+	// Each reply's /api/v2 route, POST …/replies, answers the same body by the same work
+	// (answerCommentDelivery, answerMessageDelivery), with the same 404 its row names, so each
+	// refused attempt is sent to both; the control is sent once, to /api/v1, since an attempt
+	// takes one reply.
 	routes := []struct {
-		path, code string
-		body       func(attempt int) map[string]any
+		path, v2Path, code string
+		body               func(attempt int) map[string]any
 	}{
 		{
-			path: "/api/v1/comments/" + comment.ID + "/reply", code: "COMMENT_NOT_FOUND",
+			path: "/api/v1/comments/" + comment.ID + "/reply", v2Path: "/api/v2/comments/" + comment.ID + "/replies", code: "COMMENT_NOT_FOUND",
 			body: func(attempt int) map[string]any {
 				return map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": attempt,
 					"target": "session:s1", "body": "Looked."}
 			},
 		},
 		{
-			path: "/api/v1/messages/" + message.ID + "/reply", code: "MESSAGE_NOT_FOUND",
+			path: "/api/v1/messages/" + message.ID + "/reply", v2Path: "/api/v2/messages/" + message.ID + "/replies", code: "MESSAGE_NOT_FOUND",
 			body: func(attempt int) map[string]any {
 				return map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": attempt, "body": "It shipped."}
 			},
 		},
 	}
 	for _, route := range routes {
-		for _, attempt := range []int{2147483648, 3000000000, 2147483647} {
-			response := bearerRequest(t, handler, http.MethodPost, route.path, route.body(attempt))
-			if response.Code != http.StatusNotFound || responseCode(t, response) != route.code {
-				t.Errorf("%s with attempt %d: status=%d body=%s, want 404 %s", route.path, attempt, response.Code, response.Body.String(), route.code)
+		for _, path := range []string{route.path, route.v2Path} {
+			for _, attempt := range []int{2147483648, 3000000000, 2147483647} {
+				response := bearerRequest(t, handler, http.MethodPost, path, route.body(attempt))
+				if response.Code != http.StatusNotFound || responseCode(t, response) != route.code {
+					t.Errorf("%s with attempt %d: status=%d body=%s, want 404 %s", path, attempt, response.Code, response.Body.String(), route.code)
+				}
 			}
 		}
 		if response := bearerRequest(t, handler, http.MethodPost, route.path, route.body(1)); response.Code != http.StatusCreated {

@@ -22,8 +22,11 @@ import (
 const routesFixture = "testdata/routes.txt"
 
 // oldNames are the declarations the new layout removed: a line of package api that still names
-// one was written against the old layout.
-var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScopeRoutes|approveScopeRoutes|readClasses|routeShapes|routeRow|withIDRoute|scopedRoutesNotMounted|shapedRoutesNotMounted|readRoutesNotMountedAsGET|routesNotMounted|routeIndexGolden)\b`)
+// one was written against the old layout. routeRow is not among them: since /api/v2 began it is
+// the type of a row both versions or /api/v2 alone serve (routes_versions.go), so a line naming it
+// says nothing of the layout, and a fixture that still builds the old five-column row no longer
+// compiles.
+var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScopeRoutes|approveScopeRoutes|readClasses|routeShapes|withIDRoute|scopedRoutesNotMounted|shapedRoutesNotMounted|readRoutesNotMountedAsGET|routesNotMounted|routeIndexGolden)\b`)
 
 // adoptReport is what one run did and what it leaves for the person.
 type adoptReport struct {

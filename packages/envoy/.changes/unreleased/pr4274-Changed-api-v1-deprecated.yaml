@@ -1,0 +1,25 @@
+kind: Changed
+custom:
+  Issue: pr4274
+body: |-
+  `/api/v1` is deprecated; its answers change only where this release's changelog entries say so,
+  and each `/api/v1` answer, but dev sign-in's `421 HOST_MISMATCH`, the `400 FORWARDED_FOR_INVALID`
+  of a request whose `X-Forwarded-For` a trusted proxy could not have written, and the redirect of a
+  path that is not clean (`/api/v1//issues`), carries a `Deprecation` header (RFC 9745) and a `Link`
+  header with `rel="successor-version"` naming the `/api/v2` route that answers for it, or
+  `GET /api/v2`. The
+  deprecation date marks this change, not the configured sunset.
+  `DISPATCH_API_V1_END`, an RFC 3339 instant, ends `/api/v1`, and `envoy-infra`'s
+  `gcp:Dispatch` sets it from its new `apiV1End` input: while the instant is ahead each `/api/v1`
+  answer carries a `Sunset` header (RFC 8594), and once it has passed every path under `/api/v1`
+  answers `410 API_V1_ENDED`, pointing to `GET /api/v2`. Unset, `/api/v1` has no end, and a value
+  that is not an RFC 3339 time refuses startup. Arm it only once no client still calls `/api/v1`:
+  at this release the web app, the `dispatch` command, the plugins, the Legion daemon and the
+  secrets broker still do. The web app sets no `User-Agent` of its own, so its requests carry its
+  browser's and Dispatch's access log does not name it. The cookie-origin guard's refusal carries
+  a `code` now.
+
+  The secrets broker's judge, project-access check and project-repositories read name the broker
+  in their Dispatch requests' `User-Agent`, `envoy-broker-judge/<commit>`,
+  `envoy-broker-project-access/<commit>` and `envoy-broker-project-repositories/<commit>`, so
+  Dispatch's access log tells their calls apart.

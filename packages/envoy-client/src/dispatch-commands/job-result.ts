@@ -31,6 +31,8 @@ export interface JobResultIo {
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch | undefined;
   readonly resultBound?: ResultBound | undefined;
+  /** The `User-Agent` every Dispatch request of the call sends (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string | undefined;
 }
 
 /**
@@ -139,6 +141,7 @@ export async function jobResultCommand(
       withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
       inFlightWithinMs: bound.totalMs - bound.reserveMs,
     },
+    userAgent: io.userAgent,
   });
   for (;;) {
     try {

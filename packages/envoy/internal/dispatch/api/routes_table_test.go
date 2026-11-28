@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/routefile"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -59,53 +61,88 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	if !found {
 		t.Fatalf("GET /api/v1/issues/{key} missing from the index: %+v", index.Routes)
 	}
-	if len(index.Routes) != len((&server{}).routes()) {
-		t.Fatalf("index lists %d routes, table has %d", len(index.Routes), len((&server{}).routes()))
+	// GET /api/v1 lists the routes /api/v1 serves.
+	if served := servedAt(apiV1, (&server{}).routes()); len(index.Routes) != len(served) {
+		t.Fatalf("index lists %d routes, /api/v1 serves %d", len(index.Routes), len(served))
 	}
+
 }
 
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
-// generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
+// generated from: every route of one version, as GET /api/v1 or GET /api/v2 serves it, and no test
+// hook. Each index lists its own version's routes alone, and GET /api/v2 answers them all on one
+// page.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 	t.Parallel()
-	var output bytes.Buffer
-	if err := WriteRouteIndex(&output); err != nil {
-		t.Fatal(err)
-	}
-	var printed routeIndex
-	if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
-		t.Fatalf("decode %q: %v", output.String(), err)
-	}
-	table := (&server{}).routes()
-	if len(printed.Routes) != len(table) {
-		t.Fatalf("printed %d routes, table has %d", len(printed.Routes), len(table))
-	}
-	byKey := make(map[string]routeIndexEntry, len(printed.Routes))
-	for _, entry := range printed.Routes {
-		byKey[entry.Method+" "+entry.Path] = entry
-	}
-	for _, route := range table {
-		entry, ok := byKey[route.Method+" "+route.Pattern]
-		if !ok {
-			t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
-			continue
-		}
-		if entry.Auth != route.Auth || entry.Description != route.Description {
-			t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
-		}
-	}
-	for _, entry := range printed.Routes {
-		if strings.Contains(entry.Path, "/_test/") {
-			t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
-		}
-	}
-
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
-	if served := response.Body.String(); served != output.String() {
-		t.Fatalf("printed index differs from GET /api/v1:\nprinted %s\nserved  %s", output.String(), served)
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		prefix := versionPrefix(version)
+		t.Run(prefix, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := WriteRouteIndex(&output, int(version)); err != nil {
+				t.Fatal(err)
+			}
+			type printedEntry struct {
+				Method      string    `json:"method"`
+				Path        string    `json:"path"`
+				Auth        routeAuth `json:"auth"`
+				Description string    `json:"description"`
+			}
+			var printed struct {
+				Routes []printedEntry `json:"routes"`
+				Items  []printedEntry `json:"items"`
+				Total  int            `json:"total"`
+				Limit  int            `json:"limit"`
+				Offset int            `json:"offset"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &printed); err != nil {
+				t.Fatalf("decode %q: %v", output.String(), err)
+			}
+			entries := printed.Routes
+			if version == apiV2 {
+				entries = printed.Items
+				if printed.Routes != nil || printed.Total != len(entries) || printed.Limit != len(entries) || printed.Offset != 0 {
+					t.Errorf("GET /api/v2 answers routes %v, total %d, limit %d, offset %d over %d items; want every route on one page",
+						printed.Routes, printed.Total, printed.Limit, printed.Offset, len(entries))
+				}
+			}
+			table := servedAt(version, (&server{}).routes())
+			if len(entries) != len(table) {
+				t.Fatalf("printed %d routes, %s serves %d", len(entries), prefix, len(table))
+			}
+			byKey := make(map[string]printedEntry, len(entries))
+			for _, entry := range entries {
+				byKey[entry.Method+" "+entry.Path] = entry
+			}
+			for _, route := range table {
+				entry, ok := byKey[route.Method+" "+route.Pattern]
+				if !ok {
+					t.Errorf("%s %s missing from the printed index", route.Method, route.Pattern)
+					continue
+				}
+				if entry.Auth != route.Auth || entry.Description != route.Description {
+					t.Errorf("%s %s printed as auth %q, description %q; the table says %q, %q", route.Method, route.Pattern, entry.Auth, entry.Description, route.Auth, route.Description)
+				}
+			}
+			for _, entry := range entries {
+				if strings.Contains(entry.Path, "/_test") {
+					t.Errorf("printed index carries test hook %s %s", entry.Method, entry.Path)
+				}
+				if entry.Path != prefix && !strings.HasPrefix(entry.Path, prefix+"/") {
+					t.Errorf("the %s index lists %s %s", prefix, entry.Method, entry.Path)
+				}
+			}
+
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, prefix, nil))
+			if served := response.Body.String(); served != output.String() {
+				t.Fatalf("printed index differs from GET %s:\nprinted %s\nserved  %s", prefix, output.String(), served)
+			}
+		})
+	}
+	if err := WriteRouteIndex(io.Discard, 3); err == nil {
+		t.Error("WriteRouteIndex printed an index of version 3, which the API does not have")
 	}
 }
 
@@ -132,7 +169,7 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 		if route.Description == "" {
 			t.Fatalf("route %q has no description", key)
 		}
-		if route.routeDecl.Handler == nil {
+		if route.Handler == nil {
 			t.Fatalf("route %q has no handler", key)
 		}
 		switch route.Auth {
@@ -141,21 +178,10 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	// Fifteen hooks, each mounted at its /api/v1 path and at its /api/v2/_test path.
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+2*15 {
+		t.Fatalf("test hooks add fifteen rows at two paths each: got %d, want %d", got, len(routes)+2*15)
 	}
-}
-
-// declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included.
-// Only a test reads one route out of the registry by name: the package itself reads the whole
-// registry (routes()).
-func declaredRoute(name string) (routeDecl, bool) {
-	for _, route := range routeRegistry {
-		if route.Method+" "+route.Pattern == name {
-			return route, true
-		}
-	}
-	return routeDecl{}, false
 }
 
 // duplicateRoutes names, sorted, every "<method> <pattern>" that more than one of routes
@@ -225,75 +251,117 @@ func TestEachRouteIsDeclaredInTheFileItsNameNames(t *testing.T) {
 			declaredIn[name] = append(declaredIn[name], route)
 		}
 	}
-	if len(declaredIn) != len(routeRegistry) {
-		t.Fatalf("%d route files declare routes and the registry holds %d", len(declaredIn), len(routeRegistry))
+	wantFiles := len(routeRegistry) + len(rowRegistry)
+	if len(declaredIn) != wantFiles {
+		t.Fatalf("%d route files declare routes and the registries hold %d", len(declaredIn), wantFiles)
 	}
-	for _, route := range routeRegistry {
-		want, err := routefile.Name(route.Method, route.Pattern)
+	check := func(method, pattern string) {
+		want, err := routefile.Name(method, pattern)
 		if err != nil {
-			t.Errorf("%s %s: %v", route.Method, route.Pattern, err)
-			continue
+			t.Errorf("%s %s: %v", method, pattern, err)
+			return
 		}
 		declared := declaredIn[want]
-		if len(declared) != 1 || declared[0] != route.Method+" "+route.Pattern {
-			t.Errorf("%s %s is declared in %v, want %s alone", route.Method, route.Pattern, declared, want)
+		if len(declared) != 1 || declared[0] != method+" "+pattern {
+			t.Errorf("%s %s is declared in %v, want %s alone", method, pattern, declared, want)
 		}
+	}
+	for _, route := range routeRegistry {
+		check(route.Method, route.Pattern)
+	}
+	for _, row := range (&server{}).routeRows() {
+		check(row.Method, "/api/v2"+row.Pattern)
 	}
 }
 
 // routesDeclaredIn is every "<method> <pattern>" a file of this package declares, read from its
-// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds.
+// source: the Method and Pattern of each declareRoute(routeDecl{...}) it holds, and the Method
+// and "/api/v2"+Pattern of each routeRow literal inside a declareRow(...) call it holds.
 func routesDeclaredIn(t *testing.T, file string) []string {
 	t.Helper()
 	var routes []string
 	ast.Inspect(parseAPIFile(t, file), func(node ast.Node) bool {
 		call, isCall := node.(*ast.CallExpr)
-		if !isCall {
+		if !isCall || len(call.Args) != 1 {
 			return true
 		}
-		if fun, named := call.Fun.(*ast.Ident); !named || fun.Name != "declareRoute" || len(call.Args) != 1 {
+		fun, named := call.Fun.(*ast.Ident)
+		if !named {
 			return true
 		}
-		literal, isLiteral := call.Args[0].(*ast.CompositeLit)
-		if !isLiteral {
-			return true
-		}
-		var method, pattern string
-		for _, element := range literal.Elts {
-			pair, keyed := element.(*ast.KeyValueExpr)
-			key, named := pair.Key.(*ast.Ident)
-			if !keyed || !named {
-				continue
+		switch fun.Name {
+		case "declareRoute":
+			literal, isLiteral := call.Args[0].(*ast.CompositeLit)
+			if !isLiteral {
+				return true
 			}
-			switch key.Name {
-			case "Method":
-				selector, isSelector := pair.Value.(*ast.SelectorExpr)
-				if !isSelector {
-					t.Fatalf("%s: its Method is no http.Method constant", file)
-				}
-				method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
-			case "Pattern":
-				switch value := pair.Value.(type) {
-				case *ast.BasicLit:
-					unquoted, err := strconv.Unquote(value.Value)
-					if err != nil {
-						t.Fatalf("%s: %v", file, err)
-					}
-					pattern = unquoted
-				case *ast.Ident:
-					// A pattern another file declares a constant for, such as goingCataloguePath.
-					pattern = patternOfConstant(t, value.Name)
-				default:
-					t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
-				}
+			method, pattern, hasPattern := routeLiteralMethodPattern(t, file, literal)
+			if method != "" && hasPattern && pattern != "" {
+				routes = append(routes, method+" "+pattern)
 			}
+			return false
+		case "declareRow":
+			ast.Inspect(call.Args[0], func(inner ast.Node) bool {
+				literal, isLiteral := inner.(*ast.CompositeLit)
+				if !isLiteral {
+					return true
+				}
+				kind, ok := literal.Type.(*ast.Ident)
+				if !ok || kind.Name != "routeRow" {
+					return true
+				}
+				method, pattern, hasPattern := routeLiteralMethodPattern(t, file, literal)
+				if method != "" && hasPattern {
+					routes = append(routes, method+" /api/v2"+pattern)
+				}
+				return false
+			})
+			return false
 		}
-		if method != "" && pattern != "" {
-			routes = append(routes, method+" "+pattern)
-		}
-		return false
+		return true
 	})
 	return routes
+}
+
+// routeLiteralMethodPattern reads the Method and Pattern fields of a routeDecl or routeRow
+// composite literal in file.
+func routeLiteralMethodPattern(t *testing.T, file string, literal *ast.CompositeLit) (method, pattern string, hasPattern bool) {
+	t.Helper()
+	for _, element := range literal.Elts {
+		pair, keyed := element.(*ast.KeyValueExpr)
+		if !keyed {
+			continue
+		}
+		key, named := pair.Key.(*ast.Ident)
+		if !named {
+			continue
+		}
+		switch key.Name {
+		case "Method":
+			selector, isSelector := pair.Value.(*ast.SelectorExpr)
+			if !isSelector {
+				t.Fatalf("%s: its Method is no http.Method constant", file)
+			}
+			method = strings.ToUpper(strings.TrimPrefix(selector.Sel.Name, "Method"))
+		case "Pattern":
+			switch value := pair.Value.(type) {
+			case *ast.BasicLit:
+				unquoted, err := strconv.Unquote(value.Value)
+				if err != nil {
+					t.Fatalf("%s: %v", file, err)
+				}
+				pattern = unquoted
+				hasPattern = true
+			case *ast.Ident:
+				// A pattern another file declares a constant for, such as goingCataloguePath.
+				pattern = patternOfConstant(t, value.Name)
+				hasPattern = true
+			default:
+				t.Fatalf("%s: its Pattern is neither a string nor a constant", file)
+			}
+		}
+	}
+	return method, pattern, hasPattern
 }
 
 // patternOfConstant is the value of a package-level string constant a route's Pattern names.
@@ -354,6 +422,71 @@ func TestTheProjectCreateRouteNamesItsDefaultAssigneeFieldAndRefusal(t *testing.
 	}
 }
 
+// The Inbox route's description states the rule the person a question reaches is resolved by —
+// the person it was handed to, then the issue's assignee, then the project's default assignee —
+// and that the read filters by no caller unless it asks for the caller's own (R10.1 of
+// dispatch://INFRA-2946/spec), at GET /api/v1/inbox and at GET /api/v2/asks alike; the /api/v1
+// descriptions of the default assignee's create, list and write state their side of the rule; and
+// none of the five descriptions the rule narrowed says what the rule makes false. This is a test of
+// its own because the two route tests above read every description and assert no word of one: the
+// index test reads one description alone and the pin only holds each row to having one, so nothing
+// else fails when a description outlives the code it describes.
+func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
+	t.Parallel()
+	descriptions := map[string]string{}
+	for _, route := range (&server{}).routes() {
+		descriptions[route.Method+" "+route.Pattern] = route.Description
+	}
+	for _, want := range []struct{ route, says string }{
+		// The three steps, in the order the read resolves them.
+		{"GET /api/v1/inbox", "handed to"},
+		{"GET /api/v1/inbox", "the issue's assignee"},
+		{"GET /api/v1/inbox", "the project's default assignee"},
+		{"GET /api/v2/asks", "handed to"},
+		{"GET /api/v2/asks", "the issue's assignee"},
+		{"GET /api/v2/asks", "the project's default assignee"},
+		// With no filter the read lists every open ask, whoever it waits on.
+		{"GET /api/v1/inbox", "filters by no caller unless ?assignee=me"},
+		{"GET /api/v2/asks", "with no filter, every open ask of every project the caller reads, whoever it waits on"},
+		// A create names the person, and says what happens when it names nobody.
+		{"POST /api/v1/projects", "default_assignee"},
+		{"POST /api/v1/projects", "ASSIGNEE_NOT_ALLOWED"},
+		// The settings list holds every project, not only the ones that named somebody.
+		{"GET /api/v1/settings/project-default-assignees", "every project"},
+		// The write moves a default and refuses to clear it.
+		{"PUT /api/v1/projects/{key}/default-assignee", "cannot be cleared"},
+	} {
+		description, mounted := descriptions[want.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", want.route)
+		}
+		if !strings.Contains(description, want.says) {
+			t.Errorf("%s does not say %q: %s", want.route, want.says, description)
+		}
+	}
+	for _, stale := range []struct{ route, says string }{
+		// A null no longer clears a default, so the write's description cannot offer one.
+		{"PUT /api/v1/projects/{key}/default-assignee", "null to clear"},
+		// Every project names a default, so the list leaves none out.
+		{"GET /api/v1/settings/project-default-assignees", "that names a default assignee"},
+		// The create chain's last step always lands, so it carries no qualification.
+		{"POST /api/v1/issues", "still names a person who has signed in"},
+		// The inbox resolves three steps and stops at none of them.
+		{"GET /api/v1/inbox", "until somebody hands it on"},
+		// Neither read lists only the asks waiting on the caller unless it is asked to.
+		{"GET /api/v1/inbox", "waiting on the caller"},
+		{"GET /api/v2/asks", "waiting on the caller"},
+	} {
+		description, mounted := descriptions[stale.route]
+		if !mounted {
+			t.Fatalf("the table mounts no %s", stale.route)
+		}
+		if strings.Contains(description, stale.says) {
+			t.Errorf("%s says %q, which the three-step rule makes false: %s", stale.route, stale.says, description)
+		}
+	}
+}
+
 // TestEveryIDRouteIsNamed: every route whose pattern carries {id} or {block_id} says in its ID
 // what that id names — a kind whose prefix is resolved into it and the 404 that route answers for
 // an id it does not hold, or a reason it resolves none — and no route whose pattern carries no id
@@ -368,7 +501,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 		t.Fatalf("%d route(s) whose id the prefix layer cannot decide:\n%s", len(undecided), strings.Join(undecided, "\n"))
 	}
 	withID := func(pattern string, entry *idRoute) apiRoute {
-		return apiRoute{routeDecl: routeDecl{Method: http.MethodGet, Pattern: pattern, Auth: authAny, ID: entry}}
+		return apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: pattern, Auth: authAny, IDs: entry}}
 	}
 
 	t.Run("a route that states no ID fails this walk", func(t *testing.T) {
@@ -387,7 +520,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 
 	t.Run("a row that resolves a kind and gives a reason fails it too", func(t *testing.T) {
 		undecided := undecidedIDRoutes([]apiRoute{
-			withID("/api/v1/widgets/{id}", &idRoute{Kind: "ask", NotFound: "NOT_FOUND", Reason: "and also not"}),
+			withID("/api/v1/widgets/{id}", &idRoute{Kind: "ask", NotFound: apicode.NotFound, Reason: "and also not"}),
 		})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "a reason not to") {
 			t.Fatalf("the walk answered %q, want the contradictory row named", undecided)
@@ -403,7 +536,7 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 
 	t.Run("a row that resolves a block and names no 404 for it fails it too", func(t *testing.T) {
 		undecided := undecidedIDRoutes([]apiRoute{
-			withID("/api/v1/widgets/{id}/blocks/{block_id}", &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND", Blocks: true}),
+			withID("/api/v1/widgets/{id}/blocks/{block_id}", &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound, Blocks: true}),
 		})
 		if len(undecided) != 1 || !strings.Contains(undecided[0], "the document does not hold") {
 			t.Fatalf("the walk answered %q, want the row with no block not-found answer named", undecided)
@@ -419,10 +552,10 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 
 	t.Run("every row names a kind the prefix resolver reads and a 404 that is one", func(t *testing.T) {
 		for _, route := range routes {
-			if route.ID == nil {
+			if route.IDs == nil {
 				continue
 			}
-			name, entry := route.Method+" "+route.Pattern, *route.ID
+			name, entry := route.Method+" "+route.Pattern, *route.IDs
 			switch entry.Kind {
 			case "", "ask", "comment", "message", "artifact":
 			default:
@@ -434,12 +567,15 @@ func TestEveryIDRouteIsNamed(t *testing.T) {
 			if entry.Blocks && !strings.Contains(name, "{block_id}") {
 				t.Errorf("%s reads a block, and its pattern carries no {block_id}", name)
 			}
-			if strings.Contains(name, "{block_id}") && !entry.Blocks {
+			// A {block_id} under a document's {id} is a block of that document, which the prefix
+			// layer resolves within it. A route whose path names no document, such as an issue's
+			// decision under {key}, gives its reason (the walk above).
+			if strings.Contains(name, "{block_id}") && strings.Contains(name, "{id}") && !entry.Blocks {
 				t.Errorf("%s leaves its {block_id} unresolved", name)
 			}
-			for column, code := range map[string]string{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
-				if code != "" && code != notFoundNone && !strings.HasSuffix(code, "NOT_FOUND") {
-					t.Errorf("%s states the %s code %q, which is no not-found code", name, column, code)
+			for column, code := range map[string]apicode.Code{"NotFound": entry.NotFound, "BlockNotFound": entry.BlockNotFound} {
+				if spelled, _, _ := codePair(route.Version, code); !code.IsZero() && !strings.HasSuffix(spelled, "NOT_FOUND") {
+					t.Errorf("%s states the %s code %q, which is no not-found code", name, column, spelled)
 				}
 			}
 		}
@@ -472,17 +608,22 @@ func routeProbePath(pattern string) string {
 }
 
 // routeProbeBody is the JSON body a probe sends. Every mutation that decodes before it
-// authenticates accepts `actor` (a bearer's self-identification). Two kinds of route need more:
+// authenticates accepts `actor` (a bearer's self-identification). Three kinds of route need more:
 // a review route refuses a body without a valid state (400 INVALID_REVIEW) before it reads the
-// document, so its probe is an approval, and a reply route answers REPLY_FORBIDDEN to a malformed
+// document, so its probe is an approval; a reply route answers REPLY_FORBIDDEN to a malformed
 // reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
-// check.
+// check; and a /api/v2 route whose body is a union is decoded before its handler runs, and its
+// decoder refuses a body naming no arm 400 before the authority gate judges the scope an arm needs
+// (gateV2Authorities), so its probe is an arm its decoder reads that no scope gates (unionProbe).
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
 	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
 		return `{"state":"approved"}`
 	case "POST /api/v1/messages/{id}/reply", "POST /api/v1/comments/{id}/reply":
 		return `{"actor":{"kind":"session","id":"s1"},"attempt":1,"body":"probe"}`
+	}
+	if probe, _, _, union := unionProbe(route, map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}); union {
+		return probe
 	}
 	return `{"actor":{"kind":"session","id":"s1"}}`
 }
@@ -502,7 +643,7 @@ func authRefusal(response *httptest.ResponseRecorder) (bool, string) {
 		}
 		_ = json.Unmarshal(response.Body.Bytes(), &body)
 		switch body.Code {
-		case codeScopeRequired, "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
+		case apicode.OAuthScopeRequired.V1Name(), "REPLY_FORBIDDEN", "ACCEPT_FORBIDDEN", "HANDOFF_FORBIDDEN":
 			return true, "403 " + body.Code
 		}
 	}
@@ -549,7 +690,10 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // person's own token holding exactly the scopes the row declares, which is admitted; and, on a
 // row that names `approve`, a token of that person holding `person` alone, which is refused.
 // That last probe is what holds the gate to the table: without it a row the table declares
-// `approve` whose gate asked only for `person` would pass every test here.
+// `approve` whose gate asked only for `person` would pass every test here. A row whose authority
+// rule holds on the probe itself - one that holds where a query key names no value, which the
+// probe never sends (GET /api/v2/agents/{session_id}/artifacts's list form) - is checked as a
+// row naming that rule's scopes is.
 //
 // A token holding `person`, `approve` and `p0`, the widest set a person's token may hold, keeps
 // every route the others reach (G4 of dispatch://INFRA-5637): it is admitted on every row that
@@ -605,7 +749,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 		t.Helper()
 		response := probe(t, route, credential)
 		refused, why := authRefusal(response)
-		if !refused || why != "403 "+codeScopeRequired {
+		if !refused || why != "403 "+apicode.OAuthScopeRequired.V1Name() {
 			t.Fatalf("%s %s needs %v but answers a %s caller %d %s", route.Method, route.Pattern, route.OAuthScopes, credential, response.Code, response.Body.String())
 		}
 	}
@@ -617,7 +761,7 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 			case authAny:
 				expectRefused(t, route, "anonymous")
 				expectAdmitted(t, route, "cookie")
-				if len(route.OAuthScopes) > 0 {
+				if len(route.OAuthScopes) > 0 || slices.ContainsFunc(route.Authorities, func(rule authorityRule) bool { return rule.Absent }) {
 					expectScopeRefusal(t, route, "bearer")
 					if slices.Contains(route.OAuthScopes, model.ScopeApprove) {
 						expectScopeRefusal(t, route, personOnly)
@@ -637,12 +781,13 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	}
 }
 
-// Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
-// and no other route declares a scope: the routes that declare one are exactly those, read from
-// the declarations alone with nothing mounted. The one exception is `PATCH /api/v1/comments/{id}`,
-// which declares no scope since INFRA-1523: an agent's comment has an author of kind session, so a
-// person scope would shut every author of one out of its own edit, and the route holds the caller
-// to that author instead (editComment).
+// Every route Dispatch refused a bearer token on before INFRA-1017, and each later row the list
+// below names with its reason, names the `person` scope now, and no other route of the /api/v1
+// table declares a scope: the routes that declare one are exactly the list's, read from the
+// declarations alone with nothing mounted. The one exception is
+// `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's comment has an
+// author of kind session, so a person scope would shut every author of one out of its own edit, and
+// the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	t.Parallel()
 	browserOnly := []string{

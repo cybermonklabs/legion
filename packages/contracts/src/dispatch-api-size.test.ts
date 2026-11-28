@@ -30,11 +30,16 @@ describe("the size of the Dispatch API contract", () => {
   });
 
   // The split left 18 modules beside the entry, the longest of them `dispatch-api-delivery.ts`.
+  // A generated module is no module of the split: `dispatch-api-v2.generated.ts` is the /api/v2
+  // document rendered (scripts/gen-api.ts), as `dispatch-api.generated.ts` is the /api/v1 one.
   test("no module of the split is longer than the bound", () => {
     const tooLong = readdirSync(SOURCE)
       .filter(
         (entry) =>
-          entry.startsWith(MODULE_PREFIX) && entry.endsWith(".ts") && !entry.endsWith(".test.ts")
+          entry.startsWith(MODULE_PREFIX) &&
+          entry.endsWith(".ts") &&
+          !entry.endsWith(".test.ts") &&
+          !entry.endsWith(".generated.ts")
       )
       .map((entry) => ({
         file: entry,

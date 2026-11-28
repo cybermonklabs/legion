@@ -2,7 +2,8 @@
 // the query-parameter structs, and the check that every route states one. Each route states its
 // own shape in its own file (routeDecl.Shape): what it takes, what it answers, and with which
 // status. Paths, auth and prose alone would describe no body, so the shapes are the data the
-// OpenAPI document is reflected out of (INFRA-1406). Nothing here changes behaviour: no handler
+// OpenAPI documents are reflected out of (INFRA-1406), and a routeRow carries the same in its own
+// Query, Body and Shape columns (routes_versions.go). Nothing here changes behaviour: no handler
 // reads a type declared below, and the query structs are declarations alone -
 // `r.URL.Query().Get` and `.Has` differ on an absent key, so moving forty handlers' reads onto a
 // struct would be a behaviour change, and is not this file's business.
@@ -17,11 +18,17 @@ import (
 type routeAnswer struct {
 	Status int
 	Body   any
+	// Advice and OtherAdvice are the advice shapes this answer carries beside Body, as
+	// routeShape's are for the success answer: nil for an answer that carries none.
+	Advice      any
+	OtherAdvice []any
 }
 
 // routeShape is what one route takes and answers, in Go types an OpenAPI document is reflected
-// out of (INFRA-1406). Each route states its own (routeDecl.Shape), and register refuses to mount
-// a route that states none (shapelessRoutes).
+// out of (INFRA-1406). Each route file states its own (routeDecl.Shape), and register refuses to
+// mount a route that states none (shapelessRoutes). A routeRow carries what it answers in its own
+// Shape column, and its request in its Query and Body columns rather than in Params and Request
+// (apiRoute.shape).
 //
 // Two conventions a reader should know. A route whose answer can carry either advice shape names
 // the richer one: writeAdvice holds every field documentWriteAdvice and suggestionsOnlyAdvice
@@ -76,6 +83,11 @@ type routeShape struct {
 	// object rather than nesting it: withAdvice and withRawAdvice in write_advice.go,
 	// withSuggestions in suggestions.go); nil for an answer that carries none.
 	Advice any
+	// OtherAdvice are the advice shapes the success answer carries in Advice's place where it
+	// carries another: withSuggestions answers suggestionsOnlyAdvice for a write with no issue
+	// state to report, or whose write advice could not be read. Empty for a route whose advice is
+	// always Advice.
+	OtherAdvice []any
 	// Refusals are this route's refusal bodies richer than errorBody, each with its status.
 	Refusals []routeAnswer
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
@@ -149,10 +161,10 @@ type projectPlansQuery struct {
 	Until string `query:"until"`
 }
 
-// deliveryWindowQuery is the query GET /api/v1/delivery/timeline and GET /api/v1/delivery/measures
-// share: the window, the search and the repeatable facets. The `session` facet is read by the
-// same code (deliveryFacets) and named here by no field, since `session` is the whole API's
-// parameter.
+// deliveryWindowQuery is the query GET /delivery/timeline and GET /delivery/measures share, at
+// /api/v1 and /api/v2 alike (OfINFRA979): the window, the search and the repeatable facets.
+// The `session` facet is read by the same code (deliveryFacets) and named here by no field, since
+// `session` is the whole API's parameter.
 type deliveryWindowQuery struct {
 	// From is the window's start, RFC3339; absent it is seven days before To.
 	From string `query:"from"`
@@ -194,7 +206,8 @@ type issueResultsQuery struct {
 	AsOf string `query:"as_of"`
 }
 
-// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's query.
+// deliveryPipelineQuery is GET /api/v1/delivery/pipeline's and GET /api/v2/delivery/pipeline's
+// query.
 type deliveryPipelineQuery struct {
 	// At fixes the day the seven-day Pipeline window ends on, RFC3339; absent it is now.
 	// A malformed value is 400 INVALID_QUERY.
@@ -669,14 +682,16 @@ type credentialApproverQuery struct {
 	Approver string `query:"approver"`
 }
 
-// publishFrameQuery is POST /api/v1/agents/{session_id}/stream/_test/publish's query.
+// publishFrameQuery is POST /api/v1/agents/{session_id}/stream/_test/publish's query, and POST
+// /api/v2/_test/agents/{session_id}/stream/publish's.
 type publishFrameQuery struct {
 	// As says what the posted bytes are: `replay` a transcript frame, `drop` an ended view,
 	// `responder` the {"responding"} body; absent, one ordinary frame.
 	As string `query:"as"`
 }
 
-// liveWritePauseQuery is GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}'s query.
+// liveWritePauseQuery is the query of GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}
+// and of GET /api/v2/_test/artifacts/{id}/live-write-pauses/{point}.
 type liveWritePauseQuery struct {
 	// Wait is how long to wait for a write to park, a positive Go duration such as "10s".
 	Wait string `query:"wait"`
@@ -686,15 +701,28 @@ type liveWritePauseQuery struct {
 // Shape whose Status is 0 is one the route never stated.
 func (shape routeShape) stated() bool { return shape.Status != 0 }
 
-// shapelessRoutes names every route whose declaration states no shape. A route with no shape is a
-// route the generated document would leave out, which is how "one definition of the API" stops
-// holding: a client would be given no type for it and would hand-write one. register refuses to
-// mount such a table, as it refuses a write class it cannot decide (undecidableWrites).
+// shapelessRoutes names every mounted route with no shape: a route file whose declaration states
+// none, and the mount of a routeRow whose Shape column names no success status. A route with no
+// shape is a route the generated document would leave out, which is how "one definition of the
+// API" stops holding: a client would be given no type for it and would hand-write one. register
+// refuses to mount such a table, as it refuses a write class it cannot decide (undecidableWrites).
+// A routeRow that writes its request into Shape rather than into its Query and Body columns is
+// refused too, since the v2 decoder reads those columns alone, and the request it would decode is
+// not the one the document describes.
 func shapelessRoutes(routes []apiRoute) []string {
 	var shapeless []string
 	for _, route := range routes {
-		if !route.Shape.stated() {
-			shapeless = append(shapeless, route.Method+" "+route.Pattern+": no shape (its declaration's Shape)")
+		name := route.Method + " " + route.Pattern
+		shape := route.Shape
+		switch {
+		case !route.columns:
+			if !shape.stated() {
+				shapeless = append(shapeless, name+": no shape (its declaration's Shape)")
+			}
+		case shape.Status == 0:
+			shapeless = append(shapeless, name+": no shape (its Shape column names no success status)")
+		case shape.Params != nil || shape.Request != nil || shape.Multipart || shape.OptionalRequest || shape.OpaqueRequest != "":
+			shapeless = append(shapeless, name+": its Shape column declares a request; a routeRow declares it in its Query and Body columns")
 		}
 	}
 	sort.Strings(shapeless)

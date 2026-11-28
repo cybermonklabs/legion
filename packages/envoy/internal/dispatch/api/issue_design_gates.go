@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -16,9 +18,10 @@ import (
 // one per step it gates (design_gates, migration 20261110214252_issue_design_gates): `decisions`
 // the decisions document the gate recorded, `criteria` the Verification document, `spec` the
 // primary document. A project's row says which steps a deployment gates at all
-// (PUT /api/v1/projects/{key}/gated-steps); this says which document each of those steps named
-// on one issue, so Dispatch's `superseded_approval` advice prints a design-gate clause for a
-// document a gate really records and stays quiet about every other document.
+// (PUT /api/v1/projects/{key}/gated-steps, PATCH /api/v2/projects/{key} with gated_steps); this
+// says which document each of those steps named on one issue, so Dispatch's
+// `superseded_approval` advice prints a design-gate clause for a document a gate really records
+// and stays quiet about every other document.
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope — its declaration states no OAuthScopes: the daemon presents the
@@ -92,7 +95,7 @@ type issueDesignGatesInput struct {
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The actor is resolved as every write's is, so a caller that names none is turned away
@@ -102,49 +105,20 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Gates == nil {
-		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
+		writeError(w, r, apicode.InvalidIssue, fmt.Sprintf(
 			"gates is required: the document each design-gate step (%s) records on this issue, or [] for an issue whose gates record none",
 			strings.Join(model.GatedStepsKnown, ", ")))
 		return
 	}
-	gates := make([]issueDesignGate, 0, len(*input.Gates))
-	for _, entry := range *input.Gates {
-		gate := issueDesignGate(entry)
-		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
-				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
-			return
-		}
-		if slices.ContainsFunc(gates, func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
-				"%q is named twice: gates names each design-gate step once, with the one document that step records", gate.Step))
-			return
-		}
-		if gate.ArtifactID == "" {
-			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
-				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step))
-			return
-		}
-		gates = append(gates, gate)
-	}
-	// The order a reader gets the set back in is model.GatedStepsKnown's, whatever order the
-	// publish named the steps in: the rows are a set keyed by step, so the answer is sorted
-	// where a project's list is stored in the order it was published.
-	slices.SortFunc(gates, func(left, right issueDesignGate) int {
-		return slices.Index(model.GatedStepsKnown, left.Step) - slices.Index(model.GatedStepsKnown, right.Step)
-	})
-	steps := make([]string, len(gates))
-	documents := make([]string, len(gates))
-	holds := make([]*bool, len(gates))
-	for index, gate := range gates {
-		steps[index] = gate.Step
-		documents[index] = gate.ArtifactID
-		holds[index] = gate.Holds
+	gates, err := validDesignGates(*input.Gates)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -169,17 +143,74 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		select key from issues where key = $1
 	`, []any{r.PathValue("key")}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
+			writeError(w, r, apicode.IssueNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
+	if err := writeDesignGates(r.Context(), tx, issue, gates); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, issueDesignGates{Issue: issue, Gates: gates})
+}
+
+// validDesignGates is a published set of design gates held to what design_gates keeps - each
+// step one of model.GatedStepsKnown, named once, with the document it records - read as the
+// gates the route answers (each entry's holds as it was given, nil where it gave none) and sorted
+// into the order a reader gets the set back in, model.GatedStepsKnown's, whatever order the
+// publish named the steps in: the rows are a set keyed by step, so the answer is sorted where a
+// project's list is stored in the order it was published. A set it refuses is 400 INVALID_ISSUE.
+// The answer is never nil, so an empty publish stays the publish that clears the set. Both
+// versions' writes of the set read their body's entries here, PUT
+// /api/v1/issues/{key}/design-gates and PATCH /api/v2/issues/{key}'s design_gates.
+func validDesignGates(published []issueDesignGateInput) ([]issueDesignGate, error) {
+	gates := make([]issueDesignGate, 0, len(published))
+	for _, entry := range published {
+		gates = append(gates, issueDesignGate(entry))
+	}
+	for index, gate := range gates {
+		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
+			return nil, errorf(apicode.InvalidIssue,
+				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", "))
+		}
+		if slices.ContainsFunc(gates[:index], func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
+			return nil, errorf(apicode.InvalidIssue,
+				"%q is named twice: gates names each design-gate step once, with the one document that step records", gate.Step)
+		}
+		if gate.ArtifactID == "" {
+			return nil, errorf(apicode.InvalidIssue,
+				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step)
+		}
+	}
+	slices.SortFunc(gates, func(left, right issueDesignGate) int {
+		return slices.Index(model.GatedStepsKnown, left.Step) - slices.Index(model.GatedStepsKnown, right.Step)
+	})
+	return gates, nil
+}
+
+// writeDesignGates stores gates, a set validDesignGates holds, as the issue's whole set: the
+// rows the set does not name are deleted and the ones it does upserted, so the stored set is
+// what was published and nothing older survives beside it. Both versions' writes of the set
+// call it, PUT /api/v1/issues/{key}/design-gates and PATCH /api/v2/issues/{key}.
+func writeDesignGates(ctx context.Context, tx pgx.Tx, issue string, gates []issueDesignGate) error {
+	steps := make([]string, len(gates))
+	documents := make([]string, len(gates))
+	holds := make([]*bool, len(gates))
+	for index, gate := range gates {
+		steps[index] = gate.Step
+		documents[index] = gate.ArtifactID
+		holds[index] = gate.Holds
+	}
+	if _, err := tx.Exec(ctx, `
 		delete from design_gates where issue = $1 and not (step = any($2::text[]))
 	`, issue, steps); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return err
 	}
 	// The delete above stands for the publish that names no gate — the one that clears a record,
 	// and the one the daemon sends for every issue a generation clear empties — so the insert is
@@ -189,19 +220,14 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		// holds is written whatever it was, null included: the publish is the whole of what the
 		// row says, so an entry that carries no answer replaces the one an earlier publish gave
 		// rather than leaving it standing beside a document it may not have been given for.
-		if _, err := tx.Exec(r.Context(), `
+		if _, err := tx.Exec(ctx, `
 			insert into design_gates (issue, step, artifact_id, holds)
 			select $1::text, published.step, published.artifact_id, published.holds
 			from unnest($2::text[], $3::text[], $4::boolean[]) as published(step, artifact_id, holds)
 			on conflict (issue, step) do update set artifact_id = excluded.artifact_id, holds = excluded.holds
 		`, issue, steps, documents, holds); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return err
 		}
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	WriteJSON(w, http.StatusOK, issueDesignGates{Issue: issue, Gates: gates})
+	return nil
 }

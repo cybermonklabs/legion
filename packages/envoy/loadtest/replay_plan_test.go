@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -19,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // Synthetic bundles only: every text here is made up.
@@ -485,6 +488,74 @@ func TestReplayFileWrites(t *testing.T) {
 	}
 	if p.Actions[1].Stages[0][0].File.Size != 500 {
 		t.Fatal("the file version's size is not the logged one")
+	}
+}
+
+// TestReplayFileUnderARoleName: Dispatch refuses a file or an image under the name or the slug of
+// an issue's role document (400 ARTIFACT_ROLE_NAME, R15 of dispatch://INFRA-4071/spec), so a
+// recorded file whose name gives a role's slug is sent under a name whose slug names no role, and
+// any other file under its recorded name. A file's create and its later version send the same
+// name, in the form's name field and as its file part's filename alike, so the version lands on
+// the file the create made; its type and sizes stay as recorded.
+func TestReplayFileUnderARoleName(t *testing.T) {
+	declared := "text/plain"
+	for i, file := range []struct{ recorded, role string }{
+		{"plan.md", model.ArtifactRolePlan},
+		{"Verification.MD", model.ArtifactRoleVerification},
+		{"decisions.md", model.ArtifactRoleDecisions},
+		{"notes.txt", ""},
+	} {
+		if role := model.RoleOfDocumentSlug(model.ArtifactSlug(file.recorded)); role != file.role {
+			t.Fatalf("%q names the role %q, want %q", file.recorded, role, file.role)
+		}
+		id := "F" + strconv.Itoa(10+i)
+		p := rpPlan(t, rpOptions(), []string{
+			rpEvent(1, "artifact.created", "ACME-2", rpSession, time.Second,
+				map[string]any{"artifact": map[string]any{"id": id, "name": file.recorded, "kind": "file", "versions": []any{map[string]any{"size": 300, "mime": declared}}}}),
+			rpEvent(2, "artifact.version", "ACME-2", rpSession, 2*time.Second, map[string]any{"artifact_id": id, "name": file.recorded,
+				"version": map[string]any{"number": 2, "named": true, "size": 500, "mime": declared}}),
+		}, nil)
+		if len(p.Actions) != 2 {
+			t.Fatalf("%q: %d actions, want its create and its version", file.recorded, len(p.Actions))
+		}
+		wantRoutes(t, p.Actions[0], []string{"POST /api/v1/issues/{key}/artifacts [file-create]"})
+		wantRoutes(t, p.Actions[1], []string{"POST /api/v1/issues/{key}/artifacts [file-version]"})
+		create, version := p.Actions[0].Stages[0][0].File, p.Actions[1].Stages[0][0].File
+		sent := create.Name
+		if file.role == "" && sent != file.recorded {
+			t.Errorf("%q names no role document and is sent as %q, want its recorded name", file.recorded, sent)
+		}
+		if file.role != "" {
+			if slug := model.ArtifactSlug(sent); sent == file.recorded || model.RoleOfDocumentSlug(slug) != "" {
+				t.Errorf("%q, the issue's %s document's name, is sent as %q (slug %s), want a name whose slug names no role",
+					file.recorded, file.role, sent, slug)
+			}
+		}
+		if version.Name != sent {
+			t.Errorf("%q's create is sent as %q and its version as %q, want one file", file.recorded, sent, version.Name)
+		}
+		if create.MIME != declared || version.MIME != declared || create.Size != 300 || version.Size != 500 {
+			t.Errorf("%q's create %+v and version %+v, want %s of the logged sizes", file.recorded, create, version, declared)
+		}
+		for _, f := range []*replayFile{create, version} {
+			ct, body, err := multipartFile(1, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			form := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			form.Header.Set("Content-Type", ct)
+			if err := form.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatal(err)
+			}
+			part, header, err := form.FormFile("file")
+			if err != nil {
+				t.Fatal(err)
+			}
+			part.Close()
+			if form.FormValue("name") != sent || header.Filename != sent {
+				t.Errorf("%q's form names %q, its file %q; want %q", file.recorded, form.FormValue("name"), header.Filename, sent)
+			}
+		}
 	}
 }
 

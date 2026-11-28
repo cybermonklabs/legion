@@ -1,8 +1,9 @@
-// message_corrections.go is PATCH /api/v1/messages/{id} and DELETE /api/v1/messages/{id}: the
-// author of an issue message replaces its body, or withdraws it. They are the message twins of
-// editComment (comment_actions.go) and deleteComment (comment_delete.go), with what a message
-// does not have left out: it carries no anchor and so no document margin mark, no suggestion and
-// no fallback copy, and its pending sends are rows of message_deliveries.
+// message_corrections.go is PATCH and DELETE /api/v1/messages/{id} and PATCH and DELETE
+// /api/v2/messages/{id}: the author of an issue message replaces its body, or withdraws it, each
+// version's route running the one work (editMessageAs, deleteMessageAs). They are the message
+// twins of editComment (comment_actions.go) and deleteComment (comment_delete.go), with what a
+// message does not have left out: it carries no anchor and so no document margin mark, no
+// suggestion and no fallback copy, and its pending sends are rows of message_deliveries.
 //
 // Each runs in the two phases the message create does (createStoredMessage): a read phase that
 // takes the issue's owner lock and reads and plans everything the write decides on, holding no
@@ -18,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -26,7 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// editMessageInput is the body of PATCH /api/v1/messages/{id}.
+// editMessageInput is the body of PATCH /api/v1/messages/{id} and of PATCH /api/v2/messages/{id}.
 //
 // actor is who makes the edit, for a bearer caller that names its own session: the route is the
 // author's, and an agent's message has an author of kind session, exactly as editCommentInput
@@ -65,71 +67,80 @@ func (s *server) lockedMessageForCorrection(
 ) (model.Message, time.Time, bool) {
 	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return model.Message{}, time.Time{}, false
 	}
 	var now time.Time
 	if message.IssueKey != nil {
 		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return model.Message{}, time.Time{}, false
 		}
 		if message, err = scanMessage(tx.QueryRow(r.Context(), `
 			select `+messageColumns+`, now() from messages where id = $1
 		`, message.ID), &now); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return model.Message{}, time.Time{}, false
 		}
 	}
 	// The author is compared as a writer and not field by field, as the comment edit compares:
 	// a person's actor carries the credential that acted beside them (model.ActorAct).
 	if !message.Author.SameAs(actor) {
-		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the message author may "+verb+" it")
+		writeError(w, r, apicode.NotAuthor, "only the message author may "+verb+" it")
 		return model.Message{}, time.Time{}, false
 	}
 	if message.IssueKey == nil {
-		writeError(w, "NOT_AN_ISSUE_MESSAGE", http.StatusConflict,
+		writeError(w, r, apicode.NotAnIssueMessage,
 			"only a message on an issue is "+past+": this one belongs to a conversation")
 		return model.Message{}, time.Time{}, false
 	}
 	if message.DeletedAt != nil {
-		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
+		s.writeHandlerError(w, r, deletedPostError(refs.ItemMessage))
 		return model.Message{}, time.Time{}, false
 	}
 	return message, now.UTC(), true
 }
 
-// editMessage answers PATCH /api/v1/messages/{id}. It writes the body the edit replaces into
-// post_body_history, re-indexes the blocks from the new body at the time of the edit, and
-// appends message.edited, which carries the new body as comment.edited does.
+// editMessage answers PATCH /api/v1/messages/{id}: the edit editMessageAs makes, by the caller
+// correctionActor resolves from the body's actor.
 func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
-	if !requireUUIDPath(w, r, "message") {
+	if !requireUUIDPath(w, r, "message", apicode.MessageIDInput) {
 		return
 	}
 	var input editMessageInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
+	s.editMessageAs(w, r, actor, input)
+}
+
+// editMessageAs rewrites the body of the message the path's {id} names as input asks, by actor,
+// once the route has read its body and resolved who acts: the work of PATCH /api/v1/messages/{id}
+// and PATCH /api/v2/messages/{id}. It writes the body the edit replaces into post_body_history,
+// re-indexes the blocks from the new body at the time of the edit, and appends message.edited,
+// which carries the new body as comment.edited does. It answers the message itself, or the
+// refusal.
+func (s *server) editMessageAs(w http.ResponseWriter, r *http.Request, actor model.Actor, input editMessageInput) {
 	// An edit stores line feeds alone, as a message's creation does (validateCreateMessage) and as
 	// the comment edit does: a body that holds a carriage return draws differently in every reader
 	// of the stored text, the message.edited event and its deliveries among them.
 	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
-		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "message body is required")
+		writeError(w, r, apicode.InvalidMessage, "message body is required")
 		return
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -140,7 +151,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	previousBody := message.Body
 	history, err := postBodyHistoryStep(refs.ItemMessage, message.ID, previousBody, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message.Body = input.Body
@@ -155,18 +166,18 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	referenceChanges, index, err := s.planEditedItem(
 		r.Context(), tx, message.Author, refs.ItemMessage, message.ID, previousBody, message.Body, editedAt, nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.edited", actor, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answer lists the attempts as a read of the message lists them: the edit writes none,
 	// so they are read here, in the read phase, and a read that fails writes nothing.
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The history row, the update, the index, the event and its stamp go in one batch: the
@@ -186,28 +197,21 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, func(appended model.Event) { event = appended })
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, message)
 }
 
-// deleteMessage answers DELETE /api/v1/messages/{id}: the author withdraws its own message. The
-// row and its place in the thread stay; the body goes, and with it each copy a read serves as the
-// message's own text that does not follow the cleared column — the block index and each block's
-// stored excerpt — in the one transaction that clears it. The event log's payloads stay as
-// written and are masked at each read (attachPostMarks), and a reply's events that quote the
-// message - its creation, and an edit of the reply written before the delete - keep the preview
-// they froze. Each reply keeps its own text and its own place. The delete's own message.deleted,
-// of a message that is itself a reply, carries no text of the post it answers
-// (messageCorrectionEvent).
+// deleteMessage answers DELETE /api/v1/messages/{id}: the delete deleteMessageAs makes, by the
+// caller correctionActor resolves from the body's actor.
 func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
-	if !requireUUIDPath(w, r, "message") {
+	if !requireUUIDPath(w, r, "message", apicode.MessageIDInput) {
 		return
 	}
 	var input actorInput
@@ -218,9 +222,24 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.deleteMessageAs(w, r, actor)
+}
+
+// deleteMessageAs deletes the message the path's {id} names as actor, once the route has resolved
+// who acts: the work of DELETE /api/v1/messages/{id} and DELETE /api/v2/messages/{id}, the author
+// withdrawing its own message. The row and its place in the thread stay; the body goes, and with
+// it each copy a read serves as the message's own text that does not follow the cleared column —
+// the block index and each block's stored excerpt — in the one transaction that clears it. The
+// event log's payloads stay as written and are masked at each read (attachPostMarks), and a
+// reply's events that quote the message - its creation, and an edit of the reply written before
+// the delete - keep the preview they froze. Each reply keeps its own text and its own place. The
+// delete's own message.deleted, of a message that is itself a reply, carries no text of the post
+// it answers (messageCorrectionEvent). It answers the message as the delete leaves it, or the
+// refusal.
+func (s *server) deleteMessageAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -231,7 +250,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	referenceChanges, clear, err := s.clearDeletedPostBody(
 		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, message.Author, actor, deletedAt)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	message.Body = ""
@@ -239,7 +258,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	message.DeletedBy = &actor
 	correction, logins, err := s.messageCorrectionEvent(r.Context(), tx, &message, "message.deleted", actor, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle is
@@ -247,7 +266,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 	// one's receipt is built from that. The settle refuses should a row no longer stand as this
 	// read found it (queueDeletedPostSettlement).
 	if err := s.hydrateWrittenMessage(r.Context(), tx, &message); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var pending []model.MessageDelivery
@@ -277,11 +296,11 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.queueLoggedEventOn(b, correction, logins, "message", message.ID, collect)
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appended...)

@@ -19,9 +19,10 @@ import (
 // pod's reached back 45 minutes, nine passes, which is not enough to answer why a head read six
 // hours ago still has no check. So each pass writes a row when it starts and fills the rest in
 // when it ends, and GET /api/v1/ci-reconcile/passes reads the last day of them back out
-// (RecentPasses). A row costs one insert and one update per five minutes and is kept for
-// PassRetention, which is twice the window the route serves, so a pass that is still being read
-// about is never pruned out from under the reader.
+// (RecentPasses), and GET /api/v2/ci-reconcile-passes those within the window it names, the last
+// day where it names none (Passes). A row costs one insert and one update per five minutes and is
+// kept for PassRetention, which is twice the day either route reads where no window is named, so a
+// pass that is still being read about is never pruned out from under the reader.
 const (
 	// PassWindow is how far back the route reads: the passes of the last day.
 	PassWindow = 24 * time.Hour
@@ -201,7 +202,8 @@ func passOutcome(c *counts, at *stop, cancelled bool) PassState {
 	}
 }
 
-// PassRecord is one row of ci_reconcile_passes as GET /api/v1/ci-reconcile/passes answers it.
+// PassRecord is one row of ci_reconcile_passes as GET /api/v1/ci-reconcile/passes and GET
+// /api/v2/ci-reconcile-passes answer it.
 type PassRecord struct {
 	// ID is the row's own identity, which orders two passes that started in the same instant.
 	ID int64 `json:"id"`
@@ -331,8 +333,62 @@ func RecentPasses(ctx context.Context, pool *store.Pool) ([]PassRecord, error) {
 	return passes, nil
 }
 
+// passesWithin reads the rows that started at or after $2, or PassWindow ($4) before the
+// database's now() where $2 is null, and before $3 where it is not null, newest first: each with
+// whether the process that wrote it is still live by the registry's own clock, and whether it is
+// the newest row the table holds, inside the window or not.
+const passesWithin = `
+	select p.id, p.instance::text, p.started_at, p.ended_at, p.outcome,
+	       coalesce(p.graphql_queries, 0), coalesce(p.graphql_points, 0), coalesce(p.rest_requests, 0),
+	       coalesce(p.rest_not_modified, 0), coalesce(p.heads_over_rest, 0), coalesce(p.records, 0),
+	       coalesce(p.heads, 0), coalesce(p.heads_known, 0),
+	       coalesce(p.cursor_repository, ''), coalesce(p.cursor_from, 0), coalesce(p.cursor_number, 0),
+	       coalesce(p.cursor_rest, false), coalesce(p.cursor_counted, false),
+	       coalesce(s.heartbeat_at > now() - make_interval(secs => $1), false),
+	       p.id = (select n.id from ci_reconcile_passes n order by n.started_at desc, n.id desc limit 1)
+	from ci_reconcile_passes p
+	left join server_processes s on s.instance = p.instance
+	where p.started_at >= coalesce($2::timestamptz, now() - make_interval(secs => $4))
+	  and ($3::timestamptz is null or p.started_at < $3)
+	order by p.started_at desc, p.id desc`
+
+// Passes is the CI reconcile passes that started within [from, to), newest first, which GET
+// /api/v2/ci-reconcile-passes answers: from nil is PassWindow before the database's now(), and to
+// nil no end at all. The rows are kept for PassRetention, so a window reaching further back than
+// that holds none of what came before it.
+//
+// A row with no end time is read as RecentPasses reads it, running only while its process is live,
+// the lease is held and it is the newest row, but the newest row is the table's rather than the
+// window's: a window that ends before the newest pass began holds no row that pass has not
+// overtaken, so the first row of such a window is no pass still running.
+func Passes(ctx context.Context, pool *store.Pool, from, to *time.Time) ([]PassRecord, error) {
+	held, err := duty.LeaseHeld(ctx, pool, Lease)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx, passesWithin, processes.LiveWindow.Seconds(), from, to, PassWindow.Seconds())
+	if err != nil {
+		return nil, fmt.Errorf("read the CI reconcile passes: %w", err)
+	}
+	defer rows.Close()
+	passes := []PassRecord{}
+	for rows.Next() {
+		var newest bool
+		pass, live, err := scanPass(rows, &newest)
+		if err != nil {
+			return nil, err
+		}
+		pass.State = passState(pass, live && held && newest)
+		passes = append(passes, pass)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the CI reconcile passes: %w", err)
+	}
+	return passes, nil
+}
+
 // passState is the state the route answers: the outcome the pass recorded, or, for a row with no
-// end time, whether the three liveness facts hold (RecentPasses).
+// end time, whether the three liveness facts hold (RecentPasses, Passes).
 func passState(pass PassRecord, running bool) PassState {
 	switch {
 	case pass.EndedAt != nil:
@@ -344,19 +400,21 @@ func passState(pass PassRecord, running bool) PassState {
 	}
 }
 
-// scanPass reads one row, with whether its process is live. The counts and the cursor are null
-// exactly while the pass has not ended, which the table's own check holds to the end time, so
-// the statement reads each of them through a coalesce to its own zero and the outcome, the one
-// column that says which kind of row this is, is the one nullable scan: a row with no outcome
-// is a pass that has not ended, whose counts and cursor the answer leaves null together.
-func scanPass(row pgx.Row) (pass PassRecord, live bool, err error) {
+// scanPass reads one row, with whether its process is live, and each column the statement selects
+// after those into more. The counts and the cursor are null exactly while the pass has not ended,
+// which the table's own check holds to the end time, so the statement reads each of them through
+// a coalesce to its own zero and the outcome, the one column that says which kind of row this is,
+// is the one nullable scan: a row with no outcome is a pass that has not ended, whose counts and
+// cursor the answer leaves null together.
+func scanPass(row pgx.Row, more ...any) (pass PassRecord, live bool, err error) {
 	var outcome *string
 	var counts PassCounts
 	var cursor PassCursor
-	if err := row.Scan(&pass.ID, &pass.Instance, &pass.StartedAt, &pass.EndedAt, &outcome,
+	columns := append([]any{&pass.ID, &pass.Instance, &pass.StartedAt, &pass.EndedAt, &outcome,
 		&counts.GraphQLQueries, &counts.GraphQLPoints, &counts.RESTRequests, &counts.RESTNotModified,
 		&counts.HeadsOverREST, &counts.Records, &counts.Heads, &counts.HeadsKnown,
-		&cursor.Repository, &cursor.From, &cursor.Number, &cursor.Rest, &cursor.Counted, &live); err != nil {
+		&cursor.Repository, &cursor.From, &cursor.Number, &cursor.Rest, &cursor.Counted, &live}, more...)
+	if err := row.Scan(columns...); err != nil {
 		return PassRecord{}, false, fmt.Errorf("read the CI reconcile passes: %w", err)
 	}
 	if outcome != nil {

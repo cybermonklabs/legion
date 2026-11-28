@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
@@ -99,13 +100,14 @@ const fileRoundTripLimit = 4*((maxDocumentMarkdownBytes+2)/3) + 1<<10
 // read. `dispatch artifact` sends no text past the bytes one document holds, which it refuses
 // itself, so no body it sends is past either.
 var (
-	errMarkdownRoundTripTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",
+	errMarkdownRoundTripTooLarge = errorf(apicode.CapExceededTooLarge,
 		"request body exceeds %d bytes", markdownRoundTripLimit)
-	errFileRoundTripTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED",
+	errFileRoundTripTooLarge = errorf(apicode.CapExceededTooLarge,
 		"request body exceeds %d bytes", fileRoundTripLimit)
 )
 
-// markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip: Markdown, the text a
+// markdownRoundTripInput is the body of POST /api/v1/markdown/round-trip and of POST
+// /api/v2/markdown-round-trips (postMarkdownRoundTripV2): Markdown, the text a
 // caller is about to store as a Markdown document, as an inline upload sends it as `content`, and
 // NewDocument, which asks for the refusals only a new document's seed makes of it
 // (markdownRoundTrip). A body without NewDocument is answered as the most permissive replacement
@@ -116,7 +118,8 @@ type markdownRoundTripInput struct {
 	NewDocument bool   `json:"new_document,omitempty"`
 }
 
-// fileRoundTripInput is the body of POST /api/v1/markdown/file-round-trip: File, the bytes of a
+// fileRoundTripInput is the body of POST /api/v1/markdown/file-round-trip and of POST
+// /api/v2/markdown-file-round-trips (postFileRoundTripV2): File, the bytes of a
 // file a caller is about to upload as a Markdown document, base64 in the JSON, as a multipart
 // upload sends them as its file part, and NewDocument, as markdownRoundTripInput takes it. The
 // bytes are checked as bytes, so a file holding a byte that is not UTF-8 is refused as its upload
@@ -170,15 +173,7 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeRoundTrip(w, r, markdownRoundTripPattern, &input) {
 		return
 	}
-	// The JSON upload's decode refuses U+0000 in its `content` before anything else of the text
-	// (unstorableJSON), so this route makes that refusal first, in those words; a JSON string
-	// holds no byte that is not UTF-8, since decoding writes each as U+FFFD.
-	if refusal := unstorableText("content", input.Markdown); refusal != nil {
-		s.writeTextRefusal(w, refusal)
-		return
-	}
-	stored, err := markdownRoundTrip(input.Markdown, false, input.NewDocument)
-	s.writeRoundTrip(w, stored, err)
+	s.answerMarkdownRoundTrip(w, r, input)
 }
 
 // postFileRoundTrip answers POST /api/v1/markdown/file-round-trip (postMarkdownRoundTrip).
@@ -187,8 +182,28 @@ func (s *server) postFileRoundTrip(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeRoundTrip(w, r, fileRoundTripPattern, &input) {
 		return
 	}
+	s.answerFileRoundTrip(w, r, input)
+}
+
+// answerMarkdownRoundTrip answers the inline round trip of both versions for input, its body as
+// decoded (postMarkdownRoundTrip, postMarkdownRoundTripV2). The JSON upload's decode refuses
+// U+0000 in its `content` before anything else of the text (unstorableJSON), so this makes that
+// refusal first, in those words; a JSON string holds no byte that is not UTF-8, since decoding
+// writes each as U+FFFD.
+func (s *server) answerMarkdownRoundTrip(w http.ResponseWriter, r *http.Request, input markdownRoundTripInput) {
+	if refusal := unstorableText("content", input.Markdown); refusal != nil {
+		s.writeTextRefusal(w, r, refusal)
+		return
+	}
+	stored, err := markdownRoundTrip(input.Markdown, false, input.NewDocument)
+	s.writeRoundTrip(w, r, stored, err)
+}
+
+// answerFileRoundTrip answers the file round trip of both versions for input, its body as decoded
+// (postFileRoundTrip, postFileRoundTripV2).
+func (s *server) answerFileRoundTrip(w http.ResponseWriter, r *http.Request, input fileRoundTripInput) {
 	stored, err := markdownRoundTrip(input.File, true, input.NewDocument)
-	s.writeRoundTrip(w, stored, err)
+	s.writeRoundTrip(w, r, stored, err)
 }
 
 // decodeRoundTrip decodes the body of the round trip at pattern into input, within that route's
@@ -200,7 +215,7 @@ func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern
 	limit, tooLarge := routeBody(http.MethodPost, pattern)
 	body, err := readJSONBodyAllowingNUL(r, input, limit, tooLarge)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	logUndeclaredMembers(r, input, body)
@@ -209,9 +224,9 @@ func (s *server) decodeRoundTrip(w http.ResponseWriter, r *http.Request, pattern
 
 // writeRoundTrip writes a round trip's answer: err, the refusal of the text, or the markdown
 // stored.
-func (s *server) writeRoundTrip(w http.ResponseWriter, stored string, err error) {
+func (s *server) writeRoundTrip(w http.ResponseWriter, r *http.Request, stored string, err error) {
 	if err != nil {
-		s.writeTextRefusal(w, err)
+		s.writeTextRefusal(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
@@ -224,7 +239,7 @@ const textRefusalMark = "text"
 // writeTextRefusal writes refusal, an upload's refusal of a text for the text alone, marked as
 // such (contracts.TextRefusalHeader). Every error a round trip answers after its body is read is
 // one: its checks read the text and nothing else.
-func (s *server) writeTextRefusal(w http.ResponseWriter, refusal error) {
+func (s *server) writeTextRefusal(w http.ResponseWriter, r *http.Request, refusal error) {
 	w.Header().Set(contracts.TextRefusalHeader, textRefusalMark)
-	s.writeHandlerError(w, refusal)
+	s.writeHandlerError(w, r, refusal)
 }

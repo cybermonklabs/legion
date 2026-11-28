@@ -32,7 +32,7 @@ var storeWriteCallSites = map[string]string{
 	// their own event instead, which it states in its own statement.
 	"asks/followers.go#queueFollow":    "asks#TestAFollowTakesTheStoreLockOrder",
 	"api/server.go#appendCausingEvent": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/asks.go#createAskFor":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/asks.go#openAsk":              "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/reviews.go#renewApprovalAsk":  "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/settlement.go#appendEvents":  "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The block index's cause: each site that appends what a version's index pass stated under
@@ -43,7 +43,7 @@ var storeWriteCallSites = map[string]string{
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"docs/new_document.go#QueueNewArtifact":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/issue_create.go#createIssueFrom":           "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The comment path, which the comment route and the comment an issue write leaves share: the
@@ -58,11 +58,11 @@ var storeWriteCallSites = map[string]string{
 	// its session is owed a node (queueAnsweredDelivery, which the reply's driver runs last).
 	"api/comment_delivery.go#completeCommentDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_delivery.go#queueAnsweredDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_delivery.go#replyComment":            "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/comment_delivery.go#answerCommentDelivery":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and caused by the event the
-	// create appends after it. createIssue, storeArtifact with docs' QueueNewArtifact, and createAskFor
+	// create appends after it. createIssueFrom, storeArtifact with docs' QueueNewArtifact, and openAsk
 	// are listed above for their block index and follow, and their drivers hold the node step too;
 	// these are the others. Their order - the owner lock their path already takes, the node before
 	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then

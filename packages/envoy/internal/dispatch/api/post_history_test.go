@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -352,11 +353,11 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 						t.Fatalf("the settle took a row its read did not find as it stands")
 					}
 					recorder := httptest.NewRecorder()
-					(&server{}).writeHandlerError(recorder, settle)
-					if code, _ := refusalOf(t, recorder); recorder.Code != http.StatusConflict || code != deleteContended ||
+					(&server{}).writeHandlerError(recorder, nil, settle)
+					if code, _ := refusalOf(t, recorder); recorder.Code != http.StatusConflict || code != apicode.DeleteContended.V1Name() ||
 						recorder.Header().Get("Retry-After") != "1" {
 						t.Fatalf("the route answers the refusal %d (Retry-After %q) %s, want 409 %s with Retry-After 1",
-							recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String(), deleteContended)
+							recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String(), apicode.DeleteContended.V1Name())
 					}
 					if err := tx.Rollback(ctx); err != nil {
 						t.Fatalf("roll the refused settle back: %v", err)
@@ -453,7 +454,7 @@ func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.
 			}
 
 			refused := <-deleted
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != deleteContended ||
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != apicode.DeleteContended.V1Name() ||
 				text != "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again" {
 				t.Fatalf("a delete whose send moved under it: status=%d body=%s, want 409 DELETE_CONTENDED",
 					refused.Code, refused.Body.String())

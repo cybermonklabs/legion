@@ -760,33 +760,31 @@ func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
 }
 
 // answerEndedByDelete leaves out the block text a reply carries of the post it answers
-// (reply_block), as every repeat that could give it reads the post again: each keyed route whose
-// answer can hold a reply block, as its declaration's Shape names the answer's Go type, answers a repeat
-// with the post read again (keyedRereads) or from its recovery point (keyedReplays), and no
-// refusal, which every route replays as kept, holds one.
+// (reply_block), as every repeat that could give it reads the post again: each keyed route of
+// either version whose answer can hold a reply block, as its shape declares the answer's Go type,
+// answers a repeat with the post read again (routeRow.Reread) or from its recovery point
+// (routeRow.Replay), and no refusal, which every route replays as kept, holds one.
 func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
 	t.Parallel()
-	replays := (&server{}).keyedReplays()
 	found := 0
-	for _, declared := range routeRegistry {
-		route, shape, method := declared.Method+" "+declared.Pattern, declared.Shape, declared.Method
-		if !keyedMethod(method) {
+	for _, route := range (&server{}).routes() {
+		if !keyedMethod(route) {
 			continue
 		}
-		_, rereads := keyedRereads[route]
-		_, recovers := replays[route]
+		name, shape := route.Method+" "+route.Pattern, route.shape()
+		rereads, recovers := route.Reread != nil, route.Replay != nil
 		for _, answer := range append([]routeAnswer{{Status: shape.Status, Body: shape.Response}, {Status: shape.Status, Body: shape.Advice}}, shape.Also...) {
 			if answer.Body == nil || !holdsReplyBlock(reflect.TypeOf(answer.Body)) {
 				continue
 			}
 			found++
 			if !rereads && !recovers {
-				t.Errorf("%s answers %T at %d, which can hold a reply block, and a repeat replays its kept bytes", route, answer.Body, answer.Status)
+				t.Errorf("%s answers %T at %d, which can hold a reply block, and a repeat replays its kept bytes", name, answer.Body, answer.Status)
 			}
 		}
 		for _, refusal := range shape.Refusals {
 			if holdsReplyBlock(reflect.TypeOf(refusal.Body)) {
-				t.Errorf("%s refuses with %T at %d, which can hold a reply block, and a refusal is replayed as kept", route, refusal.Body, refusal.Status)
+				t.Errorf("%s refuses with %T at %d, which can hold a reply block, and a refusal is replayed as kept", name, refusal.Body, refusal.Status)
 			}
 		}
 	}

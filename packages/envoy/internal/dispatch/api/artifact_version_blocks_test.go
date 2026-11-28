@@ -218,6 +218,36 @@ func assertPlanTask(t *testing.T, answer versionBlocksAnswer, id, steps, body st
 	t.Fatalf("no block %s among %+v (markdown %q)", id, *answer.Blocks, answer.Markdown)
 }
 
+// GET /api/v2/artifacts/{id}/versions/{number} carries the blocks of that version's own text with
+// include=blocks, the form the parent's R1.9 gives an object's other forms, as GET /api/v1's
+// ?blocks=true carries them (dispatch://INFRA-4071/spec R10: a behaviour of a route holds on
+// /api/v2 too). A read that names no include carries no blocks key, and /api/v2 refuses the
+// /api/v1 spelling, blocks=true, as a query key it does not declare.
+func TestAV2VersionReadCarriesThatVersionsBlocksWithIncludeBlocks(t *testing.T) {
+	t.Parallel()
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	plan := createIssueDocument(t, handler, issue.Key, "plan.md", ":::plan_task{#a steps=\"implementer reviewer\"}\nDo the change.\n:::\n")
+	editToVersion(t, handler, plan.ID, 2, map[string]any{
+		"op": "replace", "find": "Do the change.", "with": ":::plan_task{#a steps=\"planner implementer\"}\nDo it again.\n:::",
+	})
+	v1 := readVersionBlocks(t, handler, "/api/v2/artifacts/"+plan.ID+"/versions/1?include=blocks")
+	v2 := readVersionBlocks(t, handler, "/api/v2/artifacts/"+plan.ID+"/versions/2?include=blocks")
+	assertPlanTask(t, v1, "a", "implementer reviewer", "Do the change.")
+	assertPlanTask(t, v2, "a", "planner implementer", "Do it again.")
+	if v1.SHA256 == nil || v1.Size == nil || *v1.Size != len(v1.Markdown) {
+		t.Fatalf("version 1 read with include=blocks answers sha256 %v and size %v for %d bytes of markdown", v1.SHA256, v1.Size, len(v1.Markdown))
+	}
+	plain := dispatchRequest(t, handler, http.MethodGet, "/api/v2/artifacts/"+plan.ID+"/versions/1", nil, "alice")
+	if plain.Code != http.StatusOK || strings.Contains(plain.Body.String(), `"blocks"`) {
+		t.Fatalf("GET /api/v2 version 1 with no include: status=%d body=%s, want the version with no blocks key", plain.Code, plain.Body.String())
+	}
+	spelledAsV1 := dispatchRequest(t, handler, http.MethodGet, "/api/v2/artifacts/"+plan.ID+"/versions/1?blocks=true", nil, "alice")
+	if code := responseCode(t, spelledAsV1); spelledAsV1.Code != http.StatusBadRequest || code != "QUERY_KEY_UNKNOWN" {
+		t.Fatalf("GET /api/v2 version 1?blocks=true: status=%d code=%s, want 400 QUERY_KEY_UNKNOWN", spelledAsV1.Code, code)
+	}
+}
+
 // versionBlocksFixtures holds, from this package's directory, the two answers
 // TestAVersionsBlocksCarryTheParentOfATaskBlock commits, which -update (updateFixtures) rewrites:
 // a version read that lists each task block's parent, and an older build's refusal of it. Nothing

@@ -3,8 +3,10 @@ package projectrepos_test
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +29,41 @@ func standIn(t *testing.T) *projectaccesstest.Server {
 
 func clientOf(server *projectaccesstest.Server) *projectrepos.Client {
 	return projectrepos.New(server.URL, server.Account, nil)
+}
+
+// TestTheReadNamesItself: every read names the repository client and the broker's build in its
+// User-Agent, so Dispatch's access log tells this client's reads from every other caller's; a
+// broker whose build names no commit sends `(devel)`. The reads stay on /api/v1.
+func TestTheReadNamesItself(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct{ commit, want string }{
+		{commit, "envoy-broker-project-repositories/" + commit},
+		{"", "envoy-broker-project-repositories/(devel)"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			var mu sync.Mutex
+			var sent []string
+			recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				sent = append(sent, r.URL.Path+" "+r.UserAgent())
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"project":"PRIV","repositories":["acme/pub"]}`))
+			}))
+			t.Cleanup(recorder.Close)
+			client := projectrepos.New(recorder.URL, projectaccesstest.StaticAccount("token"), nil)
+			client.Commit = tc.commit
+			if _, err := client.Repositories(t.Context(), "PRIV"); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			want := []string{"/api/v1/access/projects/PRIV/repositories " + tc.want}
+			if !reflect.DeepEqual(sent, want) {
+				t.Fatalf("the client asked %q, want %q", sent, want)
+			}
+		})
+	}
 }
 
 // TestProjectRepositoriesClientReadsDispatchsList: the list Dispatch answers for the project, read

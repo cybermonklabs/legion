@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,8 +13,9 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Unsubscribe a session from a document.",
 	Handler:     (*server).unsubscribeArtifactSession,
+	Successor:   successorIs(http.MethodDelete, "/artifacts/{id}/subscribers/{session_id}"),
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Shape:       routeShape{Status: http.StatusNoContent},
 })

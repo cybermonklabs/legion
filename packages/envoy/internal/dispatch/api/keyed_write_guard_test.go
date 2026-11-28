@@ -54,6 +54,15 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A document's newest version at a cut, read in one batch of one or two selects on the bare pool
+	// (versionAtTheCut), only where the context carries a cut: by the text read (documentText),
+	// which the answers of PATCH /api/v2/artifacts/{id} and of the /api/v2 uploads share through
+	// artifactRowsV2, by the block route and by the checks' read. No keyed write runs it: only
+	// asOfGate puts a cut on a request's context (serveAtCut), on a GET row that answers as_of, and
+	// the limited-token gate refuses a token that carries a cut on every write. At a cut the store
+	// sends the batch in a read-only transaction of its own (store.Pool.SendBatch), which refuses
+	// every write.
+	"api.server.versionAtTheCut": "reads at a cut, which no keyed write's context carries",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",
@@ -88,8 +97,9 @@ type keyedWriteOffence struct {
 	at, function, why string
 }
 
-// keyedWriteGuard is what the guard reads off the graph: every POST and PATCH route's handler, and
-// every function those handlers run while their commit step may be live (walk).
+// keyedWriteGuard is what the guard reads off the graph: every keyed write route's handler
+// (keyedRouteNames), and every function those handlers run while their commit step may be live
+// (walk).
 type keyedWriteGuard struct {
 	graph   *lockGraph
 	objects map[*lockFunction]*types.Func
@@ -150,10 +160,12 @@ func writingCallOf(functions []string) *regexp.Regexp {
 }
 
 // TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks enforces what KEY_COMMITTED rests on
-// (markRequestKeyCommitted): every write a POST or PATCH route makes commits in a transaction the
-// shared pool opens, so the commit step marks the request's key committed with the write itself. A
-// write made as a bare pool statement commits on its own and marks nothing; the process dying after
-// it, before the answer is kept, leaves a key a repeat takes over, and the write is made twice.
+// (markRequestKeyCommitted): every write a keyed route makes (keyedMethod: a POST or a PATCH, and a
+// PUT or a DELETE of a route the rules of /api/v2 bind, apiRoute.v2Bound, which leaves out the
+// INFRA-979 tree's rows and the test hooks) commits in a transaction the shared pool opens, so the
+// commit step marks the request's key committed with the write itself. A write made as a bare pool
+// statement commits on its own and marks nothing; the process dying after it, before the answer is
+// kept, leaves a key a repeat takes over, and the write is made twice.
 //
 // It reads each route's handler from the routes table and follows it through the copy-lock guard's
 // graph (TestCopyLockComesBeforeEveryPendingRowAndEvent says how a call is resolved) through
@@ -177,7 +189,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 	slices.Sort(offences)
 	offences = slices.Compact(offences)
 	if len(offences) > 0 {
-		t.Fatalf("a POST or PATCH route reaches a write outside the transactions the commit mark hooks:\n\t%s\n"+
+		t.Fatalf("a keyed write route reaches a write outside the transactions the commit mark hooks:\n\t%s\n"+
 			"Make the write inside a transaction of the shared pool (s.begin, store.Pool.Begin): its commit "+
 			"step marks the request's Idempotency-Key committed with the write, which is what answers a "+
 			"repeat after a crash KEY_COMMITTED rather than making the write a second time.",
@@ -186,7 +198,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 }
 
 // TestTheKeyedWriteGuardSeesWhatItGuards holds the guard to what it must see, so it cannot pass by
-// seeing nothing: every POST and PATCH route of the table, the writes behind the comment and send
+// seeing nothing: every keyed write route of the table, the writes behind the comment and send
 // routes, the bare reads those handlers do make, the statement a caller names for a function that
 // takes its SQL as a parameter, the work a handler hands a Go method or starts with a go statement,
 // and a select of a SQL function that writes.
@@ -196,7 +208,7 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 	guard.offences()
 	var want []string
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		if keyedMethod(route.Method) {
+		if keyedMethod(route) {
 			want = append(want, route.Method+" "+route.Pattern)
 		}
 	}
@@ -209,7 +221,7 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 		t.Errorf("the guard reads %d keyed routes, want the table's %d", len(guard.routes), len(want))
 	}
 	for _, function := range []string{
-		"api.server.createCommentFor", "api.server.deliverResolvedCommentMention",
+		"api.server.writeComment", "api.server.deliverResolvedCommentMention",
 		"api.server.recordCommentDeliveryResolution", "api.server.createStoredMessage",
 		"api.server.recordPendingMessageDelivery", "architecture.Importer.touch",
 	} {
@@ -273,13 +285,165 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		t.Fatalf("read the SQL functions the migrations define: %v", err)
 	}
 	guard.writingCall = writingCallOf(writing)
-	for name, handlers := range keyedRouteHandlers(t, graph) {
-		for _, handler := range handlers {
-			guard.routes[name] = handler
+	keyed := keyedRouteNames()
+	for _, row := range tableRowsInSource(t, graph) {
+		names := slices.DeleteFunc(slices.Clone(row.names), func(name string) bool { return !keyed[name] })
+		if len(names) == 0 {
+			continue
+		}
+		for _, handler := range graph.functionValue(row.handler) {
+			for _, name := range names {
+				guard.routes[name] = handler
+			}
 			guard.walk(handler)
 		}
 	}
 	return guard
+}
+
+// keyedRouteNames is the "<method> <pattern>" of every route register keys (keyedMethod), its test
+// hooks in: what a guard over keyed writes reads. A row's mounts are judged one by one, since
+// /api/v2 keys the PUT and the DELETE of a row outside the INFRA-979 tree that /api/v1 serves
+// unkeyed.
+func keyedRouteNames() map[string]bool {
+	keyed := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if keyedMethod(route) {
+			keyed[route.Method+" "+route.Pattern] = true
+		}
+	}
+	return keyed
+}
+
+// sourceRow is one row of the route table as its source declares it, for the guards that read
+// what a row's handler runs from that handler's source: the "<method> <pattern>" of every route the
+// server mounts it as, and the expression the row names its handler by.
+type sourceRow struct {
+	names   []string
+	handler ast.Expr
+}
+
+// tableRowsInSource reads the table's routes from the source that declares them, since a handler
+// read at run time is a function value and what these guards ask is what that function's source
+// runs: each route file's routeDecl, whose method, pattern and handler fields name an http.Method
+// constant, a pattern and a method expression of the server, and each routeRow, whose method,
+// pattern and handler columns name an http.Method constant, a version-free pattern and a method
+// of the server. A route is named by every route the server mounts it as, read off the table with
+// its test hooks in: a route file at its pattern, a hook at its /api/v1 and its /api/v2/_test
+// path, a routeRow at /api/v1 and /api/v2 where it is mounted there. Every route the table mounts
+// is named by one route read here, so a declaration the read misses fails rather than leaving its
+// route out.
+func tableRowsInSource(t *testing.T, graph *lockGraph) []sourceRow {
+	t.Helper()
+	// Each mounted route, and whether it is the mount of a routeRow rather than a route file's, so
+	// a routeRow is never named by a /api/v1 route at the same path (GET /api/v1 is a route file;
+	// the routeRow of the index at /api/v2 writes no /api/v1 path).
+	mounted := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		mounted[route.Method+" "+route.Pattern] = route.columns
+	}
+	// methodOf is the method an http.Method constant names; any other expression, such as the
+	// declaration's own Method that v1Route copies into a routeRow, names no route.
+	methodOf := func(expression ast.Expr) (string, bool) {
+		method, ok := ast.Unparen(expression).(*ast.SelectorExpr)
+		if !ok || !strings.HasPrefix(method.Sel.Name, "Method") {
+			return "", false
+		}
+		if pkg, ok := method.X.(*ast.Ident); !ok || pkg.Name != "http" {
+			return "", false
+		}
+		return strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method")), true
+	}
+	var rows []sourceRow
+	named := map[string]bool{}
+	add := func(declaring, method string, handler ast.Expr, columns bool, patterns ...string) {
+		row := sourceRow{handler: handler}
+		for _, pattern := range patterns {
+			name := method + " " + pattern
+			if isColumns, served := mounted[name]; served && isColumns == columns {
+				row.names = append(row.names, name)
+				named[name] = true
+			}
+		}
+		if len(row.names) == 0 {
+			t.Errorf("%s declares a %s route at %v that the server mounts at none of them", declaring, method, patterns)
+			return
+		}
+		rows = append(rows, row)
+	}
+	for _, source := range graph.sources {
+		if source.file.Name.Name != "api" || strings.HasSuffix(source.path, "_test.go") {
+			continue
+		}
+		// declare reads one declaration, a routeDecl or a routeRow literal, kind naming which, and
+		// adds the route it declares; a literal that names no http.Method constant declares none.
+		declare := func(literal *ast.CompositeLit, kind string) {
+			columns := map[string]ast.Expr{}
+			for _, element := range literal.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					if key, ok := pair.Key.(*ast.Ident); ok {
+						columns[key.Name] = pair.Value
+					}
+				}
+			}
+			if columns["Method"] == nil || columns["Pattern"] == nil || columns["Handler"] == nil {
+				return
+			}
+			method, ok := methodOf(columns["Method"])
+			if !ok {
+				return
+			}
+			pattern, readable := literalText(columns["Pattern"], "api", graph.constants)
+			if !readable {
+				t.Errorf("%s holds a %s %s whose pattern the guard cannot read", source.path, method, kind)
+				return
+			}
+			if kind == "routeRow" {
+				add(source.path, method, columns["Handler"], true, "/api/v1"+pattern, "/api/v2"+pattern)
+				return
+			}
+			patterns := []string{pattern}
+			if hook, ok := columns["TestHook"].(*ast.Ident); ok && hook.Name == "true" {
+				patterns = append(patterns, testHookV2Pattern(pattern))
+			}
+			add(source.path, method, columns["Handler"], false, patterns...)
+		}
+		ast.Inspect(source.file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			switch kind := literal.Type.(type) {
+			case *ast.Ident:
+				if kind.Name != "routeDecl" && kind.Name != "routeRow" {
+					return true
+				}
+				declare(literal, kind.Name)
+				return false
+			case *ast.ArrayType:
+				// A []routeRow literal's rows leave their type out.
+				if element, ok := kind.Elt.(*ast.Ident); !ok || element.Name != "routeRow" {
+					return true
+				}
+				for _, row := range literal.Elts {
+					if row, ok := row.(*ast.CompositeLit); ok && row.Type == nil {
+						declare(row, "routeRow")
+					}
+				}
+				return false
+			}
+			return true
+		})
+	}
+	for _, name := range slices.Sorted(maps.Keys(mounted)) {
+		if !named[name] {
+			t.Errorf("the guard reads no declaration off the source for %s, which the table mounts", name)
+		}
+	}
+	if len(rows) == 0 {
+		t.Fatal("the guard reads no route off the source (route files, routeRows)")
+	}
+	return rows
 }
 
 // walk marks fn and everything it runs while its request's commit step is live reached.

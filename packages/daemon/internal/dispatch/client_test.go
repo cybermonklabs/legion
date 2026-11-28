@@ -113,6 +113,49 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}
 }
 
+// Every request names the daemon and the build it runs in its User-Agent, a read and a write
+// alike, so Dispatch's access log tells the daemon's calls apart: the release or the commit the
+// caller names (Release), and `(devel)` where it names neither, which is what a build linked with
+// neither a release nor a revision hands it, and what a client made with no Release option sends.
+// Its paths stay on /api/v1.
+func TestTheClientNamesItself(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []Option
+		want    string
+	}{
+		{name: "a release", options: []Option{Release("v4.2.0")}, want: "legion-daemon/v4.2.0"},
+		{name: "a commit", options: []Option{Release("0123456789abcdef0123456789abcdef01234567")}, want: "legion-daemon/0123456789abcdef0123456789abcdef01234567"},
+		{name: "an empty release", options: []Option{Release("")}, want: "legion-daemon/(devel)"},
+		{name: "no release option", want: "legion-daemon/(devel)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sent []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sent = append(sent, r.Method+" "+r.URL.Path+" "+r.UserAgent())
+				if r.Method == http.MethodPost {
+					writeJSON(t, w, map[string]string{"id": "message-5"})
+					return
+				}
+				writeJSON(t, w, []map[string]any{})
+			}))
+			defer server.Close()
+
+			client := New(server.URL, BearerTransport(dispatchToken, nil), tc.options...)
+			if _, err := client.ListIssues(context.Background(), "LEGION", nil); err != nil {
+				t.Fatalf("list issues: %v", err)
+			}
+			if err := client.PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
+				t.Fatalf("post message: %v", err)
+			}
+			want := []string{"GET /api/v1/issues " + tc.want, "POST /api/v1/issues/LEGION-5/messages " + tc.want}
+			if !slices.Equal(sent, want) {
+				t.Fatalf("requests = %q, want %q", sent, want)
+			}
+		})
+	}
+}
+
 // An issue's resolved repository is Dispatch's to compute (its own, else its nearest ancestor's,
 // else the project's default); the list and the detail carry it, and null reads as none.
 func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {

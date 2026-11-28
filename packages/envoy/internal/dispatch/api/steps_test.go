@@ -17,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -271,10 +273,10 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	path := "/api/v1/issues/" + issue + "/steps/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
-	expectRefusal(t, "a person's write", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "a person's write", person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 		refused := putStep(t, handler, issue, uuid.NewString(), implementerStart(map[string]any{"kind": "session", "id": session}))
-		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
@@ -426,7 +428,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
-			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, codeStepInput, row.field)
+			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, contracts.StepInputCode, row.field)
 		})
 	}
 	for name, raw := range map[string]string{
@@ -593,13 +595,13 @@ func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
 	}
 
 	neither := putExperiment(t, handler, issue, uuid.NewString(), stepIdentity(daemon))
-	expectRefusal(t, "a variant's write naming neither", neither, http.StatusBadRequest, codeStepInput,
+	expectRefusal(t, "a variant's write naming neither", neither, http.StatusBadRequest, contracts.StepInputCode,
 		"experiment and variant are required")
 	alone := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "planning"}))
-	expectRefusal(t, "a variant's write naming the experiment alone", alone, http.StatusBadRequest, codeStepInput,
+	expectRefusal(t, "a variant's write naming the experiment alone", alone, http.StatusBadRequest, contracts.StepInputCode,
 		"stated together or not at all")
 	bad := putExperiment(t, handler, issue, uuid.NewString(), withFields(stepIdentity(daemon), map[string]any{"experiment": "Bad", "variant": "b"}))
-	expectRefusal(t, "a variant's write naming the experiment Bad", bad, http.StatusBadRequest, codeStepInput,
+	expectRefusal(t, "a variant's write naming the experiment Bad", bad, http.StatusBadRequest, contracts.StepInputCode,
 		`experiment "Bad" must match`)
 
 	again := putExperiment(t, handler, issue, id, withFields(stepIdentity(daemon), map[string]any{"experiment": "planning", "variant": "a"}))
@@ -631,10 +633,10 @@ func TestAVariantIsTheDaemonsAlone(t *testing.T) {
 	for _, id := range []string{run, uuid.NewString()} {
 		path := "/api/v1/issues/" + issue + "/steps/" + id + "/experiment"
 		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(stepIdentity(nil), pair), "alice")
-		expectRefusal(t, "a person's variant of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a person's variant of "+id, person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 			refused := putExperiment(t, handler, issue, id, withFields(stepIdentity(map[string]any{"kind": "session", "id": session}), pair))
-			expectRefusal(t, "a variant of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+			expectRefusal(t, "a variant of "+id+" as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		}
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != run || steps[0].Experiment != nil || steps[0].Variant != nil {
@@ -701,7 +703,7 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSessionOf("LEG")))
 
 	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd))
-	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, contracts.StepOtherIssueCode, issues[0], issues[1])
 	if steps := stepsOf(t, handler, issues[1]); len(steps) != 0 {
 		t.Fatalf("%s lists %+v, want nothing", issues[1], steps)
 	}
@@ -730,7 +732,7 @@ func issueRecordWrites() []issueRecordWrite {
 	holders := []issueRoleHolder{{Role: "tester", Session: "ses-tester"}}
 	return []issueRecordWrite{
 		{
-			name: "a step", refusal: codeStepWriter,
+			name: "a step", refusal: apicode.StepWriter.V1Name(),
 			path: func(issue string) string { return "/api/v1/issues/" + issue + "/steps/" + step },
 			body: implementerStart,
 			landed: func(t *testing.T, handler http.Handler, issue string) {
@@ -741,7 +743,7 @@ func issueRecordWrites() []issueRecordWrite {
 			},
 		},
 		{
-			name: "a step rating", refusal: codeStepWriter,
+			name: "a step rating", refusal: apicode.StepWriter.V1Name(),
 			path: func(issue string) string { return "/api/v1/issues/" + issue + "/steps/" + retro + "/rating" },
 			body: func(actor map[string]any) map[string]any {
 				return withFields(retroIdentity(actor, 1), map[string]any{"rating": 3, "rating_reason": "The plan fit the work."})
@@ -754,7 +756,7 @@ func issueRecordWrites() []issueRecordWrite {
 			},
 		},
 		{
-			name: "a plan", refusal: codeStepWriter,
+			name: "a plan", refusal: apicode.StepWriter.V1Name(),
 			path: func(issue string) string { return "/api/v1/issues/" + issue + "/plans/" + plan },
 			body: func(actor map[string]any) map[string]any { return defaultPlanBody(actor, 1) },
 			landed: func(t *testing.T, handler http.Handler, issue string) {

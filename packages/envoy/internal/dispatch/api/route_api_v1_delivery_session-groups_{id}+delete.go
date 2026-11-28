@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Delete a Delivery session group; its sessions show as themselves again.",
 	Handler:     (*server).deleteDeliverySessionGroup,
+	Successor:   successorIs(http.MethodDelete, "/session-groups/{id}"),
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a Delivery session group id"},
 	Shape:       routeShape{Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},

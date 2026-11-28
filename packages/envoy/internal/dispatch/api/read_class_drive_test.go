@@ -82,7 +82,7 @@ const searchTook = "how long the search ran, which each read times on its own cl
 // postHistoryStatement is the one read of a post's kept bodies (postHistory): the lateral page of
 // post_body_history, in SQL the statement writes itself, which both history rows run on the
 // post the seed corrected once.
-const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
+const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+id,\s*body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
 
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
 // "GET <pattern>", as a route names itself: the request that shows the row writes nothing a read may
@@ -311,13 +311,6 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 	return ""
 }
 
-// declared is the declaration of one route by "<method> <pattern>", the zero value for a name no
-// route declares, which the walk around it reads as a route the table does not mount.
-func declared(name string) routeDecl {
-	route, _ := declaredRoute(name)
-	return route
-}
-
 // TestEveryGETRowHasADrive holds the two registries of drives to the read class: every GET row of
 // the table with its test hooks in (readOnlyTable), read off the table, so a GET row added later
 // fails here until it is driven. It fails for each read row with no drive in readRowDrives, each
@@ -329,14 +322,17 @@ func declared(name string) routeDecl {
 // run lists all that is missing.
 func TestEveryGETRowHasADrive(t *testing.T) {
 	t.Parallel()
+	// Each GET route's pattern and class, as the read-only gate reads it: a route file's declared
+	// Read, and a routeRow mount's entry of v2ReadClasses (stampV2ReadClasses).
 	patterns := map[string]string{}
+	classes := map[string]readWrites{}
 	var problems []string
 	for _, route := range readOnlyTable() {
 		if route.Method != http.MethodGet {
 			continue
 		}
 		name := route.Method + " " + route.Pattern
-		patterns[name] = route.Pattern
+		patterns[name], classes[name] = route.Pattern, route.Read.Writes
 		_, read := readRowDrives[name]
 		_, write := getWriteDrives[name]
 		switch route.Read.Writes {
@@ -369,7 +365,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 		for name, drive := range registry.drives {
 			pattern, mounted := patterns[name]
 			switch {
-			case !mounted || declared(name).Read.Writes != registry.class:
+			case !mounted || classes[name] != registry.class:
 				problems = append(problems, name+": "+registry.name+" drives it, and it is no "+registry.rows+" of the table")
 			case !sendsItsRow(pattern, drive.target):
 				problems = append(problems, name+": "+registry.name+" drives it at "+drive.target+", which its pattern does not match")
@@ -767,10 +763,8 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
 	rows = sendOrder(t, rows, drives)
-	world := newDriveRig(t)
-	world.seedWrites(t)
-	writer := world.brokerSend("the writing token", world.writer)
-	stored := func(t *testing.T, drive rowDrive) int {
+	worlds := map[string]*driveWorld{}
+	stored := func(t *testing.T, world *driveWorld, drive rowDrive) int {
 		t.Helper()
 		var count int
 		if err := world.raw.Pool.QueryRow(context.Background(), world.fill(t, drive.stored)).Scan(&count); err != nil {
@@ -779,10 +773,19 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 		return count
 	}
 	for _, name := range rows {
+		// Each version uses separate rows so a read does not consume the other version's write.
+		version, _, _ := strings.Cut(strings.TrimPrefix(name, "GET /api/"), "/")
+		world := worlds[version]
+		if world == nil {
+			world = newDriveRig(t)
+			world.seedWrites(t)
+			worlds[version] = world
+		}
+		writer := world.brokerSend("the writing token", world.writer)
 		t.Run(name, func(t *testing.T) {
 			drive := drives[name]
 			target := world.fill(t, drive.target)
-			if before := stored(t, drive); before != 0 {
+			if before := stored(t, world, drive); before != 0 {
 				t.Fatalf("before the drive the store holds %d of what %s writes, want none", before, name)
 			}
 			world.tracer.settle(t, "before "+target)
@@ -795,7 +798,7 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 				t.Errorf("GET %s: the window holds no statement matching %s among %d:\n%s",
 					target, drive.statement, len(statements), statementList(statements))
 			}
-			if after := stored(t, drive); after != 1 {
+			if after := stored(t, world, drive); after != 1 {
 				t.Errorf("GET %s: the store holds %d of what it writes (%s), want one", target, after, drive.stored)
 			}
 			t.Logf("GET %s made its write %s, the window's writes %v", target, drive.statement, writesIn(statements))

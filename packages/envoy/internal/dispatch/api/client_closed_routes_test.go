@@ -88,32 +88,31 @@ func serveClosedClient(t *testing.T, name string, handler http.Handler, request 
 }
 
 // TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine holds R6 over its class, every row of
-// the table (s.routes()): each row is built into its own chain as register builds it
-// (routeHandler, with its keyed replay), and sent, by each caller of closedClientSenders, a
-// request whose client closed before it was served. A client that leaves is no fault of the
-// server's, so no row may write a level=ERROR line for it, and its request line may not read
-// 500: the line reads 499 where an answer the close cut off is logged (accesslog's
+// the table (s.routes()), at each version that mounts it: each row is built into its own chain as
+// register builds it (routeHandler, with the route's keyed replay), and sent, by each caller of
+// closedClientSenders, a request whose client closed before it was served. A client that leaves
+// is no fault of the server's, so no row may write a level=ERROR line for it, and its request line
+// may not read 500: the line reads 499 where an answer the close cut off is logged (accesslog's
 // StatusClientClosed), and what a row answered before the close could matter keeps its own
 // status. Each request is read against the log it wrote while it ran and while any work it
 // detached ran after it: exactly one request line, which a row that wrote none fails as well.
 //
 // The table is the one a deployment serves, test hooks out. It swaps the default logger for
 // the walk, so it is not parallel; a row is counted once its request has been read, and the count
-// is held to the rows the registered server mounts (its route index), so a walk that skipped a
-// row, or walked none, fails.
+// is held to the rows the registered server mounts (its two route indexes, /api/v1's and
+// /api/v2's), so a walk that skipped a row, or walked none, fails.
 func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	logged := captureLog(t)
 
-	replays := served.keyedReplays()
 	walked, requests := 0, 0
 	var failures []string
 	for row, route := range served.routes() {
 		name := route.Method + " " + route.Pattern
-		handler := served.routeHandler(route, replays[name])
+		handler := served.routeHandler(route)
 		for _, sender := range closedClientSenders {
-			if sender.keyedOnly && !keyedMethod(route.Method) {
+			if sender.keyedOnly && !keyedMethod(route) {
 				continue
 			}
 			requests++
@@ -152,7 +151,7 @@ func TestEveryRouteLogsARequestItsClientClosedWithNoErrorLine(t *testing.T) {
 		walked++
 	}
 
-	if mounted := len(served.routeIndex); walked == 0 || walked != mounted {
+	if mounted := len(served.routeIndex) + len(served.routeIndexV2); walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
 	if len(failures) > 0 {

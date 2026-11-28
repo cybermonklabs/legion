@@ -464,7 +464,8 @@ func emptyIssuesAsAScenarioResetDoes(t *testing.T, database *store.Store) {
 // written the bytes this server kept for the first. The issue's created_at is hashed in beside
 // the counters so neither can happen, which is what the browser harness needs of it - it empties
 // `issues` and restarts each project's numbering between scenarios, under a server process that
-// keeps running - and what a database restored under a running server needs of it.
+// keeps running - and what a database restored under a running server needs of it. The /api/v2
+// lists that answer for the two are held to the same, so a client that moves off /api/v1 keeps it.
 func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T) {
 	t.Parallel()
 	// A settlement of the first issue's spec writes to the tables the reset below empties, and a
@@ -476,6 +477,8 @@ func TestANewIssueUnderARecycledKeyIsNeverAnsweredTheOldIssuesLists(t *testing.T
 	lists := []struct{ name, target, was, is string }{
 		{"comment list", commentListOf(first.Key), "A comment on the first issue", "A comment on the second issue"},
 		{"activity feed", "/api/v1/issues/" + first.Key + "/events", "The first issue of this key", "The second issue of this key"},
+		{"/api/v2 comment list", "/api/v2/issues/" + first.Key + "/comments", "A comment on the first issue", "A comment on the second issue"},
+		{"/api/v2 activity feed", "/api/v2/issues/" + first.Key + "/events", "The first issue of this key", "The second issue of this key"},
 	}
 	beforeETags := make([]string, len(lists))
 	for i, list := range lists {

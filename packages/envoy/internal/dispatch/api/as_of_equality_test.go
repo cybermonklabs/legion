@@ -828,8 +828,8 @@ func servedAtTheCut(route string, read asOfRead, caller asOfReader, answer asOfA
 	if needsPerson && !caller.person {
 		var refusal refusalAnswer
 		_ = json.Unmarshal(answer.body, &refusal)
-		if answer.status != http.StatusForbidden || refusal.Code != codeScopeRequired {
-			return fmt.Sprintf("a caller without person answered %d %s, want 403 %s", answer.status, abbreviateAnswer(answer.body), codeScopeRequired)
+		if answer.status != http.StatusForbidden || refusal.Code != readWalkScopeCode {
+			return fmt.Sprintf("a caller without person answered %d %s, want 403 %s", answer.status, abbreviateAnswer(answer.body), readWalkScopeCode)
 		}
 		return ""
 	}

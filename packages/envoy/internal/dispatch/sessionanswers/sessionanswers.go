@@ -1,7 +1,8 @@
 // Package sessionanswers is the read model of what people wrote that Dispatch delivered to one
-// session: GET /api/v1/agents/{session_id}/answers' read, which the outbox's tests read back
-// through too, so the route reads what the publisher records. On a database of production's size
-// and shape, the read finds the session's events in the window through the partial GIN index
+// session: the read of GET /api/v1/agents/{session_id}/answers and of GET
+// /api/v2/agents/{session_id}/answers alike (List), which the outbox's tests read back through
+// too, so each route reads what the publisher records. On a database of production's size and
+// shape, the read finds the session's events in the window through the partial GIN index
 // events_person_words_destinations, of published_destinations and created_at, so it reads no
 // event that only other sessions' topics received, and no event that the session's topic
 // received before the window. Where the window holds far fewer of a person's events, the planner

@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -93,55 +95,74 @@ type artifactBlockChange struct {
 	Change string `json:"change" enum:"changed,added,removed"`
 }
 
-// getArtifactChanges answers what changed between versions from and to of one document
-// (artifactChanges). It reads the document as GET …/versions/{number} reads it: an authenticated
-// caller, and the artifact's own row by its id (loadArtifactRowByID), the row that route's read
-// finds and the 404 it answers, without the versions and the approval that read goes on to carry,
-// which this one uses neither of and which say nothing of who may read the document. So a caller
-// reads here exactly what it may read there. An id that names no artifact is that route's 404
-// ARTIFACT_NOT_FOUND, and a version the document does not have is its 404 NOT_FOUND. The artifact
-// is read before the query is, so an id that names nothing answers that 404 whatever the query
-// holds, as each route's ID says it does. Both numbers must be version numbers a document can have
-// (parseVersionNumber) and from below to (400 INVALID_VERSION).
-//
-// It reads the two versions' stored markdown and parses it, never the block index, so it answers
-// for a large document as soon as both versions are stored, without waiting for the index's
-// deferred pass over its blocks (deferBlockIndexBlocks).
+// getArtifactChanges answers GET /api/v1/artifacts/{id}/changes: what changed between versions
+// from and to of one document (artifactChanges), its document read first (changedDocument), so
+// an id that names nothing answers that 404 whatever the query holds, as its route's ID says it does.
+// Both numbers must be version numbers a document can have (parseVersionNumber) and from below
+// to (400 INVALID_VERSION). GET /api/v2/artifacts/{id}/changes answers the same change set from
+// its decoded query (getArtifactChangesV2), and both write it in writeArtifactChanges.
 func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
-		return
-	}
-	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+	artifact, ok := s.changedDocument(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
 	from, fromValid := parseVersionNumber(query.Get("from"))
 	to, toValid := parseVersionNumber(query.Get("to"))
 	if !fromValid || !toValid {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from and to must be version numbers from 1 to %d", maxIntegerColumn))
+		writeError(w, r, apicode.InvalidVersion, fmt.Sprintf("from and to must be version numbers from 1 to %d", maxIntegerColumn))
 		return
 	}
 	if from >= to {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from (%d) must be below to (%d)", from, to))
+		writeError(w, r, apicode.InvalidVersion, fmt.Sprintf("from (%d) must be below to (%d)", from, to))
 		return
 	}
-	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to)
+	s.writeArtifactChanges(w, r, artifact.ID, from, to)
+}
+
+// changedDocument is the document a change set's path names, read as GET …/versions/{number}
+// reads it: an authenticated caller, and the artifact's own row by its id (loadArtifactRowByID),
+// the row that route's read finds and the 404 it answers, without the versions and the approval
+// that read goes on to carry, which a change set uses neither of and which say nothing of who may
+// read the document. So a caller reads a change set of exactly what it may read there. An id that
+// names no artifact is that route's 404 ARTIFACT_NOT_FOUND, and a file or an image is 400
+// NOT_DOCUMENT. It writes the refusal and answers false.
+func (s *server) changedDocument(w http.ResponseWriter, r *http.Request) (model.Artifact, bool) {
+	if !s.requireAuthenticated(w, r) {
+		return model.Artifact{}, false
+	}
+	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
+		return model.Artifact{}, false
+	}
+	if artifact.Kind != "doc" {
+		writeError(w, r, apicode.NotDocument, "artifact is not a document")
+		return model.Artifact{}, false
+	}
+	return artifact, true
+}
+
+// writeArtifactChanges answers the change set from version from to version to of the document
+// artifactID names, once the route has read both numbers and held from below to: the one core
+// of GET /api/v1/artifacts/{id}/changes and GET /api/v2/artifacts/{id}/changes, which answer one
+// body for one document and pair. A version the document does not have is 404 NOT_FOUND.
+//
+// It reads the two versions' stored markdown and parses it, never the block index, so it answers
+// for a large document as soon as both versions are stored, without waiting for the index's
+// deferred pass over its blocks (deferBlockIndexBlocks).
+func (s *server) writeArtifactChanges(w http.ResponseWriter, r *http.Request, artifactID string, from, to int) {
+	before, after, err := s.twoVersionsMarkdown(r.Context(), artifactID, from, to)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	changes, err := compareVersions(before, after)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	changes.ArtifactID, changes.From, changes.To = artifact.ID, from, to
+	changes.ArtifactID, changes.From, changes.To = artifactID, from, to
 	WriteJSON(w, http.StatusOK, changes)
 }
 
@@ -155,7 +176,7 @@ func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, fro
 	}
 	for _, number := range []int{from, to} {
 		if _, held := markdown[number]; !held {
-			return "", "", errorf(http.StatusNotFound, "NOT_FOUND", "the document has no version %d", number)
+			return "", "", errorf(apicode.NotFound, "the document has no version %d", number)
 		}
 	}
 	return markdown[from], markdown[to], nil

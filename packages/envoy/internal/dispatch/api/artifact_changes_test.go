@@ -744,3 +744,59 @@ func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
 		t.Fatalf("an id that names no artifact: status=%d body=%s, want 404 ARTIFACT_NOT_FOUND", unknown.Code, unknown.Body.String())
 	}
 }
+
+// GET /api/v2/artifacts/{id}/changes answers the change set GET /api/v1/artifacts/{id}/changes
+// answers, its two versions named by the decoded query's version_from and version_to: for one
+// document and one pair the two bodies are the same bytes. /api/v1 keeps its own keys, and from
+// and to are no keys of the /api/v2 row, so a /api/v2 query naming them is refused 400
+// QUERY_KEY_UNKNOWN as any undeclared key is. A pair the /api/v2 row does not take is 400
+// INVALID_QUERY, a version the document does not have the 404 NOT_FOUND /api/v1 answers, and an id
+// that names no artifact 404 ARTIFACT_NOT_FOUND.
+func TestTheV2ChangeSetIsTheV1ChangeSetUnderItsOwnKeys(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadDocumentVersions(t, handler, "plan.md",
+		"# Plan\n\n## Goal\n\nShip the service behind a flag.\n\n## Scope\n\nTwo regions.\n\n## Risks\n\nNone known.\n",
+		"# Plan\n\n## Goal\n\nShip the service behind a flag and a canary.\n\n## Scope\n\nTwo regions.\n\n## Rollout\n\nOne region a day.\n")
+	v2Path := func(query string) string { return "/api/v2/artifacts/" + artifactID + "/changes?" + query }
+
+	v1 := dispatchRequest(t, handler, http.MethodGet, changesPath(artifactID, 1, 2), nil, "alice")
+	v2 := dispatchRequest(t, handler, http.MethodGet, v2Path("version_from=1&version_to=2"), nil, "alice")
+	if v1.Code != http.StatusOK || v2.Code != http.StatusOK {
+		t.Fatalf("versions 1 to 2: /api/v1 answered %d %s, /api/v2 %d %s, want 200 from both",
+			v1.Code, v1.Body.String(), v2.Code, v2.Body.String())
+	}
+	if v1.Body.String() != v2.Body.String() {
+		t.Fatalf("versions 1 to 2: /api/v2 answered %s, want /api/v1's body %s", v2.Body.String(), v1.Body.String())
+	}
+	changes := decodeBody[servedChanges](t, v2)
+	if changes.ArtifactID != artifactID || changes.From != 1 || changes.To != 2 {
+		t.Fatalf("the /api/v2 answer names artifact %q versions %d to %d, want %q versions 1 to 2",
+			changes.ArtifactID, changes.From, changes.To, artifactID)
+	}
+	requireChanges(t, changes, []servedSection{
+		{Heading: "Goal", Occurrence: 0, Change: "changed"},
+		{Heading: "Rollout", Occurrence: 0, Change: "added"},
+		{Heading: "Risks", Occurrence: 0, Change: "removed"},
+	}, []servedBlockRef{})
+
+	for _, refused := range []struct {
+		path   string
+		status int
+		code   string
+	}{
+		{v2Path("from=1&to=2"), http.StatusBadRequest, "QUERY_KEY_UNKNOWN"},
+		{v2Path("version_from=1&version_to=2&from=1"), http.StatusBadRequest, "QUERY_KEY_UNKNOWN"},
+		{v2Path("version_from=2&version_to=2"), http.StatusBadRequest, "INVALID_QUERY"},
+		{v2Path("version_from=2&version_to=1"), http.StatusBadRequest, "INVALID_QUERY"},
+		{v2Path("version_from=0&version_to=2"), http.StatusBadRequest, "INVALID_QUERY"},
+		{v2Path("version_from=one&version_to=2"), http.StatusBadRequest, "INVALID_QUERY"},
+		{v2Path("version_to=2"), http.StatusBadRequest, "INVALID_QUERY"},
+		{v2Path("version_from=1&version_to=3"), http.StatusNotFound, "NOT_FOUND"},
+		{"/api/v2/artifacts/00000000-0000-0000-0000-00000000c0de/changes?version_from=1&version_to=2", http.StatusNotFound, "ARTIFACT_NOT_FOUND"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, refused.path, nil, "alice")
+		if refusal := decodeBody[refusedAnswer](t, response); response.Code != refused.status || refusal.Code != refused.code || refusal.Error == "" {
+			t.Errorf("GET %s: status=%d body=%s, want %d %s with a message", refused.path, response.Code, response.Body.String(), refused.status, refused.code)
+		}
+	}
+}

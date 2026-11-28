@@ -65,6 +65,17 @@ Each item below names a variable, then its purpose.
   The auth service answers with Dispatch's grant for the account its `BROKER_NATS_SERVICES` entry lists, and that user expires with the token, so the connection moves to a later token ten minutes before the one it presented lapses.
   Either set beside any other NATS credential variable refuses startup naming both.
 
+- `DISPATCH_API_V1_END`
+
+  The instant `/api/v1` ends, an RFC 3339 time with its offset, such as `2027-01-01T00:00:00Z`, which the `gcp:Dispatch` component's `apiV1End` input sets (`packages/envoy/infra/README.md`).
+  Unset or empty, `/api/v1` has no end; a value that is not an RFC 3339 time refuses startup.
+  While the instant is ahead, every `/api/v1` answer carries a `Sunset` header (RFC 8594) naming it, beside the `Deprecation` and `Link` headers every `/api/v1` answer carries (Routes, below).
+  Once it has passed, a check in front of every route answers every path under `/api/v1`, an unknown path and a test hook's included, `410 {"code":"API_V1_ENDED","error":"/api/v1 ended at <end>; GET /api/v2 lists every route","hint":"GET /api/v2"}` with `Link: </api/v2>; rel="successor-version"`.
+  The check reads the clock on each request, so the end takes effect at that instant on every process, with no restart.
+  Set it only once no client a deployment runs still calls `/api/v1`:
+  at the first `legion-envoy` release that carries pull request #4274, the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the Legion daemon and the secrets broker all still do, and each but the web app names itself in its `User-Agent`, which the access log records (Access log, below).
+  The web app sets no `User-Agent` of its own, so its requests carry its browser's and the access log does not name it.
+
 - `DISPATCH_TEST_HOOKS`
 
   Set to `1` to mount test-only routes: `POST /api/v1/live/_test/disconnect` closes every open live socket with 1012 (restart), and `POST /api/v1/live/_test/rotate` closes every one with 4001 (`max age`);
@@ -74,6 +85,7 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/{id}/_test/newer-content` appends an element no build knows, so the document holds newer content;
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
+  Each hook answers at its `/api/v1` path and at `/api/v2/_test/` followed by that path without `/api/v1` and without its `/_test` segment (`POST /api/v2/_test/live/disconnect`, `POST /api/v2/_test/artifacts/{id}/outside-schema`), mounted only with this flag, and the `/api/v1` path ends with `/api/v1` (`DISPATCH_API_V1_END`, above).
   Leave unset in every real deployment.
 
 - `DISPATCH_DEV_SIGNIN`
@@ -199,7 +211,7 @@ A request whose `Host` names a former address's host name, at any port (`weborig
 
 - `GET /auth/start` and `GET /auth/callback` answer the `404` that a path no route serves answers.
 
-- Every unsafe request that carries a session cookie or an Identity-Aware Proxy assertion and no `Authorization` header answers `403` "invalid request origin", whatever its `Origin` and `Sec-Fetch-Site` say.
+- Every unsafe request that carries a session cookie or an Identity-Aware Proxy assertion and no `Authorization` header answers `403 ORIGIN_REFUSED` ("invalid request origin"), whatever its `Origin` and `Sec-Fetch-Site` say.
 
 - A document socket (`GET /ws/doc/{room}`) opened with a session cookie or an Identity-Aware Proxy assertion answers the same `403`, whatever `Authorization` header it carries, because the socket carries the person's edits on that credential alone (`opensDocumentSocket`).
 
@@ -329,10 +341,10 @@ Each such token is made from a file on the machine that holds it, a machine logi
 So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses each of those tokens at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that does not hold `person` (one that holds no scope, or a Dispatch sign-in's holding `p0` alone), and `403 READ_ONLY_TOKEN` for a read-only token (below).
 The one broker-issued token that approves is an approve-only token (below), which no machine holds.
-The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
-a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
+The answer to an approval request (`POST /api/v1/asks/{id}/answer`, and `PUT /api/v2/asks/{id}/state` with `answered`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
+a token acting for its person passes the gate and is refused inside the answer's transaction (`recordAnswer`, which both routes run), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
 The person makes those calls from their browser session, with a personal token they gave `approve`, or from an agent session on a box where they signed in, through the secrets broker's proxy with an approve-only token (below), which no file on the box holds.
-A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`, and `PUT /api/v2/issues/{key}/decisions/{block_id}/state` with `kept`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 The OAuth scope `p0` opens no route: it lets a write make work P0, and the write checks it itself.
 A priority of `0` on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs `p0` when the write makes the issue's own priority `0`, from none or from another value.
@@ -361,8 +373,8 @@ Every GET route's declaration states one read class (`routeDecl.Read`, `internal
 `register` refuses to mount a table with a GET row that has no class.
 Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`).
 A read-only token that carries a cut reads at that cut (Reads at a past time, below).
-A read that answers `as_of` answers it as of its cut, and `GET /api/v1/whoami` names the cut.
-Every other read, and `GET /ws/live`, answer it `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) instead, naming the cut, rather than answer it with the present.
+A `/api/v1` read that answers `as_of` answers it as of its cut, and `GET /api/v1/whoami` and its `/api/v2` successor `GET /api/v2/me` name the cut.
+Every other read, each `/api/v2` read but `GET /api/v2/me` among them, and `GET /ws/live` answer it `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) instead, naming the cut, rather than answer it with the present: no `/api/v2` route answers `as_of`.
 Both refusals come before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the record of the token's use: a broker token's spent DPoP proof, which the token's verification records before the refusal, or a personal token's last use.
 `GET /api/v1/issues/{key}/results` is a read: a read-only token's read of it asks GitHub exactly what a writer's read made at the same moment asks, answers what that read answers on the rows stored then, and stores no pull request head, no branch commit and no event.
 It keeps no answer after its request: it reads the writer's claims and settles of a commit's pull requests, the unseen holds and the default-branch cache without writing any of them, and each of its reads of the stored heads runs the writer's own statement over the stored rows with that request's own answers laid on.
@@ -411,15 +423,32 @@ The token holds the OAuth scope `results` alone and the project scope `results`,
 That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person, and the access log names the run's session as the caller.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
 Dispatch serves it on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, where a CI job writes the result of a check of the spec files at its commit.
-Every other route of the table, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
+No `/api/v2` route states it: that route awaits its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`).
+Every other route of the table, every `/api/v2` route among them, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
 A service whose verifier does not set that switch, the Envoy listener among them, answers a results token `401`.
 
 An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
 It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
-Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
-Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes and everything else it does.
-The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
+Dispatch serves it on the routes its approve list names, the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`, which `approveList` in `approve_policy.go` reads): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Each route on the list is an `/api/v1` route.
+The token may call, on `/api/v2`, the route each of them has as its successor in the route table and no other, so the list is written once and the two versions cannot drift.
+A successor that takes several operations by the body's `state` takes the token for the states the list's entries name: `PUT /api/v2/credential-requests/{id}/state` for `approved` and `denied` and not `dismissed`, `PUT /api/v2/asks/{id}/state` for `answered` and not `resolved`, `retracted` or `declined`, and `PUT /api/v2/issues/{key}/decisions/{block_id}/state` for `kept`.
+Any other state such a route declares is `403 APPROVE_ONLY_TOKEN` once the decoder has read the body within the route's bound: after the route's scope, login, project and session checks, and before the authority gate's rules, the keyed layer and the handler (`gateApproveOnlyStates`).
+A state the route does not declare is the decoder's `400 STATE_INVALID` for every caller, the token included.
+The `/api/v2` document lists the `403` on every operation the token may not call whole but those of the nine delivery and Legion rows of the INFRA-979 tree and of the test hooks, which list no refusal codes.
+The list is compiled against the route table once, as the table is built (`applyApprovePolicy`), and the table's rows carry what it admits: the checks and the refusal's text read those rows and derive nothing.
+A table the list does not map onto is refused when it is built, so Dispatch does not start: an entry that names a route the table does not mount or names a route twice, a successor that is missing, deleted or not mounted, a state the successor does not declare or a state for a successor that takes none, a state for a successor the decoder does not read, where no state check holds the token, and no state for a successor that takes several operations by state.
+Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes and everything else it does, and the message names both versions' routes.
+The answer route serves every kind of ask, so `recordAnswer`, which both versions' answers call, refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written (`approveOnlyAnswerRefusal`): a question's answer, its free text among it, is no approval.
+The same refusal comes first for a keyed answer: a request that carries an `Idempotency-Key` has the ask's kind read alone, after the route's id is resolved and, on `/api/v2`, after the body is read within its bound and its state is checked, and before the keyed layer looks the key up, claims it or replays what it holds (`gateApproveOnlyAskAnswer`).
+So the token is never handed an answer that another request of its person stored under that key, a saved answer included, and an ask it may not answer claims no key.
+An id that names no ask gets the route's own `404`: `404 ASK_NOT_FOUND` on `/api/v2`, and `404 NOT_FOUND` on `/api/v1`.
+A kind that Dispatch cannot read is a server error, and the request does not go through: `500 INTERNAL` when the read fails, and `503 DATABASE_UNAVAILABLE` when Dispatch has no database.
+A request with no key does no keyed lookup, so it keeps the refusals the engine gave it.
+On `/api/v2`, `PUT /api/v2/asks/{id}/state` holds a body that repeats the answer the person gave, which is a genuine no-op that answers `200` and writes nothing for the person's own credential, to the same `403`.
+On `/api/v1`, an answer that names no `expected_answer_at` to an answered ask is never a no-op: the engine's existing-answer conflict (`409 ASK_CLOSED`) comes before the kind is read.
+Both refuse the write, but not the same way.
 A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
 
 A job's token is the token the broker mints from a job entry: `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod, `BROKER_EXCHANGE_JOB_WORKFLOWS` for a GitHub Actions workflow, and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine.
@@ -435,6 +464,7 @@ It holds no OAuth scope, so every route whose `scopes` name `person` or `approve
 With `DISPATCH_LEGION_STATUS_SCOPE` on, a job's token, `named` or `public`, holds neither `person` nor `legion-status`, so Dispatch refuses it a Legion issue's status write, the removal of its `legion` label and the move after which it is no longer a Legion issue, with `403 LEGION_STATUS_SCOPE_REQUIRED`, as it refuses every credential that holds neither (below).
 The sign-in check below lets it write, and Dispatch records each write under the token's session, for its service, and under no person.
 `GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, `project` its one project for a `named` token and null for a `public` one, and `project_scope` `named` or `public`, which tells it from a machine's token, whose `project_scope` is `person` and whose every write the sign-in check refuses.
+`GET /api/v2/me` answers the same facts in its one shape, with `person` null where whoami answers `owner` null.
 The access log's `credential` names it `broker-token:service:<identity>` (below).
 The Envoy listener and the NATS auth service take both shapes too, through the same verifier (`internal/ciphertoken`).
 
@@ -975,7 +1005,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
-  An unsafe request that carries an assertion is held to the origin of the address its `Host` names as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  An unsafe request that carries an assertion is held to the origin of the address its `Host` names as one with a session cookie is (`enforceCookieOrigin`, `403 ORIGIN_REFUSED`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
 
 - Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
@@ -4963,11 +4993,15 @@ The delete of a comment or an issue message whose text a run gave its model ends
 
 ## Keyed writes
 
-Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).
+Every `POST` and `PATCH` route, and on `/api/v2` every `PUT` and `DELETE` route too, takes an optional `Idempotency-Key` request header naming the intent behind the write, the same on every retry of it and new for every new one (the IETF `Idempotency-Key` draft; Google AIP-155).
 The dashboard mints one per press and the `dispatch` CLI one per command's write, and both retry under it by one rule (`retriesUnderKey` in `@legion/contracts`):
 a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_IN_FLIGHT`.
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
-`PUT` and `DELETE` take no key, being idempotent already.
+On `/api/v1` a `PUT` and a `DELETE` take no key, being idempotent already, so no `/api/v1` answer changes;
+on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the nine routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`, `/api/v2/projects/{key}/legion/…`), which keep their `/api/v1` shape, and the test hooks keep `/api/v1`'s rule: the `PUT` of `/api/v2/settings/delivery`, the `PUT` and `DELETE` of `/api/v2/projects/{key}/legion/daemon` and the `PUT` and `DELETE` of `/api/v2/_test/artifacts/{id}/live-write-pauses/{point}` take no key.
+A `/api/v2` `PUT` whose whole body equals the object's present state and fields, sent by the caller the object records as having set them (anyone, for an object that records no setter: a follower, an architecture source; for a credential request, a caller the broker would let decide it, `record.MayDecide`), answers `200` with the object and writes nothing (`putChangesNothing`), and it is held first to every scope and authority the write it stands in for needs, so a caller the write would not let write is refused as the write refuses it;
+every `/api/v2` `PUT` answers `200` with the object, the follower `PUT` included, which `/api/v1` answers `204`.
+The fingerprint holds the route's pattern, so one key sent to a `/api/v1` route and then to its `/api/v2` route is two requests under one key, `422 KEY_REUSED`.
 A key is 1 to 128 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted, and belongs to the caller who sent it:
 a person's canonical login (from the dashboard or through a personal token), a CI job's run for its results token (`ci-run:<repository>#<check run>`, since the person its result entry names sent nothing), a service token's subject, or the shared agent token.
 Dispatch keeps each key's answer for 24 hours (`request_keys`, migration `0137`; the maintenance sweep deletes older rows, Background loops above).
@@ -5019,9 +5053,9 @@ Each item below names a status and code, then its meaning.
   its lease lapsed in flight, or it ended in a 5xx or a panic after committing (every transaction a keyed request commits that wrote a row marks the key's `committed_at` in that same transaction;
   a lock-only `SELECT … FOR UPDATE` marks nothing, and a COMMIT refused after the mark leaves none).
   The write landed and is not run again; there is no answer to replay, so the caller reads what it wrote.
-  Also a repeat of a keyed `POST /api/v1/me/agent-tokens` that minted, once that first request has finished, answer lost or not:
+  Also a repeat of a keyed `POST /api/v1/me/agent-tokens` or `POST /api/v2/me/agent-tokens` that minted, once that first request has finished, answer lost or not:
   the mint's answer carries the plaintext token, so it is never kept under the key, never replayed, and no second token is minted (a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again).
-  That is the one route whose answer is not stored.
+  Those are the routes whose answer is not stored.
 
 - `422 KEY_REUSED`
 
@@ -5045,7 +5079,7 @@ Each item below names a status and code, then its meaning.
 
 A 5xx, a 401, a 408 and a 429 are not stored:
 the key is released and the next attempt runs the request again, unless the request had already committed a write, which makes that next attempt `409 KEY_COMMITTED` at once.
-Four kinds of write keep their own recovery point beside the key, so a repeat of `POST /api/v1/agents/{session_id}/messages`, `POST /api/v1/broadcasts`, `POST /api/v1/issues/{key}/messages`, or a comment (`POST /api/v1/issues/{key}/comments`, `POST /api/v1/artifacts/{id}/comments`) answers what it made as it stands now, under the first's `201`, however the first request ended, and puts on its way whatever delivery a dead process left owed;
+Four kinds of write keep their own recovery point beside the key, so a repeat of `POST /api/v1/agents/{session_id}/messages`, `POST /api/v1/broadcasts`, `POST /api/v1/issues/{key}/messages`, or a comment (`POST /api/v1/issues/{key}/comments`, `POST /api/v1/artifacts/{id}/comments`), and of the same paths under `/api/v2`, answers what it made as it stands now, under the first's `201`, however the first request ended, and puts on its way whatever delivery a dead process left owed;
 a broadcast's repeat answers at once and sends what it owes behind the answer.
 A comment's or an issue message's replay reads every member fresh and keeps from the first answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx.
 Neither send route takes a body `idempotency_key` any more.
@@ -5067,7 +5101,7 @@ A send to one session answers once its own attempt has settled, which keeps a pe
 a broadcast answers once its messages are committed, with its deliveries behind the answer.
 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
-26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
+26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`, and the same paths under `/api/v2`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`, `POST /api/v2/issues/{key}/handoffs`), 1 MiB for every other.
 A body past it is answered its route's `413` by the layer itself, and the handler does not run.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
@@ -5195,7 +5229,9 @@ The dashboard's own pages and assets write none, so a browser's page loads do no
 `/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
 Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets (a cookie write at a former address included), the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
-A fourth answer, the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written, is given before any route runs and writes one line, with the route `refused`.
+A fourth is given before any route runs and writes one, so the log shows who still calls `/api/v1` once it has ended:
+the `410 API_V1_ENDED` every path under `/api/v1` gets once `DISPATCH_API_V1_END` has passed (Required configuration, above), its `route` the pattern of the route that would have answered it, or `unmatched` where none would, as for the `404` of an unknown path.
+Another answer, the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written, is given before any route runs and writes one line, with the route `refused`.
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
@@ -5206,13 +5242,13 @@ A read route of kind *answers* takes `as_of`, a past time, and answers what exis
 A fraction of a second follows a period: RFC 3339 does not allow a comma there, though Go's `time.Parse` reads one.
 The time in UTC is in the year 1 or later: PostgreSQL does not read an earlier year in a `timestamptz` literal.
 Dispatch rounds it down to the microsecond, the precision of PostgreSQL (`asof.ParseCut`).
-The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/read_classes.go`).
+The description of each GET row in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut (`asOfDescription`, `internal/dispatch/api/read_classes.go`), but that of a `/api/v2` row whose query the decoder reads, which says nothing of `as_of` (below).
 For a route of kind answers it also says what the route answers at a cut (`readEntry.AtACut`), and names each member that its answer can leave out.
 A route that is not a GET row says nothing of `as_of`, and refuses it (below).
 
-**Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`), which the route's own declaration states in its read class (`routeDecl.Read`, in the route's file).
+**Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`), which the route's own declaration states in its read class (`routeDecl.Read`, in the route's file), or, for a row of `/api/v2`, its entry of `v2ReadClasses`.
 `register` refuses to mount a GET row whose declaration leaves the kind unset, as it refuses a row with no read class.
-It also refuses `asOfCaller` on each row but `GET /api/v1/whoami`, a row of kind answers whose read class has no `AtACut`, and a row of another kind whose read class has one.
+It also refuses `asOfCaller` on each row but `GET /api/v1/whoami` and `GET /api/v2/me`, a row of kind answers whose read class has no `AtACut`, and a row of another kind whose read class has one.
 
 - *Answers* (`asOfAnswers`): the route answers `as_of` and the cut of a read-only token.
   These are the routes that the list "The members an answer can leave out at a cut" names, below.
@@ -5220,17 +5256,19 @@ It also refuses `asOfCaller` on each row but `GET /api/v1/whoami`, a row of kind
   A client sends a search at a cut to `GET /api/v1/search/results`, as it sends there each member that `GET /api/v1/search` does not declare (`everyBuildReadsSearch`, `packages/contracts/src/dispatch-api-search.ts`).
   `TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument` holds the committed OpenAPI document to these declarations.
 
-- *No history* (`asOfNoHistory`): each other GET row but whoami.
+- *No history* (`asOfNoHistory`): each other GET row but whoami and `GET /api/v2/me`, every `/api/v2` row among them: `/api/v2` stands at main's freeze, which answered no read at a past time (R2 of dispatch://INFRA-4071/spec).
   Such a route answers the present only, and refuses `as_of` with `400 AS_OF_NOT_SERVED` before its handler runs.
+  A `/api/v2` row whose query the decoder reads, each but the rows of the INFRA-979 tree, declares no `as_of`, and refuses it with `400 QUERY_KEY_UNKNOWN` instead, as it refuses every key it does not declare.
   A read of this kind (`readWritesNothing`) refuses a read-only token that carries a cut with `403 AS_OF_TOKEN_NOT_SERVED`.
   A GET that writes refuses each read-only token with `403 READ_ONLY_TOKEN`, a token that carries a cut too.
   The reference graph (`GET /api/v1/references`, `GET /api/v1/issues/{key}/references`), an issue's coverage, the live sessions (`GET /api/v1/agents`), the credential requests, the read marks (`GET /api/v1/me/replies`) and the search coverage are of this kind, because no record keeps their past.
 
-- *Caller* (`asOfCaller`): `GET /api/v1/whoami` alone.
-  It describes the caller now, and refuses `as_of` with `400 AS_OF_NOT_SERVED`, except from a read-only token that carries a cut, whose `as_of` Dispatch does not read.
-  It answers a read-only token that carries a cut, and its `cut` member names that cut.
+- *Caller* (`asOfCaller`): `GET /api/v1/whoami` and its `/api/v2` successor `GET /api/v2/me`.
+  Each describes the caller now.
+  Whoami refuses `as_of` with `400 AS_OF_NOT_SERVED`, except from a read-only token that carries a cut, whose `as_of` Dispatch does not read; `GET /api/v2/me` refuses it with `400 QUERY_KEY_UNKNOWN` from every caller.
+  Each answers a read-only token that carries a cut, and its `cut` member names that cut.
 
-A route of the route table that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too.
+A route of the route table that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too, or with `400 QUERY_KEY_UNKNOWN` where the decoder reads its query.
 `GET /ws/live` and `/ws/doc/{room}` are not rows of the table, and `asOfGate` does not read their `as_of`.
 A token that may read a route may send `as_of` to it, a read-only token with no cut included.
 
@@ -5458,14 +5496,27 @@ Random vectors spread the HNSW graph unlike production's embeddings, so that is 
 
 ## Routes
 
-`GET /api/v1` (no credential) is the authoritative list:
-every mounted `/api/v1` route with its `method`, `path`, `auth` (`public`, `any`, `human`, or `bearer`), and `description`, sorted by path then method.
-`envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
-the docs site's HTTP API reference is generated from it.
-`envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
-`--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
-The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
-Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it), holding one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`).
+Dispatch serves two versions of its API from one route table (`internal/dispatch/api/routes_table.go`, `routes()`), and each version's index is the authoritative list of what that version serves, with no credential.
+`/api/v2` is the version to call, served from the first `legion-envoy` release that carries pull request #4274;
+`/api/v1` is deprecated, keeps the answers it had, and ends at the instant `DISPATCH_API_V1_END` names (Required configuration, above).
+
+`GET /api/v2` answers the list envelope `{docs, items, total, limit, offset}`, every route on one page unless the request names a `limit`:
+each mounted `/api/v2` route with its `method`, `path`, `auth` (`public`, `any`, or `bearer`), `scopes` (`[]` for none) and `description`, and what a client reads to call it — the `resource` it serves, that resource's `kind` and `key`, the `time_fields` a read windows on, the `position` field a log reads `after` and `before` in, the `list` bounds of its `limit`, and whether it reads `cross_project` — sorted by path then method.
+`GET /api/v1` answers `{docs, routes}`, every mounted `/api/v1` route with its `method`, `path`, `auth`, `scopes` (left out for none) and `description`, sorted by path then method.
+`envoy-dispatch routes` prints `GET /api/v1`'s body and `envoy-dispatch routes --version 2` prints `GET /api/v2`'s, from the table alone, with no database or listener and never a test hook;
+the docs site's HTTP API reference is generated from both, one page per version, the `/api/v1` page marked deprecated.
+`envoy-dispatch openapi` writes the OpenAPI 3.1 document of each version of the API where the repository commits it, each with that version's test hooks in and each hook's operation marked `x-test-hook`, from the table and the Go types its rows declare and nothing else:
+`packages/contracts/schemas/dispatch-openapi.json` for `/api/v1`, from the Shape each route's declaration states (`routeDecl.Shape`, in the Go types of `internal/dispatch/api/routes_shapes.go`),
+and `packages/contracts/schemas/dispatch-openapi-v2.json` for `/api/v2`, from each `/api/v2` row's declared query, body and answer types.
+`--check` writes nothing: it compares both committed documents with a fresh render, printing a unified diff for each that differs and exiting 1.
+`--version 1` or `--version 2` takes that version's document alone, and `--out <path>`, which needs `--version`, writes it to that file instead (`-` for standard output), or with `--check` compares that file.
+The `/api/v2` document lists, for the operation of each `/api/v2` row, the refusal codes it can answer with their statuses (`x-refusal-codes`), but those that no layer of the mount writes (the router guards' `ORIGIN_REFUSED`, `HOST_MISMATCH` and `FORWARDED_FOR_INVALID`, the slow-write test hook's `SLOW_WRITE_CUT_OFF`, and `DATABASE_UNAVAILABLE`, which only a server built with no store answers), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`; the operations of the test hooks (`/api/v2/_test/…`) list none.
+The nine delivery and Legion rows of the INFRA-979 tree are the exception (`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon`): they keep their `/api/v1` shape, so their operations list no refusal codes, a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
+The test hooks keep their `/api/v1` rules the same way: a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
+The clients' TypeScript types are rendered from the committed documents (`@legion/contracts` from the `/api/v1` one, `@legion/contracts/dispatch-api-v2` from the `/api/v2` one), so a route added to the table reaches them with no type hand-written for it.
+Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it): each `/api/v1` route but the nine of the INFRA-979 tree holds one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`), the `/api/v2` route that answers it among them (`Successor`), and each `/api/v2` route but a test hook's holds one `declareRow(func(s *server) routeRow { ... })`, whose named columns state every fact of it (`routes_versions.go`).
+A row of the INFRA-979 tree serves both versions from the one `declareRow` of its `route_api_v2_<path>+<method>.go` file, and a test hook's `/api/v2/_test` route comes from its `/api/v1` declaration, which names no `Successor`: `testHookRoutes` makes that route the successor of the hook's `/api/v1` path.
+A `/api/v1` route a merge on main added after `/api/v2`'s freeze names no `Successor` until its `/api/v2` route lands, and `internal/dispatch/api/testdata/v1-awaiting-v2-routes.txt` lists each such route, exactly (`TestAwaitingV2RoutesMatchTheAwaitingList`): today `GET` and `POST /api/v1/projects/{key}/results` (#4184) and `GET /api/v1/artifacts/{id}/spec-form` (#4179).
 A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
 
 ```sh
@@ -5476,9 +5527,53 @@ go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or me
 It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent, or `jj new` on it where it holds work) and what they cost, and refuses a tree that holds changes, saying to commit them or stash them with `git stash -u` under git, or to describe them and run `jj new` under jj.
 Each command it names carries the tree it adopts (`git -C <tree>`, `jj -R <tree>`).
 It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go`, `routes_shapes.go` and `read_classes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
-The route list further below (each path with its method, identity and purpose) is a summary; `GET /api/v1` lists every `/api/v1` route in full.
-An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
-/v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
+The route list further below (each path with its method, identity and purpose) is a summary; `GET /api/v1` lists every `/api/v1` route in full, and `GET /api/v2` every `/api/v2` route.
+
+Every `/api/v2` route but the INFRA-979 tree's and the test hooks' keeps one shape.
+Each item below names a rule, then what a caller meets.
+
+- Lists
+
+  Every list answers `{items, total, limit, offset}`, with the route's own `limit` bounds (50 and 200 where it had none): a `limit` outside them is `400 INVALID_LIMIT` naming the bound, and an `offset` that is no integer of 0 or more `400 INVALID_OFFSET`.
+  The global event log (`GET /api/v2/events`) and the caller's dismissed threads (`GET /api/v2/me/threads?state=dismissed`) answer `total: null`, since counting the global log costs about ten times its page and counting the dismissed threads counts every thread the caller has ever dismissed; every other list, every other log among them, answers an exact `total`.
+  A log reads `after` and `before` in its one position field (`seq` for an issue's and a document's events, `id` for the global log, `source_seq` for the references, `<time>,<id>` for the caller's dismissed threads and for a comment's or a message's corrections); an `after` past the log's last position, or a value not written as that field is, is `400 POSITION_INVALID` naming the parameter and the field, and a `before` past the end answers the newest page.
+
+- Refusals
+
+  Every refusal is `{code, error}`, the code a constant of one list (`internal/dispatch/api/apicode`), and one condition answers one code on every route: a loop through parents and one through dependencies are both `409 ISSUE_CYCLE`.
+  `/api/v1` keeps its own codes, each rendered from the same constant under the name and status `/api/v1` gave it.
+
+- The query and the body
+
+  One decoder reads every route's query and body from the types its row declares.
+  A query key the route does not declare is `400 QUERY_KEY_UNKNOWN` with the `key` and the keys the route `declared`, before any lookup or write; a body member it does not declare is ignored, but for a member a `replace` operation does not take, which `POST /api/v2/artifacts/{id}/edits` refuses `400 REPLACE_FIELDS`.
+
+- Writes
+
+  Every `POST`, `PATCH`, `PUT` and `DELETE` takes an `Idempotency-Key`, and a `PUT` that changes nothing answers `200` and writes nothing (Keyed writes, above).
+
+- Objects a path names
+
+  A path that names an object Dispatch stores, which does not exist, answers `404` with that object's code (`ISSUE_NOT_FOUND`, `PROJECT_NOT_FOUND`, `ASK_NOT_FOUND`, `VERSION_NOT_FOUND`, `BLOCK_NOT_FOUND`, …);
+  a `{session_id}` and a repository's app installation keep `/api/v1`'s answer, since Dispatch cannot tell a session that never existed from one that has gone, and GitHub answers alike for a missing repository and one the App cannot see;
+  and the `PUT` of a plan (`/api/v2/issues/{key}/plans/{id}`), of an architecture source (`/api/v2/projects/{key}/architecture-sources/{owner}/{repo}`) and of a step run that names the run's identity (`/api/v2/issues/{key}/steps/{id}`, its `/rating` and its `/experiment`) makes the object its path names.
+
+- An unknown path
+
+  An unknown path under `/api/v2` is a JSON 404 `{"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`.
+
+A `/api/v1` route's answer, and an unknown `/api/v1` path's, carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
+and a `Link`: a route's answer carries `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`), and an unknown path's answer, the cookie-origin guard's refusal and the `410` carry `Link: </api/v2>; rel="successor-version"`, which the router sets before any route runs (`endAPIV1`).
+Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
+an answer that holds none, a request refused before its handler resolves one, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`, and a keyed write's replay of the answer its key kept links what the first answer linked.
+`GET /api/v1/settings/architecture-sources`, every project's sources, carries one `Link` value per project its answer holds, `</api/v2/projects/{key}/architecture-sources>`, and `</api/v2/projects>` when it holds none.
+A route that awaits its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`) links `</api/v2>` on every answer, a refusal included, beside the same `Deprecation`.
+While `DISPATCH_API_V1_END` is ahead each `/api/v1` answer carries `Sunset` too, and once it has passed every `/api/v1` path answers `410 API_V1_ENDED`.
+No `/api/v2` answer carries any of the three.
+With `DISPATCH_DEV_SIGNIN=1` a request whose `Host` is not the dashboard origin is refused `421 HOST_MISMATCH` (`requireHost`) before the router sets any of the three or answers the `410`, so that refusal, on a `/api/v1` path too, carries none of them.
+On any server, the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written (`resolveClientAddress`) is answered before the router sets any of the three or answers the `410` too, so it carries none of them either.
+An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz`, outside `/api/v2`, is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
+/v1/issues","hint":"GET /api/v1 lists every route"}`, and no unknown path under those roots, `/api/v2`'s included, is answered the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
@@ -5487,8 +5582,14 @@ The dashboard's pages (`index.html` and the shell served for a browser route) ca
 
 In this list, header identity means only the test/local harness mode described above.
 Production Dispatch uses cookie identity through the sign-in pool.
+The `/api/v1` routes in it are as `/api/v1` serves them, which the web app, the `dispatch` command, the plugins, the daemon and the broker still call (the web app sets no `User-Agent` of its own, so the access log shows its browser's and does not name it):
+`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it, or `GET /api/v2` for a route awaiting its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`), for an unknown path, for the cookie-origin guard's refusal, for the `410` after the end and for a refusal sent before the handler resolves a value the successor's path needs.
 
 Each item below names a path with its method and identity, then its purpose.
+
+- `/api/v2` (GET; none)
+
+  List every `/api/v2` route with its auth, scopes and purpose and what a client reads to call it, in the list envelope.
 
 - `/api/v1` (GET; none)
 
@@ -5508,7 +5609,8 @@ Each item below names a path with its method and identity, then its purpose.
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
   The issuer sends the browser back to the callback of the address the sign-in started at: `DISPATCH_SERVER_URL`'s, or a served address's when the request's `Host` names that address (`DISPATCH_SERVED_ORIGINS`).
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
-  `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
+  `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read;
+  `500 SIGNIN_START_FAILED` when no state or nonce can be drawn or the state cookie cannot be signed.
   At a former address's host, at any port, it answers the `404` a path no route serves answers, since a sign-in that started there would end at another host.
 
 - `/auth/callback` (GET; sign-in state)
@@ -5520,15 +5622,20 @@ Each item below names a path with its method and identity, then its purpose.
   Any process holding a key of the set completes a sign-in another process started.
   The code exchange names the callback URL of the address the request came to, the one `/auth/start` sent the issuer from that address.
   At a former address's host, at any port, it answers the `404` a path no route serves answers.
-  `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
-  `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
+  `400 AUTH_STATE_INVALID` ("invalid or expired state") when the state cookie is missing, does not verify, has lapsed or names another state;
+  `400 AUTH_PARAMS_INVALID` ("sign-in callback <error>: <description>", or "sign-in callback: <error>" when the issuer sent no description, "missing code or state in callback", or "the callback's code is longer than 2048 bytes"), before any request to the issuer, when the callback carries the issuer's `error` (such as `access_denied`), no code or state, or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
-  `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
+  `502 SIGNIN_FAILED` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
+  `500 SIGNIN_RECORD_FAILED` or `500 SESSION_FAILED` when the person or the session generation cannot be recorded;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
 - `/auth/logout` (POST; cookie or trusted header)
 
   End the person's Dispatch sessions, forget their refresh token, and clear the session cookie.
+  The caller lookup (`identity.WriteError`) answers `401 NO_IDENTITY` for a caller who is not signed in, `503 SIGNIN_UNAVAILABLE` when confirming the caller needs the sign-in issuer and it cannot be reached, and `500 IDENTITY_ERROR` when the caller cannot be looked up;
+  `500 SESSION_FAILED` when the sessions cannot be ended.
+  Like every unsafe request a browser credential carries, from another origin it is `403 ORIGIN_REFUSED` (`enforceCookieOrigin`).
+  Every refusal of the `/auth` routes, and of the router's own guard and dashboard files (`STATIC_NOT_FOUND`, `DASHBOARD_NOT_BUILT`, `STATIC_READ_FAILED`, `ASSET_STORE_UNAVAILABLE`, `ASSET_STORE_BUSY`), is `{code, error}`, but the 403 HTML page `/auth/callback` answers a person the sign-in rule does not admit (`writeSignInRefusedPage`), which carries no code, and the plain-text errors net/http writes as it serves a dashboard file (`http.ServeContent`, `http.ServeFile`): a `416` for a range the file does not hold, a `412` for a precondition the file fails, and a `404`, `403` or `500` for a file gone or unreadable after its stat.
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
@@ -5538,7 +5645,7 @@ Each item below names a path with its method and identity, then its purpose.
   A server with neither list answers the three keys above alone, as before.
   The page reads this list when it starts (`web/src/api/origins.ts`): a link at any address in it is a reference, and the page opens it at the page's own origin.
   Where the answer has no `origins`, the page reads links at its own origin alone.
-  The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
+  The sign-in check comes first, and the head is never read when it refuses: the caller lookup (`identity.WriteError`) answers `401 NO_IDENTITY` for a caller who is not signed in, `503 SIGNIN_UNAVAILABLE` when confirming the caller needs the sign-in issuer and it cannot be reached, and `500 IDENTITY_ERROR` when the caller cannot be looked up.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
@@ -5948,6 +6055,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each write of a run that stores something new makes it larger, and a write sent again leaves it.
   A project that names no daemon is not refused: its issue answers `configured` `false`, `state` `null` and `read` `null`, whatever rows an earlier daemon left, and its `runs_revision`.
   The one refusal is `404 NOT_FOUND`, for a key that names no issue, as `GET /api/v1/issues/{key}` answers it.
+  Its `/api/v2` successor is `GET /api/v2/issues/{key}?include=legion`, whose `legion` member is this body, `runs_revision` the one the `legion_issue` view carries; an issue that does not exist is that read's `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
@@ -6163,6 +6271,7 @@ Each item below names a path with its method and identity, then its purpose.
   It waits at most 5 seconds and answers `200` with the create's `advice.suggestions` shape (`outcome`, `search`, `search_note`, `search_query`, `related`, `missing`), a blank title and text included (`not_made`).
   The two forms do not answer alike: POST is the check an agent runs to ask a question, so it also answers `other_projects`, at most two answered question asks of other projects, and GET answers none of them, because its caller is the dashboard's new-issue dialog ([Search](#search)).
   `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for an unknown one.
+  Both forms' `/api/v2` successor is a `POST`, `POST /api/v2/projects/{key}/related-searches`, which takes the fields in its JSON body, so the `Link` a `GET` answer carries names a route that a `GET` does not reach.
 
 - `/api/v1/related-checks?project=&source_kind=&from=&to=` (GET; cookie, trusted header, or bearer)
 
@@ -6625,16 +6734,19 @@ Each item below names a path with its method and identity, then its purpose.
   `blocks` (`[{id, from}]`, each block id the editor carried and where its span starts in `body`, in UTF-16 code units, in body order) with `base_revision` (the revision `.../blocks` answered) keeps each id on the new block its span starts in;
   with a `base_revision` that is no longer the comment's, or without `blocks`, the new blocks take ids by their text.
   `400 INVALID_COMMENT` naming the field for `blocks` without `base_revision`, and, at the current revision, for an id that is not a current block of the comment, an id twice, or a `from` outside `body` or before the one ahead of it.
+  Its `/api/v2` successor is `PATCH /api/v2/comments/{id}`, which holds the edit to the same author rule (`403 NOT_AUTHOR`) and answers a missing comment `404 COMMENT_NOT_FOUND`.
 
 - `/api/v1/comments/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete a comment, its author alone (`403 NOT_AUTHOR`): the comment keeps its place, and no read of it gives its body again.
   Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its `/api/v2` successor is `DELETE /api/v2/comments/{id}`, the same delete (`deleteCommentAs`), which answers a missing comment `404 COMMENT_NOT_FOUND`.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this comment replaced, newest first: a delete writes an entry of its own, and a deleted comment's entries carry no body.
   Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its `/api/v2` successor is `GET /api/v2/comments/{id}/corrections`, a log by `edited_at,id` (each bound `<RFC3339 time>,<id>`, the id breaking a tie between two corrections written at one time): `{deleted_at, deleted_by, items, total, limit, offset}`, each item `{id, body, edited_by, edited_at}`; a position that is no time and id, and an `after` above the newest item, are `400 POSITION_INVALID`, and a missing comment `404 COMMENT_NOT_FOUND`.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -6702,16 +6814,19 @@ Each item below names a path with its method and identity, then its purpose.
 
   Edit an issue message's body, its author alone (`403 NOT_AUTHOR`).
   Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its `/api/v2` successor is `PATCH /api/v2/messages/{id}`, the same edit (`editMessageAs`), which answers a missing message `404 MESSAGE_NOT_FOUND`.
 
 - `/api/v1/messages/{id}` (DELETE; cookie, trusted header, or bearer)
 
   Delete an issue message, its author alone (`403 NOT_AUTHOR`): the message keeps its place, and no read of it gives its body again.
   Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its `/api/v2` successor is `DELETE /api/v2/messages/{id}`, the same delete (`deleteMessageAs`), which answers a missing message `404 MESSAGE_NOT_FOUND`.
 
 - `/api/v1/messages/{id}/history?before=&session=` (GET; cookie, trusted header, or bearer)
 
   The bodies an edit or a delete of this message replaced, newest first: a delete writes an entry of its own, and a deleted message's entries carry no body.
   Its rules are its description in its route file under `internal/dispatch/api` (`route_<path>+<method>.go`), which `GET /api/v1` serves and the docs site's API reference prints.
+  Its `/api/v2` successor is `GET /api/v2/messages/{id}/corrections`, the comment's log read under this route's rule (`session=`), a missing message `404 MESSAGE_NOT_FOUND`.
 
 - `/api/v1/deploys` (POST; cookie, trusted header, or bearer)
 
@@ -7429,8 +7544,7 @@ Each item below names a path with its method and identity, then its purpose.
       `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
       `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and names the `dispatch spec-form` command, which lists them, the first 500 at most.
       The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
-      A person's approval of a covered document gets the same refusal through three routes.
-      These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
+      A person's approval of a covered document gets the same refusal.
       That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
       A request for changes is never refused.
       When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, unread}`.
@@ -7634,7 +7748,7 @@ It connects as the nkey user `NATS_NKEY_SEED_FILE` (or `NATS_NKEY_SEED`) names, 
 
 ## Document edit operations
 
-`POST /api/v1/artifacts/{id}/edits` accepts an `ops` array.
+`POST /api/v1/artifacts/{id}/edits` and `POST /api/v2/artifacts/{id}/edits` accept an `ops` array, and both run the one edit.
 Quote targets resolve against the document's plain text rather than Markdown source:
 inline-code and link text match without their syntax, and a table-cell target is its cell text.
 A quote holding a table with a row shorter than its delimiter row, the header included, is matched as the text it is.
@@ -7645,7 +7759,7 @@ Each item below names an operation and its required fields, then its behavior.
 
   Replace one plain-text target.
   Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` takes `op`, `find`, `with` and `occurrence` alone, and one with no `with`, or carrying any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`), is `400 REPLACE_FIELDS` naming the operation and the member, with nothing written, where it was read as an empty `with` and deleted the target, or applied beside a member it never read.
-  The route reads the request body a second time for each operation's member names (`api.replaceFieldsRefusal`), since a decoded operation's `with` is empty both for no `with` and for `with: ""`, and a member the operation type does not declare decodes to nothing.
+  Each route reads the request body a second time for each operation's member names (`api.replaceFieldsRefusal`), since a decoded operation's `with` is empty both for no `with` and for `with: ""`, and a member the operation type does not declare decodes to nothing.
   `dispatch doc-edit` refuses both shapes before it sends anything, exit 2 naming `ops[<index>]` and the field.
 
 - `delete` (`find`)
@@ -7737,6 +7851,35 @@ Each item below names a status and code, then its meaning.
 - `400 INVALID_SESSION_ID`
 
   An agent artifact route's `session_id` is empty or holds `/`, `?`, `#`, whitespace, a control character or a character that ends a reference in text, so no reference could name what it owns; nothing is written.
+
+- `400 QUERY_KEY_UNKNOWN`
+
+  On `/api/v2` but the nine rows of the INFRA-979 tree and the test hooks (`/api/v2/_test/…`), and on the `/api/v1` path of a decoded row served in both versions (none today): the query names a key the route does not declare, a misspelt filter among them.
+  The body is `{code, error, key, declared}`, `key` the key and `declared` every key the route declares, sorted, `session` among them; nothing is read or written.
+  Every other `/api/v1` route still ignores a key it does not read.
+
+- `400 INVALID_QUERY`, `400 INVALID_LIMIT`, `400 INVALID_OFFSET`
+
+  On `/api/v2` but the nine rows of the INFRA-979 tree and the test hooks, and on the `/api/v1` path of a decoded row served in both versions (none today), a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
+  a `limit` outside the route's bounds (`INVALID_LIMIT`, naming the bound), or an `offset` that is no integer of 0 or more (`INVALID_OFFSET`).
+  A delivery read of the INFRA-979 tree answers `400 INVALID_QUERY` at both versions only for a time its own handler cannot take: a `from`, `to` or `at` that is not RFC 3339, or a window that is empty or longer than 84 days.
+
+- `400 POSITION_INVALID`
+
+  `/api/v2` alone: a log's `after` past its last written position, or an `after` or `before` not written as the log's position field is, naming the parameter and the field.
+
+- `400 STATE_INVALID`, `400 INVALID_KIND`
+
+  On `/api/v2`, and on the `/api/v1` path of a decoded row served in both versions (none today), a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
+
+- `404 NO_ROUTE`
+
+  `/api/v2` alone: no route serves the method and path; the body's `hint` is `GET /api/v2 lists every route`.
+  `/api/v1` answers the same case `404 NOT_FOUND`, "no route for …".
+
+- `410 API_V1_ENDED`
+
+  `/api/v1` alone, every path under it, once the instant `DISPATCH_API_V1_END` names has passed (Required configuration, above); the body's `hint` is `GET /api/v2`.
 
 - `409 ID_AMBIGUOUS`
 

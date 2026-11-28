@@ -765,6 +765,7 @@ export function IssueHeader({
           <div className="min-w-0 max-w-full" data-testid="issue-labels-group">
             <IssueLabels
               disabled={isClosed}
+              externalLinks={issue.external_links ?? []}
               labels={issue.labels ?? []}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -27,10 +28,11 @@ const (
 	// and its default.
 	maxEventPage = 200
 	// maxEventReplay is the most events one page of the global event log holds: the relay's read
-	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) each page through the
-	// log at it, and it is that route's default. An events subscription's catch-up pages
-	// readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
-	// (replayThrough in live_events.go).
+	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) page through the log
+	// at it, GET /api/v2/events through a read of its own (listEventLogV2), and it is both routes'
+	// default and largest limit (parseEventLimit, and the List of route_api_v2_events+get.go). An
+	// events subscription's catch-up pages readEventsAfterID at maxLiveReplay instead, the bound its
+	// resume is replayed within (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 
@@ -101,7 +103,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	options, err := parseEventListOptions(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -111,7 +113,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !atCut {
 		lastSeq, createdAt, held, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
@@ -126,11 +128,11 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := eventPageAtTheCut(r.Context(), events); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// One pass over the page: the reader takes each payload's texts as the shaping registers
@@ -140,7 +142,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	reader.resolve()
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if atCut {
@@ -223,34 +225,34 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	after, err := parseNonNegativeInt(query.Get("after"), "after")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	limit, err := parseEventLimit(query.Get("limit"), maxEventReplay)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	through, err := s.sinceHorizon(asof.WithoutCut(r.Context()))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, atCut := asof.CutFrom(r.Context()); atCut {
 		newest, err := s.newestEventIDAtTheCut(r.Context())
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		through = min(through, newest)
 	}
 	events, err := s.readEventsAfterID(r.Context(), who, after, through, limit)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := eventPageAtTheCut(r.Context(), events); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, events)
@@ -260,7 +262,7 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	query := r.URL.Query()
 	hasBefore := query.Has("before")
 	if hasBefore && strings.TrimSpace(query.Get("before")) == "" {
-		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "before must be an integer from 0 to %d", maxIntegerColumn)
+		return eventListOptions{}, errorf(apicode.InvalidQuery, "before must be an integer from 0 to %d", maxIntegerColumn)
 	}
 	after, err := parseEventPosition(query.Get("after"), "after")
 	if err != nil {
@@ -287,7 +289,7 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 		return eventListOptions{}, err
 	}
 	if query.Has("after") && (hasBefore || descending) {
-		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "after cannot be combined with before or order=desc")
+		return eventListOptions{}, errorf(apicode.InvalidQuery, "after cannot be combined with before or order=desc")
 	}
 	return eventListOptions{
 		after:        after,
@@ -333,7 +335,7 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 	case owner.ArtifactID != nil:
 		predicate, ownerValue = "e.artifact_id = $1", *owner.ArtifactID
 	default:
-		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+		return nil, errorf(apicode.OwnerInvalid, "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
 		exclude, arguments := options.excludeTypesCondition(ownerValue, options.ids)
@@ -953,7 +955,7 @@ func parseNonNegativeInt(raw, field string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be a non-negative integer", field)
+		return 0, errorf(apicode.InvalidQuery, "%s must be a non-negative integer", field)
 	}
 	return value, nil
 }
@@ -966,7 +968,7 @@ func parseNonNegativeInt(raw, field string) (int64, error) {
 func parseEventPosition(raw, field string) (int64, error) {
 	value, err := parseNonNegativeInt(raw, field)
 	if err != nil || !fitsIntegerColumn(value) {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be an integer from 0 to %d", field, maxIntegerColumn)
+		return 0, errorf(apicode.InvalidQuery, "%s must be an integer from 0 to %d", field, maxIntegerColumn)
 	}
 	return value, nil
 }
@@ -978,7 +980,7 @@ func parseEventLimit(raw string, most int) (int, error) {
 	}
 	limit, err := strconv.Atoi(raw)
 	if err != nil || limit < 1 || limit > most {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be between 1 and %d", most)
+		return 0, errorf(apicode.InvalidQuery, "limit must be between 1 and %d", most)
 	}
 	return limit, nil
 }
@@ -990,7 +992,7 @@ func parseEventOrder(raw string) (bool, error) {
 	case "desc":
 		return true, nil
 	default:
-		return false, errorf(http.StatusBadRequest, "INVALID_QUERY", "order must be asc or desc")
+		return false, errorf(apicode.InvalidQuery, "order must be asc or desc")
 	}
 }
 
@@ -1000,13 +1002,13 @@ func parseEventIDs(raw string) ([]int64, error) {
 	}
 	parts := strings.Split(raw, ",")
 	if len(parts) > 50 {
-		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "ids must include at most 50 values")
+		return nil, errorf(apicode.InvalidQuery, "ids must include at most 50 values")
 	}
 	ids := make([]int64, len(parts))
 	for index, part := range parts {
 		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
 		if err != nil || id < 1 {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "ids must be positive integers")
+			return nil, errorf(apicode.InvalidQuery, "ids must be positive integers")
 		}
 		ids[index] = id
 	}
@@ -1024,17 +1026,17 @@ func parseEventExcludeTypes(raw string) ([]string, error) {
 	}
 	parts := strings.Split(raw, ",")
 	if len(parts) > 50 {
-		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must include at most 50 values")
+		return nil, errorf(apicode.InvalidQuery, "exclude_types must include at most 50 values")
 	}
 	kinds := make([]string, len(parts))
 	for index, part := range parts {
 		kind := strings.TrimSpace(part)
 		if kind == "" {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must not hold an empty value")
+			return nil, errorf(apicode.InvalidQuery, "exclude_types must not hold an empty value")
 		}
 		// contracts.DispatchEventTypes is sorted, which a binary search needs.
 		if _, known := slices.BinarySearch(contracts.DispatchEventTypes, kind); !known {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must be event types Dispatch writes: %q is not one", kind)
+			return nil, errorf(apicode.InvalidQuery, "exclude_types must be event types Dispatch writes: %q is not one", kind)
 		}
 		kinds[index] = kind
 	}

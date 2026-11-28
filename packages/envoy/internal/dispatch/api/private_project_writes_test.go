@@ -44,6 +44,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -209,7 +210,7 @@ func TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken(t *
 				return rig.send(t, token, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A remark."})
 			}
 		}
-		rig.refusedAsMissing(t, []string{private}, http.StatusForbidden, codeProjectScope, private, missingIssue,
+		rig.refusedAsMissing(t, []string{private}, http.StatusForbidden, apicode.ProjectScope.V1Name(), private, missingIssue,
 			comment(scopedToken, private), comment(scopedToken, missingIssue))
 		requireTaken(t, "the comment of the token that names the private project", comment(namingToken, private)(), http.StatusCreated)
 	})
@@ -431,10 +432,10 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 				t.Fatalf("%s of the missing key %s answered %v, want its 400 %s", site.name, missingIssue, err, site.code)
 			}
 			want := strings.ReplaceAll(missing.message, missingIssue, private)
-			if refused.status != http.StatusBadRequest || refused.code != site.code ||
-				refused.status != missing.status || refused.code != missing.code || refused.message != want {
+			if refused.code.Status() != http.StatusBadRequest || refused.code.V1Name() != site.code ||
+				refused.code != missing.code || refused.message != want {
 				t.Errorf("%s answers %d %s %q for the private key and %d %s %q for a missing key, want one 400 %s",
-					site.name, refused.status, refused.code, refused.message, missing.status, missing.code, missing.message, site.code)
+					site.name, refused.code.Status(), refused.code.V1Name(), refused.message, missing.code.Status(), missing.code.V1Name(), missing.message, site.code)
 			}
 			if err := answer(privateTestProject, private); err != nil {
 				t.Errorf("%s for a caller that names %s answered %v, want the key taken", site.name, privateTestProject, err)
@@ -483,7 +484,7 @@ func TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne(t *testing.
 			},
 		},
 		{
-			name: "refuseRetractionOfUncoveredCheck", code: codeProjectScope, status: http.StatusForbidden,
+			name: "refuseRetractionOfUncoveredCheck", code: apicode.ProjectScope.V1Name(), status: http.StatusForbidden,
 			check: func(tx pgx.Tx, caller string) error {
 				return refuseRetractionOfUncoveredCheck(ctx, tx, caller, parent)
 			},
@@ -511,7 +512,7 @@ func TestTheResultRoutesSecondChecksAnswerAPrivateCheckAsAMissingOne(t *testing.
 				t.Fatalf("%s took the private project's check k1, want the answer of a target that does not exist", site.name)
 			}
 			refused := httptest.NewRecorder()
-			rig.served.writeHandlerError(refused, err)
+			rig.served.writeHandlerError(refused, httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil), err)
 			if code, _ := refusalOf(t, refused); refused.Code != site.status || code != site.code {
 				t.Fatalf("%s of the private project's check k1: status=%d body=%s, want %d %s",
 					site.name, refused.Code, refused.Body.String(), site.status, site.code)
@@ -618,7 +619,7 @@ func TestAResultOnAPrivateProjectsCheckAnswersAsAMissingCheckToAnotherProjectsTo
 			}
 		}
 		for _, reason := range []string{"The run was against the wrong commit.", " "} {
-			rig.refusedAsMissing(t, []string{own, parent}, http.StatusForbidden, codeProjectScope, result, missingResult,
+			rig.refusedAsMissing(t, []string{own, parent}, http.StatusForbidden, apicode.ProjectScope.V1Name(), result, missingResult,
 				retract(scopedToken, result, reason), retract(scopedToken, missingResult, reason))
 		}
 		keyed := func(id, key, reason string) *httptest.ResponseRecorder {

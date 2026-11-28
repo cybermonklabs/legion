@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -10,7 +12,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List the sessions an ask's answer and replies reach.",
 	Handler:     (*server).listAskFollowers,
-	ID:          &idRoute{Kind: "ask", NotFound: "NOT_FOUND"},
+	Successor:   deletedFor(http.MethodGet, "/asks/{id}?include=thread"),
+	ID:          &idRoute{Kind: "ask", NotFound: apicode.NotFound},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: askFollowersRead{}},
 })

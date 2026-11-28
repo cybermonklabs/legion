@@ -249,6 +249,10 @@
       "types": "./test/subscribe-answer.ts",
       "bun": "./test/subscribe-answer.ts"
     },
+    "./test/upload-type-matrix": {
+      "types": "./test/upload-type-matrix.ts",
+      "bun": "./test/upload-type-matrix.ts"
+    },
     "./tmux-place": {
       "types": "./src/tmux-place.ts",
       "bun": "./src/tmux-place.ts",

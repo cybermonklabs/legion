@@ -229,20 +229,21 @@ const (
 )
 
 // DeliveryRunJobView is one job of a DeliveryRunView, the shape `GET /api/v1/delivery/timeline`
-// answers in a run's failed_jobs and root_failing_job -- mirrors
-// packages/contracts/src/dispatch-api.ts's DeliveryRunJob exactly.
+// and `GET /api/v2/delivery/timeline`, one row in both versions, answer in a run's failed_jobs and
+// root_failing_job -- mirrors packages/contracts/src/dispatch-api.ts's DeliveryRunJob exactly.
 type DeliveryRunJobView struct {
 	Name        string     `json:"name"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
-// DeliveryPRView is one population pull request on `GET /api/v1/delivery/timeline` -- LEGION-294's
-// facts plus what the server derives at read time from the stored facts: DeployedStatus, the
-// linked issue's title, the priority it resolves to and its effective components (the nearest
-// ancestor's attachment in its own project), each as the issue read resolves it, and (on
-// DeliveryRunView) RootFailingJob. Mirrors packages/contracts/src/dispatch-api.ts's DeliveryPR
-// exactly. ParentAgent is the Parent agent of the first of Sessions: its session group's
-// `group:<id>`, else that session's title or id (ParentAgents, parent_agent.go).
+// DeliveryPRView is one population pull request on `GET /api/v1/delivery/timeline` and
+// `GET /api/v2/delivery/timeline` -- LEGION-294's facts plus what the server derives at read time
+// from the stored facts: DeployedStatus, the linked issue's title, the priority it resolves to and
+// its effective components (the nearest ancestor's attachment in its own project), each as the
+// issue read resolves it, and (on DeliveryRunView) RootFailingJob. Mirrors
+// packages/contracts/src/dispatch-api.ts's DeliveryPR exactly. ParentAgent is the Parent agent of
+// the first of Sessions: its session group's `group:<id>`, else that session's title or id
+// (ParentAgents, parent_agent.go).
 type DeliveryPRView struct {
 	ID            string     `json:"id"`
 	Repo          string     `json:"repo"`
@@ -290,9 +291,10 @@ type DeliveryShippedPRView struct {
 	Title string `json:"title"`
 }
 
-// DeliveryRunView is one deploy run on `GET /api/v1/delivery/timeline`: a production deploy
-// (Production succeeded; sized by PRs) and/or a pipeline failure (FailedJobs, RootFailingJob, or a
-// failed Production). Mirrors packages/contracts/src/dispatch-api.ts's DeliveryRun exactly.
+// DeliveryRunView is one deploy run on `GET /api/v1/delivery/timeline` and
+// `GET /api/v2/delivery/timeline`: a production deploy (Production succeeded; sized by PRs) and/or
+// a pipeline failure (FailedJobs, RootFailingJob, or a failed Production). Mirrors
+// packages/contracts/src/dispatch-api.ts's DeliveryRun exactly.
 // FailedJobs is in compareRunJobs' order (by start, a job that never started last, then by name in
 // byte order), and RootFailingJob is the earliest-finishing failed job that isn't a summary/guard
 // job, falling back to the earliest failed job overall, ties by name. PRs
@@ -314,7 +316,8 @@ type DeliveryRunView struct {
 	PRs            []DeliveryShippedPRView    `json:"prs"`
 }
 
-// DeliveryFreshnessView is `GET /api/v1/delivery/timeline`'s freshness object: when intake last
+// DeliveryFreshnessView is the freshness object of `GET /api/v1/delivery/timeline` and
+// `GET /api/v2/delivery/timeline`: when intake last
 // processed a GitHub event, when the five-minute reconcile last *completed successfully*, (when
 // the most recent pass failed) why, and how many population pull requests can no longer be
 // fetched from GitHub at all (a permanent 404/410 -- store.go's unfetchable_at/unfetchable_reason).
@@ -347,7 +350,8 @@ type DeliveryWaitingPRView struct {
 	DeployedAt *time.Time `json:"deployed_at"`
 }
 
-// DeliveryTimelineResponse is `GET /api/v1/delivery/timeline?from&to&q&<facets>`: merges, deploys,
+// DeliveryTimelineResponse is `GET /api/v1/delivery/timeline?from&to&q&<facets>`, and
+// `GET /api/v2/delivery/timeline`'s, one row in both versions: merges, deploys,
 // pipeline failures and waiting-to-deploy PRs within [from, to) and the given facets. Runs holds
 // deploy runs only. Waiting holds the pull requests that merged before the window and had not
 // shipped by its start, under the same facets and search. FacetCounts counts, per facet, the
@@ -375,8 +379,8 @@ type DeliveryTimelineResponse struct {
 	SessionPRCounts map[string]int                   `json:"session_pr_counts"`
 }
 
-// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}`: the drill-down's job
-// list, with each job's result and timings.
+// DeliveryRunJobDetailView is one job of `GET /api/v1/delivery/runs/{id}` and
+// `GET /api/v2/deploy-runs/{id}`: the drill-down's job list, with each job's result and timings.
 type DeliveryRunJobDetailView struct {
 	Name        string                 `json:"name"`
 	StartedAt   *time.Time             `json:"started_at"`
@@ -384,8 +388,9 @@ type DeliveryRunJobDetailView struct {
 	Conclusion  *DeliveryJobConclusion `json:"conclusion"`
 }
 
-// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}`: one run of the deploy repository with
-// every job it ran, ordered by when each started (a job that never started last, then by name).
+// DeliveryRunDetailView is `GET /api/v1/delivery/runs/{id}` and `GET /api/v2/deploy-runs/{id}`:
+// one run of the deploy repository with every job it ran, ordered by when each started (a job that
+// never started last, then by name).
 type DeliveryRunDetailView struct {
 	ID   int64                      `json:"id"`
 	URL  string                     `json:"url"`

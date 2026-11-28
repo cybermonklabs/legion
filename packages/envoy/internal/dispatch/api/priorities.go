@@ -13,6 +13,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,31 +25,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-)
-
-const (
-	// codePriorityInput refuses a body no priority can be written from: a title with nothing in
-	// it or one longer than an issue title may be, an id the caller names that is no priority id,
-	// a patch that names nothing to write, and a patch whose expected names an attribute the same
-	// patch does not write.
-	codePriorityInput = "PRIORITY_INPUT"
-	// codePriorityExists refuses a create of an id the store already holds, as a project create
-	// refuses a key it holds (PROJECT_EXISTS): a second create would write its own history over
-	// the first write's.
-	codePriorityExists = "PRIORITY_EXISTS"
-	// codePriorityNotFound answers a write addressed to an id no priority row carries.
-	codePriorityNotFound = "PRIORITY_NOT_FOUND"
-	// codePriorityChanged refuses a patch whose expected title or description is not the one
-	// the priority stores now: somebody else wrote it after the writer's edit began, and the
-	// patch would write over that change unseen (priorityChangedRefusal).
-	codePriorityChanged = "PRIORITY_CHANGED"
-	// codeRankInput refuses a move to a place the order does not have, which is the code and
-	// the wording the issue board's own drag is refused with (issue_rank.go).
-	codeRankInput = "RANK_INPUT"
 )
 
 // priorityIDMax is the longest priority id, in characters (code points), which for the ASCII the
@@ -63,8 +44,8 @@ const priorityIDMax = contracts.PriorityIDMax
 
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
 // joined by single hyphens, which is the slug spelling a document's id already takes
-// (artifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into a
-// path and into the `advances` filter of the issue listing, so one that spells anything else
+// (model.ArtifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into
+// a path and into the `advances` filter of the issue listing, so one that spells anything else
 // would be stored and then address nothing. The grammar admits two words the filter reads as
 // keywords, noAdvancesFilter and anyAdvancesFilter, and the length is bounded by priorityIDMax;
 // priorityIDRefusal holds an id to all of them.
@@ -102,12 +83,12 @@ func priorityIDRefusal(id string) string {
 // alike. A title is one line a page heads itself with, and the id a create derives from it is
 // cut to priorityIDMax apart (priorityIDFromTitle), so a title this allows never fails a create
 // for the length of the id it derives.
-func refusePriorityTitle(w http.ResponseWriter, title string) bool {
+func refusePriorityTitle(w http.ResponseWriter, r *http.Request, title string) bool {
 	length := itemblocks.Units16(title)
 	if length <= contracts.IssueTitleMax {
 		return false
 	}
-	writeError(w, codePriorityInput, http.StatusBadRequest, fmt.Sprintf(
+	writeError(w, r, apicode.PriorityInput, fmt.Sprintf(
 		"a title is at most %d characters, as an issue title is, and this one is %d", contracts.IssueTitleMax, length))
 	return true
 }
@@ -145,6 +126,20 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 	return priority
 }
 
+// readPriorityTrees gives each listed row the tree of its description, and whether Parse takes
+// that description whole (model.Priority.DescriptionTreeExact), for a caller that sent
+// `Dispatch-Trees: 1`, read as a comment list reads its bodies' (displayTreeReader), so the page
+// parses no description: the listing of either version calls it on the rows it answers. The rows
+// must be final, since resolve fills each field registered where it stands.
+func (s *server) readPriorityTrees(r *http.Request, rows []model.PriorityRow) {
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	for index := range rows {
+		row := &rows[index]
+		reader.textExact(&row.DescriptionTree, &row.DescriptionTreeExact, row.Description)
+	}
+	reader.resolve()
+}
+
 // listPriorities is GET /api/v1/priorities: every live priority in rank order, the work that
 // advances each, and the two faults — work in flight under no priority, and priority work parked
 // in `backlog` or `icebox`. The reads are priority_queries.go's, which says what each one costs.
@@ -159,10 +154,9 @@ func priorityAnswer(priority model.Priority, trees bool) model.Priority {
 // why (priorityNoneWritten): a deployment that has written no priority yet has nothing to list
 // and nothing has gone wrong.
 //
-// Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, read
-// as a comment list reads its bodies' (displayTreeReader), so the page parses no description,
-// and whether Parse takes the description whole (model.Priority.DescriptionTreeExact), which
-// says whether a writer's editor may take the markdown in.
+// Every description carries its display tree for a caller that sent `Dispatch-Trees: 1`, and
+// whether Parse takes the description whole, which says whether a writer's editor may take the
+// markdown in (readPriorityTrees).
 func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -174,22 +168,16 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 			projects = append(projects, named)
 		}
 	}
-	body, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
+	body, _, err := s.readPriorities(r.Context(), projects, query.Get("summary") == "true")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	// The list is final here, so every field registered stands where resolve fills it.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	for index := range body.Priorities {
-		row := &body.Priorities[index]
-		reader.textExact(&row.DescriptionTree, &row.DescriptionTreeExact, row.Description)
-	}
-	reader.resolve()
+	s.readPriorityTrees(r, body.Priorities)
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// createPriorityInput is the body of POST /api/v1/priorities.
+// createPriorityInput is the body of POST /api/v1/priorities and of POST /api/v2/priorities.
 type createPriorityInput struct {
 	// ID is the priority's own id, the spelling every address of it carries. A body that names
 	// none takes the title written as a slug and cut to priorityIDMax at the end of a word
@@ -213,19 +201,25 @@ type createPriorityInput struct {
 func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	var input createPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createPriorityFrom(w, r, input)
+}
+
+// createPriorityFrom writes the priority input names, the work both versions' POST does once each
+// has read its body.
+func (s *server) createPriorityFrom(w http.ResponseWriter, r *http.Request, input createPriorityInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	input.Title = strings.TrimSpace(input.Title)
 	if input.Title == "" {
-		writeError(w, codePriorityInput, http.StatusBadRequest, "title is required")
+		writeError(w, r, apicode.PriorityInput, "title is required")
 		return
 	}
-	if refusePriorityTitle(w, input.Title) {
+	if refusePriorityTitle(w, r, input.Title) {
 		return
 	}
 	input.Owner = strings.TrimSpace(input.Owner)
@@ -233,12 +227,12 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		id = priorityIDFromTitle(input.Title)
 	} else if refusal := priorityIDRefusal(id); refusal != "" {
-		writeError(w, codePriorityInput, http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.PriorityInput, refusal)
 		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -247,7 +241,7 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	// creates at once write two keys rather than one (prioritystore.RankAt).
 	order, err := prioritystore.RankAt(r.Context(), tx, id, "", "")
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	at := time.Now().UTC()
@@ -259,20 +253,20 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := prioritystore.Create(r.Context(), tx, id, values, actor, at); err != nil {
 		if errors.Is(err, prioritystore.ErrPriorityExists) {
-			writeError(w, codePriorityExists, http.StatusConflict,
+			writeError(w, r, apicode.PriorityExists,
 				fmt.Sprintf("a priority with the id %q is already written", id))
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityCreated))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -293,9 +287,9 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, answer)
 }
 
-// patchPriorityInput is the body of PATCH /api/v1/priorities/{id}. Each field is a pointer, so a
-// write names the attributes it changes and leaves every other as it is: one write states one
-// fact, which is what the tuple log then holds.
+// patchPriorityInput is the body of PATCH /api/v1/priorities/{id} and of PATCH
+// /api/v2/priorities/{id}. Each field is a pointer, so a write names the attributes it changes and
+// leaves every other as it is: one write states one fact, which is what the tuple log then holds.
 type patchPriorityInput struct {
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
@@ -329,18 +323,24 @@ type patchPriorityExpected struct {
 // ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its page and its
 // history already answer. The transaction is rolled back, so a refused write appends no tuple
 // and no `priority.updated` (priorityEvent).
+func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
+	var input patchPriorityInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.patchPriorityFrom(w, r, input)
+}
+
+// patchPriorityFrom writes what input names of the path's priority, the work both versions'
+// PATCH does once each has read its body.
 //
 // A body whose expected names a value first reads the node row under its lock
 // (prioritystore.ReadForWrite) and compares, in the transaction that then writes, so a second
 // write naming the same value waits for this one and finds the value it wrote. One that differs
 // is 409 PRIORITY_CHANGED, refused before any statement writes. A body naming no expected takes
 // no lock of its own and writes as it always has.
-func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
-	var input patchPriorityInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+func (s *server) patchPriorityFrom(w http.ResponseWriter, r *http.Request, input patchPriorityInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -349,11 +349,11 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	if input.Title != nil {
 		title := strings.TrimSpace(*input.Title)
 		if title == "" {
-			writeError(w, codePriorityInput, http.StatusBadRequest,
+			writeError(w, r, apicode.PriorityInput,
 				"title is required: a write renames a priority or leaves its name alone")
 			return
 		}
-		if refusePriorityTitle(w, title) {
+		if refusePriorityTitle(w, r, title) {
 			return
 		}
 		values[prioritystore.AttributeTitle] = title
@@ -365,11 +365,11 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		values[prioritystore.AttributeOwner] = strings.TrimSpace(*input.Owner)
 	}
 	if refusal := patchExpectedUnwritten(input); refusal != "" {
-		writeError(w, codePriorityInput, http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.PriorityInput, refusal)
 		return
 	}
 	if len(values) == 0 && input.Rank == nil {
-		writeError(w, codePriorityInput, http.StatusBadRequest,
+		writeError(w, r, apicode.PriorityInput,
 			"a write names at least one of title, description, owner and rank")
 		return
 	}
@@ -382,7 +382,7 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 			after = strings.TrimSpace(*input.Rank.After)
 		}
 		if before == "" && after == "" {
-			writeError(w, codeRankInput, http.StatusBadRequest,
+			writeError(w, r, apicode.RankInput,
 				"rank names the priority this one lands above in before, the one it lands below in after, or both")
 			return
 		}
@@ -390,7 +390,7 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -398,40 +398,40 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	if expected := input.Expected; expected != nil && (expected.Title != nil || expected.Description != nil) {
 		stored, err := prioritystore.ReadForWrite(r.Context(), tx, id)
 		if err != nil {
-			s.refusePriorityWrite(w, id, err)
+			s.refusePriorityWrite(w, r, id, err)
 			return
 		}
 		if refusal := priorityChangedRefusal(id, stored, *expected); refusal != "" {
-			writeError(w, codePriorityChanged, http.StatusConflict, refusal)
+			writeError(w, r, apicode.PriorityChanged, refusal)
 			return
 		}
 	}
 	if err := prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at); err != nil {
-		s.refusePriorityWrite(w, id, err)
+		s.refusePriorityWrite(w, r, id, err)
 		return
 	}
 	if input.Rank != nil {
 		if _, err := prioritystore.Move(r.Context(), tx, id, before, after, actor, at); err != nil {
-			s.refusePriorityWrite(w, id, err)
+			s.refusePriorityWrite(w, r, id, err)
 			return
 		}
 	}
 	node, held, err := prioritystore.Read(r.Context(), tx, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !held {
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityChanged))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -521,24 +521,30 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.deletePriorityAs(w, r, actor)
+}
+
+// deletePriorityAs writes the path's priority gone as actor, the work both versions' DELETE does
+// once each has settled who sends it.
+func (s *server) deletePriorityAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	id := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	if err := prioritystore.SetState(r.Context(), tx, id, prioritystore.StateGone, actor, time.Now().UTC()); err != nil {
-		s.refusePriorityWrite(w, id, err)
+		s.refusePriorityWrite(w, r, id, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityDeleted))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -579,23 +585,33 @@ func (s *server) priorityHistory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	_, held, err := prioritystore.Read(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !held {
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
-	tuples, err := prioritystore.Timeline(r.Context(), s.deps.Store.Pool, id)
+	acts, err := priorityActsOf(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, acts)
+}
+
+// priorityActsOf is every act stated about the priority id, newest first (prioritystore.Timeline),
+// as both versions' history of one priority answers it.
+func priorityActsOf(ctx context.Context, q prioritystore.Queryer, id string) ([]model.PriorityAct, error) {
+	tuples, err := prioritystore.Timeline(ctx, q, id)
+	if err != nil {
+		return nil, err
 	}
 	acts := make([]model.PriorityAct, 0, len(tuples))
 	for _, tuple := range tuples {
 		acts = append(acts, priorityActFrom(tuple, id))
 	}
-	WriteJSON(w, http.StatusOK, acts)
+	return acts, nil
 }
 
 // priorityActFrom is one tuple of the log as the history answers it. An attribute tuple holds its
@@ -623,25 +639,25 @@ func priorityActFrom(tuple prioritystore.Tuple, id string) model.PriorityAct {
 // id whose priority is gone are both 404 ErrNoPriority, since a priority whose state is gone is
 // no priority; a move to a place the order does not have is 400; and anything else is the
 // handler error every route answers a failed statement with.
-func (s *server) refusePriorityWrite(w http.ResponseWriter, id string, err error) {
+func (s *server) refusePriorityWrite(w http.ResponseWriter, r *http.Request, id string, err error) {
 	switch {
 	case errors.Is(err, prioritystore.ErrNoPriority):
-		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
+		writeError(w, r, apicode.PriorityNotFound, fmt.Sprintf("no priority of the id %q", id))
 	case errors.Is(err, prioritystore.ErrRankNeighbor):
-		writeError(w, codeRankInput, http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.RankInput, err.Error())
 	default:
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 	}
 }
 
 // priorityIDFromTitle is the id a create takes when its body names none: the title written as a
-// slug, by the rule artifactSlug writes one, so one spelling names every slug this deployment
-// stores, and then cut to priorityIDMax (priorityIDCut). A title the slug cannot name takes its
-// hash instead (priorityIDHash): one holding no ASCII letter or digit, for which artifactSlug
-// would answer its own fallback word, and one the cut leaves as noAdvancesFilter or
-// anyAdvancesFilter, which no priority may take (priorityIDRefusal). So every title
-// refusePriorityTitle allows derives an id, and the title itself is written whole. The cases of
-// the rule, at the bound, for U+0130 and U+212A and for the hash, are
+// slug, by the rule model.ArtifactSlug writes one, so one spelling names every slug this
+// deployment stores, and then cut to priorityIDMax (priorityIDCut). A title the slug cannot name
+// takes its hash instead (priorityIDHash): one holding no ASCII letter or digit, for which
+// model.ArtifactSlug would answer its own fallback word, and one the cut leaves as
+// noAdvancesFilter or anyAdvancesFilter, which no priority may take (priorityIDRefusal). So every
+// title refusePriorityTitle allows derives an id, and the title itself is written whole. The
+// cases of the rule, at the bound, for U+0130 and U+212A and for the hash, are
 // packages/contracts/fixtures/priority-ids.json.
 func priorityIDFromTitle(title string) string {
 	if !strings.ContainsFunc(title, func(character rune) bool {
@@ -651,7 +667,7 @@ func priorityIDFromTitle(title string) string {
 	}) {
 		return priorityIDHash(title)
 	}
-	id := priorityIDCut(artifactSlug(title))
+	id := priorityIDCut(model.ArtifactSlug(title))
 	if id == noAdvancesFilter || id == anyAdvancesFilter {
 		return priorityIDHash(title)
 	}
@@ -662,8 +678,8 @@ func priorityIDFromTitle(title string) string {
 // whole. A longer one is cut to its longest start of at most priorityIDMax characters that ends at
 // the end of a word, which is where the next character of the slug is a hyphen; when the first
 // word is longer than priorityIDMax, no start ends a word and the id is the first priorityIDMax
-// characters. The slug is ASCII, so a byte is a character. artifactSlug is not cut, because a
-// document's slug is written by it too.
+// characters. The slug is ASCII, so a byte is a character. model.ArtifactSlug is not cut, because
+// a document's slug is written by it too.
 func priorityIDCut(slug string) string {
 	if len(slug) <= priorityIDMax {
 		return slug

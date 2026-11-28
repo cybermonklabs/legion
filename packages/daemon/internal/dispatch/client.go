@@ -20,10 +20,15 @@ import (
 
 const requestTimeout = 10 * time.Second
 
+// unstampedUserAgent is the User-Agent of a client given no release (Release): a build linked with
+// neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
+const unstampedUserAgent = "legion-daemon/(devel)"
+
 const dispatchServer = "Dispatch"
 
 type HTTPClient struct {
 	baseURL    string
+	userAgent  string
 	timeout    time.Duration
 	httpClient *http.Client
 	// session is the session every write names as its actor (WritesAs). It is empty for a client
@@ -40,9 +45,22 @@ func WritesAs(session string) Option {
 	return func(c *HTTPClient) { c.session = session }
 }
 
+// Release makes every request of the client name release, the build the daemon runs, in its
+// User-Agent (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's calls from
+// every other client's. An empty release names none, and the client keeps `legion-daemon/(devel)`,
+// as a client made without this option does.
+func Release(release string) Option {
+	return func(c *HTTPClient) {
+		if release != "" {
+			c.userAgent = "legion-daemon/" + release
+		}
+	}
+}
+
 func New(baseURL string, transport http.RoundTripper, options ...Option) *HTTPClient {
 	c := &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
+		userAgent:  unstampedUserAgent,
 		timeout:    requestTimeout,
 		httpClient: &http.Client{Transport: transport},
 	}
@@ -793,6 +811,7 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("create Dispatch %s %s: %w", method, path, redact.RequestError(dispatchServer, route, err))
 	}
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", c.userAgent)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

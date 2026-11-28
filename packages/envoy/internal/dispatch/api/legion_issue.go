@@ -1,10 +1,12 @@
-// legion_issue.go serves GET /api/v1/issues/{key}/legion, one issue's Legion state from what the
-// Legion intake recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the
-// issue's phase, the claims of its roles, its slot, its place in the daemon's waiting line, what
-// holds it and what it waits on from a person, the newest read of the project's daemon, and the
-// revision of the issue's runs. readLegionIssue computes that body from the key alone, so the
-// `legion_issue` live view of the issue answers through the same function and sends the GET body
-// byte for byte, the hub's rule for every kind (live_frames.go).
+// legion_issue.go serves GET /api/v1/issues/{key}/legion, and the legion member GET
+// /api/v2/issues/{key} answers with include=legion, one issue's Legion state from what the Legion
+// intake recorded (dispatch://INFRA-4869): whether the issue's project names a daemon, the issue's
+// phase, the claims of its roles, its slot, its place in the daemon's waiting line, what holds it
+// and what it waits on from a person, the newest read of the project's daemon, and the revision of
+// the issue's runs. readLegionIssue computes that body from the key alone, so the `legion_issue`
+// live view of the issue answers through the same function and sends the GET body byte for byte,
+// the hub's rule for every kind (live_frames.go), and the /api/v2 member is that body too, its
+// runs' revision the one the live view carries.
 //
 // Like the board (legion_board.go) it reads what Dispatch holds and never calls the daemon, and it
 // reads an issue's observations through the board's own per-issue rule (legion.IssueState), so a
@@ -24,13 +26,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
-// legionIssueResponse is GET /api/v1/issues/{key}/legion: the issue, the project its row names,
-// whether that project names a Legion daemon, the issue's state as that daemon recorded it, the
-// newest read of the daemon, and the revision of the issue's runs.
+// legionIssueResponse is GET /api/v1/issues/{key}/legion, and the legion member of GET
+// /api/v2/issues/{key} (include=legion): the issue, the project its row names, whether that
+// project names a Legion daemon, the issue's state as that daemon recorded it, the newest read of
+// the daemon, and the revision of the issue's runs.
 // Mirrors packages/contracts/src/dispatch-api.ts's LegionIssueResponse exactly.
 type legionIssueResponse struct {
 	Issue string `json:"issue"`
@@ -39,8 +43,9 @@ type legionIssueResponse struct {
 	Project string `json:"project"`
 	// Configured is whether the project names a daemon, a legion_settings row. Where it is false
 	// State and Read are null whatever rows an earlier daemon left in legion_current,
-	// legion_observations and legion_reads: DELETE /api/v1/projects/{key}/legion/daemon leaves
-	// them (legion.DeleteSettings), and they are no daemon's state now.
+	// legion_observations and legion_reads: DELETE /api/v1/projects/{key}/legion/daemon and
+	// DELETE /api/v2/projects/{key}/legion/daemon leave them (legion.DeleteSettings), and they are
+	// no daemon's state now.
 	Configured bool `json:"configured"`
 	// State is null where the daemon does not record the issue: it has no `phase` row, or its
 	// newest `phase` row is `null`, which covers every issue of a project whose daemon no read has
@@ -120,14 +125,15 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	answer, err := s.readLegionIssue(r.Context(), r.PathValue("key"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// readLegionIssue is GET /api/v1/issues/{key}/legion's body for key, computed from the key alone,
-// so the route and the live view of one issue answer one body through one function. Every read it
+// readLegionIssue is GET /api/v1/issues/{key}/legion's body for key, and the legion member GET
+// /api/v2/issues/{key} answers with include=legion (getIssueV2), computed from the key alone, so
+// the routes and the live view of one issue answer one body through one function. Every read it
 // makes is one read-only, repeatable-read transaction, as the board's readSampled is, so
 // `configured`, the state and the read answer one moment:
 //
@@ -135,7 +141,8 @@ func (s *server) getLegionIssue(w http.ResponseWriter, r *http.Request) {
 //     code and the words writeHandlerError answers pgx.ErrNoRows with, which is GET
 //     /api/v1/issues/{key}'s refusal of that key (readIssue), so a mistyped key never reads as an
 //     issue the daemon does not record. It is an *apiError, so a live view, which writes no HTTP
-//     answer, is refused in the same code and words (viewReads.refusal);
+//     answer, is refused in the same code and words (viewReads.refusal). GET /api/v2/issues/{key}
+//     reads the issue before it asks for this body, so it refuses such a key ISSUE_NOT_FOUND first;
 //   - the project's Legion setting. A project with none is the `configured` false body, never an
 //     error: this function does not return legion.ErrNoSettings, which the hub would refuse with;
 //   - only where the setting exists, the newest read of its daemon (readDaemonRead, the statement
@@ -151,7 +158,7 @@ func (s *server) readLegionIssue(ctx context.Context, key string) (legionIssueRe
 	answer := legionIssueResponse{Issue: key}
 	if err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, key).Scan(&answer.Project); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return legionIssueResponse{}, errorf(http.StatusNotFound, "NOT_FOUND", "not found")
+			return legionIssueResponse{}, errorf(apicode.NotFound, "not found")
 		}
 		return legionIssueResponse{}, err
 	}

@@ -7,13 +7,14 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// getDeliverySettings answers GET /api/v1/settings/delivery with the one delivery_settings row,
-// or null when none has been written yet.
+// getDeliverySettings answers GET /api/v1/settings/delivery and GET /api/v2/settings/delivery with
+// the one delivery_settings row, or null when none has been written yet.
 func (s *server) getDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -24,13 +25,14 @@ func (s *server) getDeliverySettings(w http.ResponseWriter, r *http.Request) {
 			WriteJSON(w, http.StatusOK, nil)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)
 }
 
-// deliverySettingsInput is the body of PUT /api/v1/settings/delivery.
+// deliverySettingsInput is the body of PUT /api/v1/settings/delivery and of PUT
+// /api/v2/settings/delivery.
 type deliverySettingsInput struct {
 	DeployRepo              string       `json:"deploy_repo" required:"true"`
 	DeployWorkflowPath      string       `json:"deploy_workflow_path" required:"true"`
@@ -45,22 +47,23 @@ type deliverySettingsInput struct {
 	Actor                   *model.Actor `json:"actor"`
 }
 
-// putDeliverySettings answers PUT /api/v1/settings/delivery: set (or replace) the one
-// delivery_settings row after proving the GitHub App can read the deploy repository, the same
-// access-check-before-write shape putArchitectureSource uses. Unlike putArchitectureSource, this
-// is a bare pool write with no appended event: every sibling settings route
-// scopes its event to the project it changes (projectOwner), but delivery_settings is a true
-// singleton with no project, issue, or artifact to own it, and events/broker.go's
-// eventOwnerKey refuses an event with none of those unless its payload names a specific session
-// target or is a priority's write (the ownerless-event paths exist for session-addressed messages
-// and the cross-project priority node, not settings) -- there is no project-scoped equivalent for
-// a cross-project configuration table, so this intentionally does not force one. Production job
-// names are required and stored trimmed; the production apply step and the Pipeline page's three
-// job names are optional, and absent, null or blank values store null.
+// putDeliverySettings answers PUT /api/v1/settings/delivery and PUT /api/v2/settings/delivery: set
+// (or replace) the one delivery_settings row after proving the GitHub App can read the deploy
+// repository, the same access-check-before-write shape putArchitectureSourceFrom uses. Unlike
+// putArchitectureSourceFrom, the save both versions make, this is a bare pool write with no
+// appended event: every sibling settings route scopes its event to the project it changes
+// (projectOwner), but delivery_settings is a true singleton with no project, issue, or artifact to
+// own it, and events/broker.go's eventOwnerKey refuses an event with none of those unless its
+// payload names a specific session target or is a priority's write (the ownerless-event paths
+// exist for session-addressed messages and the cross-project priority node, not settings) -- there
+// is no project-scoped equivalent for a cross-project configuration table, so this intentionally
+// does not force one. Production job names are required and stored trimmed; the production apply
+// step and the Pipeline page's three job names are optional, and absent, null or blank values
+// store null.
 func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input deliverySettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
@@ -69,7 +72,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	}
 	repoOwner, repoName, err := parseSourceRepo(input.DeployRepo)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The deploy repository and each excluded one are stored under their new name where a rename
@@ -85,17 +88,17 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		"pr_checks_workflow_path": input.PRChecksWorkflowPath,
 	} {
 		if strings.TrimSpace(value) == "" {
-			writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, name+" is required")
+			writeError(w, r, apicode.DeliverySettingsInput, name+" is required")
 			return
 		}
 	}
 	if len(input.PopulationAuthors) == 0 {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, "population_authors must name at least one author")
+		writeError(w, r, apicode.DeliverySettingsInput, "population_authors must name at least one author")
 		return
 	}
 	productionJobNames, refusal := trimmedProductionJobNames(input.ProductionJobNames)
 	if refusal != "" {
-		writeError(w, "DELIVERY_SETTINGS_INPUT", http.StatusBadRequest, refusal)
+		writeError(w, r, apicode.DeliverySettingsInput, refusal)
 		return
 	}
 
@@ -103,10 +106,10 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	// untouched, matching putArchitectureSource's own ordering.
 	if _, err := s.deps.GitHub.CheckSource(r.Context(), repoOwner, repoName); err != nil {
 		if errors.Is(err, githubapp.ErrNoAppKey) || errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrNoContentsRead) {
-			writeError(w, "DELIVERY_SETTINGS_ACCESS", http.StatusConflict, err.Error())
+			writeError(w, r, apicode.DeliverySettingsAccess, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -123,7 +126,7 @@ func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 		PRChecksRollupJobName:   optionalJobName(input.PRChecksRollupJobName),
 	}, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, settings)

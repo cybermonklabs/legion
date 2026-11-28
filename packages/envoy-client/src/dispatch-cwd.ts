@@ -5,6 +5,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { canonicalRepo } from "@legion/contracts/repo";
 import { machineID } from "./machine";
 
@@ -128,7 +129,7 @@ const GITHUB_REMOTE_PATTERNS = [
 
 /** Parse a GitHub remote URL (https, scp-like, or ssh) into `owner/name`; null for any other host. */
 export function parseGitHubRemoteUrl(url: string): string | null {
-  const trimmed = url.trim();
+  const trimmed = goTrimSpace(url);
   for (const pattern of GITHUB_REMOTE_PATTERNS) {
     const match = trimmed.match(pattern);
     if (match) return canonicalRepo(match[1] ?? "", match[2] ?? "");

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // An issue's own repository is any `owner/name` GitHub could hold, and nothing else. Since
@@ -33,7 +35,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"acme/...git.git",
 	} {
 		raw, _ := json.Marshal(value)
-		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
+		if repo, _, err := parseIssueRepo(raw, "repo", apicode.InvalidIssue); err == nil {
 			t.Errorf("parseIssueRepo(%q) = %q, want it refused: GitHub holds no repository of that name", value, *repo)
 		}
 	}
@@ -46,7 +48,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"o/" + strings.Repeat("a", 100): "o/" + strings.Repeat("a", 100),
 	} {
 		raw, _ := json.Marshal(value)
-		repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE")
+		repo, _, err := parseIssueRepo(raw, "repo", apicode.InvalidIssue)
 		if err != nil || repo == nil || *repo != want {
 			t.Errorf("parseIssueRepo(%q) = %v, %v, want %q", value, repo, err, want)
 		}

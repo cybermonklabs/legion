@@ -30,14 +30,15 @@ import (
 // the document does not reflect fails the emit, so the table cannot rot.
 var schemaNames = map[reflect.Type]string{
 	// GET /api/v1/issues/{key}/summary's answer, against model.IssueSummary, the row GET
-	// /api/v1/issues lists. The list row holds the name, since the dashboard reads its issues
-	// through it; this is the reference card, which its TypeScript consumers already import as
-	// IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
+	// /api/v1/issues and GET /api/v2/issues list. The list row holds the name, since the dashboard
+	// reads its issues through it; this is the reference card, which its TypeScript consumers
+	// already import as IssueReferenceSummary (packages/contracts/src/dispatch-api.ts).
 	reflect.TypeOf(issueSummary{}): "IssueReferenceSummary",
-	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three routes
-	// answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers) and whose
-	// shape is what the TypeScript OpenAskOwner says. This one carries the issue's assignee
-	// besides, so the two are not one schema.
+	// The owner of a GET /api/v1/asks/open row, against model.OpenAskOwner, which three /api/v1
+	// routes answer (GET /api/v1/me/answers, /me/replies and /agents/{session_id}/answers), as
+	// GET /api/v2/me/answers and GET /api/v2/agents/{session_id}/answers do, and whose shape is
+	// what the TypeScript OpenAskOwner says. This one carries the issue's assignee besides, so the
+	// two are not one schema.
 	reflect.TypeOf(openAskOwner{}): "OpenAskItemOwner",
 
 	// This package's own shapes, whose Go names say what the handler called them and whose
@@ -204,11 +205,13 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	{reflect.TypeOf(createIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name". The
-	// project's default repository is read by the same rule; its handler refuses a body without
-	// the field, which the field's own `required:"true"` says.
-	{reflect.TypeOf(createIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(updateIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
+	// project's default repository is read by the same rule; its PUT refuses a body without the
+	// field, which the field's own `required:"true"` says, and PATCH /api/v2/projects/{key} reads
+	// absent as leaving it.
+	{reflect.TypeOf(createIssueInput{}), "repo"}:                  rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "repo"}:                  rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}:     rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(patchProjectV2Input{}), "default_repository"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.
@@ -225,12 +228,31 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
-	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
+	// The waiting_on of GET /api/v1/issues/{key}/legion and of the legion member GET
+	// /api/v2/issues/{key} answers with include=legion (legion_issue.go): null is an issue that waits
 	// on nothing, and an object is the daemon's own as the intake stored it, which the answer
 	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
 	// fields the daemon writes today and leaves the object open, so the generated type has them.
 	// The answer always carries the field, which its `required:"true"` says.
 	{reflect.TypeOf(legionIssueState{}), "waiting_on"}: rawField{Fragment: openAPILegionWaitingOn, Nullable: true},
+}
+
+// itemUnion is a request type whose JSON is a union of arms its Go type cannot state
+// (itemUnions): Key is the member whose value picks the arm, and Arms the arm types by the values
+// that pick them.
+type itemUnion struct {
+	Key  string
+	Arms map[string]any
+}
+
+// itemUnions names the request types whose JSON carries, beside the type's own members, the
+// members of the arm its key picks, which the handler reads out of the bytes rather than through
+// a field: an item of PATCH /api/v2/me/marks is {kind, id, ...fields}, its fields its kind's mark
+// write (markArms), read by markItemWrite as PATCH /api/v2/me/marks/{kind}/{id} reads its body by
+// the path's kind. The document declares such a type as that union (writeItemUnions). An entry
+// naming a type neither document declares fails the emit.
+var itemUnions = map[reflect.Type]itemUnion{
+	reflect.TypeOf(markItemV2{}): {Key: "kind", Arms: markArms},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -263,8 +285,9 @@ var (
 	// is sent as stored.
 	openAPILegionWaitingOn = map[string]any{
 		"type": "object",
-		"description": "what the issue waits on from a person, the Legion daemon's waitingOn " +
-			"object exactly as Dispatch stored it; a field a later daemon adds is sent too",
+		"description": "what the issue waits on from a person - a question of its tree still with a " +
+			"person (an ask), or a document version no person has reviewed (a gate) - with when the wait " +
+			"began and, once it was answered, when and how",
 		"properties": map[string]any{
 			"kind": map[string]any{
 				"type":        "string",

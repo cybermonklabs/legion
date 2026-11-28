@@ -232,7 +232,7 @@ func (w *asOfThreadWorld) readTreesAt(t *testing.T, target string, cut asof.Cut)
 	if named := response.Header().Get(contracts.DispatchAsOfHeader); named != cut.String() {
 		t.Fatalf("GET %s with trees as of the cut: %s is %q, want the cut %s", target, contracts.DispatchAsOfHeader, named, cut)
 	}
-	return decodeAnswer(t, target, response), absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))
+	return decodeAsOfAnswer(t, target, response), absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))
 }
 
 // elementWhere is the index of the first element of the array list whose member key is value,

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -24,8 +24,7 @@ func refuseParameterAtCut(w http.ResponseWriter, r *http.Request, parameter, rea
 	if _, atCut := asof.CutFrom(r.Context()); !atCut || !r.URL.Query().Has(parameter) {
 		return false
 	}
-	writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest,
-		parameter+": "+reason+"; send the request with no "+parameter)
+	writeError(w, r, apicode.AsOfNotServed, parameter+": "+reason+"; send the request with no "+parameter)
 	return true
 }
 

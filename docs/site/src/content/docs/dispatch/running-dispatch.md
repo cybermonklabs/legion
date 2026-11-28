@@ -46,7 +46,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone, as for each model endpoint, `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_GITHUB_API_BASE`. |
 | NATS | `NATS_URLS`, `NATS_NKEY_SEED_FILE` | Where Dispatch publishes its events for agents. The Agents page's live view also needs it. Dispatch refuses a NATS server on another machine unless `ENVOY_ALLOW_REMOTE_NATS=1`. A NATS that is down, or refuses Dispatch's credential, when Dispatch starts does not stop it: Dispatch serves, connects once NATS answers, and publishes what was written meanwhile. Set `DISPATCH_NATS_DISABLED=1` to run without it. |
 | An address to listen on | `DISPATCH_LISTEN_HOST`, `DISPATCH_PORT` | Port `8766` by default. |
-| Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v1/search/coverage` shows how far it has got. |
+| Meaning search | `DISPATCH_EMBEDDER`, and for Azure the `DISPATCH_AZURE_*` settings | Search by meaning embeds text with Cohere Embed v4 on AWS Bedrock (the default, with the AWS SDK's region and credentials) or on Azure AI Foundry (`DISPATCH_EMBEDDER=azure`: the endpoint, the deployment's tokens-per-minute quota, and either the deployment's key or a keyless sign-in through a federated token). Without it, search answers by words alone and says so. The server embeds everything it already holds by itself, at start and every ten minutes; `GET /api/v2/search-coverage` shows how far it has got. |
 
 These are the settings most deployments need, not all of them. The full list, generated from the
 server, is in [Configuration](/legion/dispatch/reference/configuration/).
@@ -928,7 +928,49 @@ delete from components c
 where not exists (select 1 from architecture_sources s where s.project_key = c.project_key);
 ```
 
+The first `legion-envoy` release that carries pull request #4274 serves `/api/v2` beside
+`/api/v1`, while the web app and the `dispatch` command stay on `/api/v1`. It needs no migration
+step of its own: the server serves both versions, so a page or a `dispatch` command of either
+release works against either while the release rolls.
+
 ## The HTTP API
 
-`GET /api/v1` lists every API route with its method, who may call it, and a description. The
-[HTTP API reference](/legion/dispatch/reference/api/) is the same list.
+Dispatch serves two versions of its API side by side. `/api/v2`, from the first `legion-envoy`
+release that carries pull request #4274, is the one to call: every list answers
+`{items, total, limit, offset}`, every refusal is `{code, error}`, a query key a route does not
+declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`. Nine
+delivery and Legion routes are the exception: `GET /api/v2/delivery/measures`,
+`GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and
+`PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
+`DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the OpenAPI document
+lists no refusal codes for them, a query key they do not declare is not refused, and their `PUT`
+and `DELETE` take no `Idempotency-Key`. The test hooks under `/api/v2/_test/`, which a server
+serves only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
+`GET /api/v2` lists every route with its method, who may call it, what it serves and a
+description, with no credential, and the [HTTP API reference](/legion/dispatch/reference/api/) is
+the same list.
+
+`/api/v1` is deprecated. `GET /api/v1` and the
+[HTTP API v1 reference](/legion/dispatch/reference/api-v1/) list its routes, which keep the
+answers they had but for a few fixes of this release (the `unsettled` member a document's text
+read adds among them), and from that release on each answer, but dev sign-in's `421 HOST_MISMATCH`,
+the router's `400 FORWARDED_FOR_INVALID` and the redirect of a path that is not clean
+(`/api/v1//issues`), carries a `Deprecation` header and a `Link` header (`rel="successor-version"`)
+naming the `/api/v2` route that answers for it, or `GET /api/v2`. At that
+release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the
+Legion daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and
+its release in its `User-Agent` (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`,
+`pi-legion/<version>`, `claude-envoy/<version>`, `claude-envoy-hooks/<version>`,
+`codex-envoy/<version>`, `codex-envoy-hooks/<version>`,
+`legion-daemon/<release>`, `envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`,
+`envoy-broker-project-repositories/<commit>`), so the `user_agent` of Dispatch's access log shows
+which of them still call it. The web app sets no `User-Agent` of its own: its requests carry its
+browser's, so the access log does not name it.
+
+`/api/v1` ends at the instant `DISPATCH_API_V1_END` names, an RFC 3339 time with its offset, such
+as `2027-01-01T00:00:00Z`; `envoy-infra`'s `gcp:Dispatch` component sets it from its `apiV1End`
+input. While the instant is ahead, every `/api/v1` answer carries a `Sunset` header naming it.
+Once it has passed, every path under `/api/v1` answers `410 API_V1_ENDED`, pointing to
+`GET /api/v2`. Dispatch reads the clock on each request, so the end needs no restart, and it
+refuses to start on a value that is not an RFC 3339 time. Unset, `/api/v1` has no end: leave it so
+until no client you run still calls `/api/v1`, since such a client fails every call once it ends.

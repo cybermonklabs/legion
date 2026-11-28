@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -283,7 +284,16 @@ func newBrokerTokenRig(t *testing.T, options ...func(*ciphertoken.Options)) *bro
 func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...func(*ciphertoken.Options)) *brokerTokenRig {
 	t.Helper()
 	broker := ciphertokentest.NewStubBroker(t)
-	serving.brokerTokens = func(database *store.Store) *ciphertoken.Verifier {
+	serving.brokerTokens = stubBrokerTokens(t, broker, options...)
+	handler, database, deps, served := newRegisteredTestServer(t, serving)
+	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
+}
+
+// stubBrokerTokens builds the broker-token check a test server decides a broker-issued token by,
+// asking broker about each token and keeping its proofs' replay store in the server's database,
+// each option applied to the verifier's options before it is built.
+func stubBrokerTokens(t *testing.T, broker *ciphertokentest.StubBroker, options ...func(*ciphertoken.Options)) func(*store.Store) *ciphertoken.Verifier {
+	return func(database *store.Store) *ciphertoken.Verifier {
 		opts := ciphertoken.Options{
 			BrokerURL: broker.Server.URL,
 			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, credentialTestAccountToken)),
@@ -308,8 +318,6 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 		}
 		return verifier
 	}
-	handler, database, deps, served := newRegisteredTestServer(t, serving)
-	return &brokerTokenRig{handler: handler, deps: deps, database: database, broker: broker, served: served}
 }
 
 // serve carries one request through the server under test.
@@ -1282,11 +1290,11 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 		intruding := rig.serve(caller.presentingUpload(t, "/api/v1/agents/"+anotherSession+"/artifacts", token,
 			"shot.png", "image/png", pngBytes("another session's conversation")))
 		if intruding.Code != http.StatusForbidden {
-			t.Fatalf("an upload into another session's conversation: status=%d body=%s, want 403 %s", intruding.Code, intruding.Body.String(), codeSessionScope)
+			t.Fatalf("an upload into another session's conversation: status=%d body=%s, want 403 %s", intruding.Code, intruding.Body.String(), apicode.SessionScope.V1Name())
 		}
 		refusal := decodeBody[refusalAnswer](t, intruding)
-		if refusal.Code != codeSessionScope {
-			t.Fatalf("an upload into another session's conversation: refusal=%+v, want %s", refusal, codeSessionScope)
+		if refusal.Code != apicode.SessionScope.V1Name() {
+			t.Fatalf("an upload into another session's conversation: refusal=%+v, want %s", refusal, apicode.SessionScope.V1Name())
 		}
 		if !strings.Contains(refusal.Error, brokerTestSession) || !strings.Contains(refusal.Error, anotherSession) {
 			t.Fatalf("refusal %q names neither the session the token proved (%s) nor the session addressed (%s)",
@@ -1590,7 +1598,7 @@ func TestAJobsNamedTokenIsJudgedAsAPersonsNamedTokenForTheSameProject(t *testing
 			job:    map[string]any{"key": "JOB", "name": "Job", "default_assignee": brokerTestPerson},
 			person: map[string]any{"key": "PERSON", "name": "Person", "default_assignee": brokerTestPerson},
 			read:   "/api/v1/projects", written: `"JOB"`,
-			status: http.StatusForbidden, code: codeProjectScopeDeployment,
+			status: http.StatusForbidden, code: apicode.ProjectScopeDeployment.V1Name(),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1655,6 +1663,7 @@ func TestAJobsPublicTokenWritesEveryProjectAndTheDeployment(t *testing.T) {
 // one a named token's entry names, and none for a public token, which no one project limits; and
 // the project scope is the token's own, named or public, and sign_in_required is false, which is
 // what tells a job's token, whose service writes, from a machine's, which is refused every write.
+// GET /api/v2/me, whoami's successor, answers the same facts, the project scope among them.
 func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)
@@ -1698,6 +1707,22 @@ func TestAJobBrokerTokenIsNamedByWhoami(t *testing.T) {
 			}
 			if answer.SignInRequired == nil || *answer.SignInRequired {
 				t.Fatalf("whoami answered %s, want sign_in_required false: a job's token writes as its service", response.Body.String())
+			}
+			// GET /api/v2/me, whoami's successor, names the same facts in its one shape.
+			v2 := rig.serve(caller.presenting(t, http.MethodGet, "/api/v2/me", row.token, nil))
+			if v2.Code != http.StatusOK {
+				t.Fatalf("GET /api/v2/me: status=%d body=%s", v2.Code, v2.Body.String())
+			}
+			me := decodeBody[meV2](t, v2)
+			if me.Kind != "agent" || me.Person != nil || me.Session == nil || *me.Session != brokerTestSession ||
+				me.Service == nil || *me.Service != brokerTestJob || me.SignInRequired {
+				t.Fatalf("GET /api/v2/me = %s, want the token's session and the job as its service, no person and sign_in_required false", v2.Body.String())
+			}
+			if (row.project == nil) != (me.Project == nil) || (row.project != nil && *me.Project != *row.project) {
+				t.Fatalf("GET /api/v2/me project = %v, want %v", me.Project, row.project)
+			}
+			if me.ProjectScope == nil || *me.ProjectScope != row.scope {
+				t.Fatalf("GET /api/v2/me project_scope = %v, want %q: %s", me.ProjectScope, row.scope, v2.Body.String())
 			}
 		})
 	}

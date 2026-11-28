@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -93,6 +94,11 @@ type AppContext struct {
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
 	// event log to read (whoami then answers 503). A test sets it to answer a head of its own.
 	eventHead func(context.Context) (int64, error)
+	// apiV1End is AppContextOptions.APIV1End, the instant /api/v1 ends; zero is no end.
+	apiV1End time.Time
+	// now is the clock the end of /api/v1 is read against on each request (endAPIV1): nil for
+	// time.Now, and a test's own clock where it moves the time past the end.
+	now func() time.Time
 }
 
 // AppContextOptions is the explicit-injection bundle main.go assembles
@@ -216,6 +222,10 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// APIV1End is the instant /api/v1 ends (cmd/dispatch: DISPATCH_API_V1_END); zero is no end.
+	// While it is ahead each /api/v1 answer carries a Sunset header naming it, and once it has
+	// passed every path under /api/v1 answers 410 API_V1_ENDED (endAPIV1).
+	APIV1End time.Time
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
 	// See api.Deps.ParentStatusRule.
 	ParentStatusRule api.ParentStatusRule
@@ -330,6 +340,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		apiDeps:         apiDeps,
 		eventHead:       eventHead,
 		lifetime:        opts.Lifetime,
+		apiV1End:        opts.APIV1End,
 	}, nil
 }
 
@@ -385,7 +396,10 @@ type router struct {
 func New(ctx *AppContext) (http.Handler, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
-	handler := r.enforceCookieOrigin(mux)
+	// The end of /api/v1 sits outside the cookie-origin guard, so once it has passed it answers
+	// every path under /api/v1, a cross-origin write's included, and until then each refusal the
+	// guard writes there carries the version's headers too.
+	handler := r.endAPIV1(mux, r.enforceCookieOrigin(mux))
 	if ctx.devSignInHost != "" {
 		handler = requireHost(ctx.devSignInHost, handler)
 	}
@@ -437,12 +451,12 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	}
 	state, err := randomToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	nonce, err := randomToken()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), r.ctx.hosts.callbackURL(req), state, nonce)
@@ -459,7 +473,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		Exp:   time.Now().Add(oauthStateTTL).Unix(),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "state")
+		writeCodeError(w, http.StatusInternalServerError, "state", codeSigninStartFailed)
 		return
 	}
 	http.SetCookie(w, oauthStateCookieFor(value, oauthStateMaxAge, !r.ctx.InsecureCookie))
@@ -492,18 +506,18 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	code, state, err := auth.ParseCallback(req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeCodeError(w, http.StatusBadRequest, err.Error(), codeAuthParamsInvalid)
 		return
 	}
 	http.SetCookie(w, oauthStateCookieFor("", -1, !r.ctx.InsecureCookie))
 	cookie, err := req.Cookie(oauthStateCookie)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
+		writeCodeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start", codeAuthStateInvalid)
 		return
 	}
 	pending, ok := verifyOAuthState(r.ctx.SigningKey, cookie.Value, time.Now())
 	if !ok || subtle.ConstantTimeCompare([]byte(state), []byte(pending.State)) != 1 {
-		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
+		writeCodeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start", codeAuthStateInvalid)
 		return
 	}
 	session, err := r.ctx.SignIn.Exchange(req.Context(), r.ctx.hosts.callbackURL(req), code, pending.Nonce)
@@ -514,7 +528,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in code exchange failed", "error", err)
-		writeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error())
+		writeCodeError(w, http.StatusBadGateway, "sign-in failed: "+err.Error(), codeSigninFailed)
 		return
 	}
 	email, err := r.ctx.SignInRule.Person(session.Claims)
@@ -526,7 +540,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	subject := r.ctx.SignInRule.Subject(session.Claims)
 	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, email, subject, session.RefreshToken); err != nil {
 		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
-		writeError(w, http.StatusInternalServerError, "record sign-in")
+		writeCodeError(w, http.StatusInternalServerError, "record sign-in", codeSigninRecordFailed)
 		return
 	}
 	if !r.issueSession(w, req, email, subject) {
@@ -554,7 +568,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 		generation, err = r.ctx.Sessions.EnsureSession(req.Context(), email)
 		if err != nil {
 			slog.Error("dispatch: ensure session generation failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "session generation")
+			writeCodeError(w, http.StatusInternalServerError, "session generation", codeSessionFailed)
 			return false
 		}
 	}
@@ -566,7 +580,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 				return false
 			}
 			slog.Error("dispatch: read the account the sign-in recorded failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "record sign-in")
+			writeCodeError(w, http.StatusInternalServerError, "record sign-in", codeSigninRecordFailed)
 			return false
 		}
 	}
@@ -582,7 +596,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
 			slog.Warn("dispatch: revoke sessions failed", "email", email, "error", err)
-			writeError(w, http.StatusInternalServerError, "revoke session")
+			writeCodeError(w, http.StatusInternalServerError, "revoke session", codeSessionFailed)
 			return
 		}
 	}
@@ -694,12 +708,12 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	normalized := filepath.Clean("/" + requestedPath)
 	if isReservedPath(normalized, serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
-		// does not exist is visible beside the callers of the routes that do.
+		// does not exist is visible beside the callers of the routes that do (writeNoRoute).
 		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
-		writeError(w, http.StatusNotFound, "dashboard build not found")
+		writeCodeError(w, http.StatusNotFound, "dashboard build not found", codeDashboardNotBuilt)
 		return
 	}
 	if normalized == "/" {
@@ -730,7 +744,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err != nil && !isMissingFile(err) {
-		writeError(w, http.StatusInternalServerError, "stat failed")
+		writeCodeError(w, http.StatusInternalServerError, "stat failed", codeStaticReadFailed)
 		return
 	}
 	// The store's key is a Postgres text parameter, which cannot carry a NUL byte or invalid UTF-8
@@ -741,7 +755,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if !isBrowserRoute(normalized) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodeError(w, http.StatusNotFound, "not found", codeStaticNotFound)
 		return
 	}
 	servePage(w, req, filepath.Join(r.ctx.WebDistDir, "index.html"))
@@ -821,7 +835,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 		return
 	}
 	if errors.Is(err, ErrAssetNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodeError(w, http.StatusNotFound, "not found", codeStaticNotFound)
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -830,7 +844,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 	}
 	if err != nil {
 		slog.Error("dispatch: retained asset store failed", "key", key, "error", err)
-		writeError(w, http.StatusBadGateway, "retained asset store unavailable")
+		writeCodeError(w, http.StatusBadGateway, "retained asset store unavailable", codeAssetStoreUnavailable)
 		return
 	}
 	r.retainedHeld.Release(held - int64(len(asset)))
@@ -887,7 +901,7 @@ func refuseRetainedAssetAtCap(w http.ResponseWriter, key string) {
 	slog.Warn("dispatch: retained asset refused at the memory cap", "key", key, "cap_bytes", maxRetainedBytesHeld)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Retry-After", "1")
-	writeError(w, http.StatusServiceUnavailable, "retained assets are at their memory cap; retry")
+	writeCodeError(w, http.StatusServiceUnavailable, "retained assets are at their memory cap; retry", codeAssetStoreBusy)
 }
 
 // isBrowserRoute reports whether an unmatched, non-static path should fall
@@ -933,11 +947,11 @@ func isReservedPath(normalized string, roots []string) bool {
 func servePage(w http.ResponseWriter, req *http.Request, path string) {
 	page, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "dashboard build not found")
+		writeCodeError(w, http.StatusNotFound, "dashboard build not found", codeDashboardNotBuilt)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read failed")
+		writeCodeError(w, http.StatusInternalServerError, "read failed", codeStaticReadFailed)
 		return
 	}
 	w.Header().Set("Content-Type", contentType(path))
@@ -999,14 +1013,21 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
-// gate that answers as a path no route serves (googleSignInHere) writes it directly, so the
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A path under
+// /api/v2 answers that version's no-route code and points at its own index; every other root
+// answers as /api/v1 always has, and one under /api/v1 carries that version's Deprecation and Link
+// to /api/v2, and Sunset while an end is set and ahead, which endAPIV1 set before the mux ran. A
+// route's gate that answers as a path no route serves (googleSignInHere) writes it directly, so the
 // request's one access-log line is its route's own, as every request's is.
 func writeNoRoute(w http.ResponseWriter, req *http.Request) {
-	api.WriteJSON(w, http.StatusNotFound, map[string]string{
-		"code":  "NOT_FOUND",
+	code, status, hint := apicode.NotFound.V1Name(), apicode.NotFound.V1Status(), "GET /api/v1 lists every route"
+	if isReservedPath(filepath.Clean("/"+req.URL.Path), apiV2Roots) {
+		code, status, hint = apicode.NoRoute.Name(), apicode.NoRoute.Status(), "GET /api/v2 lists every route"
+	}
+	api.WriteJSON(w, status, map[string]string{
+		"code":  code,
 		"error": "no route for " + req.Method + " " + req.URL.Path,
-		"hint":  "GET /api/v1 lists every route",
+		"hint":  hint,
 	})
 }
 
@@ -1048,7 +1069,7 @@ func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 			return
 		}
 		if r.ctx.hosts.atFormer(req) {
-			writeError(w, http.StatusForbidden, "invalid request origin")
+			writeAPIRefusal(w, req, apicode.OriginRefused, "invalid request origin")
 			return
 		}
 		if docSocket {
@@ -1063,7 +1084,7 @@ func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, req)
 			return
 		}
-		writeError(w, http.StatusForbidden, "invalid request origin")
+		writeAPIRefusal(w, req, apicode.OriginRefused, "invalid request origin")
 	})
 }
 
@@ -1112,12 +1133,150 @@ func oauthStateCookieFor(value string, maxAge int, secure bool) *http.Cookie {
 	}
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
-	api.WriteJSON(w, status, map[string]string{"error": message})
-}
+// The router's own refusal codes, for the /auth routes and the dashboard's files. They answer no
+// /api path, so they are this package's own and not apicode's, as SIGNIN_UNCONFIGURED,
+// SIGNIN_SUPERSEDED, EVENT_HEAD_UNAVAILABLE and the dev sign-in's codes are.
+const (
+	// codeSigninStartFailed is a sign-in /auth/start could not open: no random state or nonce,
+	// or a state cookie that could not be signed.
+	codeSigninStartFailed = "SIGNIN_START_FAILED"
+	// codeAuthParamsInvalid is an /auth/callback that carries the issuer's error, lacks a code or
+	// a state, or carries a code longer than oidc.MaxCallbackCode.
+	codeAuthParamsInvalid = "AUTH_PARAMS_INVALID"
+	// codeAuthStateInvalid is an /auth/callback with no state cookie, or one that does not
+	// verify, has lapsed, or names another sign-in's state.
+	codeAuthStateInvalid = "AUTH_STATE_INVALID"
+	// codeSigninFailed is a code exchange the token endpoint answered with a 4xx, a 3xx, or a 2xx
+	// that names an error or holds no token; one that meets an issuer this process has not
+	// discovered, or that the endpoint could not answer (a 5xx, a 408 or a 429), is
+	// SIGNIN_UNAVAILABLE (authCallback).
+	codeSigninFailed = "SIGNIN_FAILED"
+	// codeSigninRecordFailed is a sign-in whose person could not be recorded or read back.
+	codeSigninRecordFailed = "SIGNIN_RECORD_FAILED"
+	// codeSessionFailed is a session generation that could not be ensured or revoked.
+	codeSessionFailed = "SESSION_FAILED"
+	// codeDashboardNotBuilt is a dashboard path on a server with no dashboard build to serve.
+	codeDashboardNotBuilt = "DASHBOARD_NOT_BUILT"
+	// codeStaticNotFound is a file path no build holds, here or in the asset store.
+	codeStaticNotFound = "STATIC_NOT_FOUND"
+	// codeStaticReadFailed is a dashboard file the filesystem failed to stat or read.
+	codeStaticReadFailed = "STATIC_READ_FAILED"
+	// codeAssetStoreUnavailable is an asset store read that failed.
+	codeAssetStoreUnavailable = "ASSET_STORE_UNAVAILABLE"
+	// codeAssetStoreBusy is a retained asset refused at the memory cap or past its fetch bound.
+	codeAssetStoreBusy = "ASSET_STORE_BUSY"
+)
+
+// apiV2Roots is the path root of /api/v2, whose refusals the router writes under that version's
+// names (writeAPIRefusal) and whose unknown paths answer NO_ROUTE.
+var apiV2Roots = []string{"/api/v2"}
 
 func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 	api.WriteJSON(w, status, map[string]string{"error": message, "code": code})
+}
+
+// writeAPIRefusal answers a refusal the router writes in front of every route with a code of the
+// API's own list (apicode): under the name and status /api/v2 gives it on a path under /api/v2,
+// and under /api/v1's on any other path, the /auth routes and the dashboard's among them.
+func writeAPIRefusal(w http.ResponseWriter, req *http.Request, code apicode.Code, message string) {
+	name, status := code.V1Name(), code.V1Status()
+	if isReservedPath(filepath.Clean("/"+req.URL.Path), apiV2Roots) {
+		name, status = code.Name(), code.Status()
+	}
+	writeCodeError(w, status, message, name)
+}
+
+// apiV1DeprecatedAt dates the Deprecation header of every /api/v1 answer (RFC 9745; R3.1 of
+// dispatch://INFRA-4071/spec): 00:00Z of the day the change that added /api/v2 wrote its last
+// implementing head, which its implementer sets in that round. It is a date in code because no
+// build can know the day it is released: the Envoy image is built before the release job decides
+// its legion-envoy version, and the server knows only the commit it was built from (main's
+// buildCommit), so the date can be some days before the release that carries it.
+var apiV1DeprecatedAt = time.Date(2026, time.November, 28, 0, 0, 0, 0, time.UTC)
+
+// apiV1Deprecation is the Deprecation header's value, `@` and the date's Unix seconds.
+var apiV1Deprecation = "@" + strconv.FormatInt(apiV1DeprecatedAt.Unix(), 10)
+
+// apiV1Roots is the path root of /api/v1, every path the end of /api/v1 holds (endAPIV1).
+var apiV1Roots = []string{"/api/v1"}
+
+// apiV1Index is the Link of a /api/v1 answer no route of its own names a successor for: an
+// unknown path, the cookie-origin guard's refusal, the end's 410. It links /api/v2, which lists
+// every route; a route's own answer replaces it with its successor (api's linkSuccessor).
+const apiV1Index = `</api/v2>; rel="successor-version"`
+
+// endAPIV1 holds every path under /api/v1 - a route's, an unknown one, a test hook's - to the
+// version's deprecation and to its end, in front of next, which serves mux (R3.1, R3.4): each
+// answer carries Deprecation and the Link to /api/v2, and, while the instant AppContext.apiV1End
+// names is ahead, Sunset (RFC 8594) naming it; once it has passed, the path is answered 410
+// API_V1_ENDED, pointing to GET /api/v2, and no route runs. The clock is read on each request, so
+// the end takes effect at its instant on every process with no restart. Every other path passes
+// untouched.
+//
+// The 410 writes its access-log line, since after the end the log is where an operator sees who
+// still calls /api/v1: under the route mux would have served the request by, as that route's own
+// line names it, or unmatchedRoute, as the no-route answer's line does (endedRoute).
+func (r *router) endAPIV1(mux *http.ServeMux, next http.Handler) http.Handler {
+	end := r.ctx.apiV1End
+	now := r.ctx.now
+	if now == nil {
+		now = time.Now
+	}
+	// Written once, so a request formats nothing: Sunset is an IMF-fixdate, which is UTC, and the
+	// 410 names the end as the setting gave it.
+	var sunset string
+	var ended map[string]string
+	if !end.IsZero() {
+		sunset = end.UTC().Format(http.TimeFormat)
+		ended = map[string]string{
+			"code":  apicode.APIV1Ended.V1Name(),
+			"error": "/api/v1 ended at " + end.Format(time.RFC3339Nano) + "; GET /api/v2 lists every route",
+			"hint":  "GET /api/v2",
+		}
+	}
+	answerEnded := func(w http.ResponseWriter, _ *http.Request) {
+		api.WriteJSON(w, apicode.APIV1Ended.V1Status(), ended)
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !underAPIV1(req.URL.Path) {
+			next.ServeHTTP(w, req)
+			return
+		}
+		header := w.Header()
+		header.Set("Deprecation", apiV1Deprecation)
+		header.Set("Link", apiV1Index)
+		if !end.IsZero() {
+			if !now().Before(end) {
+				accesslog.HandlerFunc(endedRoute(mux, req), answerEnded)(w, req)
+				return
+			}
+			header.Set("Sunset", sunset)
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+// endedRoute is the access-log route of a request the end of /api/v1 answers: the path pattern of
+// the route mux matches it to, which is the route its line would have named had the route run, or
+// unmatchedRoute where only the catch-all matches - a path no route answers, a method its route
+// does not serve. An unclean path is named by the route its cleaned path matches, the pattern
+// mux.Handler answers for the redirect it would make.
+func endedRoute(mux *http.ServeMux, req *http.Request) string {
+	_, pattern := mux.Handler(req)
+	if _, path, withMethod := strings.Cut(pattern, " "); withMethod {
+		pattern = path
+	}
+	if pattern == "" || pattern == "/" {
+		return unmatchedRoute
+	}
+	return pattern
+}
+
+// underAPIV1 reports whether path is /api/v1 or a path below it once cleaned, as staticHandler
+// reads a path's root. A path that does not begin /api/v1 is none: one that cleans to such a path
+// is unclean, and the mux redirects it to the clean path, which this then holds.
+func underAPIV1(path string) bool {
+	return strings.HasPrefix(path, "/api/v1") && isReservedPath(filepath.Clean(path), apiV1Roots)
 }
 
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from

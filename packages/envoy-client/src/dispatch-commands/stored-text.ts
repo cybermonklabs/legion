@@ -10,10 +10,12 @@ import { resolve as resolvePath } from "node:path";
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
+  uploadExtensionOf,
   utf8Bytes,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { BunFile } from "bun";
+import { uploadIsDocument } from "../askgate-marker";
 import { fileTextBytes, unstorableBytes } from "../dispatch-file-text";
 import {
   DispatchAnswerMissingError,
@@ -160,16 +162,41 @@ export function documentFieldRefusal(field: string, text: string): Error | undef
 
 /**
  * The file `dispatch artifact --path` sends for `path`, resolved against `cwd`, the directory the
- * call runs in, under the type its upload declares, which Dispatch stores it by: an upload whose
- * file part is declared `text/markdown`, its parameters and its case aside, is a document, and any
- * other is a picture or a file (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go).
- * It declares the type Bun reads from the path's extension, `text/markdown` for .md and .markdown
- * (PATH_KEEPS_BYTES). The call uploads this file, or the bytes read of it under its type, and the
- * CLI's check of the file, the call and its dry run read from it whether the file is Markdown
- * (`documentFileRead`), so the upload and its check take one rule of which files are Markdown.
+ * call runs in, under `name`, the name it is sent as, and under the type its upload declares,
+ * which Dispatch stores it by: an upload whose file part is declared `text/markdown`, its
+ * parameters and its case aside, is a document, and any other is a picture or a file
+ * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). The type is
+ * `text/markdown` exactly when AskGate's predicate holds the upload as a document
+ * (uploadIsDocument, ../askgate-marker.ts), from its name and the path, and never otherwise, so
+ * Dispatch stores as a document every upload AskGate holds as one and no other (INFRA-4071 R15):
+ * a plan written to plan.txt and sent as plan.md is a document, as the plan the issue reads must
+ * be, and so is a Markdown file sent under a title (`Design notes`, `Plan v1.2`, `notes.md/`) or
+ * from `notes.md/`, which the path resolves to notes.md. Every other upload declares the type Bun
+ * gives the extension that decides in its name (`x.<extension>`, uploadExtensionOf, past trailing
+ * extensions of the digits 0 to 9 alone), whatever the path, so cases.txt sent from cases.md is a
+ * file of the bytes as written, notes.txt.1 goes up as `text/plain` and rows.jsonl.1 as
+ * `application/octet-stream`; a name with no extension, or no name, declares the type Bun reads
+ * from the resolved path. A type of those that is still `text/markdown` goes up as
+ * `application/octet-stream`. The call uploads this file, or the bytes read of it under its type,
+ * and the CLI's check of the file, the call and its dry run read from it whether the file is
+ * Markdown (`documentFileRead`), so the upload and its check take one rule of which files are
+ * Markdown.
  */
-export function uploadedFile(cwd: string, path: string): BunFile {
-  return Bun.file(resolvePath(cwd, path));
+export function uploadedFile(cwd: string, path: string, name: string | undefined): BunFile {
+  const local = resolvePath(cwd, path);
+  if (uploadIsDocument({ name, path }, cwd)) return Bun.file(local, { type: "text/markdown" });
+  const extension = name === undefined ? undefined : uploadExtensionOf(name);
+  return Bun.file(local, {
+    type: notMarkdown(Bun.file(extension === undefined ? local : `x.${extension}`).type),
+  });
+}
+
+/** `type`, or `application/octet-stream` for `text/markdown`, which only an upload AskGate holds
+ *  as a document declares (uploadedFile). */
+function notMarkdown(type: string): string {
+  return type.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown"
+    ? "application/octet-stream"
+    : type;
 }
 
 /**

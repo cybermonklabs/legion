@@ -56,6 +56,7 @@
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.
 
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { refusedDirective, runOf, typedOpenerAt } from "./typed-block-opener";
 
 /** A new ask a call opens for a person. */
@@ -141,7 +142,7 @@ function editOps(input: Readonly<Record<string, unknown>>): Record<string, unkno
 
 /** A `dispatch ask`: its question, then its options as the bullet list an ask block holds them in. */
 function questionAsk(input: Readonly<Record<string, unknown>>): NewAsk {
-  const question = typeof input.question === "string" ? input.question.trim() : "";
+  const question = typeof input.question === "string" ? goTrimSpace(input.question) : "";
   const options = (Array.isArray(input.options) ? input.options : []).flatMap((option: unknown) => {
     if (typeof option !== "object" || option === null) return [];
     const { label, description } = option as Record<string, unknown>;
@@ -203,8 +204,10 @@ function scanAsks(markdown: string, frontMatter: boolean): NewAsk[] {
     scan.index = index;
     readLine(scan, document, new Line(text));
   }
+  // Dispatch trims a block's question with Go's `strings.TrimSpace` (parseAskBlock,
+  // packages/envoy/internal/dispatch/docs/ask_blocks.go), so the text is cut as Go cuts it.
   return scan.drafts.map(({ id, lines: body }) => {
-    const text = body.join("\n").trim();
+    const text = goTrimSpace(body.join("\n"));
     return { kind: "block", ...(id === undefined ? {} : { id }), text, opening: openingOf(text) };
   });
 }

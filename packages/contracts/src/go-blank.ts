@@ -17,8 +17,29 @@
  * `dispatch artifact` (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the
  * Dispatch server's blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion`
  * tool's `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's;
- * and the Envoy plugin's `listenerRoleName` (`packages/pi-envoy/src/listener-role-name.ts`), which
- * trims a role's name as the Envoy listener trims a claim's.
+ * the `dispatch` command's refusal of a flag value that is only white space
+ * (`packages/envoy-client/src/dispatch-command.ts`) and the patterns
+ * `packages/envoy-client/src/go-space.ts` builds from its source; and `goTrimSpace` below. It
+ * trims a role's name as the Envoy listener trims a claim's, in
+ * `packages/pi-envoy/extensions/envoy.ts`'s session-role read and the Envoy plugin's
+ * `listenerRoleName` (`packages/pi-envoy/src/listener-role-name.ts`), and each value Dispatch
+ * trims with `strings.TrimSpace` as Dispatch trims it: an upload's name (`uploadStoredName`,
+ * `./dispatch-tools.ts`) for its extension (`uploadExtensionOf`), for the held-name check
+ * (`artifactUnderName`, `packages/envoy-client/src/dispatch-commands/upload-checks.ts`) and for
+ * AskGate's rules check and breaker (`uploadName` and `callKeys`,
+ * `packages/pi-envoy/extensions/askgate/`); the host session id the `dispatch` commands send
+ * (`packages/envoy-client/src/dispatch-commands/`), which Dispatch trims on the routes that read
+ * it with `strings.TrimSpace` (`dispatch open-asks`, `follow` and `read --message`) and refuses
+ * as no session id when it holds whitespace on the routes that read it with `requestSessionID`
+ * (`dispatch answers` and a picture upload), so an id blank to Go is no session id before any
+ * request; a GitHub repository as `refs.ExternalRepo` reads its owner and name (`canonicalRepo`,
+ * `./repo.ts`), for the issue reference a `dispatch` command's owner check reads
+ * (`canonicalExternalIssueRef`, `packages/envoy-client/src/dispatch-commands/check.ts`) and for
+ * the default repository a command takes from the working directory's git remote
+ * (`parseGitHubRemoteUrl`, `packages/envoy-client/src/dispatch-cwd.ts`, whose own trim is of the
+ * remote URL git prints, which is never sent); an ask's question and an ask block's text
+ * (`questionAsk` and the block scan, `packages/envoy-client/src/askgate-new-asks.ts`); and the
+ * reasons the tool specs refuse as blank before they send (`./dispatch-tools.ts`).
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
@@ -39,3 +60,18 @@ export const goBlankPattern =
 /** The two characters on which `String.prototype.trim` and Go's `strings.TrimSpace` differ:
  * U+0085, blank to Go and content to `trim`, and U+FEFF, content to Go and blank to `trim`. */
 export const GO_TRIM_SPLIT = ["\u0085", "\uFEFF"] as const;
+
+/**
+ * `text` with the characters `goBlankPattern` holds cut from both ends, as Go's
+ * `strings.TrimSpace` cuts them, which is not what `trim` cuts (`GO_TRIM_SPLIT`). Each end is
+ * walked one UTF-16 unit at a time and each unit tested alone, so the pattern never sees more
+ * than one character and the time is linear in the blanks cut. Every character of the set is a
+ * single unit, and half a surrogate pair is none of them.
+ */
+export function goTrimSpace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && goBlankPattern.test(text.charAt(start))) start += 1;
+  while (end > start && goBlankPattern.test(text.charAt(end - 1))) end -= 1;
+  return text.slice(start, end);
+}

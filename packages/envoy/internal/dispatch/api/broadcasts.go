@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -30,17 +31,20 @@ import (
 // ordinary issue-less message aimed at its own session, carrying the broadcast's id, so each
 // recipient's thread, retry and reply work exactly as they do for a message sent from one
 // agent card. Nothing reads a broadcast to deliver it; the broadcast row only records what
-// the recipients share, and GET /api/v1/broadcasts/{id} reads their messages back.
+// the recipients share, and GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id} read
+// their messages back (getBroadcast).
 //
 // A selected session that does not advertise the chosen mode is never switched to another
 // one: it is excluded before anything is written, and named in the create response. The mode
 // a human picked is part of what they said - a steer interrupts an agent and a btw waits for
 // an answer - so silently downgrading it would deliver a different message than the one the
-// sender composed. Exclusions are not stored: the browser excludes them at compose time from
-// the same capability list, and the response covers the race where a session's capabilities
-// or liveness changed in between. What persists is who was actually sent to.
+// sender composed. Exclusions are not stored with the broadcast, only in a keyed send's recovery
+// point for its repeat (broadcastRecovery): the browser excludes them at compose time from the
+// same capability list, and the response covers the race where a session's capabilities or
+// liveness changed in between. What the broadcast persists is who was actually sent to.
 //
-// Broadcasting needs the person scope (its route's OAuthScopes), like the one-session route it is built from.
+// Broadcasting needs the person scope (its route's OAuthScopes, at /api/v1 its declaration's and
+// at /api/v2 the row's), like the one-session route it is built from.
 
 // broadcastDeliveryWorkers is how many recipients are delivered to at once, once the create
 // request has already answered. Each worker takes a tracking context of its own
@@ -157,21 +161,29 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	var input createBroadcastInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.IdempotencyKey != nil {
-		writeError(w, "INVALID_JSON", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidJSON,
 			"idempotency_key is the Idempotency-Key header, not a body member")
 		return
 	}
-	requested, err := validateBroadcastInput(input.Body, input.Delivery, input.SessionIDs)
+	s.sendBroadcast(w, r, actor, input.Body, input.Delivery, input.SessionIDs)
+}
+
+// sendBroadcast sends body in mode delivery to each session of sessionIDs that can take it, as
+// the person actor, once the route has read its body: the work of POST /api/v1/broadcasts and
+// POST /api/v2/broadcasts. It answers 201 the broadcast once it is committed, each recipient's
+// delivery running behind the answer, with the sessions it left out; or the refusal.
+func (s *server) sendBroadcast(w http.ResponseWriter, r *http.Request, actor model.Actor, body, delivery string, sessionIDs []string) {
+	requested, err := validateBroadcastInput(body, delivery, sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if s.deps.Envoy == nil {
-		writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, "ENVOY_URL is not configured")
+		writeError(w, r, apicode.EnvoyUnavailable, "ENVOY_URL is not configured")
 		return
 	}
 	// Each selected session is judged against the session store by its own id, one read each.
@@ -192,13 +204,13 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		// retry would be told the session was left out on purpose, and no retry of theirs could
 		// ever reach it.
 		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
-			writeError(w, "ENVOY_UNAVAILABLE", http.StatusServiceUnavailable, err.Error())
+			writeError(w, r, apicode.EnvoyUnavailable, err.Error())
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	targets := resolveBroadcastTargets(requested, input.Delivery, sessions)
+	targets := resolveBroadcastTargets(requested, delivery, sessions)
 	recipients := make([]broadcastTarget, 0, len(targets))
 	excluded := make([]broadcastExclusion, 0)
 	for _, target := range targets {
@@ -211,14 +223,14 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		recipients = append(recipients, target)
 	}
 	if len(recipients) == 0 {
-		writeError(w, "BROADCAST_EMPTY", http.StatusBadRequest,
+		writeError(w, r, apicode.BroadcastEmpty,
 			"no selected session can receive this message: "+excludedSummary(excluded))
 		return
 	}
 
-	created, events, err := s.writeBroadcast(r.Context(), actor, input.Body, input.Delivery, recipients, excluded)
+	created, events, err := s.writeBroadcast(r.Context(), actor, body, delivery, recipients, excluded)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), events...)
@@ -243,7 +255,7 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 		sends = append(sends, broadcastSend{message: recipient.Message.Message, attempt: 1})
 	}
 	sending := context.WithoutCancel(r.Context())
-	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, input.Delivery, actor) })
+	s.detached.goDetached(func() { s.deliverBroadcast(sending, sends, delivery, actor) })
 	// The send's own answer carries the body it has just stored the tree of, so it is read where
 	// it stands rather than from the table.
 	shapeBuilt(wantsDisplayTrees(r), created.attachTrees)
@@ -255,13 +267,13 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 // named twice is one recipient, not two messages.
 func validateBroadcastInput(body, delivery string, sessionIDs []string) ([]string, error) {
 	if strings.TrimSpace(body) == "" {
-		return nil, errorf(http.StatusBadRequest, "INVALID_MESSAGE", "message body is required")
+		return nil, errorf(apicode.InvalidMessage, "message body is required")
 	}
 	if err := blockBoundError(itemblocks.Check("body", body)); err != nil {
 		return nil, err
 	}
 	if !validDelivery(delivery) {
-		return nil, errorf(http.StatusBadRequest, "BROADCAST_INPUT", "delivery must be one of btw, aside, steer")
+		return nil, errorf(apicode.BroadcastInput, "delivery must be one of btw, aside, steer")
 	}
 	seen := make(map[string]struct{}, len(sessionIDs))
 	requested := make([]string, 0, len(sessionIDs))
@@ -277,12 +289,12 @@ func validateBroadcastInput(body, delivery string, sessionIDs []string) ([]strin
 		requested = append(requested, trimmed)
 	}
 	if len(requested) == 0 {
-		return nil, errorf(http.StatusBadRequest, "BROADCAST_INPUT", "session_ids must name at least one session")
+		return nil, errorf(apicode.BroadcastInput, "session_ids must name at least one session")
 	}
 	// contracts.MaxBroadcastRecipients bounds one send, and the dashboard refuses the same number
 	// before it asks. A runaway guard rather than a product limit.
 	if len(requested) > contracts.MaxBroadcastRecipients {
-		return nil, errorf(http.StatusBadRequest, "BROADCAST_INPUT",
+		return nil, errorf(apicode.BroadcastInput,
 			"a broadcast reaches at most %d sessions (%d selected)", contracts.MaxBroadcastRecipients, len(requested))
 	}
 	return requested, nil
@@ -297,9 +309,10 @@ type broadcastRecovery struct {
 }
 
 // replayBroadcast answers a repeat of a keyed broadcast whose broadcast committed: the broadcast as
-// GET /api/v1/broadcasts/{id} reads it, every recipient's attempts as they stand, with the send's
-// own exclusions, under the send's own 201 - answered at once, as the send was, while
-// sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
+// GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id} read it, every recipient's attempts
+// as they stand, with the send's own exclusions, under the send's own 201 - answered at once, as
+// the send was, while sendOwedBroadcastRecipients puts every recipient it still owes on its way
+// behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -308,11 +321,11 @@ func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point b
 	ctx := r.Context()
 	read, err := s.readBroadcast(ctx, who, point.BroadcastID, wantsDisplayTrees(r))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.sendOwedBroadcastRecipients(ctx, read); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	excluded := point.Excluded
@@ -654,7 +667,19 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+	summaries, err := s.broadcastSummaries(r.Context(), wantsDisplayTrees(r), 50, 0)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, summaries)
+}
+
+// broadcastSummaries is one page of the broadcasts, newest first, limit of them from offset, each
+// with how many sessions it reached and how many of those answered: GET /api/v1/broadcasts reads
+// the newest 50, and GET /api/v2/broadcasts the page its query names.
+func (s *server) broadcastSummaries(ctx context.Context, trees bool, limit, offset int) ([]broadcastSummary, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select b.id::text, b.author, b.body, b.delivery, b.created_at,
 		       count(distinct m.id),
 		       -- Recipients who answered, not answered attempts: one recipient that answered a
@@ -665,14 +690,12 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		left join message_deliveries d on d.message_id = m.id and d.reply_id is not null
 		group by b.id
 		order by b.created_at desc, b.id desc
-		limit 50
-	`)
+		limit $1 offset $2
+	`, limit, offset)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	defer rows.Close()
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	summaries := []broadcastSummary{}
 	for rows.Next() {
 		var summary broadcastSummary
@@ -681,29 +704,28 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 			&summary.ID, &author, &summary.Body, &summary.Delivery, &summary.CreatedAt,
 			&summary.Recipients, &summary.Replies,
 		); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		if err := json.Unmarshal(author, &summary.Author); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return nil, err
 		}
 		summaries = append(summaries, summary)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
+	rows.Close()
 	// The bodies are registered once the list is whole: a row of a slice still being appended to
 	// is a row the reader must not hold the address of.
+	reader := s.readDisplayTrees(ctx, trees)
 	for index := range summaries {
 		summaries[index].attachTrees(reader)
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, summaries)
+	return summaries, nil
 }
 
-// GET /api/v1/broadcasts/{id}
+// GET /api/v1/broadcasts/{id} and GET /api/v2/broadcasts/{id}
 //
 // A broadcast's route resolves no id prefix, but the prefix layer canonicalizes its {id} all the
 // same (canonicalizeUUIDPath), so this handler parses the one spelling of it: Postgres refuses
@@ -716,23 +738,23 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if _, err := uuid.Parse(id); err != nil {
-		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
+		writeError(w, r, apicode.BroadcastNotFound, "broadcast not found")
 		return
 	}
 	read, err := s.readBroadcast(r.Context(), who, id, wantsDisplayTrees(r))
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
+		writeError(w, r, apicode.BroadcastNotFound, "broadcast not found")
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it to who; an unknown id is pgx.ErrNoRows.
+// and GET /api/v2/broadcasts/{id} answer it to who (getBroadcast); an unknown id is pgx.ErrNoRows.
 func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte

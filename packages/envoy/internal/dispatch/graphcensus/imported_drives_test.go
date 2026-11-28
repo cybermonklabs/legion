@@ -273,8 +273,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	return []graphcensus.StoreDrive{{
-		Name: "api/issue_create.go#createIssue", Database: r.database,
-		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
+		Name: "api/issue_create.go#createIssueFrom", Database: r.database,
+		Sites: []string{"api/issue_create.go#createIssueFrom", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -307,7 +307,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 		Counts: newBlockCounted,
 	}, {
-		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
+		Name: "api/comment_create.go#queueCommentRow, on an issue", Database: r.database,
 		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
@@ -327,7 +327,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
 		// runs.
-		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
+		Name: "api/comment_create.go#queueCommentRow, anchored to a document, mentioning a session", Database: r.database,
 		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
 			r.mentioned = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
@@ -359,8 +359,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// The reply answers an attempt the listener refused, which the answer flips to sent: a
 		// delivery its session is owed a node for, and the one write that states it delivered.
-		Name: "api/comment_delivery.go#replyComment", Database: r.database,
-		Sites: comment("api/comment_delivery.go#replyComment",
+		Name: "api/comment_delivery.go#answerCommentDelivery", Database: r.database,
+		Sites: comment("api/comment_delivery.go#answerCommentDelivery",
 			"api/comment_delivery.go#queueAnsweredDelivery", "graphstore/people.go#QueueSessionRecorded"),
 		Ready: func(t *testing.T) {
 			refused := decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments", map[string]any{
@@ -429,8 +429,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
 		},
 	}, {
-		Name: "api/asks.go#createAskFor", Database: r.database,
-		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#queueFollow"},
+		Name: "api/asks.go#openAsk", Database: r.database,
+		Sites: []string{"api/asks.go#openAsk", "asks/followers.go#queueFollow"},
 		Drive: func(t *testing.T) {
 			r.ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks", map[string]any{
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),

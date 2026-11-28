@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -57,7 +59,7 @@ func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *Liv
 	if view.Query != nil {
 		query, err := url.ParseQuery(*view.Query)
 		if err != nil {
-			return invalidLiveView("INVALID_QUERY", "query does not parse: "+err.Error())
+			return invalidLiveView(apicode.InvalidQuery.V1Name(), "query does not parse: "+err.Error())
 		}
 		spec.query = query
 	}
@@ -83,7 +85,7 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 	if view.At != nil {
 		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 		if err != nil {
-			return invalidLiveView("INVALID_QUERY", err.Error())
+			return invalidLiveView(apicode.InvalidQuery.V1Name(), err.Error())
 		}
 		at = at.UTC()
 		spec.at = &at
@@ -93,7 +95,8 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 }
 
 // parseLegionLiveView reads a legion view: it names the project whose board it shows and nothing
-// else, since the board has no window and the project is all GET /api/v1/projects/{key}/legion/board reads.
+// else, since the board has no window and the project is all GET
+// /api/v1/projects/{key}/legion/board and GET /api/v2/projects/{key}/legion/board read.
 func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")
@@ -107,7 +110,7 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	// person who meets the mistake at either door learns one name for it. A project that does not
 	// exist is the read's to refuse, as the route's is (readLegionBoardView, loadProject).
 	if !projectKeyPattern.MatchString(project) {
-		return invalidLiveView("INVALID_PROJECT", projectKeyProblem("project", project))
+		return invalidLiveView(apicode.InvalidProject.V1Name(), projectKeyProblem("project", project))
 	}
 	spec.project = project
 	spec.key = legionBoardView + "|" + project + "|"
@@ -162,7 +165,7 @@ func (spec *deliveryLiveSpec) readWindow(window *DeliveryLiveWindow) (string, *L
 	case window.Preset == nil && window.From != nil && window.To != nil:
 		from, to, err := parseDeliveryWindow(url.Values{"from": {*window.From}, "to": {*window.To}})
 		if err != nil {
-			return refuse("INVALID_QUERY", err.Error())
+			return refuse(apicode.InvalidQuery.V1Name(), err.Error())
 		}
 		spec.from, spec.to = from.UTC(), to.UTC()
 		return spec.from.Format(time.RFC3339Nano) + "," + spec.to.Format(time.RFC3339Nano), nil

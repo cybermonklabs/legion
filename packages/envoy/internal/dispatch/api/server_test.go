@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -166,7 +167,8 @@ type testServerOptions struct {
 	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
 	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
 	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
-	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF. The
+	// route tour points it at its own fake broker (newTourSecretsBroker).
 	agentSecretsURL string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
@@ -611,6 +613,16 @@ func awaitResponse(t *testing.T, responses <-chan *httptest.ResponseRecorder) *h
 
 func dispatchRequest(t testing.TB, handler http.Handler, method, target string, body any, login string) *httptest.ResponseRecorder {
 	t.Helper()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, newDispatchRequest(t, method, target, body, login))
+	return response
+}
+
+// newDispatchRequest is the request dispatchRequest serves: body as JSON, from login where one is
+// given. It fails t for a body it cannot encode, so a test that serves on a goroutine of its own
+// builds the request here, on the test's goroutine.
+func newDispatchRequest(t testing.TB, method, target string, body any, login string) *http.Request {
+	t.Helper()
 	if strings.HasSuffix(target, "/answer") {
 		data, err := json.Marshal(body)
 		if err != nil {
@@ -642,9 +654,7 @@ func dispatchRequest(t testing.TB, handler http.Handler, method, target string, 
 	if login != "" {
 		request.Header.Set("X-Dispatch-User", login)
 	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	return response
+	return request
 }
 
 func multipartRequest(t *testing.T, handler http.Handler, target string, fields map[string]string, filename, contentType string, content []byte, login string) *httptest.ResponseRecorder {
@@ -1723,8 +1733,8 @@ func TestBearerReadRoutesDoNotRequireActor(t *testing.T) {
 
 	// The inbox is one of the rows the person scope opens, and the shared token holds no scope.
 	inbox := agentRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "agent-token")
-	if inbox.Code != http.StatusForbidden || !strings.Contains(inbox.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's inbox: status=%d body=%s, want 403 %s", inbox.Code, inbox.Body.String(), codeScopeRequired)
+	if inbox.Code != http.StatusForbidden || !strings.Contains(inbox.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's inbox: status=%d body=%s, want 403 %s", inbox.Code, inbox.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 	anonymous := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key, nil, "")
 	if anonymous.Code != http.StatusUnauthorized {
@@ -1764,8 +1774,8 @@ func TestPerUserIssueStateIsIsolated(t *testing.T) {
 		t.Fatalf("Bob state leaked Alice pin: status=%d body=%s", bob.Code, bob.Body.String())
 	}
 	session := agentRequest(t, handler, http.MethodGet, "/api/v1/me/state", nil, "agent-token")
-	if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-		t.Fatalf("the shared token's state: status=%d body=%s, want 403 %s", session.Code, session.Body.String(), codeScopeRequired)
+	if session.Code != http.StatusForbidden || !strings.Contains(session.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+		t.Fatalf("the shared token's state: status=%d body=%s, want 403 %s", session.Code, session.Body.String(), apicode.OAuthScopeRequired.V1Name())
 	}
 }
 

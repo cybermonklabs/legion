@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -36,45 +37,6 @@ import (
 
 // specDir is the directory of a repository that holds its spec files.
 const specDir = ".dispatch/spec"
-
-// The codes of this route's own refusals, and of the gate that holds a results token to it.
-const (
-	// codeResultsOnlyToken refuses a results token on every route the results list does not
-	// name (refuseLimitedToken).
-	codeResultsOnlyToken = "RESULTS_ONLY_TOKEN"
-	// codeResultsScopeRequired refuses every other credential on the route: only a CI job's
-	// results token writes a result of a spec check.
-	codeResultsScopeRequired = "RESULTS_SCOPE_REQUIRED"
-	// codeResultInput refuses a body this route does not take.
-	codeResultInput = "RESULT_INPUT"
-	// codeCommitNotTheRuns refuses a result for another commit than the run's.
-	codeCommitNotTheRuns = "COMMIT_NOT_THE_RUNS"
-	// codeRepositoryNotTheProjects refuses a run of a repository that is not the project's
-	// default repository.
-	codeRepositoryNotTheProjects = "REPOSITORY_NOT_THE_PROJECTS"
-	// codeCheckRunNotTheRuns refuses a token whose check run GitHub names for another commit.
-	codeCheckRunNotTheRuns = "CHECK_RUN_NOT_THE_RUNS"
-	// codeCheckRunNotShown refuses a token whose check run GitHub refuses Dispatch for good, with
-	// its 403 or 404 (githubapp.ErrRepositoryUnreadable): the App cannot see the run, or no such
-	// run exists, so the run is not proven, and a write again is answered the same.
-	codeCheckRunNotShown = "CHECK_RUN_NOT_SHOWN"
-	// codeSpecFilesRefused refuses a result at a commit whose spec files the graph logic refuses
-	// (specgraph.Judge): such files hold no check to write a result for.
-	codeSpecFilesRefused = "SPEC_FILES_REFUSED"
-	// codeCheckNotInFiles refuses a check the spec files at the run's commit do not hold.
-	codeCheckNotInFiles = "CHECK_NOT_IN_FILES"
-	// codeCheckNotThisJobs refuses a check whose test part names another job than the run's.
-	codeCheckNotThisJobs = "CHECK_NOT_THIS_JOBS"
-	// codeWorkflowNotShown refuses a check run whose job only the run's workflow file says, where
-	// GitHub refuses Dispatch that file for good, with its 403 or 404: the commit does not hold the
-	// file, or the App cannot see it, and a write again is answered the same.
-	codeWorkflowNotShown = "WORKFLOW_NOT_SHOWN"
-	// codeCheckRunUnreadable, codeFilesUnreadable and codeWorkflowUnreadable are GitHub not
-	// answering, a 503: the result was not judged, and the job writes it again.
-	codeCheckRunUnreadable = "CHECK_RUN_UNREADABLE"
-	codeFilesUnreadable    = "FILES_UNREADABLE"
-	codeWorkflowUnreadable = "WORKFLOW_UNREADABLE"
-)
 
 // The in-toto statement a result is stored as: its own type, and the type of its predicate.
 const (
@@ -187,11 +149,11 @@ func (c *specResultReads) init() {
 func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	if actor.Credential == nil || !actor.Credential.ResultsOnly || actor.Credential.CI == nil {
-		writeError(w, codeResultsScopeRequired, http.StatusForbidden,
+		writeError(w, r, apicode.ResultsScopeRequired,
 			"only a CI job's results token writes the result of a spec check, and this request's credential is not one")
 		return
 	}
@@ -199,15 +161,15 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	var input specCheckResultInput
 	body, err := readJSONBody(r, &input, maxJSONRequestBytes, errJSONTooLarge)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := validSpecCheckResultInput(input, body); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if input.Commit != run.SHA {
-		writeError(w, codeCommitNotTheRuns, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.CommitNotTheRuns, fmt.Sprintf(
 			"the result is for commit %s, and this token's run tested commit %s: a job writes results only for the commit that it tested",
 			input.Commit, run.SHA))
 		return
@@ -218,11 +180,11 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	isDefault, err := s.isProjectsDefaultRepository(ctx, project, run.Repository)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !isDefault {
-		writeError(w, codeRepositoryNotTheProjects, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.RepositoryNotTheProjects, fmt.Sprintf(
 			"%s, the repository of this token's run, is not the default repository of project %s", run.Repository, project))
 		return
 	}
@@ -231,20 +193,20 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	reader := &repositoryReader{s: s, owner: owner, name: name}
 	checkRun, err := s.specCheckRun(ctx, reader, run.Repository, run.CheckRun)
 	if err != nil {
-		s.writeHandlerError(w, githubReadRefusal(err, fmt.Sprintf("check run %d of %s", run.CheckRun, run.Repository),
+		s.writeHandlerError(w, r, githubReadRefusal(err, fmt.Sprintf("check run %d of %s", run.CheckRun, run.Repository),
 			"as it refuses a check run the App cannot see or that does not exist, so this token's run is not proven",
-			codeCheckRunNotShown, http.StatusForbidden, codeCheckRunUnreadable))
+			apicode.CheckRunNotShown, apicode.CheckRunUnreadable))
 		return
 	}
 	if checkRun.HeadSHA != run.SHA {
-		writeError(w, codeCheckRunNotTheRuns, http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.CheckRunNotTheRuns, fmt.Sprintf(
 			"GitHub names commit %s for check run %d, and this token's run tested commit %s: the check run is no job of this run",
 			checkRun.HeadSHA, run.CheckRun, run.SHA))
 		return
 	}
 	files, err := s.specFilesAt(ctx, reader, run.Repository, run.SHA)
 	if err != nil {
-		s.writeHandlerError(w, githubUnanswered(fmt.Sprintf("%s of %s at %s", specDir, run.Repository, run.SHA), codeFilesUnreadable, err))
+		s.writeHandlerError(w, r, githubUnanswered(fmt.Sprintf("%s of %s at %s", specDir, run.Repository, run.SHA), apicode.FilesUnreadable, err))
 		return
 	}
 	if files.Problems > 0 {
@@ -252,20 +214,20 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 		if files.Problems != 1 {
 			problems = fmt.Sprintf("%d problems", files.Problems)
 		}
-		writeError(w, codeSpecFilesRefused, http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.SpecFilesRefused, fmt.Sprintf(
 			"the spec files of %s at %s have %s, so they hold no check to write a result for. The first: %s",
 			run.Repository, run.SHA, problems, files.First))
 		return
 	}
 	check, held := files.Checks[input.Check]
 	if !held {
-		writeError(w, codeCheckNotInFiles, http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.CheckNotInFiles, fmt.Sprintf(
 			"the spec files of %s at %s hold no check with the id %q, and a result is for a check that the files hold", run.Repository, run.SHA, input.Check))
 		return
 	}
 	job, leg, err := s.jobOfCheckRun(ctx, reader, run, checkRun, input.Check, check)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 
@@ -277,17 +239,17 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(ctx)
 	result, err := insertSpecCheckResult(ctx, tx, row)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("commit a spec check result: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("commit a spec check result: %w", err))
 		return
 	}
 	WriteJSON(w, http.StatusCreated, result)
@@ -300,20 +262,20 @@ func (s *server) recordSpecCheckResult(w http.ResponseWriter, r *http.Request) {
 // sets it.
 func validSpecCheckResultInput(input specCheckResultInput, body []byte) error {
 	if undeclared := undeclaredMembers(&input, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, codeResultInput,
+		return errorf(apicode.ResultInput,
 			"the body takes commit, check, verdict and observed alone, and names %s: Dispatch reads who wrote a result from its token, never from its body",
 			strings.Join(undeclared, ", "))
 	}
 	if !resultCommitSHA.MatchString(input.Commit) {
-		return errorf(http.StatusBadRequest, codeResultInput, "commit is the 40-character lowercase hex commit the job tested")
+		return errorf(apicode.ResultInput, "commit is the 40-character lowercase hex commit the job tested")
 	}
 	if strings.TrimSpace(input.Check) == "" {
-		return errorf(http.StatusBadRequest, codeResultInput, "check names a check of the spec files at the commit")
+		return errorf(apicode.ResultInput, "check names a check of the spec files at the commit")
 	}
 	switch input.Verdict {
 	case "pass", "fail", "could_not_run":
 	default:
-		return errorf(http.StatusBadRequest, codeResultInput, "verdict is pass, fail or could_not_run")
+		return errorf(apicode.ResultInput, "verdict is pass, fail or could_not_run")
 	}
 	return nil
 }
@@ -476,11 +438,11 @@ func judgeSpecFiles(read map[string][]byte) specFiles {
 
 // githubReadRefusal is the refusal of a result whose read of what, GitHub's, failed with err.
 // GitHub's 403 or 404 (githubapp.ErrRepositoryUnreadable) refuses Dispatch the read for good, so
-// a write again is answered the same: the final refusal notShown, at status, saying why the result
-// needs what. Any other failure is GitHub not answering (githubUnanswered, with unreadable).
-func githubReadRefusal(err error, what, why, notShown string, status int, unreadable string) *apiError {
+// a write again is answered the same: the final refusal notShown, saying why the result needs
+// what. Any other failure is GitHub not answering (githubUnanswered, with unreadable).
+func githubReadRefusal(err error, what, why string, notShown, unreadable apicode.Code) *apiError {
 	if errors.Is(err, githubapp.ErrRepositoryUnreadable) {
-		return errorf(status, notShown, "GitHub refuses Dispatch the read of %s, %s: the result is refused, and a write again is refused the same: %v", what, why, err)
+		return errorf(notShown, "GitHub refuses Dispatch the read of %s, %s: the result is refused, and a write again is refused the same: %v", what, why, err)
 	}
 	return githubUnanswered(what, unreadable, err)
 }
@@ -489,8 +451,8 @@ func githubReadRefusal(err error, what, why, notShown string, status int, unread
 // and was not answered: the result was not judged, so the 503 asks for the write again. Every 503
 // the route answers of a read of GitHub is this one; the 503s of the broker's token and of the
 // database (BROKER_UNAVAILABLE, DATABASE_UNAVAILABLE) are answered by the layers that read them.
-func githubUnanswered(what, code string, err error) *apiError {
-	return errorf(http.StatusServiceUnavailable, code, "GitHub did not answer the read of %s, so the result was not judged; write it again: %v", what, err)
+func githubUnanswered(what string, code apicode.Code, err error) *apiError {
+	return errorf(code, "GitHub did not answer the read of %s, so the result was not judged; write it again: %v", what, err)
 }
 
 // jobOfCheckRun is the job and the leg that checkRun, this token's check run, ran, where the run's
@@ -508,7 +470,7 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 			if check.Job != "" {
 				named = fmt.Sprintf("names the job %q", check.Job)
 			}
-			return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
+			return "", "", errorf(apicode.CheckNotThisJobs,
 				"check %s %s, and this token's job is %q (check run %d): a job writes results only for the checks that name it",
 				id, named, checkRun.Name, run.CheckRun)
 		}
@@ -517,19 +479,19 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 	if err != nil {
 		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the run's workflow file", run.Workflow, run.Repository, run.SHA),
 			fmt.Sprintf("which says which job makes the check run %d, %q", run.CheckRun, checkRun.Name),
-			codeWorkflowNotShown, http.StatusConflict, codeWorkflowUnreadable)
+			apicode.WorkflowNotShown, apicode.WorkflowUnreadable)
 	}
 	where := run.Workflow + " at " + run.SHA
 	if isLeg {
 		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
-			return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
+			return "", "", errorf(apicode.CheckNotThisJobs,
 				"check %s names the job %q, and this token's check run %d is named %q, a leg of %q only where the run's workflow file makes %q a matrix job, and %s: a job writes results only for the checks that name it",
 				id, check.Job, run.CheckRun, checkRun.Name, check.Job, check.Job, why)
 		}
 		return check.Job, leg, nil
 	}
 	if why := jobs.whyNotTheJob(checkRun.Name, where); why != "" {
-		return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,
+		return "", "", errorf(apicode.CheckNotThisJobs,
 			"check %s names the job %q, and this token's check run %d is named %q, that job's check run only where the run's workflow file says so, and %s: a job writes results only for the checks that name it",
 			id, check.Job, run.CheckRun, checkRun.Name, why)
 	}
@@ -811,7 +773,7 @@ func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	commit, check := query.Get("commit"), query.Get("check")
 	if !resultCommitSHA.MatchString(commit) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "commit is the 40-character lowercase hex commit whose results to read")
+		writeError(w, r, apicode.InvalidQuery, "commit is the 40-character lowercase hex commit whose results to read")
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
@@ -819,7 +781,7 @@ func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 		where project_key = $1 and commit_sha = $2 and ($3 = '' or check_id = $3)
 		order by seq desc`, r.PathValue("key"), commit, check)
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read spec check results: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read spec check results: %w", err))
 		return
 	}
 	defer rows.Close()
@@ -828,17 +790,17 @@ func (s *server) listSpecCheckResults(w http.ResponseWriter, r *http.Request) {
 		result := model.SpecCheckResult{Kind: model.SpecCheckResultKindRun}
 		var stored []byte
 		if err := rows.Scan(&result.ID, &result.Seq, &stored); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("read a spec check result: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("read a spec check result: %w", err))
 			return
 		}
 		if err := json.Unmarshal(stored, &result.Attestation); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("decode a stored spec check result: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("decode a stored spec check result: %w", err))
 			return
 		}
 		answer.Results = append(answer.Results, result)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read spec check results: %w", err))
+		s.writeHandlerError(w, r, fmt.Errorf("read spec check results: %w", err))
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)

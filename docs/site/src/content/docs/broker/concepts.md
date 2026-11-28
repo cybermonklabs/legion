@@ -80,7 +80,9 @@ and refuses it on every other route with `403 READ_ONLY_TOKEN`. The Envoy listen
 NATS auth service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
 needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
-documents, comments and asks. No setting holds a read entry to some projects.
+documents, comments and asks. That includes a project's architecture at
+`GET /api/v2/projects/{key}/architecture` or its deprecated `/api/v1` path.
+No setting holds a read entry to some projects.
 
 Any trade but a job entry's may also ask for the OAuth scope `read` (`scope=read`), whatever its
 subject. That includes a pod's token under any other entry, an account entry that names no person
@@ -92,9 +94,10 @@ the narrowed word of the one it would have had: `read-named`, `read-person` or `
 holds `read`, and `person` beside it when it acts for a person, never `approve` and never
 `legion-status`, so a Legion daemon's read token writes no status either. The trade may
 also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
-trade. Dispatch answers a token with a cut as of its cut on each route that answers `as_of`, and
-`GET /api/v1/whoami` names the cut. Every other read refuses the token with
-`403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the token it always got
+trade. Dispatch answers a token with a cut as of its cut on each `/api/v1` route that answers
+`as_of`, and `GET /api/v1/whoami` and `GET /api/v2/me` name the cut. Every other read, each other
+`/api/v2` read among them, refuses the token with `403 AS_OF_TOKEN_NOT_SERVED`: no `/api/v2` route
+answers `as_of`. A trade that asks for no scope gets the token it always got
 (`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
 
 A read trade makes, moves and extends no launcher credential, and its answer names none. A
@@ -1927,8 +1930,9 @@ the token it holds into every later allowed request while the grant lives; it ne
 token. The broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
 (`broker: minted a grant's token`), one line per token it mints, never the token.
 Dispatch holds that token to its approve
-routes, and to the answer of an approval request among the asks, and answers every other route
-`403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
+routes, on `/api/v1` and on `/api/v2`, and to the answer of an approval request among the asks, and
+answers every other route `403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a
+personal token among them.
 The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST
 /api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
 that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,

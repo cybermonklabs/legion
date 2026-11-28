@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
@@ -96,7 +97,7 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 	if want := "dispatch spec-form --issue ACME-2 --artifact spec.md --version 3 lists the first 500 of them."; refusal.more != want {
 		t.Fatalf("the refusal of 501 findings names %q, want %q", refusal.more, want)
 	}
-	body := refusal.body()
+	body := refusal.body(apicode.SpecForm.Name())
 	if body.Code != "SPEC_FORM" || len(body.Findings) != 500 || body.FindingsTotal != 501 || body.ChangesReason != "" {
 		t.Fatalf("body = code %q, %d findings, total %d, changes_reason %q; want SPEC_FORM, 500, 501 and none",
 			body.Code, len(body.Findings), body.FindingsTotal, body.ChangesReason)
@@ -114,7 +115,7 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 	if want := "dispatch spec-form --issue ACME-2 --artifact spec.md --version 3 lists them all."; approval.more != want {
 		t.Fatalf("the refusal of 1 finding names %q, want %q", approval.more, want)
 	}
-	approvalBody := approval.body()
+	approvalBody := approval.body(apicode.SpecForm.Name())
 	if !strings.HasSuffix(approvalBody.Error, "\nTo send these findings to the author, choose Request changes.") ||
 		approvalBody.ChangesReason != "Dispatch refused my approval, because 1 text breaks the form of The Spec.\n"+
 			"- statement s0 in spec.md version 3: it has 3 sentences, and a statement has one or two.\n"+

@@ -12,8 +12,9 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Un-snooze an inbox row for the caller.",
 	Handler:     (*server).deleteAskSnooze,
+	Successor:   successorIs(http.MethodPatch, "/me/marks/{kind}/{id}", "kind=ask"),
 	WriteClass:  scopeSession,
-	ID:          &idRoute{Kind: "ask", NotFound: notFoundNone},
+	ID:          &idRoute{Kind: "ask", NoNotFound: true},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Shape:       routeShape{Status: http.StatusNoContent},
 })

@@ -283,7 +283,7 @@ pass 8 "--name rows.jsonl with no content is refused by the Markdown-name rule, 
 printf '# From a file\n\nA line stored from a file.\n' >"$work/from-file.md"
 run 9 "dispatch artifact --path" artifact --issue "$key" --name "from-file.md" \
   --path "$work/from-file.md"
-grep -qF 'Uploaded from-file.md as version 1 (artifact slug from-file-md;' "$work/out" ||
+grep -qF 'Uploaded from-file.md as version 1, a document (kind doc; artifact slug from-file-md;' "$work/out" ||
   fail 9 "the file create reports its version" "$(<"$work/out")"
 get "/api/v1/issues/$key/artifacts/from-file-md/text"
 want_status 200 9 "read from-file.md"
@@ -294,7 +294,7 @@ run 9 "dispatch artifact --content" artifact --issue "$key" --name "inline.md" \
 
 A line stored from the command line.
 '
-grep -qF 'Uploaded inline.md as version 1 (artifact slug inline-md;' "$work/out" ||
+grep -qF 'Uploaded inline.md as version 1, a document (kind doc; artifact slug inline-md;' "$work/out" ||
   fail 9 "the content create reports its version" "$(<"$work/out")"
 get "/api/v1/issues/$key/artifacts/inline-md/text"
 want_status 200 9 "read inline.md"

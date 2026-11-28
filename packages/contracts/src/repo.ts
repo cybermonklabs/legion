@@ -1,6 +1,7 @@
+import { goTrimSpace } from "./go-blank";
+
 export function canonicalRepo(owner: string, repo: string): string {
-  return `${owner.trim().toLowerCase()}/${repo
-    .trim()
+  return `${goTrimSpace(owner).toLowerCase()}/${goTrimSpace(repo)
     .toLowerCase()
     .replace(/\.git$/, "")}`;
 }

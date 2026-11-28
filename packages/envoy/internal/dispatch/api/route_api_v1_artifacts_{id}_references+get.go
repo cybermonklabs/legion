@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,7 +13,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Cross-references to and from a document.",
 	Handler:     (*server).getArtifactReferences,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/references"),
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.ArtifactReferences{}},
 })

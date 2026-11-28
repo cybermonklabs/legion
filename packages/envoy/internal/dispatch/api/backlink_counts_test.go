@@ -4,12 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -106,6 +113,98 @@ func TestAskListsCarryBatchedBacklinkCounts(t *testing.T) {
 		t.Fatalf("list document asks: status=%d body=%s", artifactAsks.Code, artifactAsks.Body.String())
 	}
 	requireAskBacklinkCount(t, countsByAskID(decodeBody[[]askBacklinkCount](t, artifactAsks)), documentAsk.ID, 1)
+}
+
+// TestAV2AskWriteCountsItsBacklinksAsItsCaller: a /api/v2 write of an ask answers the ask's
+// referenced_by_count as its caller counts it (writtenAskV2's read-back), as the no-op that
+// answers in the write's place and GET /api/v2/asks/{id} count it, so the route never answers
+// two counts of one ask depending on whether it wrote. The ask's one backlink is a mention
+// from a comment reserved for alice, its author, written through the store's own writer as
+// seedPrivateNode writes its private nodes: alice counts it and everyReader, which proves no
+// author, does not, so a read-back made as everyReader answers alice 0 where her read answers 1.
+func TestAV2AskWriteCountsItsBacklinksAsItsCaller(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "ASKCT", "An ask a private comment cites", "A spec.")
+	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
+		map[string]any{"question": "Which way does the issue go?"}, "alice")
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("open the ask: status=%d body=%s", opened.Code, opened.Body.String())
+	}
+	ask := decodeBody[writtenRecord](t, opened).ID
+
+	ctx := t.Context()
+	author := model.Actor{Kind: "user", ID: "alice"}
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
+	if err != nil {
+		t.Fatalf("reserve the comment for its author: %v", err)
+	}
+	comment := uuid.NewString()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the private comment's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+		Kind: graphstore.KindComment, ID: comment, Supertag: graphstore.KindComment,
+		Visibility: visibility, State: graphstore.StateLive,
+		MadeAt: time.Now().UTC(), MadeBy: author, SourceEvent: graphstore.NoEvent,
+	}}, nil); err != nil {
+		t.Fatalf("write the private comment's node: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into comments (id, issue_key, author, body, node_kind, node_address)
+		values ($1::uuid, $2, '{"kind":"user","id":"alice"}', 'A remark alice keeps to herself.', $3, $1)
+	`, comment, issue.Key, graphstore.KindComment); err != nil {
+		t.Fatalf("write the private comment's row: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, kind, to_kind, to_id) values ('comment', $1, 'mentions', 'ask', $2)
+	`, comment, ask); err != nil {
+		t.Fatalf("write the private comment's mention of the ask: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the private comment: %v", err)
+	}
+
+	// The two views differ: everyReader counts no backlink of the ask, and alice, the comment's
+	// author, counts its mention.
+	if counted, err := refs.BacklinkCounts(ctx, database.Pool, everyReader, "ask", []string{ask}, refs.AskBacklinkExclusions); err != nil {
+		t.Fatalf("count the ask's backlinks as everyReader: %v", err)
+	} else if counted[ask] != 0 {
+		t.Fatalf("everyReader counts %d backlink of the ask, want 0: the one comment citing it is reserved for alice", counted[ask])
+	}
+	countOf := func(what string, response *httptest.ResponseRecorder) int {
+		t.Helper()
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+		}
+		count := decodeBody[askBacklinkCount](t, response).ReferencedByCount
+		if count == nil {
+			t.Fatalf("%s answers no referenced_by_count: %s", what, response.Body.String())
+		}
+		return *count
+	}
+	if read := countOf("alice's GET /api/v2/asks/{id}", dispatchRequest(t, handler, http.MethodGet, "/api/v2/asks/"+ask, nil, "alice")); read != 1 {
+		t.Fatalf("alice's read of the ask counts %d backlink, want 1: her private comment's mention", read)
+	}
+
+	route := "/api/v2/asks/" + ask + "/state"
+	resolve := map[string]any{"state": "resolved", "reason": "Settled on the issue."}
+	wrote := countOf("alice's resolve", dispatchRequest(t, handler, http.MethodPut, route, resolve, "alice"))
+	unchanged := countOf("alice's resolve sent again", dispatchRequest(t, handler, http.MethodPut, route, resolve, "alice"))
+	var resolutions int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from events where issue_key = $1 and type = 'ask.resolved'`,
+		issue.Key).Scan(&resolutions); err != nil {
+		t.Fatalf("count the issue's ask.resolved events: %v", err)
+	}
+	if resolutions != 1 {
+		t.Fatalf("the two resolves appended %d ask.resolved events, want 1: the first writes and the second, the same state from the same caller, writes nothing", resolutions)
+	}
+	if wrote != 1 || unchanged != 1 {
+		t.Fatalf("alice's resolve answers the ask with %d backlink and the same resolve sent again, which writes nothing, with %d; want 1 for both, the count her read answers",
+			wrote, unchanged)
+	}
 }
 
 // referenceWriteEvent is the part of a message or comment event a reader holding batched

@@ -123,13 +123,14 @@ RUN mkdir -p /out \
       "npm packages inlined into, and the typeface shipped with, the Dispatch web app, /srv/dispatch-web (served as /THIRD_PARTY_NOTICES.txt)" /tmp/dispatch-web-notices
 
 # The legion commit this image is built from, which envoy-dispatch's /healthz reports as
-# `commit`, and which every binary below that connects to NATS names after its connection's name
-# (internal/buildversion's commit; legacy-subjects-gate.sh reads it from the hub's census of
-# connections). The release workflow passes its own github.sha, for the image it publishes and for
-# the smoke image it tests first. Left empty — a local compose or hand build, and the
-# pull-request lane's smoke image, which publishes nothing to match — the binary reports null and
-# names no build; anything else must be a full commit sha, so no placeholder is ever reported as a
-# commit.
+# `commit` and envoy-broker's Dispatch reads name in their User-Agent, and which every binary below
+# that connects to NATS names after its connection's name (internal/buildversion's commit;
+# legacy-subjects-gate.sh reads it from the hub's census of connections). The release workflow
+# passes its own github.sha, for the image it publishes and for the smoke image it tests first.
+# Left empty — a local compose or hand build, and the pull-request lane's smoke image, which
+# publishes nothing to match — envoy-dispatch reports null, envoy-broker names `(devel)`, and no
+# connection names a build; anything else must be a full commit sha, so no placeholder is ever
+# reported as a commit.
 ARG LEGION_COMMIT=
 RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then \
       echo "LEGION_COMMIT must be a full 40-character commit sha or empty, got '$LEGION_COMMIT'" >&2; exit 1; \
@@ -140,7 +141,7 @@ RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -ldflags "-X main.buildCommit=${LEGION_COMMIT} $build" -o /out/envoy-dispatch ./cmd/dispatch \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -ldflags "$build" -o /out/envoy-broker ./cmd/cipherd \
+    go build -ldflags "-X main.buildCommit=${LEGION_COMMIT} $build" -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -ldflags "$build" -o /out/agent-secrets ./cmd/cipher
 

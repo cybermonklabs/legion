@@ -30,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -183,7 +184,7 @@ func requireP0IssueKept(t *testing.T, database *store.Store, key string, before 
 // lacks the p0 scope, and a message that names p0. The message's words are the server's.
 func requireP0Refusal(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
-	requireRefused(t, response, http.StatusForbidden, codeScopeRequired)
+	requireRefused(t, response, http.StatusForbidden, apicode.OAuthScopeRequired.V1Name())
 	if got, want := response.Header().Get("WWW-Authenticate"), `Bearer error="insufficient_scope", scope="`+model.ScopeP0+`"`; got != want {
 		t.Errorf("the refusal's challenge = %q, want %q", got, want)
 	}
@@ -238,15 +239,13 @@ type p0IssueWrite struct {
 	send func(t *testing.T, rig *legionStatusRig, credential p0Credential, from *int)
 }
 
-// p0IssueWrites are the requests of TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero, by
-// the operation, as "METHOD path", that each one sends. Each operation of a committed OpenAPI
-// document whose request body takes a priority has its requests here, or its reason in
-// p0PriorityFilters.
-var p0IssueWrites = map[string]p0IssueWrite{
-	"POST /api/v1/issues": {from: []*int{nil}, send: func(t *testing.T, rig *legionStatusRig, credential p0Credential, _ *int) {
+// p0Create is the create of an issue at priority 0 under the path prefix of one version
+// (/api/v1 or /api/v2), which both answer with the issue alike.
+func p0Create(prefix string) p0IssueWrite {
+	return p0IssueWrite{from: []*int{nil}, send: func(t *testing.T, rig *legionStatusRig, credential p0Credential, _ *int) {
 		t.Helper()
 		title := rig.title()
-		response := credential.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		response := credential.send(t, http.MethodPost, prefix+"/issues", map[string]any{
 			"project": brokerTestProject, "title": title, "priority": 0, "force": true,
 		})
 		switch credential.p0 {
@@ -265,8 +264,12 @@ var p0IssueWrites = map[string]p0IssueWrite{
 				t.Errorf("%s as the create made it: %s, want priority 0", key, made)
 			}
 		}
-	}},
-	"PATCH /api/v1/issues/{key}": {from: []*int{nil, new(2)}, send: func(t *testing.T, rig *legionStatusRig, credential p0Credential, from *int) {
+	}}
+}
+
+// p0Patch is the change of an issue's priority to 0 under the path prefix of one version.
+func p0Patch(prefix string) p0IssueWrite {
+	return p0IssueWrite{from: []*int{nil, new(2)}, send: func(t *testing.T, rig *legionStatusRig, credential p0Credential, from *int) {
 		t.Helper()
 		fields := map[string]any{}
 		if from != nil {
@@ -274,9 +277,20 @@ var p0IssueWrites = map[string]p0IssueWrite{
 		}
 		key := rig.personIssue(t, fields).Key
 		before := readP0Issue(t, rig.database, key)
-		response := credential.send(t, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"priority": 0})
+		response := credential.send(t, http.MethodPatch, prefix+"/issues/"+key, map[string]any{"priority": 0})
 		rig.requireP0Answer(t, credential, key, before, response)
-	}},
+	}}
+}
+
+// p0IssueWrites are the requests of TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero, by
+// the operation, as "METHOD path", that each one sends. Each operation of a committed OpenAPI
+// document whose request body takes a priority has its requests here, or its reason in
+// p0PriorityFilters.
+var p0IssueWrites = map[string]p0IssueWrite{
+	"POST /api/v1/issues":        p0Create("/api/v1"),
+	"PATCH /api/v1/issues/{key}": p0Patch("/api/v1"),
+	"POST /api/v2/issues":        p0Create("/api/v2"),
+	"PATCH /api/v2/issues/{key}": p0Patch("/api/v2"),
 }
 
 // p0PriorityFilters are the operations whose request body takes a priority that is no issue's,
@@ -285,6 +299,7 @@ var p0IssueWrites = map[string]p0IssueWrite{
 var p0PriorityFilters = map[string]string{
 	"POST /api/v1/me/inbox/dismiss": "its priority is a filter of the Inbox rows the dismissal reaches, and no issue's priority",
 	"POST /api/v1/me/inbox/read":    "its priority is a filter of the Inbox rows the mark-all reaches, and no issue's priority",
+	"PATCH /api/v2/me/marks":        "its priority is a filter of the Inbox threads its {filter, set} form marks, and no issue's priority",
 }
 
 // openAPIMethods are the keys of an OpenAPI path item that name an operation.

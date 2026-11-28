@@ -20,6 +20,7 @@ import {
   slackTopicChannel,
   zodSchemaApi,
 } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import {
   type AskgateOwner,
   closeStore,
@@ -226,7 +227,6 @@ import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
 import { INBOUND_RESTORED_LINES, INBOUND_UNAVAILABLE_LINES } from "../src/inbound-outage-lines";
-import { listenerRoleName } from "../src/listener-role-name";
 import {
   CONSUMER_STATE_ENTRY,
   consumerSnapshot,
@@ -777,6 +777,9 @@ process.env.DISPATCH_HOST = "omp";
 // nothing on and turns both sections off.
 const CONFIG_FILE = sessionConfigFile("omp", process.env);
 if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
+/** What every Dispatch request this plugin makes on its own names it as: the program and the
+ *  release it ships in. The `dispatch` command its sessions run names itself apart. */
+const PI_ENVOY_USER_AGENT = `pi-envoy/${packageVersion}`;
 /**
  * The session's Dispatch for one request of this extension's own, which has `ms` to answer: the
  * one builder (`sessionDispatchClient`), resolved again per call, so a Dispatch that moved takes
@@ -786,7 +789,15 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * is on by the time the request goes out.
  */
 const timedDispatchClient = async (ms: number, session: () => string = currentSessionID) =>
-  (await sessionDispatchClient(CONFIG_FILE, process.cwd(), { deadlineMs: ms }, session))?.client;
+  (
+    await sessionDispatchClient(
+      CONFIG_FILE,
+      process.cwd(),
+      { deadlineMs: ms },
+      session,
+      PI_ENVOY_USER_AGENT
+    )
+  )?.client;
 
 /** The host's logger, every message and field it is handed passing the scrub of the secrets this
  *  process holds (`../src/scrubbed-host`). Each extension instance writes through its own tell
@@ -1553,7 +1564,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         await dispatchConfigFor(replySessionID),
         replySessionID,
         delivery,
-        result
+        result,
+        PI_ENVOY_USER_AGENT
       );
     } catch (error) {
       if (!(error instanceof DispatchWriteLandedError)) throw error;
@@ -3595,7 +3607,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // fork's or a branch's transcript carries the named session's record of the claim. Each pass
   // compares the session open then. Read when the instance is created; nothing takes them out of
   // the environment.
-  const sessionRole = listenerRoleName(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
+  const sessionRole = goTrimSpace(process.env.ENVOY_SESSION_ROLE ?? "") || undefined;
   const sessionRoleSession = process.env.ENVOY_SESSION_ROLE_SESSION?.trim() || undefined;
   // The topics the deployment names for each role (`ENVOY_ROLE_TOPICS`), which the session holding
   // that role follows for as long as it holds it, however it took it: a launch's role, a Legion
@@ -3607,15 +3619,16 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   const roleTopicFollows = createRoleTopicFollows({ roleTopics, follow: followNew });
   // Why session `id` may not claim `role`, or undefined when it may: the launch's role is the
   // named session's alone, so every other session is refused it, and with no session named every
-  // session is. The name is read as the listener reads a claim's (`listenerRoleName`), so a padded
-  // name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`), whichever
-  // session and path meets it first, and the person is told once for each session refused, on
-  // screen, where the role stays and how to take it back.
+  // session is. The name is read as the listener reads a claim's, with the characters Go's
+  // `strings.TrimSpace` takes trimmed from both ends (`goTrimSpace`, Go's set and not `trim`'s),
+  // so a padded name is the same role. The process logs the refusal once (`SESSION_ROLE_LOGGED`),
+  // whichever session and path meets it first, and the person is told once for each session
+  // refused, on screen, where the role stays and how to take it back.
   const sessionRoleNotified = new Set<string>();
   const sessionRoleRefusal = (id: string, role: string): string | undefined => {
     if (
       sessionRole === undefined ||
-      listenerRoleName(role) !== sessionRole ||
+      goTrimSpace(role) !== sessionRole ||
       id === sessionRoleSession
     ) {
       return undefined;
@@ -5497,6 +5510,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           })
         ).dispatch,
         env: process.env,
+        userAgent: PI_ENVOY_USER_AGENT,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
       return carriedAnswers(read);
@@ -5952,6 +5966,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       logger: gateLogger,
       runtimeLogger: logger,
       session: currentSessionID,
+      userAgent: PI_ENVOY_USER_AGENT,
     });
     askgateRecorder = registration;
     askgateLoad = registration.loaded.catch((error: unknown) => {

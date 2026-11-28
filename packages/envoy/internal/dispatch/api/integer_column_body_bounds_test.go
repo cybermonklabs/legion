@@ -46,4 +46,30 @@ func TestABodyNumberAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
 	if response := dispatchRequest(t, handler, http.MethodPut, state, map[string]any{"last_read_seq": 2147483647}, "alice"); response.Code != http.StatusOK {
 		t.Errorf("last_read_seq 2147483647 (the control): status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
+
+	// The same two body numbers under /api/v2, each refused with the code its row declares for a
+	// value its field refuses: a result's count by POST /api/v2/issues/{key}/results (400
+	// RESULT_INPUT), and the read position by the issue mark's write, PATCH
+	// /api/v2/me/marks/issue/{key} (400 INVALID_STATE). The controls are taken as under /api/v1.
+	for _, count := range []string{"failed", "skipped", "excluded"} {
+		fields := map[string]any{count: 2147483648}
+		if count != "failed" {
+			fields["failed"] = 1
+		}
+		results := "/api/v2/issues/" + issue.Key + "/results"
+		if response := dispatchRequest(t, handler, http.MethodPost, results, resultBody("k1", "fail", headCommit, fields), "alice"); response.Code != http.StatusBadRequest || responseCode(t, response) != "RESULT_INPUT" {
+			t.Errorf("a result under /api/v2 with %s 2147483648: status=%d body=%s, want 400 RESULT_INPUT", count, response.Code, response.Body.String())
+		}
+		fields[count] = 2147483647
+		if response := dispatchRequest(t, handler, http.MethodPost, results, resultBody("k1", "fail", headCommit, fields), "alice"); response.Code != http.StatusCreated {
+			t.Errorf("a result under /api/v2 with %s 2147483647 (the control): status=%d body=%s, want 201", count, response.Code, response.Body.String())
+		}
+	}
+	mark := "/api/v2/me/marks/issue/" + issue.Key
+	if response := dispatchRequest(t, handler, http.MethodPatch, mark, map[string]any{"last_read_seq": 2147483648}, "alice"); response.Code != http.StatusBadRequest || responseCode(t, response) != "INVALID_STATE" {
+		t.Errorf("an issue mark's last_read_seq 2147483648: status=%d body=%s, want 400 INVALID_STATE", response.Code, response.Body.String())
+	}
+	if response := dispatchRequest(t, handler, http.MethodPatch, mark, map[string]any{"last_read_seq": 2147483647}, "alice"); response.Code != http.StatusOK {
+		t.Errorf("an issue mark's last_read_seq 2147483647 (the control): status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
 }

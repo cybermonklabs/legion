@@ -1,10 +1,12 @@
 // as_of_routes_test.go holds the table to its as_of kinds (readEntry.AsOf). Every GET row names
 // a kind, and register refuses a table with a GET row that names none. The rows that answer
-// as_of are the rows of the plan's table "Routes and their kinds" (INFRA-4620), and whoami alone
-// describes the caller now. Every other row, every method, refuses a request that sends as_of
-// 400 AS_OF_NOT_SERVED before its handler runs (asOfGate). An answers row refuses an as_of that
-// is not a time, one given twice and one later than the database's now() 400 INVALID_AS_OF, and
-// otherwise runs its handler under the cut, rounded down to the microsecond.
+// as_of are the rows of the plan's table "Routes and their kinds" (INFRA-4620), and whoami and its
+// /api/v2 successor GET /api/v2/me alone describe the caller now. Every other row, every method,
+// refuses a request that sends as_of before its handler runs: 400 AS_OF_NOT_SERVED (asOfGate), or
+// on a row whose query the decoder reads, which declares no as_of since /api/v2 stands at main's
+// freeze (dispatch://INFRA-4071/spec R2), 400 QUERY_KEY_UNKNOWN. An answers row refuses an as_of
+// that is not a time, one given twice and one later than the database's now() 400 INVALID_AS_OF,
+// and otherwise runs its handler under the cut, rounded down to the microsecond.
 package api
 
 import (
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 )
 
@@ -88,12 +91,19 @@ func declaredReads() map[string]readEntry {
 	return reads
 }
 
-// rowAnswersAsOf reports whether the row named name answers as_of. It reads the route's
-// declaration (declared) and not the mounted row (apiRoute.Read), as readOnlyAnswer does, so a
-// table routes() built wrong fails the walk rather than agreeing with the gate. A row that is not
-// a GET row answers no as_of.
+// declared is the declaration of one route file's route by "<method> <pattern>", the zero value
+// for a name no route file declares.
+func declared(name string) routeDecl {
+	route, _ := declaredRoute(name)
+	return route
+}
+
+// rowAnswersAsOf reports whether the row named name answers as_of. It reads the declarations
+// (declaredClass) and not the mounted row (apiRoute.Read), as readOnlyAnswer does, so a table
+// routes() built wrong fails the walk rather than agreeing with the gate. A row that is not a GET
+// row answers no as_of.
 func rowAnswersAsOf(route apiRoute) bool {
-	return route.Method == http.MethodGet && declared(route.Method+" "+route.Pattern).Read.AsOf == asOfAnswers
+	return route.Method == http.MethodGet && declaredClass(route).AsOf == asOfAnswers
 }
 
 // asOfNotServedMessage is the message of the 400 AS_OF_NOT_SERVED a row that holds no history
@@ -136,10 +146,11 @@ func (c *cutRecorder) handler(w http.ResponseWriter, r *http.Request) {
 
 // TestEveryGETRowNamesItsAsOfKind walks every GET row of the table with its test hooks in
 // (readOnlyTable), read off the table and not listed, so a GET row added later fails here until
-// its declaration's read class names its as_of kind. It fails once, naming each GET row whose
-// class leaves AsOf unset or holds no kind. Then it takes the as_of kind away from one route's
-// declaration and holds register to refuse the table, naming that route, as it refuses a GET route
-// stating no class. Register also refuses asOfCaller on a route but GET /api/v1/whoami, which
+// its declaration's read class names its as_of kind: a route file's, or a routeRow's entry of
+// v2ReadClasses (declaredClass). It fails once, naming each GET row whose class leaves AsOf unset
+// or holds no kind. Then it takes the as_of kind away from one route's declaration and holds
+// register to refuse the table, naming that route, as it refuses a GET route stating no class.
+// Register also refuses asOfCaller on a route but GET /api/v1/whoami and GET /api/v2/me, which
 // would answer a token's cut with the present, a route of kind answers whose class says nothing
 // of what it answers at a cut (AtACut), and a route of another kind whose class says it, naming
 // the route each time. The refusals replace the package's declarations for their length
@@ -154,7 +165,7 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 		}
 		gets++
 		name := route.Method + " " + route.Pattern
-		kind := declared(name).Read.AsOf
+		kind := declaredClass(route).AsOf
 		kinds[kind]++
 		switch kind {
 		case asOfAnswers, asOfNoHistory, asOfCaller:
@@ -213,7 +224,9 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 // TestTheAsOfKindsAreThePlansTable holds the rows of kind asOfAnswers to the plan's table
 // (thePlansAnswersRows), both ways: a row the plan lists that the table does not mount or that
 // is not of kind answers fails by name, and so does a row of kind answers that the plan does not
-// list. GET /api/v1/whoami is the one row of kind asOfCaller.
+// list. GET /api/v1/whoami and its /api/v2 successor GET /api/v2/me are the rows of kind
+// asOfCaller, and no /api/v2 row answers as_of, since /api/v2 stands at main's freeze
+// (dispatch://INFRA-4071/spec R2).
 func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 	listed := map[string]bool{}
 	for _, name := range thePlansAnswersRows {
@@ -231,7 +244,7 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 		if route.Method != http.MethodGet {
 			continue
 		}
-		switch declared(name).Read.AsOf {
+		switch declaredClass(route).AsOf {
 		case asOfAnswers:
 			answers[name] = true
 		case asOfCaller:
@@ -252,8 +265,9 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 			problems = append(problems, name+": its read class says it answers as_of, and the plan's table does not list it")
 		}
 	}
-	if !slices.Equal(callers, []string{asOfCallerRow}) {
-		problems = append(problems, fmt.Sprintf("the rows of kind asOfCaller are %v, want %s alone", callers, asOfCallerRow))
+	slices.Sort(callers)
+	if want := []string{asOfCallerRow, asOfCallerV2Row}; !slices.Equal(callers, want) {
+		problems = append(problems, fmt.Sprintf("the rows of kind asOfCaller are %v, want %v alone", callers, want))
 	}
 	slices.Sort(problems)
 	t.Logf("the table holds %d rows of kind asOfAnswers; the plan's table lists %d", len(answers), len(thePlansAnswersRows))
@@ -268,18 +282,20 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 // holds every scope. Every row that does not answer as_of, every method, answers 400
 // AS_OF_NOT_SERVED naming the row, and its handler never runs. So does each request whose as_of
 // pair does not decode (a % that escapes nothing, an escape that is no hex, a semicolon), which
-// url.ParseQuery drops: such a row refuses every as_of, whatever its value. Every row of kind
-// answers runs its handler once, with the cut on its context, rounded down to the microsecond;
-// sent again with no as_of, it runs its handler with no cut. The test identity records the person
-// it resolves, a write, and the store refuses every write under a cut, so a row whose own scopes
-// resolve the caller behind the gate (GET /api/v1/inbox) runs its handler only when the gate
-// resolved the caller before it put the cut on the context. Each row is counted once its
-// assertions have run, and the count is held to the rows the registered server mounts, so a walk
-// that skipped a row fails.
+// url.ParseQuery drops: such a row refuses every as_of, whatever its value. A row whose query the
+// decoder reads (apiRoute.decoded) declares no as_of, since /api/v2 stands at main's freeze
+// (dispatch://INFRA-4071/spec R2): it answers as_of 400 QUERY_KEY_UNKNOWN, as it answers every key
+// it does not declare, and a query that does not decode 400 INVALID_QUERY, and its handler never
+// runs. Every row of kind answers runs its handler once, with the cut on its context, rounded down
+// to the microsecond; sent again with no as_of, it runs its handler with no cut. The test identity
+// records the person it resolves, a write, and the store refuses every write under a cut, so a row
+// whose own scopes resolve the caller behind the gate (GET /api/v1/inbox) runs its handler only
+// when the gate resolved the caller before it put the cut on the context. Each row is counted
+// once its assertions have run, and the count is held to the rows the registered server mounts at
+// both versions, so a walk that skipped a row fails.
 func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
-	replays := served.keyedReplays()
-	mounted := len(served.routeIndex)
+	mounted := len(served.routeIndex) + len(served.routeIndexV2)
 	const (
 		asOf    = "2026-01-02T03:04:05.123456789Z"
 		wantCut = "2026-01-02T03:04:05.123456Z"
@@ -288,15 +304,34 @@ func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
 	// Each query is sent as it is: url.Values.Encode would escape what makes it malformed.
 	malformed := []string{asOfParameter + "=" + asOf + "%", asOfParameter + "=%zz", asOfParameter + "=" + asOf + ";x"}
 
-	walked, refused, answered := 0, 0, 0
+	walked, refused, undeclared, answered := 0, 0, 0, 0
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
 		recorder := &cutRecorder{}
 		route.Handler = recorder.handler
-		chain := served.routeHandler(route, replays[name])
+		chain := served.routeHandler(route)
 
 		response := httptest.NewRecorder()
 		chain.ServeHTTP(response, asOfProbe(route, query))
+		if route.decoded() {
+			unknownKey, _ := renderCode(route.Version, apicode.QueryKeyUnknown, 0)
+			invalidQuery, _ := renderCode(route.Version, apicode.InvalidQuery, 0)
+			if refusal := gateRefusalOf(response); len(recorder.runs) != 0 || response.Code != http.StatusBadRequest || refusal.Code != unknownKey {
+				t.Errorf("%s declares no as_of, and a request with as_of answered %d %s with %d handler runs, want 400 %s and none",
+					name, response.Code, strings.TrimSpace(response.Body.String()), len(recorder.runs), unknownKey)
+			}
+			for _, raw := range malformed {
+				refusedRaw := httptest.NewRecorder()
+				chain.ServeHTTP(refusedRaw, asOfProbe(route, raw))
+				if refusal := gateRefusalOf(refusedRaw); len(recorder.runs) != 0 || refusedRaw.Code != http.StatusBadRequest || refusal.Code != invalidQuery {
+					t.Errorf("%s declares no as_of, and the query %q answered %d %s with %d handler runs, want 400 %s and none",
+						name, raw, refusedRaw.Code, strings.TrimSpace(refusedRaw.Body.String()), len(recorder.runs), invalidQuery)
+				}
+			}
+			undeclared++
+			walked++
+			continue
+		}
 		if !rowAnswersAsOf(route) {
 			refusal := gateRefusalOf(response)
 			if len(recorder.runs) != 0 {
@@ -336,8 +371,8 @@ func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
 	if walked == 0 || walked != mounted {
 		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 	}
-	t.Logf("walked the table's %d rows (test hooks in): %d refused as_of %s, %d ran their handler under the cut",
-		walked, refused, contracts.DispatchAsOfNotServed, answered)
+	t.Logf("walked the table's %d rows (test hooks in): %d refused as_of %s, %d refused it as a key they do not declare, %d ran their handler under the cut",
+		walked, refused, contracts.DispatchAsOfNotServed, undeclared, answered)
 }
 
 // TestAnAnswersRowRefusesAMalformedOrFutureAsOf sends an answers row's own chain (routeHandler),
@@ -395,7 +430,7 @@ func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
 				query = url.Values{asOfParameter: row.values}.Encode()
 			}
 			response := httptest.NewRecorder()
-			served.routeHandler(route, keyedRoute{}).ServeHTTP(response, asOfProbe(route, query))
+			served.routeHandler(route).ServeHTTP(response, asOfProbe(route, query))
 			if row.wantCut != "" {
 				if response.Code != http.StatusNoContent || !slices.Equal(recorder.runs, []string{row.wantCut}) {
 					t.Fatalf("the query %q answered %d %s with its handler's runs seeing the cuts %q, want one run under the cut %s",

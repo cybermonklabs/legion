@@ -330,6 +330,7 @@ packages/envoy:
       - internal/dispatch/githubapp/githubapptest
       - internal/dispatch/retry
       - internal/dispatch/api/apitest
+      - internal/dispatch/api/apicode
       - internal/dispatch/docs/crafted
       - internal/dispatch/docs/docstest
       - internal/dispatch/embed/embedtest

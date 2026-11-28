@@ -13,6 +13,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List the caller's own sign-ins on their machines (`agent-secrets login`), one per box key they have not revoked, each naming the machine's account, the key's thumbprint, when the person signed in there and when that machine last used it. Nobody lists another person's: Dispatch names the person from its own session.",
 	Handler:     (*server).listSignIns,
+	Successor:   successorIs(http.MethodGet, "/me/signins"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{

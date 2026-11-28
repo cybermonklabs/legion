@@ -94,7 +94,7 @@ var itemRowWriters = map[string]map[string]string{
 		"Restore":      holdTableException,
 	},
 	"internal/dispatch/api/ask_asked_of.go": {
-		"putAskAskedOf": "the ask's owner lock, taken with the read of the owner it guards " +
+		"handAskOn": "the ask's owner lock, taken with the read of the owner it guards " +
 			"(requireOpenOwner, store.LockOwnerAndRead)",
 	},
 	"internal/dispatch/api/ask_transitions.go": {
@@ -102,8 +102,8 @@ var itemRowWriters = map[string]map[string]string{
 			"transition reads the ask (requireOpenOwner)",
 	},
 	"internal/dispatch/api/asks.go": {
-		"createAskFor": "the owner's lock (requireOpenOwnerStatus)",
-		"editAsk":      "the ask's owner lock, taken before the document's (requireOpenOwner)",
+		"openAsk":   "the owner's lock (requireOpenOwnerStatus)",
+		"rewordAsk": "the ask's owner lock, taken before the document's (requireOpenOwner)",
 	},
 	"internal/dispatch/api/broadcasts.go": {
 		"writeBroadcast": "none, and none to take: each copy is a direct message, whose " +
@@ -111,24 +111,24 @@ var itemRowWriters = map[string]map[string]string{
 			"body: only an issue message is edited or deleted",
 	},
 	"internal/dispatch/api/comment_actions.go": {
-		"commentAction": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
-		"editComment":   "the comment's owner lock (lockedCommentForCorrection, lockOwnerOfComment)",
+		"commentActionAs": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+		"editCommentAs":   "the comment's owner lock (lockedCommentForCorrection, lockOwnerOfComment)",
 		"recordOrphanedCommentAnchor": "the comment's owner lock, which both its callers hold " +
-			"(commentAction's lockedComment, deleteComment's lockedCommentForCorrection)",
-		"reopenComment": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
+			"(commentActionAs's lockedComment, deleteCommentAs's lockedCommentForCorrection)",
+		"reopenCommentAs": "the comment's owner lock (lockedComment, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/comment_create.go": {
-		"createCommentFor": "the owner's lock, taken inside the comment's transaction " +
+		"writeComment": "the owner's lock, taken inside the comment's transaction " +
 			"(lockCommentOwner)",
 		"queueCommentRow": "the owner's lock, which every caller holds: the comment route's, " +
 			"taken inside its transaction (createCommentFor, lockCommentOwner), and the issue " +
 			"write's that leaves a comment (writeIssue, lockIssueOwners)",
 	},
 	"internal/dispatch/api/comment_delivery.go": {
-		"replyComment": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
+		"answerCommentDelivery": "the comment's owner lock (lockedCommentAllowingClosed, lockOwnerOfComment)",
 	},
 	"internal/dispatch/api/message_corrections.go": {
-		"editMessage": "the issue's owner lock (lockedMessageForCorrection's lockIssue); a " +
+		"editMessageAs": "the issue's owner lock (lockedMessageForCorrection's lockIssue); a " +
 			"direct message is refused before anything is written",
 	},
 	"internal/dispatch/api/message_delivery.go": {

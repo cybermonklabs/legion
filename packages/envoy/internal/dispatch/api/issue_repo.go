@@ -5,31 +5,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// parseIssueRepo decodes a tri-state `repo` field: an issue's own repository on an issue write,
-// and a project's default repository on PUT /api/v1/projects/{key}/default-repository. Absent →
-// (nil, false): leave it alone. JSON null → (nil, true): clear it, so the issue resolves through
-// its parent chain and the project's default again, or the project has no default. A string,
-// trimmed of the space around it → its canonical `owner/name`, provided GitHub could hold a
-// repository of that name (refs.ParseGitHubRepo, which lowercases, drops a `.git` suffix and
-// holds the stored form to GitHub's names); anything else → 400 with code, the write's own
-// invalid-input code (INVALID_ISSUE, INVALID_PROJECT). An issue's own repository is a column of
-// the issue and a project's default repository a column of the project, so this is the whole
-// gate on the value, and the value goes on to GitHub reads of its own: the CI repair asks GitHub
-// about every distinct repository an issue names or a project has as its default (cireconcile's
-// covered), once a pass, and the Legion daemon prepares a working copy from it. A name GitHub's
-// rule refuses can only answer "no such repository" there, every pass, so it is refused at the
-// write instead. The rule is held here and not in the reading of an issue reference's repository
-// (refs.ParseExternalRef), because externalRef resolves a reference to an external issue already
-// linked (resolveIssueRef): a row written before this gate existed is still to be found by the
-// reference that names it, and refusing the rule there would answer INVALID_ISSUE_REF for a link
-// the server itself stored.
-func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bool, err error) {
+// parseIssueRepo decodes a tri-state repository field, named member in its refusals: an issue's
+// own repository on an issue write (repo), and a project's default repository on PUT
+// /api/v1/projects/{key}/default-repository (repo) and PATCH /api/v2/projects/{key}
+// (default_repository). Absent → (nil, false): leave it alone. JSON null → (nil, true): clear it,
+// so the issue resolves through its parent chain and the project's default again, or the project
+// has no default. A string, trimmed of the space around it → its canonical `owner/name`, provided
+// GitHub could hold a repository of that name (refs.ParseGitHubRepo, which lowercases, drops a
+// `.git` suffix and holds the stored form to GitHub's names); anything else → 400 with code, the
+// write's own invalid-input code (INVALID_ISSUE, INVALID_PROJECT). An issue's own repository is a
+// column of the issue and a project's default repository a column of the project, so this is the
+// whole gate on the value, and the value goes on to GitHub reads of its own: the CI repair asks
+// GitHub about every distinct repository an issue names or a project has as its default
+// (cireconcile's covered), once a pass, and the Legion daemon prepares a working copy from it. A
+// name GitHub's rule refuses can only answer "no such repository" there, every pass, so it is
+// refused at the write instead. The rule is held here and not in the reading of an issue
+// reference's repository (refs.ParseExternalRef), because externalRef resolves a reference to an
+// external issue already linked (resolveIssueRef): a row written before this gate existed is still
+// to be found by the reference that names it, and refusing the rule there would answer
+// INVALID_ISSUE_REF for a link the server itself stored.
+func parseIssueRepo(raw json.RawMessage, member string, code apicode.Code) (repo *string, provided bool, err error) {
 	if len(raw) == 0 {
 		return nil, false, nil
 	}
@@ -38,11 +39,11 @@ func parseIssueRepo(raw json.RawMessage, code string) (repo *string, provided bo
 	}
 	var value string
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" or null`)
+		return nil, true, errorf(code, `%s must be "owner/name" or null`, member)
 	}
 	owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(value))
 	if err != nil {
-		return nil, true, errorf(http.StatusBadRequest, code, `repo must be "owner/name" (got %q)`, value)
+		return nil, true, errorf(code, `%s must be "owner/name" (got %q)`, member, value)
 	}
 	canonical := owner + "/" + name
 	return &canonical, true, nil

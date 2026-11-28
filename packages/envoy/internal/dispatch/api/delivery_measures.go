@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -18,12 +19,13 @@ type deliveryFlagsSource string
 // once the dora role holder confirms it (LEGION-294).
 const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 
-// deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the
-// measures for the window over the pull requests the timeline's search and facets select, Sami's
-// targets, whether each is met, the open P0 issues with no owner, and the timeline's freshness.
-// Mirrors packages/contracts/src/dispatch-api.ts's DeliveryMeasuresResponse exactly. It lives
-// here rather than beside the timeline's views in delivery/model.go because the measures package
-// imports delivery.
+// deliveryMeasuresResponse is GET /api/v1/delivery/measures and GET /api/v2/delivery/measures,
+// one row served in both versions (OfINFRA979), and the timeline's `measures`: the measures
+// for the window over the pull requests the timeline's search and facets select, Sami's targets,
+// whether each is met, the open P0 issues with no owner, and the timeline's freshness. Mirrors
+// packages/contracts/src/dispatch-api.ts's DeliveryMeasuresResponse exactly. It lives here rather
+// than beside the timeline's views in delivery/model.go because the measures package imports
+// delivery.
 type deliveryMeasuresResponse struct {
 	Window      delivery.DeliveryWindowView    `json:"window"`
 	ComputedAt  time.Time                      `json:"computed_at"`
@@ -35,9 +37,10 @@ type deliveryMeasuresResponse struct {
 	Freshness   delivery.DeliveryFreshnessView `json:"freshness"`
 }
 
-// getDeliveryMeasures answers GET /api/v1/delivery/measures, computed from stored facts on
-// request: the window's population read once (readDeliveryPopulation) and measured by
-// deliveryMeasuresCompute, the two halves the live hub calls too.
+// getDeliveryMeasures answers GET /api/v1/delivery/measures and GET /api/v2/delivery/measures,
+// computed from stored facts on request: the window's population read once
+// (readDeliveryPopulation) and measured by deliveryMeasuresCompute, the two halves the live hub
+// calls too.
 func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -45,7 +48,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	from, to, err := parseDeliveryWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -54,7 +57,7 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 	}
 	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, false)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryMeasuresCompute(settings, population, from, to, time.Now().UTC()))
@@ -78,8 +81,9 @@ func (d deliveryDerived) measuresPRs() []measures.PR {
 	return prs
 }
 
-// deliveryMeasuresCompute is GET /api/v1/delivery/measures' body for [from, to) from a population
-// read for that window or narrowed to it. It reads nothing; now is only computed_at.
+// deliveryMeasuresCompute is the body of GET /api/v1/delivery/measures and GET
+// /api/v2/delivery/measures for [from, to) from a population read for that window or narrowed to
+// it. It reads nothing; now is only computed_at.
 func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) deliveryMeasuresResponse {
 	return deliveryMeasuresOver(settings, pop, pop.derive(settings), from, to, now)
 }

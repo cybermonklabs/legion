@@ -883,18 +883,38 @@ func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx co
 func requireNoRouteOrCommandWritesAType(t *testing.T) {
 	t.Helper()
 	var index bytes.Buffer
-	if err := api.WriteRouteIndex(&index); err != nil {
+	if err := api.WriteRouteIndex(&index, 1); err != nil {
 		t.Fatalf("read the route table: %v", err)
 	}
+	type indexedRoute struct {
+		Method string `json:"method"`
+		Path   string `json:"path"`
+		Auth   string `json:"auth"`
+	}
 	var table struct {
-		Routes []struct {
-			Method string `json:"method"`
-			Path   string `json:"path"`
-			Auth   string `json:"auth"`
-		} `json:"routes"`
+		Routes []indexedRoute `json:"routes"`
 	}
 	if err := json.Unmarshal(index.Bytes(), &table); err != nil {
 		t.Fatalf("read the route index: %v", err)
+	}
+	// The /api/v2 index lists its routes under items; a route of either version may write no type.
+	var indexV2 bytes.Buffer
+	if err := api.WriteRouteIndex(&indexV2, 2); err != nil {
+		t.Fatalf("read the /api/v2 route table: %v", err)
+	}
+	var tableV2 struct {
+		Items []indexedRoute `json:"items"`
+	}
+	if err := json.Unmarshal(indexV2.Bytes(), &tableV2); err != nil {
+		t.Fatalf("read the /api/v2 route index: %v", err)
+	}
+	if len(tableV2.Items) == 0 {
+		t.Fatal("the /api/v2 route index lists no route, so its check below reads nothing")
+	}
+	for _, route := range tableV2.Items {
+		if namesAType(route.Path) && route.Method != "GET" {
+			t.Errorf("%s %s addresses a type node and writes; no route creates, retitles or deletes one", route.Method, route.Path)
+		}
 	}
 	schemaRoutes := 0
 	for _, route := range table.Routes {

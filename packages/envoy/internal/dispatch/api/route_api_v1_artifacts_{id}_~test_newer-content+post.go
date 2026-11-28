@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -12,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).injectArtifactNewerContent,
 	TestHook:    true,
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	Shape:       routeShape{Status: http.StatusNoContent},
 })

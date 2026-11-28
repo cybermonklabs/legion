@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -67,8 +68,8 @@ func TestAgentTokensArePrivateRevocableAndAttributeSessionWrites(t *testing.T) {
 	} {
 		t.Run("the shared token cannot "+test.name, func(t *testing.T) {
 			response := agentRequest(t, handler, test.method, test.path, test.body, "agent-token")
-			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+codeScopeRequired+`"`) {
-				t.Fatalf("%s agent token endpoint: status=%d body=%s, want 403 %s", test.name, response.Code, response.Body.String(), codeScopeRequired)
+			if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"`+apicode.OAuthScopeRequired.V1Name()+`"`) {
+				t.Fatalf("%s agent token endpoint: status=%d body=%s, want 403 %s", test.name, response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 			}
 		})
 	}
@@ -333,8 +334,8 @@ func TestAPersonalTokenMayHoldReadBesidePersonOrAlone(t *testing.T) {
 	} {
 		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens",
 			map[string]any{"name": "refused", "scopes": scopes}, "alice")
-		if refusal := decodeBody[refusalAnswer](t, refused); refused.Code != http.StatusBadRequest || refusal.Code != codeTokenScopesInput {
-			t.Fatalf("mint a token holding %v: status=%d body=%s, want 400 %s", scopes, refused.Code, refused.Body.String(), codeTokenScopesInput)
+		if refusal := decodeBody[refusalAnswer](t, refused); refused.Code != http.StatusBadRequest || refusal.Code != apicode.TokenScopesInput.V1Name() {
+			t.Fatalf("mint a token holding %v: status=%d body=%s, want 400 %s", scopes, refused.Code, refused.Body.String(), apicode.TokenScopesInput.V1Name())
 		}
 	}
 
@@ -381,8 +382,8 @@ func TestAPersonalTokenMayHoldReadBesidePersonOrAlone(t *testing.T) {
 		if inbox.Code != reader.inbox {
 			t.Fatalf("%s: the inbox: status=%d body=%s, want %d", reader.name, inbox.Code, inbox.Body.String(), reader.inbox)
 		}
-		if reader.inbox == http.StatusForbidden && gateRefusalOf(inbox).Code != codeScopeRequired {
-			t.Fatalf("%s: the inbox refused %s, want %s: the token holds no person", reader.name, inbox.Body.String(), codeScopeRequired)
+		if reader.inbox == http.StatusForbidden && gateRefusalOf(inbox).Code != apicode.OAuthScopeRequired.V1Name() {
+			t.Fatalf("%s: the inbox refused %s, want %s: the token holds no person", reader.name, inbox.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 	}
 
@@ -419,8 +420,8 @@ func TestAnExistingTokenCannotBeChangedToRead(t *testing.T) {
 	requireRefused := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
 		refusal := decodeBody[refusalAnswer](t, response)
-		if response.Code != http.StatusBadRequest || refusal.Code != codeTokenScopesInput || !strings.Contains(refusal.Error, "A person makes a new token") {
-			t.Fatalf("%s: status=%d body=%s, want 400 %s naming that a person makes a new token", what, response.Code, response.Body.String(), codeTokenScopesInput)
+		if response.Code != http.StatusBadRequest || refusal.Code != apicode.TokenScopesInput.V1Name() || !strings.Contains(refusal.Error, "A person makes a new token") {
+			t.Fatalf("%s: status=%d body=%s, want 400 %s naming that a person makes a new token", what, response.Code, response.Body.String(), apicode.TokenScopesInput.V1Name())
 		}
 	}
 	for _, scopes := range [][]string{{model.ScopeRead}, {model.ScopeRead, model.ScopePerson}} {

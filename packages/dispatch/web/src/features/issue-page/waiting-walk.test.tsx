@@ -180,6 +180,7 @@ function serve(store: Store): void {
       markdown: "The document",
       token: "sha256:document",
       version: null,
+      unsettled: false,
     }),
     spyOn(api, "getComment").mockImplementation(async () => {
       throw new Error("no thread read here");

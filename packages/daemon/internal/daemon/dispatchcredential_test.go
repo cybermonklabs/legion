@@ -165,7 +165,7 @@ func TestTheBrokerSettingRefusesABootWithoutThePodIdentity(t *testing.T) {
 		t.Run(missing, func(t *testing.T) {
 			env := podIdentity(t, broker.url)
 			delete(env, missing)
-			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
+			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", "", getenvOf(env), quietLogger())
 			if err == nil || !strings.Contains(err.Error(), want) || transport != nil {
 				t.Fatalf("dispatchCredential without %s = %v, %v; want the boot refused naming it (%q)", missing, transport, err, want)
 			}
@@ -195,7 +195,7 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 		dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 		if err == nil || !strings.Contains(err.Error(), "invalid_grant: "+words) || transport != nil {
 			t.Fatalf("dispatchCredential = %v, %v; want the boot refused in the broker's words %q", transport, err, words)
 		}
@@ -218,7 +218,7 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 		var logged bytes.Buffer
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
+		transport, err := dispatchCredential(ctx, brokerConfig(dispatchServer.URL), "", "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewTextHandler(&logged, nil)))
 		if err != nil || transport == nil {
 			t.Fatalf("dispatchCredential after a 503 = %v, %v; want the trade made again and the boot on\nlog:\n%s", transport, err, logged.String())
 		}
@@ -259,7 +259,7 @@ func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 			whoami := daemonWhoami("EXAMPLE")
 			tc.change(whoami)
 			dispatchServer := newCredentialDispatch(t, whoami)
-			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", getenvOf(podIdentity(t, broker.url)), quietLogger())
+			transport, err := dispatchCredential(context.Background(), brokerConfig(dispatchServer.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 			if tc.want == "" {
 				if err != nil || transport == nil {
 					t.Fatalf("dispatchCredential for the daemon's own whoami = %v, %v; want the boot on", transport, err)
@@ -302,11 +302,11 @@ func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
 				cfg = config.Config{Project: "EXAMPLE", DispatchURL: dispatchServer.URL, DispatchTokenFile: writeSecret(t, "dispatch-token", fileToken)}
 				dispatchToken = fileToken
 			}
-			transport, err := dispatchCredential(context.Background(), cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), quietLogger())
+			transport, err := dispatchCredential(context.Background(), cfg, dispatchToken, "", getenvOf(podIdentity(t, broker.url)), quietLogger())
 			if err != nil {
 				t.Fatalf("dispatchCredential: %v", err)
 			}
-			client := daemonDispatchClient(cfg, transport)
+			client := daemonDispatchClient(cfg, transport, "")
 			if err := client.PostMessage(context.Background(), "OTHER-1", "The daemon's notice on an issue of another project."); err != nil {
 				t.Fatalf("post a message on OTHER-1: %v", err)
 			}
@@ -367,7 +367,7 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 		t.Fatalf("boot planned a Dispatch bearer for the daemon's own calls under dispatch_token_broker (the transition token: %t), want none",
 			p.dispatchToken == transitionToken)
 	}
-	transport, err := dispatchCredential(context.Background(), cfg, p.dispatchToken, getenvOf(env), quietLogger())
+	transport, err := dispatchCredential(context.Background(), cfg, p.dispatchToken, "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 			if !tc.cfg.DispatchTokenBroker {
 				dispatchToken = fileToken
 			}
-			if _, err := dispatchCredential(context.Background(), tc.cfg, dispatchToken, getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
+			if _, err := dispatchCredential(context.Background(), tc.cfg, dispatchToken, "", getenvOf(podIdentity(t, broker.url)), slog.New(slog.NewJSONHandler(&logged, nil))); err != nil {
 				t.Fatalf("dispatchCredential: %v", err)
 			}
 			var lines []map[string]any
@@ -483,7 +483,7 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 		cipherclient.BrokerURLVar: rig.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
 		cipherclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
-	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())
+	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", "", getenvOf(env), quietLogger())
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}

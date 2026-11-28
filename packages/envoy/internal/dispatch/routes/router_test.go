@@ -1443,7 +1443,7 @@ func TestStaticHandlerServesBuiltAssets(t *testing.T) {
 
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
-	if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":\"not found\"}\n" {
+	if response.Code != http.StatusNotFound || response.Body.String() != "{\"code\":\"STATIC_NOT_FOUND\",\"error\":\"not found\"}\n" {
 		t.Fatalf("missing asset: status %d body %q", response.Code, response.Body.String())
 	}
 }
@@ -1644,7 +1644,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 			if webDist == "" {
 				return
 			}
-			if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":\"not found\"}\n" {
+			if response.Code != http.StatusNotFound || response.Body.String() != "{\"code\":\"STATIC_NOT_FOUND\",\"error\":\"not found\"}\n" {
 				t.Fatalf("missing asset: status %d body %q", response.Code, response.Body.String())
 			}
 		})
@@ -1716,6 +1716,29 @@ func TestTheRepositoryMappingWritesAreNoRoute(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/settings/repo-projects", nil))
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("an anonymous GET /api/v1/settings/repo-projects: status %d body %s, want 401 from the mounted read", response.Code, response.Body.String())
+	}
+}
+
+// The repository mapping's writes are gone from /api/v2 too (#4457): a PUT or a DELETE of
+// /api/v2/repositories/{owner}/{repo} answers 404 NO_ROUTE, /api/v2's answer for a path no route
+// serves. The read of the stored rows, GET /api/v2/repositories, stays mounted, so an anonymous
+// GET of it is refused 401, not 404.
+func TestTheV2RepositoryMappingWritesAreNoRoute(t *testing.T) {
+	handler, _ := newTestRouter(t)
+	const path = "/api/v2/repositories/acme/widgets"
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, "http://dispatch.test"+path, strings.NewReader(`{"project":"CORE"}`)))
+		body := requireCodedRefusal(t, method+" "+path, response, http.StatusNotFound, "NO_ROUTE")
+		if body.Error != "no route for "+method+" "+path || body.Hint != "GET /api/v2 lists every route" {
+			t.Fatalf("%s %s: body=%s, want error %q and hint %q", method, path, response.Body.String(),
+				"no route for "+method+" "+path, "GET /api/v2 lists every route")
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v2/repositories", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("an anonymous GET /api/v2/repositories: status %d body %s, want 401 from the mounted read", response.Code, response.Body.String())
 	}
 }
 

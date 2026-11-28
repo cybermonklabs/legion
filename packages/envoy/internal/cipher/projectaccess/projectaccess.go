@@ -111,6 +111,10 @@ const (
 	projectNotFoundCode = "PROJECT_NOT_FOUND"
 )
 
+// program is the name every call gives in its User-Agent, before the broker's build
+// (Client.Commit).
+const program = "envoy-broker-project-access"
+
 var (
 	// ErrProjectNotFound is a project Dispatch does not hold.
 	ErrProjectNotFound = errors.New("projectaccess: dispatch holds no such project")
@@ -388,6 +392,13 @@ type Access interface {
 
 // Client asks Dispatch's routes at one base URL, presenting the broker's own account token.
 type Client struct {
+	// Commit is the commit the broker was built from (cmd/cipherd's buildRelease), which every
+	// call names in its User-Agent, `envoy-broker-project-access/<commit>`
+	// (dispatchread.Reader.Get), so Dispatch's access log tells this check's calls from every
+	// other caller's; empty names `(devel)`, a build that holds none. It is set before the first
+	// call and never after.
+	Commit string
+
 	read dispatchread.Reader
 	now  func() time.Time
 
@@ -423,7 +434,7 @@ type cachedAnswer struct {
 // 10 s whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
 	return &Client{
-		read:     dispatchread.New(baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
+		read:     dispatchread.New(program, baseURL, account, httpClient, requestTimeout, maxAnswerBytes),
 		now:      time.Now,
 		answers:  map[accessKey]cachedAnswer{},
 		people:   map[string]cachedPerson{},
@@ -623,7 +634,7 @@ func (c *Client) sweepLocked() {
 // any other code is Dispatch's answer. Every other status, a transport failure and a body it
 // could not read or decode are errors naming what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
-	answer, err := c.read.Get(ctx, path, query)
+	answer, err := c.read.Get(ctx, c.Commit, path, query)
 	if err != nil {
 		return 0, err
 	}

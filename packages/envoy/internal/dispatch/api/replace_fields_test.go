@@ -15,7 +15,9 @@ import (
 // nothing, so one carrying a member no operation takes beside its with (replacement) was applied
 // as if it held none, and one carrying another operation's member beside it (after, an empty
 // markdown) was too. Each refused replace stands second in its batch, after a replace that would
-// write, so the refusal names operation 1 and the batch writes nothing.
+// write, so the refusal names operation 1 and the batch writes nothing. Both versions' edit routes
+// run the one edit (applyEdits), which reads the members from the body each route read, so
+// POST /api/v2/artifacts/{id}/edits refuses each replace as POST /api/v1/artifacts/{id}/edits does.
 func TestAReplaceWithoutItsWithIsRefused(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -59,33 +61,35 @@ func TestAReplaceWithoutItsWithIsRefused(t *testing.T) {
 			wants: []string{"operation 1: replace names no with", "carries text, which replace does not take"},
 		},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler := newTestHandler(t)
-			issue := createInteractionIssue(t, handler, "TEST", "Replace fields", "Intro.\n\nPlanning notes here.\n\nOutro.\n")
-			before, versions := documentMarkdown(t, handler, issue.PrimaryArtifactID), len(documentVersions(t, handler, issue.PrimaryArtifactID))
-			response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
-				"ops":   []map[string]any{{"op": "replace", "find": "Intro.", "with": "Opening."}, test.op},
-				"actor": sessionActor(),
-			})
-			body := decodeBody[struct {
-				Code  string `json:"code"`
-				Error string `json:"error"`
-			}](t, response)
-			if response.Code != http.StatusBadRequest || body.Code != "REPLACE_FIELDS" {
-				t.Fatalf("replace %v: status=%d code=%q error=%q, want 400 REPLACE_FIELDS", test.op, response.Code, body.Code, body.Error)
-			}
-			for _, want := range test.wants {
-				if !strings.Contains(body.Error, want) {
-					t.Fatalf("refusal = %q, want it to say %q", body.Error, want)
+		for _, version := range []string{"/api/v1", "/api/v2"} {
+			t.Run(version+": "+test.name, func(t *testing.T) {
+				handler := newTestHandler(t)
+				issue := createInteractionIssue(t, handler, "TEST", "Replace fields", "Intro.\n\nPlanning notes here.\n\nOutro.\n")
+				before, versions := documentMarkdown(t, handler, issue.PrimaryArtifactID), len(documentVersions(t, handler, issue.PrimaryArtifactID))
+				response := sessionRequest(t, handler, http.MethodPost, version+"/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+					"ops":   []map[string]any{{"op": "replace", "find": "Intro.", "with": "Opening."}, test.op},
+					"actor": sessionActor(),
+				})
+				body := decodeBody[struct {
+					Code  string `json:"code"`
+					Error string `json:"error"`
+				}](t, response)
+				if response.Code != http.StatusBadRequest || body.Code != "REPLACE_FIELDS" {
+					t.Fatalf("replace %v: status=%d code=%q error=%q, want 400 REPLACE_FIELDS", test.op, response.Code, body.Code, body.Error)
 				}
-			}
-			if after := documentMarkdown(t, handler, issue.PrimaryArtifactID); after != before {
-				t.Fatalf("document after the refused batch = %q, want %q unchanged", after, before)
-			}
-			if after := len(documentVersions(t, handler, issue.PrimaryArtifactID)); after != versions {
-				t.Fatalf("versions after the refused batch = %d, want %d", after, versions)
-			}
-		})
+				for _, want := range test.wants {
+					if !strings.Contains(body.Error, want) {
+						t.Fatalf("refusal = %q, want it to say %q", body.Error, want)
+					}
+				}
+				if after := documentMarkdown(t, handler, issue.PrimaryArtifactID); after != before {
+					t.Fatalf("document after the refused batch = %q, want %q unchanged", after, before)
+				}
+				if after := len(documentVersions(t, handler, issue.PrimaryArtifactID)); after != versions {
+					t.Fatalf("versions after the refused batch = %d, want %d", after, versions)
+				}
+			})
+		}
 	}
 }
 

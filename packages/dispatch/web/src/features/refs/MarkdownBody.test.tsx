@@ -353,6 +353,7 @@ describe("Dispatch pictures", () => {
       markdown: "The design.",
       token: "sha256:design",
       version: 1,
+      unsettled: false,
     });
     const view = render(
       withQueries(
@@ -395,6 +396,7 @@ describe("Dispatch pictures", () => {
       markdown: "The design.",
       token: "sha256:design",
       version: 1,
+      unsettled: false,
     });
     const page = `https://dispatch.test/issues/CORE-1/artifacts/${slug}`;
     const plan = "https://dispatch.test/issues/CORE-1/artifacts/plan-md";
@@ -447,6 +449,7 @@ describe("Dispatch pictures", () => {
       markdown: "The design.",
       token: "sha256:design",
       version: 1,
+      unsettled: false,
     });
     const long = `dispatch://CORE-1/artifact/${slug}`;
     const plan = "dispatch://CORE-1/artifact/plan-md";

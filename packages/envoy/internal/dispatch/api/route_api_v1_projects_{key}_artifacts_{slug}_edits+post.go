@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename.",
 	Handler:     (*server).editArtifact,
+	Successor:   deletedFor(http.MethodPost, "/artifacts/{id}/edits"),
 	WriteClass:  scopeProject,
 	Shape: routeShape{
 		Status: http.StatusOK, Response: editArtifactResponse{}, Request: editArtifactInput{},

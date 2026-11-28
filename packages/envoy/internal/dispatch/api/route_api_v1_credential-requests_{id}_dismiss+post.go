@@ -13,6 +13,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request of a private project the caller may not see is 404, as an id no request has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. A caller Dispatch calls a restricted member dismisses only their own machine logins: a secret request or a service's machine login is 403 NOT_APPROVER to them, saying why, and while the broker cannot ask Dispatch what kind of member the caller is, its dismissal is 503 MEMBER_KIND_UNCHECKABLE, dismissing nothing.",
 	Handler:     (*server).dismissCredentialRecord,
+	Successor:   successorIs(http.MethodPut, "/credential-requests/{id}/state"),
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a credential request id"},
 	// Dismissing an expired credential request settles nothing: nobody decided it before its

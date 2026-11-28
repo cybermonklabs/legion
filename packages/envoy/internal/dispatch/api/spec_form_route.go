@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
@@ -31,31 +32,31 @@ func (s *server) getArtifactSpecForm(w http.ResponseWriter, r *http.Request) {
 	pool := s.deps.Store.Pool
 	artifact, err := s.loadArtifact(r.Context(), pool, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if artifact.Kind != "doc" {
-		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only a document holds texts of The Spec")
+		writeError(w, r, apicode.NotDocument, "only a document holds texts of The Spec")
 		return
 	}
 	version, present, valid := parseQueryInt(r.URL.Query(), "version", 1, maxApprovalVersion)
 	if present && !valid {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "version must be a whole number of 1 or more")
+		writeError(w, r, apicode.InvalidQuery, "version must be a whole number of 1 or more")
 		return
 	}
 	if !present {
 		if version, err = settledVersionNumber(r.Context(), pool, artifact.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if version == 0 {
-			writeError(w, "NO_VERSION", http.StatusConflict, "the document has no settled version to read yet")
+			writeError(w, r, apicode.NoVersion, "the document has no settled version to read yet")
 			return
 		}
 	}
 	result, err := s.deps.SpecForm.specFormOf(r.Context(), pool, []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}, actRead)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	document := result.documents[0]

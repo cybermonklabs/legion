@@ -37,7 +37,7 @@ func TestALockOnlyTransactionMarksNothing(t *testing.T) {
 			t.Errorf("commit the lock: %v", err)
 		}
 		if run == 1 {
-			writeError(w, "AFTER_THE_LOCK", http.StatusInternalServerError, "failed after the lock")
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "AFTER_THE_LOCK", Error: "failed after the lock"})
 			return
 		}
 		answerRun(run, w, r)
@@ -81,7 +81,7 @@ func TestACommitThatFailsAfterTheMarkLeavesNoMark(t *testing.T) {
 			}
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			writeError(w, "COMMIT_FAILED", http.StatusInternalServerError, err.Error())
+			WriteJSON(w, http.StatusInternalServerError, errorBody{Code: "COMMIT_FAILED", Error: err.Error()})
 			return
 		}
 		answerRun(run, w, r)
@@ -198,7 +198,7 @@ func TestARecoveredReplayKeepsNothingOfARefusal(t *testing.T) {
 		t.Fatalf("a success's stored body = %s, want it handed to the replay", body)
 	}
 	response := httptest.NewRecorder()
-	(&server{}).writeRefreshed(response, http.StatusCreated, stored, map[string]any{"id": "m1"})
+	(&server{}).writeRefreshed(response, nil, http.StatusCreated, stored, map[string]any{"id": "m1"})
 	var answer map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
@@ -229,13 +229,14 @@ func TestARequestKeysRowIsOneOfItsStates(t *testing.T) {
 
 // Every route the keyed layer's own tables name - those that replay a recovery point, read the
 // post a kept answer holds again, never keep their answer, take an upload's body, or read a body
-// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a POST or
-// PATCH route the server registers: a pattern spelled wrong would silently turn its rule off.
+// of their own size (handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute) - is a route
+// the server registers and keys (keyedMethod): a pattern spelled wrong would silently turn its rule
+// off.
 func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	t.Parallel()
 	registered := map[string]bool{}
 	for _, route := range (&server{}).routes() {
-		if keyedMethod(route.Method) {
+		if keyedMethod(route) {
 			registered[route.Method+" "+route.Pattern] = true
 		}
 	}
@@ -258,7 +259,7 @@ func TestEveryKeyedRouteTableNamesARoute(t *testing.T) {
 	for table, routes := range tables {
 		for _, route := range routes {
 			if !registered[route] {
-				t.Errorf("%s names %q, which is no registered POST or PATCH route", table, route)
+				t.Errorf("%s names %q, which is no registered route the server keys", table, route)
 			}
 		}
 	}

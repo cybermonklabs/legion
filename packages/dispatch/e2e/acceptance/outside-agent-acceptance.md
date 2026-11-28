@@ -428,7 +428,7 @@ A command left unset is made by the leg itself with the owner's own browser sess
 holds today), at `OUTSIDE_TAILNET_DISPATCH_URL`: `PUT` and `DELETE
 /api/v1/projects/<key>/access/people/<address>`, `GET /api/v1/projects/<key>/access` and `POST
 .../people/<address>/invitations`, each read as the command's contract says. Dispatch refuses a
-cookie's write whose `Origin` is not the origin called, 403 `invalid request origin`, which a row
+cookie's write whose `Origin` is not the origin called, 403 `ORIGIN_REFUSED`, which a row
 then names; a refusal with no code is quoted by its words. With neither the command nor the
 session, the rows that need the act read UNKNOWN, naming both.
 
@@ -562,7 +562,7 @@ row holds the same in both legs' gate); either driver row's FAIL fails grants, w
 control, and an empty control, no grant with no approver and no operator (no `grants_probe_id` is
 sent), the driver's own guard and no `outside-edge-grants.tsv` each read UNKNOWN; with no owner
 command every owner act is made with the owner's browser session and every row passes, while the
-same acts sent another `Origin` are refused `403 invalid request origin`, which rows unlisted and
+same acts sent another `Origin` are refused `403 ORIGIN_REFUSED`, which rows unlisted and
 public name, and with neither a command nor the session the owner rows read UNKNOWN naming both. Run
 alone, `outside-agent-grants.sh` prints the probe grant, `no grant with no approver and no operator`
 (exit 1), or UNKNOWN without the token (exit 2). With no input the browser gate reads each of its

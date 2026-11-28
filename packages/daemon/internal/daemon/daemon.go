@@ -169,8 +169,9 @@ func storeOpenLongest(retry bootprobe.Retry) time.Duration {
 	return longest
 }
 
-// overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
-// the zero value is the real daemon binding its own address.
+// overrides are the parts of a daemon a test replaces, and what `legion start` hands it: the
+// listener it inherited and the build's release; the zero value is the real daemon binding its own
+// address and naming no release.
 type overrides struct {
 	// runtime builds the runtime over the worker stream in place of the configured one; nil is the
 	// configured runtime.
@@ -243,6 +244,10 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// release is the build `legion start` names this daemon by (cmd/legion's release, else its
+	// revision): what the daemon's Dispatch client names itself with (dispatch.Release). Empty, in a
+	// test, names none, which the client sends as `legion-daemon/(devel)`.
+	release string
 	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every
 	// script of the panes' launcher directory execs: bin/legion, bin/gh, bin/git and bin/jj. Empty,
 	// in production, is this process's own executable. A test whose panes run these scripts (a live
@@ -367,8 +372,11 @@ type overrides struct {
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
 // Run closes it once it stops serving, as it closes a listener it binds; a refusal before the
 // listener is taken leaves it to the caller to close.
-func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener) error {
-	return run(ctx, cfg, log, overrides{listen: handed(listener)})
+//
+// release names the build the daemon runs in every request its Dispatch client makes
+// (`legion-daemon/<release>`); empty names none.
+func Run(ctx context.Context, cfg config.Config, log *slog.Logger, listener net.Listener, release string) error {
+	return run(ctx, cfg, log, overrides{listen: handed(listener), release: release})
 }
 
 // handed is the listen of a daemon handed listener: it takes listener, whatever address it is
@@ -428,7 +436,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// broker, whose first trade and Dispatch's reading of it wait out a broker or a Dispatch that
 	// does not answer, which the boot budget does not bound, as it does not bound the plugin gate.
 	environ := o.environment()
-	dispatchTransport, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
+	dispatchTransport, err := dispatchCredential(ctx, cfg, plan.dispatchToken, o.release, func(name string) string {
 		value, _ := envValue(environ, name)
 		return value
 	}, log)
@@ -549,7 +557,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, wakePacer, plan.clock.Now, o.experimentSource, o.appCalls)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, wakePacer, o.release, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -1082,10 +1090,13 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
 // waits out as it waits out a Dispatch outage.
 //
+// release is the build the whoami's client names itself by (dispatch.Release), as openWorkflow's
+// client does; empty names none.
+//
 // The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
 // is never this credential: it is the sandbox runtime's alone, for a launch into a pod built before
 // the setting.
-func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
+func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken, release string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, error) {
 	switch {
 	case cfg.DispatchURL == "":
 		return nil, nil
@@ -1108,7 +1119,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
-	daemonDispatch := daemonDispatchClient(cfg, transport)
+	daemonDispatch := daemonDispatchClient(cfg, transport, release)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
@@ -1136,12 +1147,13 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 // refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH), and the daemon
 // writes the issues of other projects too, when it runs a claim on one (legion claims spawn). With
 // the setting off the bearer proves no session, and each write names the session of the daemon of
-// the issue's project (dispatch.DaemonSession), as it did before the setting.
-func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispatch.HTTPClient {
+// the issue's project (dispatch.DaemonSession), as it did before the setting. release is the build
+// the daemon runs, which every request names in its User-Agent.
+func daemonDispatchClient(cfg config.Config, transport http.RoundTripper, release string) *dispatch.HTTPClient {
 	if !cfg.DispatchTokenBroker {
-		return dispatch.New(cfg.DispatchURL, transport)
+		return dispatch.New(cfg.DispatchURL, transport, dispatch.Release(release))
 	}
-	return dispatch.New(cfg.DispatchURL, transport, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.Release(release), dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,

@@ -20,13 +20,13 @@ const (
 )
 
 // pauser is the fill's pause (filler.pause), on the statistic of the answers reads this process
-// serves (sessionanswers.Latency), which the answers route records and the fill shares. Before
-// each batch the fill asks it whether a read that took longer than sessionanswers.SlowRead ended
-// within the last sessionanswers.SlowWithin, or one has run longer than that and not ended
-// (Latency.Slow); while either holds the fill writes nothing and asks again each pauseAskEvery,
-// and it continues once neither has held for the last SlowWithin. It is asked between batches
-// alone, so a batch that runs as a read turns slow is not interrupted: it commits, and the pause
-// holds the next.
+// serves (sessionanswers.Latency), which the answers routes of both versions record and the fill
+// shares. Before each batch the fill asks it whether a read that took longer than
+// sessionanswers.SlowRead ended within the last sessionanswers.SlowWithin, or one has run longer
+// than that and not ended (Latency.Slow); while either holds the fill writes nothing and asks
+// again each pauseAskEvery, and it continues once neither has held for the last SlowWithin. It is
+// asked between batches alone, so a batch that runs as a read turns slow is not interrupted: it
+// commits, and the pause holds the next.
 type pauser struct {
 	latency *sessionanswers.Latency
 	// now is the clock the pause asks Slow at, and wait waits between its asks, or until ctx ends

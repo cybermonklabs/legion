@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Import one architecture source's model now; 200 carries its updated row (last_error set when the import failed), 409 SOURCE_ACCESS a credential or branch problem.",
 	Handler:     (*server).syncArchitectureSource,
+	Successor:   successorIs(http.MethodPost, "/projects/{key}/architecture-syncs"),
 	WriteClass:  scopeProject,
 	Shape:       routeShape{Status: http.StatusOK, Response: model.ArchitectureSource{}},
 })

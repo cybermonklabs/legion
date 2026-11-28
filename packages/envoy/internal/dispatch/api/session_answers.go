@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -13,19 +14,28 @@ import (
 )
 
 const (
-	// sessionAnswersWindow is the window GET /api/v1/agents/{session_id}/answers reads when the
-	// request names no since: the 72 hours every agent host carries on each model request.
+	// sessionAnswersWindow is the window an answers read reads when the request names no start:
+	// GET /api/v1/agents/{session_id}/answers with no since, and GET
+	// /api/v2/agents/{session_id}/answers with no from (listSessionAnswersV2). It is the 72 hours
+	// every agent host carries on each model request.
 	sessionAnswersWindow = 72 * time.Hour
-	// sessionAnswersOldest bounds how far back a since may reach, so one read never walks more
-	// than a week of the events index.
+	// sessionAnswersOldest bounds how far back a read's start may reach, /api/v1's since and
+	// /api/v2's from alike (sessionAnswersStart), so one read never walks more than a week of the
+	// events index.
 	sessionAnswersOldest = 7 * 24 * time.Hour
-	// sessionAnswersMaxChars is the largest max_chars the route takes.
+	// sessionAnswersMaxChars is the largest max_chars an answers read takes: /api/v1's, checked
+	// against it here, and /api/v2's, whose query tag writes the same bound
+	// (sessionAnswersV2Query.MaxChars).
 	sessionAnswersMaxChars = 100_000
 )
 
-// sessionAnswersRoute is the answers read, whose reads routeHandler times for the keyword fill's
-// pause (Deps.AnswersLatency).
-const sessionAnswersRoute = http.MethodGet + " /api/v1/agents/{session_id}/answers"
+// sessionAnswersRoute and sessionAnswersV2Route are the answers reads of the two versions, whose
+// reads routeHandler times for the keyword fill's pause (Deps.AnswersLatency): both read
+// sessionanswers.List, so a slow read of either is a slow read the fill pauses on.
+const (
+	sessionAnswersRoute   = http.MethodGet + " /api/v1/agents/{session_id}/answers"
+	sessionAnswersV2Route = http.MethodGet + " /api/v2/agents/{session_id}/answers"
+)
 
 // timedAnswersReads serves handler, recording each request into latency from the moment the
 // handler starts to the moment it returns (sessionanswers.Latency.Begin), a panic included, as
@@ -58,7 +68,7 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := requestSessionID(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	query := r.URL.Query()
@@ -69,12 +79,12 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 	}
 	since, err := parseSessionAnswersSince(query, now, atCut)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	maxChars, limited, valid := parseQueryInt(query, "max_chars", 1, sessionAnswersMaxChars)
 	if limited && !valid {
-		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_QUERY",
+		s.writeHandlerError(w, r, errorf(apicode.InvalidQuery,
 			"max_chars must be one integer from 1 to %d", sessionAnswersMaxChars))
 		return
 	}
@@ -86,7 +96,7 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 				WriteJSON(w, http.StatusOK, model.SessionAnswersResponse{SessionID: session, Since: since})
 				return
 			}
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -95,7 +105,7 @@ func (s *server) listSessionAnswers(w http.ResponseWriter, r *http.Request) {
 		response.Items = sessionAnswersWithin(items, maxChars)
 	}
 	if err := s.sessionAnswersAtTheCut(r.Context(), response.Items); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, response)
@@ -110,23 +120,37 @@ func parseSessionAnswersSince(query url.Values, now time.Time, atCut bool) (time
 		return now.Add(-sessionAnswersWindow), nil
 	}
 	if len(values) != 1 {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be one RFC3339 timestamp")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must be one RFC3339 timestamp")
 	}
 	since, err := time.Parse(time.RFC3339, values[0])
 	if err != nil {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be an RFC3339 timestamp")
+		return time.Time{}, errorf(apicode.InvalidQuery, "since must be an RFC3339 timestamp")
 	}
-	since = since.UTC()
-	if since.Before(now.Add(-sessionAnswersOldest)) {
-		if atCut {
-			return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be no more than 7 days before the cut")
+	if atCut {
+		// At a cut the window counts back from the cut, and a since after the cut answers no items
+		// rather than being refused (listSessionAnswers).
+		since = since.UTC()
+		if since.Before(now.Add(-sessionAnswersOldest)) {
+			return time.Time{}, errorf(apicode.InvalidQuery, "since must be no more than 7 days before the cut")
 		}
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must be no more than 7 days ago")
+		return since, nil
 	}
-	if since.After(now) && !atCut {
-		return time.Time{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "since must not be in the future")
+	return sessionAnswersStart("since", since, now)
+}
+
+// sessionAnswersStart holds a window's start to the bounds both versions of the route read at the
+// present: no older than sessionAnswersOldest and not after now. name is the parameter that named
+// it, since /api/v1 and /api/v2 call it since and from. /api/v2's route holds no history, so only
+// /api/v1's reads a start at a cut, which parseSessionAnswersSince bounds itself.
+func sessionAnswersStart(name string, start, now time.Time) (time.Time, error) {
+	start = start.UTC()
+	if start.Before(now.Add(-sessionAnswersOldest)) {
+		return time.Time{}, errorf(apicode.InvalidQuery, "%s must be no more than 7 days ago", name)
 	}
-	return since, nil
+	if start.After(now) {
+		return time.Time{}, errorf(apicode.InvalidQuery, "%s must not be in the future", name)
+	}
+	return start, nil
 }
 
 // sessionAnswersWithin is items up to and including the one whose words take the running sum

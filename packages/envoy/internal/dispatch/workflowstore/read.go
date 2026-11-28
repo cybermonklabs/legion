@@ -3,6 +3,7 @@ package workflowstore
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -121,6 +122,33 @@ func compareRuns(left, right Step) int {
 		}
 	}
 	return cmp.Compare(left.ID, right.ID)
+}
+
+// PlanOfIssue answers the plan id of issue as its node holds it, and false where issue holds no
+// plan of that id: none was written under it, or it is the plan of another issue. id is a plan's id
+// in its canonical spelling, as PutPlan stores it. It reads the one node row by its key.
+func PlanOfIssue(ctx context.Context, q Queryer, issue, id string) (Plan, bool, error) {
+	rows, err := q.Query(ctx, `
+		select attributes from workflow_nodes where kind = '`+KindPlan+`' and id = $1
+	`, id)
+	if err != nil {
+		return Plan{}, false, fmt.Errorf("read plan %s of %s: %w", id, issue, err)
+	}
+	attributes, err := pgx.CollectOneRow(rows, pgx.RowTo[[]byte])
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Plan{}, false, nil
+	case err != nil:
+		return Plan{}, false, fmt.Errorf("read plan %s of %s: %w", id, issue, err)
+	}
+	plan, err := planFrom(id, attributes)
+	switch {
+	case err != nil:
+		return Plan{}, false, err
+	case plan.Issue != issue:
+		return Plan{}, false, nil
+	}
+	return plan, true, nil
 }
 
 // IssueRunsRevision answers the revision of one issue's runs: the count of the workflow_tuples rows

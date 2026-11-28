@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -32,30 +33,31 @@ import (
 // made first, from the pool and locking nothing (refuseUploadBeforeItsObject, the writer's check of
 // who writes an issue's Verification document among them, and refuseFileBase for a token the upload
 // names, against the version newestFileVersion reads; an issue that is closed or missing is refused
-// before the body is read, refuseUploadToAClosedIssue): nothing deletes an object, and one a
-// refused upload left would be named by no row. Deleting it on refusal instead is not safe, since
-// the store is keyed by the bytes' hash and another version, or another upload in flight, can name
-// the same object. The transaction's own checks still decide: an upload this check passes that a
-// concurrent write then makes refusable (another upload taking its name with another kind, the
-// issue closing, a role-holder publication), or whose insert fails, leaves an object no row names,
-// which a later upload of the same bytes reuses. The row records the hash the object is keyed by,
-// and the bytes too only while a live server process has no bucket (fleetServesFilesFromRows).
+// before the body is spooled or parsed, refuseUploadToAClosedIssue): nothing deletes an object,
+// and one a refused upload left would be named by no row. Deleting it on refusal instead is not
+// safe, since the store is keyed by the bytes' hash and another version, or another upload in
+// flight, can name the same object. The transaction's own checks still decide: an upload this
+// check passes that a concurrent write then makes refusable (another upload taking its name with
+// another kind, the issue closing, a role-holder publication), or whose insert fails, leaves an
+// object no row names, which a later upload of the same bytes reuses. The row records the hash the
+// object is keyed by, and the bytes too only while a live server process has no bucket
+// (fleetServesFilesFromRows).
 func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer specWriter, kind, sha string, input artifactUploadInput, target artifactTarget) bool {
 	if kind == "doc" || s.deps.Files == nil {
 		return true
 	}
 	artifactID, err := s.refuseUploadBeforeItsObject(r.Context(), target, writer, input.name, kind, input.precondition != nil)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	if artifactID != "" && input.precondition != nil {
 		standing, err := newestFileVersion(r.Context(), s.deps.Store.Pool, kind, artifactID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return false
 		}
-		if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
+		if s.refuseFileBase(w, r, kind, input.name, input.precondition, standing) {
 			return false
 		}
 	}
@@ -65,7 +67,7 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 		if !closedByClient(w, err) {
 			slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
 		}
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusBadGateway, "the file store did not accept the upload")
+		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not accept the upload")
 		return false
 	}
 	return true
@@ -73,21 +75,23 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
 // storeArtifact's transaction would make of a file or image upload by writer to target under
-// name, in that transaction's order: a project that does not exist, an artifact the name or slug
-// finds whose kind is not kind, a new artifact whose name or reference key is past its bound, the
-// check of who writes an issue's spec or Verification document (refuseSpecWriterOfDocument), which
-// passes a row of no issue without a read, and last a first upload naming a token (namesToken),
-// which storeArtifact's one statement of that rule refuses (uploadNoTokenRefusal). The writer
-// check judges the row the upload would store or replace as the transaction does: the row the
-// name or slug finds, or a new row with the slug nextArtifactSlug gives it and no role, since only
-// a document takes a role (documentRole) and a document writes no object (putUploadedFile). A file
-// is the issue's Verification document only by its slug (specWriterDocumentName), so a file named
-// verification.md, whose slug reads as that document's, is refused here before its object is
-// written. It reads as that transaction reads, so the two refuse alike whenever nothing writes the
-// owner's artifacts, or the issue's chain and its role holders, between them; the transaction's
-// checks still decide, under the owner's lock. With no refusal it answers the id of the artifact
-// the upload writes a version of, "" for a new one, for the check of the token the upload names
-// (refuseFileBase).
+// name, in that transaction's order: a project that does not exist, an issue's role document's
+// name or slug, behind the check of who writes an issue's spec or Verification document
+// (refuseFileUnderRoleName), an artifact the name or slug finds whose kind is not kind, a new
+// artifact whose name or reference key is past its bound, the check of who writes an issue's spec
+// or Verification document (refuseSpecWriterOfDocument), which passes a row of no issue without a
+// read, and last a first upload naming a token (namesToken), which storeArtifact's one statement of
+// that rule refuses (uploadNoTokenRefusal). The writer check judges the row the upload would store
+// or replace as the transaction does: the row the name or slug finds, or a new row with the slug
+// nextArtifactSlug gives it and no role, since only a document takes a role (documentRole) and a
+// document writes no object (putUploadedFile). A file is the issue's Verification document only by
+// its slug (specWriterDocumentName), so a file named verification.md, whose slug reads as that
+// document's, is refused here before its object is written: by the writer check where its writer
+// may not write that document, and else as a file under a role document's name. It reads as that
+// transaction reads, so the two refuse alike whenever nothing writes the owner's artifacts, or the
+// issue's chain and its role holders, between them; the transaction's checks still decide, under
+// the owner's lock. With no refusal it answers the id of the artifact the upload writes a version
+// of, "" for a new one, for the check of the token the upload names (refuseFileBase).
 func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, writer specWriter, name, kind string, namesToken bool) (string, error) {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
@@ -99,6 +103,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	created := false
 	switch {
 	case err == nil:
+		if err := refuseFileUnderRoleName(ctx, pool, writer, target, kind, name, &artifact, ""); err != nil {
+			return "", err
+		}
 		if artifact.Kind != kind {
 			return "", artifactKindMismatch(name, artifact, kind)
 		}
@@ -110,6 +117,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 		}
 		slug, err := s.nextArtifactSlug(ctx, pool, target, name)
 		if err != nil {
+			return "", err
+		}
+		if err := refuseFileUnderRoleName(ctx, pool, writer, target, kind, name, nil, slug); err != nil {
 			return "", err
 		}
 		if refusal := newArtifactKeyRefusal(target, slug); refusal != nil {
@@ -133,10 +143,10 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 // fleetServesFilesFromRows reports whether any live server process (processes.Bucketless, read in
 // the upload's transaction) has no bucket: one started without DISPATCH_FILE_STORE_BUCKET, or one
 // of a build that predates the fleet columns (PredatesFleetColumns), which registers no file_store
-// and so reads as having none. Such a process serves a file only from its row, and answers 503
-// FILE_STORE_UNAVAILABLE for a row that holds no bytes, so while one is live an upload keeps its
-// bytes in its row as well as in the bucket. backfill-files moves them out once every process has
-// a bucket.
+// and so reads as having none. Such a process serves a file only from its row, and answers 503 for
+// a row that holds no bytes (FILE_STORE_UNAVAILABLE on /api/v1, FILE_STORE_UNCONFIGURED on
+// /api/v2: apicode.FileStoreUnconfigured), so while one is live an upload keeps its bytes in its
+// row as well as in the bucket. backfill-files moves them out once every process has a bucket.
 func fleetServesFilesFromRows(ctx context.Context, db processes.Querier) (bool, error) {
 	bucketless, err := processes.Bucketless(ctx, db)
 	if err != nil {
@@ -167,8 +177,8 @@ const (
 // from `?download=true`) answers `no-cache` instead, so a browser asks again before each use of a
 // copy it holds and saves under the name of the moment: an older version's name gains its
 // `-v<number>` once a newer version arrives, which the year-long cache would hide. `private`
-// either way, since the route is authenticated and no shared cache may hold them. A document
-// version is not served here (getArtifactVersion).
+// either way, since the route is authenticated and no shared cache may hold them. A version that
+// stores Markdown is not served here (serveArtifactVersion).
 func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifactID, filename string, number int, download bool, content []byte, contentType, sha *string, size *int64) {
 	headers := func(length int64) {
 		w.Header().Set("Content-Type", cmp.Or(deref(contentType), "application/octet-stream"))
@@ -191,12 +201,12 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 	}
 	if s.deps.Files == nil {
 		slog.Error("dispatch: a file version holds no bytes and no file store is configured", "artifact", artifactID, "version", number, "sha256", deref(sha))
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusServiceUnavailable, "this file's bytes are in a store this server is not configured to read")
+		writeError(w, r, apicode.FileStoreUnconfigured, "this file's bytes are in a store this server is not configured to read")
 		return
 	}
 	if sha == nil {
 		slog.Error("dispatch: a file version holds no bytes and records no hash to read them by", "artifact", artifactID, "version", number)
-		writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+		writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 		return
 	}
 	object, err := s.deps.Files.Get(r.Context(), *sha)
@@ -205,14 +215,14 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			// The row names an object the bucket does not hold: not an outage a retry mends, a
 			// restore from the bucket's versioning.
 			slog.Error("dispatch: a file version's object is missing from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
-			writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+			writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 			return
 		}
 		// A request its client closed while the store opened the object, as putUploadedFile's.
 		if !closedByClient(w, err) {
 			slog.Error("dispatch: read a file version from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
 		}
-		writeError(w, "FILE_STORE_UNAVAILABLE", http.StatusBadGateway, "the file store did not return this file")
+		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not return this file")
 		return
 	}
 	defer object.Body.Close()
@@ -222,7 +232,7 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 	// leaves the client short of Content-Length rather than whole.
 	if size != nil && object.Size != *size {
 		slog.Error("dispatch: a file version's object is not the size the row records", "artifact", artifactID, "version", number, "sha256", *sha, "row_size", *size, "object_size", object.Size)
-		writeError(w, "FILE_MISSING", http.StatusInternalServerError, "this file's bytes cannot be found")
+		writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 		return
 	}
 	headers(object.Size)
@@ -236,16 +246,18 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 }
 
 // versionFilename is the name a version saves under, before safeFilename makes it safe for the
-// header: the artifact's stored name, with `.md` added to a document's name that ends in no
-// Markdown extension, since a document downloads as its Markdown, and with `-v<number>` before
-// the extension of a version older than latest, so it does not take the latest version's name in
-// a folder. The extension starts at the last `.` after the first byte, so `.env` and `Makefile`
-// take the suffix at their end.
-func versionFilename(name, kind string, number, latest int) string {
+// header: the artifact's stored name, with `.md` added where the version is Markdown (markdown) -
+// a document's version, which downloads as its Markdown - and the name ends in no Markdown
+// extension, and with `-v<number>` before the extension of a version older than latest, so it does
+// not take the latest version's name in a folder. A version that stores a file's bytes keeps the
+// name as it is, the version a document holds from before an upload made it one included
+// (serveArtifactVersion). The extension starts at the last `.` after the first byte, so `.env` and
+// `Makefile` take the suffix at their end.
+func versionFilename(name string, markdown bool, number, latest int) string {
 	hasExtension := func(extension string) bool {
 		return len(name) >= len(extension) && strings.EqualFold(name[len(name)-len(extension):], extension)
 	}
-	if kind == "doc" && !hasExtension(".md") && !hasExtension(".markdown") {
+	if markdown && !hasExtension(".md") && !hasExtension(".markdown") {
 		name += ".md"
 	}
 	if number >= latest {

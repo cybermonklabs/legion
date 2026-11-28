@@ -364,11 +364,12 @@ export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
 /**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
  * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
- * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
- * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
- * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
- * runs, and names the cut, rather than answer it with the present. On a route outside the read
- * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ * and each read route that does not answer `as_of` except `GET /api/v1/whoami` and `GET
+ * /api/v2/me`. A route that answers `as_of` answers such a token as of its cut, whatever `as_of`
+ * the request sends, and `GET /api/v1/whoami` and `GET /api/v2/me` name the cut. No `/api/v2`
+ * route answers `as_of`. Dispatch refuses the request before the route's handler runs, and names
+ * the cut, rather than answer it with the present. On a route outside the read class the same
+ * token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 

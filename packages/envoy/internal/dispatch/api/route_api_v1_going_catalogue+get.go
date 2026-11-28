@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: goingCatalogueDescription(),
 	Handler:     (*server).getGoingCatalogue,
+	Successor:   successorIs(http.MethodGet, "/going-actions"),
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: goingCatalogueBody{}},
 })

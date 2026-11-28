@@ -25,6 +25,8 @@ A run's write appends no event, so this signal is how the live hub learns of a r
 No write updates or deletes a tuple, so the count rises with each commit of a write that appends one, stays where it is for a write sent again, and never falls.
 It is a count and not the newest `seq`, because two writes of one issue's runs do not wait for each other, and the write that drew the earlier `seq` can commit after the other.
 
+From the first `legion-envoy` release that carries pull request #4274, which first serves `/api/v2`, an issue's steps are also read and written at `GET /api/v2/issues/{key}/step-tasks` (tasks with their needs, planned steps and runs), `GET /api/v2/issues/{key}/steps` (flattened runs) and `PUT /api/v2/issues/{key}/steps/{id}`, `/steps/{id}/rating` and `/steps/{id}/experiment`: there a write that names no identity to a step no record holds is `404 STEP_NOT_FOUND` (`workflowstore.ErrStepUnmade`, which the refusal answers beside `ErrStepInput`), and the deprecated `/api/v1` routes answer it `400 STEP_INPUT` as before.
+
 It holds each session's newest stamped title in `session_titles`, one row a session keyed by `session_id` (`20261117100008_session_titles`).
 `delivery.ResolveSessionTitles` reads that table by its primary key, one `session_id = any($1)` read for every id it is given, and reads no row of `events`.
 The constraint trigger `events_session_title` on `events` (`20261117100015_events_session_titles`), deferred to the commit, writes the row in the transaction that inserts an event of a session actor whose origin stamps a non-empty `session_title`.

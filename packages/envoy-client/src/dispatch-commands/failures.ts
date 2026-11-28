@@ -1,7 +1,12 @@
 import { ISSUE_UPDATE_PATCH_FIELDS } from "@legion/contracts";
 import { mayHaveReachedServer } from "@legion/contracts/http-status";
 import { commandLine } from "../dispatch-command";
-import { DispatchGatewayError, DispatchNoRouteError, DispatchServiceError } from "../dispatch-http";
+import {
+  DispatchGatewayError,
+  DispatchNoRouteError,
+  DispatchServiceError,
+  type DispatchWriteUnsettledError,
+} from "../dispatch-http";
 import type { Owner } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { optionalString } from "./context";
@@ -169,7 +174,15 @@ function nextSteps(
   ];
 }
 
-/** Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it decided. */
+/**
+ * Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it
+ * decided. A write Dispatch answered with its own 5xx is no refusal but a
+ * `DispatchWriteUnsettledError` (the write may have committed first), so a caller that reads such
+ * a 5xx asks this of that error's `last`; but for Dispatch's 503 BROKER_UNAVAILABLE, which checked
+ * no token and ran nothing (`tokenNotChecked`), and a keyed write's 5xx text refusal, each thrown
+ * as the refusal it is while no attempt of the write may have landed (a `#send` write's 503
+ * always), and after one may have the `last` of the write's `DispatchWriteUnsettledError`.
+ */
 export function dispatchAnswered(error: unknown, status: number): error is DispatchServiceError {
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
 }
@@ -255,11 +268,15 @@ export function refuseMissingPost(
  * Whether a write that failed with `error` may have taken effect anyway. Only an answer sent
  * before the write could apply proves it did not: Dispatch's own refusal (a 4xx but a 408), or a
  * gateway's answer that never reached Dispatch (`mayHaveReachedDispatch`), which the client throws
- * as such only when no earlier attempt of the write may have reached Dispatch either. A status
- * after which the request may have reached the server (`mayHaveReachedServer`: a 5xx, which
- * Dispatch can send after it committed, or a 408), a timeout, a transport error or a
- * `DispatchWriteUnsettledError` (an earlier attempt may have reached Dispatch) says nothing either
- * way.
+ * as such only when no earlier attempt of the write may have reached Dispatch either. Dispatch's
+ * own answer after which the request may have reached it (`mayHaveReachedServer`: a 5xx, which it
+ * can send after it committed, or a 408) the client throws as a `DispatchWriteUnsettledError`, as
+ * it does a transport failure and a deadline after an attempt may have reached Dispatch; that
+ * error, and a timeout or a transport error thrown as it came, says nothing either way. The 5xx
+ * refusals the client throws as they came while nothing of the write may have landed - Dispatch's
+ * 503 BROKER_UNAVAILABLE (`tokenNotChecked`), a keyed write's 5xx text refusal, and the
+ * `DispatchProxyRefusalError` of a 5xx Cipher's proxy wrote before anything of a review left it -
+ * this reads by their status as possibly landed too, though nothing ran.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;
@@ -284,6 +301,21 @@ export function closeAccount(error: unknown, closingNote: ClosingNote): string {
   return writeMayHaveLanded(error)
     ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
     : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
+}
+
+/**
+ * A write that may or may not have taken effect (`DispatchWriteUnsettledError`) told with
+ * `clauses`, the caller's account of what its call did and what to do, in place of the client's
+ * own words on it: an account that knows what the call wrote says that once, as `refusalWithCode`
+ * lets one replace a gateway's advice. What the write got leads: a transport failure's, quoted
+ * whole, carries its own advice for a server that may have moved.
+ */
+export function unsettledWithAccount(
+  error: DispatchWriteUnsettledError,
+  ...clauses: string[]
+): Error {
+  const account = clauses.filter((clause) => clause !== "").join("; ");
+  return new Error(`${error.answer}; ${account}`, { cause: error });
 }
 
 /**

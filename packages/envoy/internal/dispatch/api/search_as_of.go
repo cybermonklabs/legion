@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -256,7 +257,7 @@ func searchAsOfKeywordLegs(cut string, ranksFirst bool) string {
          false as own, v.r as r
     from text_matched v join issues i on i.key = v.id, q
    where v.kind = 'issue' and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+		searchRowFilters("i.status", "i.created_by", "i.updated_at", searchSince) + `
   union all
   select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
          null::text, null::text[],
@@ -264,7 +265,7 @@ func searchAsOfKeywordLegs(cut string, ranksFirst bool) string {
          true, ` + rank + `
     from q, unnest(q.own_keys) as named(key), issues i, text_versions v
    where i.key = named.key and v.kind = 'issue' and v.id = i.key and ($2 = '' or i.project_key = $2)` +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+		searchRowFilters("i.status", "i.created_by", "i.updated_at", searchSince) + `
   union all
 ` + searchAsOfDocumentLegs(cut) + `
   union all
@@ -305,15 +306,15 @@ const (
 // narrow (searchKeywordLegs).
 var searchAsOfPostArms = searchAsOfCommentArm + `, q
    where c.kind = 'comment' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
-	searchRowFilters("i.status", "c.author", "coalesce("+searchAsOfEditedAt("comments", "c")+", c.created_at)") + `
+	searchRowFilters("i.status", "c.author", "coalesce("+searchAsOfEditedAt("comments", "c")+", c.created_at)", searchSince) + `
   union all
 ` + searchAsOfAskArm + `, q
    where k.kind = 'ask' and ($2 = '' or ` + searchAsOfAskProject + ` = $2)` +
-	searchRowFilters("i.status", "k.author", "coalesce("+searchAsOfEditedAt("asks", "k")+", k.created_at)") + `
+	searchRowFilters("i.status", "k.author", "coalesce("+searchAsOfEditedAt("asks", "k")+", k.created_at)", searchSince) + `
   union all
 ` + searchAsOfMessageArm + `, q
    where m.kind = 'message' and ($2 = '' or i.project_key = $2)` +
-	searchRowFilters("i.status", "m.author", "coalesce("+searchAsOfEditedAt("messages", "m")+", m.created_at)")
+	searchRowFilters("i.status", "m.author", "coalesce("+searchAsOfEditedAt("messages", "m")+", m.created_at)", searchSince)
 
 // searchAsOfBoundedPostArms is the comment, ask and message arms at the cut for a search that
 // ranks first (searchAsOfBoundedPosts): the columns of searchAsOfPostArms for each post at or above
@@ -389,7 +390,7 @@ func searchAsOfDocumentLegs(cut string) string {
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
    where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2) and v.created_at <= ` + cut +
-		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
+		searchRowFilters("i.status", "a.created_by", "v.created_at", searchSince) + `
   union all
 ` + columns + `
     from document_search d
@@ -400,7 +401,7 @@ func searchAsOfDocumentLegs(cut string) string {
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
    where a.kind = 'doc' and d.created_at > ` + cut + ` and v.search @@ q.tsq and ($2 = '' or p.key = $2)` +
-		searchRowFilters("i.status", "a.created_by", "v.created_at")
+		searchRowFilters("i.status", "a.created_by", "v.created_at", searchSince)
 }
 
 // searchAsOfTexts is the page's texts at a cut (searchPageAndTailReading): a document hit's
@@ -528,7 +529,7 @@ func searchAsOfMeaningBody(cut string, ranksFirst bool, exclude string, seen int
                  and v.body = present_issue.title and v.spec_artifact_id is not distinct from present_spec.id
                  and v.spec_version is not distinct from (select max(n.number) from public.artifact_versions n where n.artifact_id = present_spec.id)
                  and `+refs.VisibleKind("issue", "i.key", searchParam(seen))+
-		project("i.project_key")+searchRowFilters("i.status", "i.created_by", "i.updated_at"), "limit $7") + `
+		project("i.project_key")+searchRowFilters("i.status", "i.created_by", "i.updated_at", searchSince), "limit $7") + `
     join issues i on i.key = w.item
 ),
 ` + searchMeaningIssueProjection + `meaning_document_candidates as (
@@ -542,7 +543,7 @@ func searchAsOfMeaningBody(cut string, ranksFirst bool, exclude string, seen int
                where a.id = `+windowOwnerUUID+` and a.kind = 'doc'
                  and v.number = (select max(n.number) from public.artifact_versions n where n.artifact_id = a.id)
                  and `+refs.VisibleKind("artifact", "a.ref_key", searchParam(seen))+
-		project("p.key")+searchRowFilters("i.status", "a.created_by", "v.created_at"), searchWindowLimit) + `
+		project("p.key")+searchRowFilters("i.status", "a.created_by", "v.created_at", searchSince), searchWindowLimit) + `
     join artifacts a on a.id = w.item
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key
@@ -561,7 +562,7 @@ func searchAsOfMeaningBody(cut string, ranksFirst bool, exclude string, seen int
                where c.id = `+windowItemUUID+`
                  and v.deleted_at is null and v.body = present_comment.body
                  and `+refs.VisibleKind("comment", "c.id::text", searchParam(seen))+
-		project(searchMeaningCommentProject)+searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)"), searchWindowLimit) + `
+		project(searchMeaningCommentProject)+searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)", searchSince), searchWindowLimit) + `
     join comments c on c.id = w.item
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
@@ -582,7 +583,7 @@ meaning_ask_candidates as (
                where k.id = `+windowItemUUID+`
                  and v.body = present_ask.question || ' ' || ask_search_suffix(present_ask.options, present_ask.answer)
                  and `+refs.VisibleKind("ask", "k.id::text", searchParam(seen))+
-		project("coalesce(i.project_key, p.key)")+searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)"), searchWindowLimit) + `
+		project("coalesce(i.project_key, p.key)")+searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)", searchSince), searchWindowLimit) + `
     join asks k on k.id = w.item
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
@@ -598,7 +599,7 @@ meaning_ask_candidates as (
                where m.id = `+windowItemUUID+`
                  and v.deleted_at is null and v.body = present_message.body
                  and `+refs.VisibleKind("message", "m.id::text", searchParam(seen))+
-		project("i.project_key")+searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)"), searchWindowLimit) + `
+		project("i.project_key")+searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)", searchSince), searchWindowLimit) + `
     join messages m on m.id = w.item
     join issues i on i.key = m.issue_key
 ),
@@ -731,15 +732,15 @@ func (s *server) searchAsksAtTheCut(ctx context.Context, results []model.SearchR
 // (decision 7): 409 AS_OF_SEARCH_NOT_FILLED, which names the time the fill reached in its message
 // and in Dispatch-As-Of-Filled-Through, and no result. A fill that has reached no time names
 // none.
-func writeSearchNotFilled(w http.ResponseWriter, cut asof.Cut, refusal *store.TextVersionsNotReachedError) {
+func writeSearchNotFilled(w http.ResponseWriter, r *http.Request, cut asof.Cut, refusal *store.TextVersionsNotReachedError) {
 	if !refusal.Reached {
-		writeError(w, contracts.DispatchAsOfSearchNotFilled, http.StatusConflict,
+		writeError(w, r, apicode.AsOfSearchNotFilled,
 			"as_of: a search at "+cut.String()+" reads the keyword index of past text, and its fill has reached no time yet; search again later")
 		return
 	}
 	reach := asof.CutAt(refusal.Reach).String()
 	w.Header().Set(contracts.DispatchAsOfFilledThroughHeader, reach)
-	writeError(w, contracts.DispatchAsOfSearchNotFilled, http.StatusConflict,
+	writeError(w, r, apicode.AsOfSearchNotFilled,
 		"as_of: a search at "+cut.String()+" reads the keyword index of past text, and its fill has reached "+reach+
 			" only; search at "+reach+" or before, or search again later")
 }

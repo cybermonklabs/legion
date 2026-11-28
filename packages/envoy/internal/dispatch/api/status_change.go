@@ -1,8 +1,10 @@
 package api
 
-// status_change.go is POST /api/v1/issues/{key}/status-change: a status change of one issue that
-// names, with an option, what happens to the open issues under it or to the issues above it, so
-// that every parent's status stays in line with its children's (R24, parent_status_rule.go).
+// status_change.go is POST /api/v1/issues/{key}/status-change and the status-change form of PATCH
+// /api/v2/issues/{key} (a body carrying include_children, unlink_children, include_parent or
+// dry_run): a status change of one issue that names, with an option, what happens to the open
+// issues under it or to the issues above it, so that every parent's status stays in line with its
+// children's (R24, parent_status_rule.go).
 //
 // The call is a sequence of single-issue writes, each one the PATCH's own write (writeIssue) in a
 // transaction of its own, in an order where every write keeps the rule: the ancestors that
@@ -44,6 +46,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -64,7 +67,8 @@ const (
 const statusChangeRuleSentence = "Dispatch keeps a parent's status in line with its children's: a parent is done only when " +
 	"each child is done, and while a child is in work its parent is in work too."
 
-// statusChangeInput is the body of POST /api/v1/issues/{key}/status-change.
+// statusChangeInput is the body of POST /api/v1/issues/{key}/status-change, and what the
+// status-change form of PATCH /api/v2/issues/{key} carries (patchIssueV2Input.statusChangeInput).
 type statusChangeInput struct {
 	// Status is the status the call writes on the issue it names.
 	Status string `json:"status" required:"true"`
@@ -143,13 +147,13 @@ type statusChange struct {
 func parseStatusChange(input statusChangeInput) (statusChange, error) {
 	status := strings.TrimSpace(input.Status)
 	if status == "" {
-		return statusChange{}, errorf(http.StatusBadRequest, "STATUS_CHANGE_INPUT", "status is required")
+		return statusChange{}, errorf(apicode.StatusChangeInput, "status is required")
 	}
 	if !model.IsIssueStatus(status) {
-		return statusChange{}, errorf(http.StatusBadRequest, "INVALID_STATUS", "status is not in the Legion lifecycle")
+		return statusChange{}, errorf(apicode.InvalidStatus, "status is not in the Legion lifecycle")
 	}
 	if input.IncludeChildren && input.UnlinkChildren {
-		return statusChange{}, errorf(http.StatusBadRequest, "STATUS_CHANGE_INPUT",
+		return statusChange{}, errorf(apicode.StatusChangeInput,
 			"include_children and unlink_children cannot both be set: pick what happens to the open issues under the issue")
 	}
 	return statusChange{
@@ -164,38 +168,47 @@ func parseStatusChange(input statusChangeInput) (statusChange, error) {
 	}, nil
 }
 
-// changeIssueStatus is POST /api/v1/issues/{key}/status-change. It plans the call and checks the
+// changeIssueStatus answers POST /api/v1/issues/{key}/status-change: the call changeIssueStatusFrom
+// makes, once the body is read.
+func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
+	none := []statusChangeEntry{}
+	var input statusChangeInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeStatusChangeRefusal(w, r, err, none)
+		return
+	}
+	s.changeIssueStatusFrom(w, r, input)
+}
+
+// changeIssueStatusFrom is a status change, the work of POST /api/v1/issues/{key}/status-change
+// and of the status-change form of PATCH /api/v2/issues/{key}. It plans the call and checks the
 // plan under its owner locks (planStatusChange), answers a dry run from that plan, and otherwise
 // runs each step through the PATCH's write core. A refused step stops the call: no later step
 // runs, and the refusal carries the entries of the steps that committed before it. An attempt
 // that took over a key an earlier attempt left unanswered resumes the call from that attempt's
 // recovery point (resumedStatusChange).
-func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
+func (s *server) changeIssueStatusFrom(w http.ResponseWriter, r *http.Request, input statusChangeInput) {
 	none := []statusChangeEntry{}
-	var input statusChangeInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
-		return
-	}
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	change, err := parseStatusChange(input)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	ctx, key := r.Context(), r.PathValue("key")
 	resumed, err := s.resumedStatusChange(ctx)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, none)
+		s.writeStatusChangeRefusal(w, r, err, none)
 		return
 	}
 	run := &statusChangeRun{
 		server: s, key: key, change: change, writer: writer, callerName: statusChangeCallerName(writer.actor),
 		outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
+		adviceRoute: routeName(r.Context()),
 	}
 	plan, err := s.planStatusChange(ctx, key, change, writer, resumed)
 	// A dry run answers what the call answers with the rule on, whatever the setting.
@@ -210,7 +223,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		ran, err = run.steps(ctx, plan.steps)
 	}
-	run.answer(w, ran, err)
+	run.answer(w, r, ran, err)
 }
 
 // statusChangeStep is one step of a status change's plan: the write of one issue, the option that
@@ -426,7 +439,7 @@ func (s *server) planStatusChange(
 		}
 		read = *moved
 	}
-	return statusChangePlan{}, errorf(http.StatusConflict, parentContended,
+	return statusChangePlan{}, errorf(apicode.ParentContended,
 		"the issues that the status change of %s writes changed at each of %d attempts while this request waited to lock them, so nothing was applied: read the issue and retry",
 		key, parentLockAttempts)
 }
@@ -486,7 +499,7 @@ func (s *server) planStatusChangeUnderLocks(
 		}
 	}
 	if named.ClosedAt != nil && change.status == "done" && !resumed.holds(key) {
-		return statusChangePlan{}, nil, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+		return statusChangePlan{}, nil, errorf(apicode.IssueClosed, "issue is closed")
 	}
 	again, err := readStatusChange(ctx, tx, key, change)
 	if err != nil {
@@ -567,17 +580,18 @@ func (s *server) planStatusChangeUnderLocks(
 // option that this attempt ran changed, in the order the steps committed, which the comment on the
 // named issue lists (namedComment).
 type statusChangeRun struct {
-	server     *server
-	key        string
-	change     statusChange
-	writer     issueWriter
-	callerName string
-	outliving  context.Context
-	resumed    *statusChangeRecovery
-	pointed    bool
-	named      issueWriteResult
-	namedRan   bool
-	moved      []statusChangeMove
+	server      *server
+	key         string
+	adviceRoute string
+	change      statusChange
+	writer      issueWriter
+	callerName  string
+	outliving   context.Context
+	resumed     *statusChangeRecovery
+	pointed     bool
+	named       issueWriteResult
+	namedRan    bool
+	moved       []statusChangeMove
 }
 
 // steps runs each step of the plan through the PATCH's write core, in a transaction of its own,
@@ -636,7 +650,7 @@ func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep)
 // answer, and answers changed: the entries of the point it resumed, as their steps answered them,
 // followed by ran. An attempt whose key another attempt took over sweeps nothing: the attempt that
 // holds the key sweeps instead.
-func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntry, err error) {
+func (run *statusChangeRun) answer(w http.ResponseWriter, r *http.Request, ran []statusChangeEntry, err error) {
 	s := run.server
 	var issue model.Issue
 	if err == nil {
@@ -654,7 +668,7 @@ func (run *statusChangeRun) answer(w http.ResponseWriter, ran []statusChangeEntr
 	}
 	changed = append(changed, ran...)
 	if err != nil {
-		s.writeStatusChangeRefusal(w, err, changed)
+		s.writeStatusChangeRefusal(w, r, err, changed)
 		return
 	}
 	WriteJSON(w, http.StatusOK, statusChangeAnswer{Issue: issue, Changed: changed})
@@ -842,7 +856,7 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 		writer:      run.writer,
 		key:         step.key,
 		outliving:   run.outliving,
-		adviceRoute: statusChangeRoute,
+		adviceRoute: run.adviceRoute,
 		step: &issueWriteCallStep{
 			named: run.key, fence: fence, claim: claim, sweepsLater: step.key == run.key, options: run.change.statusChangeOptions,
 		},
@@ -940,22 +954,23 @@ func claimedSessionName(id string) string {
 // beside the refusal: the entries of the steps that committed before it, [] when changed is nil.
 // It shapes the handler's refusals and the keyed layer's (refuseStatusChangeKey); every other
 // layer's gets changed [] (addChangedToRefusals).
-func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, changed []statusChangeEntry) {
+func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, r *http.Request, err error, changed []statusChangeEntry) {
 	if changed == nil {
 		changed = []statusChangeEntry{}
 	}
 	var conflict *parentStatusConflict
 	if errors.As(err, &conflict) {
-		body := conflict.body()
-		WriteJSON(w, http.StatusConflict, statusChangeConflict{Code: body.Code, Error: body.Error, Issues: body.Issues, Changed: changed})
+		code, status := refusalPair(r, apicode.ParentStatusConflict)
+		body := conflict.body(code)
+		WriteJSON(w, status, statusChangeConflict{Code: body.Code, Error: body.Error, Issues: body.Issues, Changed: changed})
 		return
 	}
 	refused := &errorAnswer{outer: w, header: http.Header{}, status: http.StatusOK}
-	s.writeAuthenticationError(refused, err)
+	s.writeAuthenticationError(refused, r, err)
 	var body errorBody
 	if decodeErr := json.Unmarshal(refused.body.Bytes(), &body); decodeErr != nil {
 		// A server fault: writeHandlerError answers it 500 {code, error}, so it recurses once.
-		s.writeStatusChangeRefusal(w, fmt.Errorf("read the refusal of a status change: %w", decodeErr), changed)
+		s.writeStatusChangeRefusal(w, r, fmt.Errorf("read the refusal of a status change: %w", decodeErr), changed)
 		return
 	}
 	maps.Copy(w.Header(), refused.header)
@@ -969,13 +984,13 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 // point whatever the repeat's body; elsewhere a point is passed only once the digest matched.
 // recovery is nil where the layer read none, where the row is another request's (KEY_REUSED), and
 // where it is past its window.
-func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {
+func (s *server) refuseStatusChangeKey(w http.ResponseWriter, r *http.Request, err error, recovery json.RawMessage) {
 	var point statusChangeRecovery
 	if recovery != nil {
 		if decodeErr := json.Unmarshal(recovery, &point); decodeErr != nil {
-			s.writeStatusChangeRefusal(w, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), nil)
+			s.writeStatusChangeRefusal(w, r, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), nil)
 			return
 		}
 	}
-	s.writeStatusChangeRefusal(w, err, point.Changed)
+	s.writeStatusChangeRefusal(w, r, err, point.Changed)
 }

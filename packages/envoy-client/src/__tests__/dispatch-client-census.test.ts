@@ -6,13 +6,14 @@ import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 import { CALLS, type ClientMethod, clientMethodNames } from "./dispatch-client-calls";
 
-// Every write the `dispatch` command makes carries one key because every request DispatchClient
-// makes goes through its one request function. This drives every method of the class through a
-// recording fetch, so a method added later that reaches Dispatch any other way - its own fetch, the
-// global one, a write without the key - fails here, as does a method that `CALLS`
+// Every POST or PATCH the `dispatch` command makes carries one key, but the one `UNKEYED` names
+// with why, and every read, PUT or DELETE carries none, because every request DispatchClient makes
+// goes through its one request function. This drives every method of the class through a
+// recording fetch, so a method added later that reaches Dispatch any other way - its own fetch,
+// the global one, a POST or a PATCH without the key - fails here, as does a method that `CALLS`
 // (dispatch-client-calls.ts) leaves out. The fetch answers a write as Dispatch does, behind its
 // keyed layer: the route's least answer, naming the write's key back, which every write reads as
-// its answer. `UNKEYED` names the one write sent with no key, and why.
+// its answer.
 
 /** The write methods whose POST or PATCH carries no `Idempotency-Key`, each with why. */
 const UNKEYED: Readonly<Partial<Record<ClientMethod, string>>> = {
@@ -20,7 +21,7 @@ const UNKEYED: Readonly<Partial<Record<ClientMethod, string>>> = {
     "dispatch api's write of the route its caller names, sent through one #send as written, so the caller decides whether to send it again",
 };
 
-test("every DispatchClient method reaches Dispatch through its one request function, every write keyed and answered", async () => {
+test("every DispatchClient method reaches Dispatch through its one request function, every POST and PATCH keyed and answered", async () => {
   // Every method of the class: a method `CALLS` leaves out, or names that the class lacks, fails.
   expect(clientMethodNames().sort()).toEqual(Object.keys(CALLS).sort());
   const global = spyOn(globalThis, "fetch");

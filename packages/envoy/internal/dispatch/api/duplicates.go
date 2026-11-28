@@ -359,7 +359,7 @@ func (s *server) duplicateGateBound() time.Duration {
 }
 
 // duplicateGateText is what the gate reads for a new issue: its title and its spec, joined as
-// createIssue joins them for the related-item check.
+// createIssueFrom, the create both versions make, joins them for the related-item check.
 func duplicateGateText(title, spec string) string {
 	if strings.TrimSpace(spec) == "" {
 		return title

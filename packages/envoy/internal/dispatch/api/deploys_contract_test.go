@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -130,7 +131,7 @@ func TestADeployWriteRefusesAProjectScopedTokenBeforeItsBody(t *testing.T) {
 	const token = "a-project-scoped-token-that-may-not-record-a-deploy"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/deploys", token, map[string]any{"program": false}))
-	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != codeProjectScopeDeployment {
+	if refused.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, refused).Code != apicode.ProjectScopeDeployment.V1Name() {
 		t.Fatalf("project scope must precede invalid body parsing: %d %s", refused.Code, refused.Body)
 	}
 	var count int

@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1084,7 +1085,7 @@ func TestSpecWriteKeepsThePersonScopeRefusals(t *testing.T) {
 		{"decline of the architect's block ask", "/api/v1/asks/" + ask + "/decline", map[string]any{"note": "Not the tester's to say."}},
 		{"rebuild of C's spec", "/api/v1/artifacts/" + spec + "/rebuild", nil},
 	} {
-		rig.requireRefusedWith(t, http.StatusForbidden, codeScopeRequired, specWriteAttempt{
+		rig.requireRefusedWith(t, http.StatusForbidden, apicode.OAuthScopeRequired.V1Name(), specWriteAttempt{
 			what: "C's tester's " + route.what,
 			send: func(t *testing.T) *httptest.ResponseRecorder {
 				return rig.send(t, rig.cTester, http.MethodPost, route.path, route.body)
@@ -2135,7 +2136,10 @@ func TestSpecWriteKeepsNotAuthorFirst(t *testing.T) {
 // row names (putUploadedFile). So the check refuses a worker's file upload of a first
 // verification.md before its object is written: C's tester's upload is refused with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT and the file store holds no object more after it. The same upload
-// by C's architect is taken and writes its object.
+// by C's architect passes the check, and this branch's rule that a Verification document is
+// always a document refuses it 400 ARTIFACT_ROLE_NAME, before its object too
+// (role_document_kind_test.go); C's architect's file upload under another name is taken and writes
+// its object, so the store's count is one that moves.
 func TestSpecWriteRefusesAWorkersFileUploadBeforeItsObject(t *testing.T) {
 	t.Parallel()
 	memory := filestest.NewMemory()
@@ -2152,8 +2156,17 @@ func TestSpecWriteRefusesAWorkersFileUploadBeforeItsObject(t *testing.T) {
 	if objects := memory.Len(); objects != before {
 		t.Errorf("the file store holds %d objects after C's tester's refused upload, want the %d it held before", objects, before)
 	}
-	rig.requireTaken(t, "C's architect's first upload of "+rig.c.key+"'s verification.md as a file", http.StatusCreated, func(t *testing.T) *httptest.ResponseRecorder {
-		return rig.uploadFile(t, rig.cArchitect, rig.c, "verification.md", "text/plain", "C's architect's verification.\n")
+	rig.requireRefusedWith(t, http.StatusBadRequest, "ARTIFACT_ROLE_NAME", specWriteAttempt{
+		what: "C's architect's first upload of " + rig.c.key + "'s verification.md as a file",
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.uploadFile(t, rig.cArchitect, rig.c, "verification.md", "text/plain", "C's architect's verification.\n")
+		},
+	})
+	if objects := memory.Len(); objects != before {
+		t.Errorf("the file store holds %d objects after C's architect's refused upload of verification.md as a file, want the %d it held before", objects, before)
+	}
+	rig.requireTaken(t, "C's architect's upload of "+rig.c.key+"'s evidence.txt as a file", http.StatusCreated, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.uploadFile(t, rig.cArchitect, rig.c, "evidence.txt", "text/plain", "C's architect's evidence.\n")
 	})
 	if objects := memory.Len(); objects != before+1 {
 		t.Errorf("the file store holds %d objects after C's architect's upload, want %d", objects, before+1)

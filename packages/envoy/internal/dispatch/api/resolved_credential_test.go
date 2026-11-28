@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -20,7 +21,7 @@ func TestARefusedCallerIsNeitherReadOnlyNorApproveOnly(t *testing.T) {
 	t.Parallel()
 	readOnly := &model.Credential{ReadOnly: true}
 	approveOnly := &model.Credential{ApproveOnly: true}
-	refusal := errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE", "the secrets broker does not hold this access token as live")
+	refusal := errorf(apicode.BrokerTokenNotActive, "the secrets broker does not hold this access token as live")
 	carrying := func(caller resolvedCaller) *http.Request {
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 		return request.WithContext(context.WithValue(request.Context(), resolvedCallerKey{}, caller))

@@ -1,11 +1,11 @@
 // results_token_test.go holds Dispatch to its results list: a results token - one the secrets
 // broker minted from a result entry for one CI run, the scope results alone beside the project
 // scope results, a person, one project and the run - reaches the routes whose declarations state
-// ResultsScope and nothing else. Every other row of the table and GET /ws/live answer it 403
-// RESULTS_ONLY_TOKEN before the route's handler, before the sign-in check and before its
-// Idempotency-Key is read (refuseLimitedToken). The walks send the read-only walks' probes
-// (readOnlyWalkToken.probe) with this token and this list (limitedToken); the read-only token
-// is held to the read class instead (read_only_token_test.go).
+// ResultsScope and nothing else. Every other row of the table, every /api/v2 row among them, and
+// GET /ws/live answer it 403 RESULTS_ONLY_TOKEN before the route's handler, before the sign-in
+// check and before its Idempotency-Key is read (refuseLimitedToken). The walks send the read-only
+// walks' probes (readOnlyWalkToken.probe) with this token and this list (limitedToken); the
+// read-only token is held to the read class instead (read_only_token_test.go).
 package api
 
 import (
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // resultsTokenProject is the project the walks' results token writes the results of: the
@@ -52,9 +53,10 @@ type limitedAnswer struct {
 }
 
 // limitedToken is a broker token Dispatch serves on a list of its own, the routes whose
-// declarations state its mark, and answers 403 on every other row and on GET /ws/live, before the
-// row's handler: a results token (routeDecl.ResultsScope), which refuseLimitedToken holds to its
-// list. The two walks below take one.
+// declarations state its mark, and answers 403 on every other row of both versions and on GET
+// /ws/live, before the row's handler: a results token (apiRoute.ResultsScope, a route file's
+// routeDecl.ResultsScope), which refuseLimitedToken holds to its list. The two walks below take
+// one.
 type limitedToken struct {
 	// kind names the token in a failure: "a results token".
 	kind string
@@ -87,7 +89,7 @@ func resultsLimitedToken() limitedToken {
 		kind:    "a results token",
 		answer:  func(jkt string) ciphertoken.Introspection { return resultsOnlyToken(jkt, resultsTokenProject) },
 		listed:  func(route apiRoute) bool { return route.ResultsScope },
-		refusal: codeResultsOnlyToken,
+		refusal: apicode.ResultsOnlyToken.Name(),
 		listAnswers: map[string]limitedAnswer{
 			"POST /api/v1/projects/{key}/results": {http.StatusBadRequest, "RESULT_INPUT"},
 		},
@@ -108,8 +110,8 @@ func resultsLimitedToken() limitedToken {
 // the row too, and a row the walk names that no longer states the mark fails it as well.
 // GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
 // replaced. A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
-// walked none, fails.
+// registered server mounts in both versions (its two route indexes, one entry a row), so a walk
+// that skipped a row, or walked none, or walked no /api/v2 row, fails.
 func walkEveryChainWith(t *testing.T, token limitedToken) {
 	t.Helper()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -120,8 +122,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 	const presented = "a-limited-token-walking-every-chain"
 	rig.broker.Says(presented, token.answer(caller.jkt))
 
-	replays := rig.served.keyedReplays()
-	walked, listed := 0, 0
+	walked, listed, refusedV2 := 0, 0, 0
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
 		ran := 0
@@ -132,7 +133,7 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 		// Through a mux of the row's own pattern, as register mounts it, so the chain reads the
 		// path values its project check and its handler read (r.PathValue).
 		mux := http.NewServeMux()
-		mux.Handle(name, rig.served.routeHandler(route, replays[name]))
+		mux.Handle(name, rig.served.routeHandler(route))
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, caller.presentingProbe(t, route, presented))
 		if token.listed(route) {
@@ -151,6 +152,9 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 			if why := notTheGatesRefusal(response, token.refusal, ""); why != "" {
 				t.Errorf("%s %s for %s, want 403 %s", name, why, token.kind, token.refusal)
 			}
+			if route.Version == apiV2 {
+				refusedV2++
+			}
 		}
 		walked++
 	}
@@ -166,21 +170,25 @@ func walkEveryChainWith(t *testing.T, token limitedToken) {
 		t.Errorf("GET %s %s for %s, want 403 %s", liveSocketPattern, why, token.kind, token.refusal)
 	}
 
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
-		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
+	if mounted := len(rig.served.routeIndex) + len(rig.served.routeIndexV2); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts in both versions", walked, mounted)
+	}
+	if v2 := len(rig.served.routeIndexV2); refusedV2 != v2 {
+		t.Fatalf("%d /api/v2 rows refused %s, want every one of the %d the server mounts", refusedV2, token.kind, v2)
 	}
 	if listed != len(token.listAnswers) {
 		t.Fatalf("%d rows state the mark of %s, want the %d the walk names an answer for (%v)", listed, token.kind, len(token.listAnswers), token.listAnswers)
 	}
-	t.Logf("walked %d rows of the table (test hooks in) and GET %s with %s: %d listed, %d refused, every refusal %s",
-		walked, liveSocketPattern, token.kind, listed, walked-listed+1, token.refusal)
+	t.Logf("walked %d rows of the table (test hooks in) and GET %s with %s: %d listed, %d refused (%d of them /api/v2), every refusal %s",
+		walked, liveSocketPattern, token.kind, listed, walked-listed+1, refusedV2, token.refusal)
 }
 
 // walkTheMountedServerWith walks the server register mounted, test hooks in, with the token:
-// every row the list does not name and GET /ws/live answer 403 with its refusal; GET
-// /ws/doc/{room}, which reads no broker token at all, answers 401; and each listed row answers its
-// handler's own answer (listAnswers). A row is counted once its assertions have run, and the
-// count is held to the rows the registered server mounts, as the chain walk's is.
+// every row the list does not name, every /api/v2 row among them, and GET /ws/live answer 403
+// with its refusal; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and each
+// listed row answers its handler's own answer (listAnswers). A row is counted once its assertions
+// have run, and the count is held to the rows the registered server mounts in both versions, as
+// the chain walk's is.
 func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 	t.Helper()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -216,8 +224,8 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 		t.Errorf("GET %s answered %s %d %s, want 401: the document socket takes a cookie alone", room, token.kind, document.Code, document.Body.String())
 	}
 
-	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
-		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
+	if mounted := len(rig.served.routeIndex) + len(rig.served.routeIndexV2); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts in both versions", walked, mounted)
 	}
 	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room} with %s", walked, liveSocketPattern, token.kind)
 }

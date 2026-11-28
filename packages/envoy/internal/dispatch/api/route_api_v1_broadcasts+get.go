@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Recent broadcasts, newest first, with their recipient and reply counts.",
 	Handler:     (*server).listBroadcasts,
+	Successor:   successorIs(http.MethodGet, "/broadcasts"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []broadcastSummary{}},

@@ -1,0 +1,39 @@
+kind: Fixed
+custom:
+  Issue: pr4274
+body: |-
+  `dispatch artifact --path` sends a file as the type its `--name` says. A name that ends in `.md`
+  or `.markdown` is Markdown, whatever the path's extension, so `--name plan.md --path plan.txt`
+  stores a document. A name with any other extension is that extension's type, whatever the path,
+  so `--name cases.txt --path cases.md` stores a file whose bytes are the bytes sent, which before
+  was stored as a document with its text changed. Only a name with no extension keeps the type of
+  the path as the upload resolves it (`--path notes.md/` sends notes.md, a document), and an upload
+  goes up as `text/markdown` exactly when the CLI holds it for AskGate's marker (`gatedWrite` takes
+  the directory the path resolves against). A name's trailing extension of the digits 0 to 9 alone
+  does not count (`rows.jsonl.1` is a `.jsonl` name, `Plan v1.2` has none), while a path counts
+  only when it ends in `.md` or `.markdown` itself (`--name plan --path plan.md.1` stores a file),
+  and the CLI holds an upload for AskGate's marker by the same reading. The
+  declared type is the deciding extension's (`notes.txt.1` goes up as `text/plain`), a name of 4,096
+  characters reaches Dispatch's own refusal, and a name-only upload, the empty-document create, is
+  not held for an AskGate marker. The check that refuses an upload under a name the owner already
+  holds, unless `--force` is given, reads the name as Dispatch trims it, so `plan.md` followed by
+  U+0085 is refused over a held `plan.md`, as `plan.md` is; for a Markdown upload over an issue's
+  role document (`plan-md`, `verification-md`, `decisions-md`) held as a file or picture, that
+  check advises `--force` alone (no token) rather than another name, since Dispatch converts it to
+  a document as its next version. The commands also trim the host session
+  id, a GitHub repository and an ask's question as Dispatch does, so a session id of U+0085 alone is
+  refused as none. Its
+  answer names the kind Dispatch stored: `a document
+  (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`. `dispatch doc-read
+  --version` reads a document's version stored as bytes as a file. The name, not the path, also
+  decides which `--path` files `dispatch artifact` and its dry run check and send as Markdown; this
+  replaces the rule of the `--dry-run` round trip entry, a path that ends in .md or .markdown.
+
+  A `dispatch` write that may have reached Dispatch says so and tells the caller to check before it
+  retries: a keyed write whose every attempt failed on the network after it went out, an unkeyed
+  `PUT` or `DELETE` or a `dispatch api` write that failed in transport after it went out, whose
+  answer's body broke off after its status came, or that its deadline ended in flight, and
+  Dispatch's own JSON `5xx`, which before read as a refusal, but for its `503 BROKER_UNAVAILABLE`,
+  which it answers before any handler runs. A refusal Dispatch decided prints none of those words,
+  and neither does a read, a request that writes nothing (the markdown round trip, the related
+  search) or a request whose tunnel the airlock proxy refused (`AIRLOCK_TUNNEL_REFUSED`).

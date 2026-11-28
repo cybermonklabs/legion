@@ -67,8 +67,12 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
     # must start this job: the Run stands for what the command compiles, never for what it reads.
     ("packages/contracts/schemas/dispatch-openapi.json",
      f"{at('envoy-go-build', 'Check the OpenAPI document is generated from the route table')}: "
-     "`packages/envoy/cmd/dispatch/subcommands.go#writeOpenAPIDocument` and `packages/envoy/cmd/dispatch/subcommands.go#committedOpenAPIPath`: the first reads the "
+     "`packages/envoy/cmd/dispatch/subcommands.go#writeOpenAPIDocument` and `packages/envoy/cmd/dispatch/subcommands.go#committedOpenAPIPath`: the first reads each "
      "committed document to compare it, and the second only builds a candidate path for it"),
+    ("packages/contracts/schemas/dispatch-openapi-v2.json",
+     f"{at('envoy-go-build', 'Check the OpenAPI document is generated from the route table')}: "
+     "`packages/envoy/cmd/dispatch/subcommands.go#writeOpenAPIDocument` reads the committed /api/v2 document to compare it, as it reads the "
+     "/api/v1 one"),
     (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
     (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-build', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
     ("packages/proof-editor/src/**", "`packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#setBlockIdGenerator`, `packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#createHeadlessProof` and `packages/envoy/internal/dispatch/pmdoc/gen/gen.ts#readDocument` imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),

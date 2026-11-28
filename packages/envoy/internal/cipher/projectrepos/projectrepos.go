@@ -47,8 +47,19 @@ const (
 	pathSuffix = "/repositories"
 )
 
+// program is the name every read gives in its User-Agent, before the broker's build
+// (Client.Commit).
+const program = "envoy-broker-project-repositories"
+
 // Client reads Dispatch's route at one base URL, presenting the broker's own account token.
 type Client struct {
+	// Commit is the commit the broker was built from (cmd/cipherd's buildRelease), which every
+	// read names in its User-Agent, `envoy-broker-project-repositories/<commit>`
+	// (dispatchread.Reader.Get), so Dispatch's access log tells this route's reads from every other
+	// caller's; empty names `(devel)`, a build that holds none. It is set before the first read and
+	// never after.
+	Commit string
+
 	read dispatchread.Reader
 }
 
@@ -56,7 +67,7 @@ type Client struct {
 // (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader, the one projectaccess presents) on every call. A nil
 // httpClient is http.DefaultClient; each call is bounded by Timeout whatever the client.
 func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *Client {
-	return &Client{read: dispatchread.New(baseURL, account, httpClient, Timeout, MaxAnswerBytes)}
+	return &Client{read: dispatchread.New(program, baseURL, account, httpClient, Timeout, MaxAnswerBytes)}
 }
 
 // Repositories is Dispatch's list for project, read now: each repository, as "owner/name", that
@@ -68,7 +79,7 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 // (Dispatch's 503, a project it does not hold, a Dispatch that serves no such route), and a 200
 // whose body is past MaxAnswerBytes or is no whole answer about project (readAnswer) are errors.
 func (c *Client) Repositories(ctx context.Context, project string) ([]string, error) {
-	answer, err := c.read.Get(ctx, pathPrefix+url.PathEscape(project)+pathSuffix, nil)
+	answer, err := c.read.Get(ctx, c.Commit, pathPrefix+url.PathEscape(project)+pathSuffix, nil)
 	if err != nil {
 		return nil, fmt.Errorf("projectrepos: read %s's repositories: %w", project, err)
 	}

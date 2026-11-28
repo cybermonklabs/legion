@@ -1,9 +1,11 @@
 // post_history.go is what a write of a comment's or an issue message's body does to the body it
 // replaces: the one write that keeps it (postBodyHistoryStep), the clear both deletes make of it
 // and of the sends still carrying it (clearDeletedPostBody, queueDeletedPostSettlement), and the
-// two reads that serve the kept bodies, GET /api/v1/comments/{id}/history and GET
-// /api/v1/messages/{id}/history. One table holds the kept bodies of both kinds, keyed by the one
-// of comment_id and message_id its row carries (post_body_history, migration 20261110224508).
+// reads that serve the kept bodies, GET /api/v1/comments/{id}/history and GET
+// /api/v1/messages/{id}/history, and their /api/v2 successors GET /api/v2/comments/{id}/corrections
+// and GET /api/v2/messages/{id}/corrections (postHistory, one statement for all four). One table
+// holds the kept bodies of both kinds, keyed by the one of comment_id and message_id its row
+// carries (post_body_history, migration 20261110224508).
 //
 // Every write here is planned in the route's read phase and returned as a step of its write
 // phase (docs.WriteStep), which the route queues where it makes the write: on its ledger for a
@@ -21,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -30,15 +33,18 @@ import (
 
 // postHistoryEntry is one body a write replaced, with the actor that replaced it and the time
 // of that write. Body is empty on a deleted post, whose read gives no part of the body
-// anywhere, this one included.
+// anywhere, this one included. id is the row's own identity, which /api/v1 never answers and
+// /api/v2 answers beside edited_at as the position of a post's corrections (postCorrectionV2):
+// edited_at is clock_timestamp(), unique per post in no constraint, and the id breaks a tie.
 type postHistoryEntry struct {
 	Body     string      `json:"body"`
 	EditedBy model.Actor `json:"edited_by"`
 	EditedAt time.Time   `json:"edited_at"`
+	id       int64
 }
 
-// postHistoryRead is what the two history reads answer: the post's earlier bodies, newest
-// first, and the deleted mark the post carries, as every other read of it carries it. Entries
+// postHistoryRead is what the history reads answer: the post's earlier bodies, newest first, and
+// the deleted mark the post carries, as every other read of it carries it. On /api/v1 Entries
 // holds at most contracts.PostHistoryPageLimit rows; the page after is the same read under
 // ?before= the oldest edited_at this one gave.
 type postHistoryRead struct {
@@ -85,7 +91,7 @@ func postBodyHistoryStep(kind refs.ItemKind, itemID, body string, actor model.Ac
 }
 
 // queuePostBodyHistory queues postBodyHistoryStep on ledger, for a route whose write phase is its
-// ledger's (editComment).
+// ledger's (editCommentAs).
 func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body string, actor model.Actor) error {
 	step, err := postBodyHistoryStep(kind, itemID, body, actor)
 	if err != nil {
@@ -102,22 +108,20 @@ func queuePostBodyHistory(ledger *docs.Ledger, kind refs.ItemKind, itemID, body 
 // deliverMessageResuming).
 const deletedPostDeliveryError = contracts.DeletedPostDeliveryError
 
-// deleteContended is the code of a delete whose settle met a send of its post that the send's own
+// deleteContendedRetryAfter is the Retry-After, in whole seconds, that a delete's 409
+// DELETE_CONTENDED carries: a delete whose settle met a send of its post that the send's own
 // sender moved after the delete's read found it (queueDeletedPostSettlement). Nothing is written,
-// and the same delete sent again reads the attempts as they stand then.
-const deleteContended = "DELETE_CONTENDED"
-
-// deleteContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
-// caller waits for is a sender's write already committing - the statement that moved the attempt,
-// which held its row while the delete waited on it - and no budget this caller has spent, so the
-// wait is the shortest whole second HTTP can ask for, as the results write's checkContendedRetryAfter
-// is for the same reason.
+// and the same delete sent again reads the attempts as they stand then. What the caller waits for
+// is a sender's write already committing - the statement that moved the attempt, which held its
+// row while the delete waited on it - and no budget this caller has spent, so the wait is the
+// shortest whole second HTTP can ask for, as the results write's checkContendedRetryAfter is for
+// the same reason.
 const deleteContendedRetryAfter = 1
 
 // errDeleteContended is that refusal: 409 DELETE_CONTENDED with Retry-After: 1. Both deletes
-// answer it, through the settle they both queue.
+// answer it, in either version, through the settle they both queue.
 var errDeleteContended error = &apiError{
-	status: http.StatusConflict, code: deleteContended, retryAfter: deleteContendedRetryAfter,
+	code: apicode.DeleteContended, retryAfter: deleteContendedRetryAfter,
 	message: "a send of this post moved while the delete was being written; nothing was written, and the same delete can be sent again",
 }
 
@@ -322,7 +326,7 @@ func queueDeletedPostSettlement(b *store.WriteBatch, itemID string, read pending
 // getCommentHistory answers GET /api/v1/comments/{id}/history, read by whoever GET
 // /api/v1/comments/{id} answers: any authenticated caller.
 func (s *server) getCommentHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
 	s.writePostHistory(w, r, refs.ItemComment)
@@ -339,31 +343,75 @@ func (s *server) getMessageHistory(w http.ResponseWriter, r *http.Request) {
 	s.writePostHistory(w, r, refs.ItemMessage)
 }
 
+// writePostHistory answers the /api/v1 history read of the post the path's {id} names: one page of
+// contracts.PostHistoryPageLimit kept bodies, newest first, below ?before= where it names one.
 func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind refs.ItemKind) {
 	before, err := parseOptionalRFC3339(r.URL.Query(), "before", time.Time{})
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
-	read, err := s.postHistory(r.Context(), kind, r.PathValue("id"), before)
+	window := postHistoryWindow{limit: contracts.PostHistoryPageLimit}
+	if !before.IsZero() {
+		window.before = &postHistoryPosition{at: before}
+	}
+	read, _, err := s.postHistory(r.Context(), kind, r.PathValue("id"), window)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// postHistory is one post's kept bodies, newest first, at most contracts.PostHistoryPageLimit of
-// them and only those written before `before` when it is given. The order is the partial index's
-// (post_body_history_comment, post_body_history_message), so the read sorts nothing, and
-// edited_at is clock_timestamp(), so two writes of one transaction order by it with the
-// identity breaking a tie within one reading.
+// postHistoryWindow is the part of one post's kept bodies a read answers, by (edited_at, id): those
+// written after `after` and before `before` where each is set, newest first or, with oldestFirst,
+// oldest first, at most limit of them past the first offset. /api/v1 reads a page of
+// contracts.PostHistoryPageLimit below a before that names a time alone; /api/v2 pages its log by
+// both bounds, each a time and an id, limit and offset, and counts it (counted).
+type postHistoryWindow struct {
+	after, before *postHistoryPosition
+	oldestFirst   bool
+	limit, offset int
+	// counted asks for the tally beside the page (postHistoryTally).
+	counted bool
+}
+
+// postHistoryPosition is a bound of a postHistoryWindow: a kept body's edited_at and its id. A
+// before whose id is 0 keeps every body written before at, since no row's identity is below 1:
+// /api/v1's ?before=, which names a time alone.
+type postHistoryPosition struct {
+	at time.Time
+	id int64
+}
+
+// args are the bound's time and id as the statement binds them, both null for no bound.
+func (position *postHistoryPosition) args() (*time.Time, *int64) {
+	if position == nil {
+		return nil, nil
+	}
+	return &position.at, &position.id
+}
+
+// postHistoryTally is what a counted read answers beside its page: total, how many kept bodies
+// the window's two bounds keep, and reached, whether a kept body was written at or after the
+// window's after, true where it names none.
+type postHistoryTally struct {
+	total   int
+	reached bool
+}
+
+// postHistory is one post's kept bodies within window, at most window.limit of them past the first
+// window.offset. The order is the partial index's (post_body_history_comment,
+// post_body_history_message), (edited_at, id) read forward or backward, so the read sorts
+// nothing, and edited_at is clock_timestamp(), so two writes of one transaction order by it with
+// the identity breaking a tie within one reading, as each bound does.
 //
-// The page is contracts.PostHistoryPageLimit and not maxEventPage, though both are 200 today.
-// maxEventPage bounds a page of an issue's or a document's event log; this page is a different
-// read, and it is also the bound on which `dispatch read --history` decides a page is full and
-// names the read of its older rows. Under one name a change to the event page would move this
-// page with no client told, so this one is declared in packages/contracts, which both ends read.
+// /api/v1's page is contracts.PostHistoryPageLimit and not maxEventPage, though both are 200
+// today. maxEventPage bounds a page of an issue's or a document's event log; this page is a
+// different read, and it is also the bound on which `dispatch read --history` decides a page is
+// full and names the read of its older rows. Under one name a change to the event page would move
+// this page with no client told, so this one is declared in packages/contracts, which both ends
+// read.
 //
 // The post's deleted mark and its kept bodies are one statement, so both are read in one
 // snapshot: as two statements a delete that committed between them served the bodies the
@@ -371,88 +419,121 @@ func (s *server) writePostHistory(w http.ResponseWriter, r *http.Request, kind r
 // The post itself drives the join, so a post that is not there answers no row at all, as the
 // single read of it did (pgx.ErrNoRows, 404); the lateral is its page of kept bodies, read
 // through the same partial index under the same order and limit, and a post that kept none
-// answers one row with every history column null.
+// answers one row with every history column null. A counted read counts the post's kept bodies
+// in a lateral of its own, over the same index, in the same snapshot.
 //
 // At a cut the page is read from the rows that the post's edit and delete events at the cut wrote
 // (decision 17 of INFRA-4620's plan): the first of its rows in the order they were written, as
-// many as the post has such events at the cut (asof.CommentHistoryRowsAtCut), paged as the
-// present read pages them. The post's row is its shadow, whose mark is the present one, so a post
-// deleted after the cut answers as its present read answers a deleted post.
-func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, before time.Time) (postHistoryRead, error) {
+// many as the post has such events at the cut (asof.CommentHistoryRowsAtCut), paged and counted
+// as the present read pages and counts them. The post's row is its shadow, whose mark is the
+// present one, so a post deleted after the cut answers as its present read answers a deleted
+// post.
+func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, window postHistoryWindow) (postHistoryRead, postHistoryTally, error) {
 	items, column, err := postHistoryOwner(kind)
 	if err != nil {
-		return postHistoryRead{}, err
+		return postHistoryRead{}, postHistoryTally{}, err
 	}
-	var cursor *time.Time
-	if !before.IsZero() {
-		cursor = &before
+	order := "edited_at desc, id desc"
+	if window.oldestFirst {
+		order = "edited_at asc, id asc"
 	}
+	bounded := `($2::timestamptz is null or (edited_at, id) < ($2::timestamptz, coalesce($3::bigint, 0)))` +
+		` and ($4::timestamptz is null or (edited_at, id) > ($4::timestamptz, $5::bigint))`
+	// The kept bodies the page and the tally read: every one the post kept, or at a cut the first
+	// rows its edit and delete events at the cut wrote.
 	page := `
-			select body, edited_by, edited_at
+			select id, body, edited_by, edited_at
 			from post_body_history
-			where ` + column + ` = p.id and ($2::timestamptz is null or edited_at < $2)
-			order by edited_at desc, id desc
-			limit $3`
+			where ` + column + ` = p.id and ` + bounded + `
+			order by ` + order + `
+			limit $6 offset $7`
+	tallyRows := `post_body_history
+			where ` + column + ` = p.id`
 	if _, atCut := asof.CutFrom(ctx); atCut {
 		rowsAtCut := asof.CommentHistoryRowsAtCut
 		if kind == refs.ItemMessage {
 			rowsAtCut = asof.MessageHistoryRowsAtCut
 		}
+		kept := `(
+				select id, body, edited_by, edited_at
+				from (
+					select id, body, edited_by, edited_at, row_number() over (order by edited_at, id) as place
+					from post_body_history
+					where ` + column + ` = p.id
+				) numbered
+				where numbered.place <= ` + rowsAtCut + `
+			) kept`
 		page = `
-			select kept.body, kept.edited_by, kept.edited_at
-			from (
-				select body, edited_by, edited_at, id, row_number() over (order by edited_at, id) as place
-				from post_body_history
-				where ` + column + ` = p.id
-			) kept
-			where kept.place <= ` + rowsAtCut + ` and ($2::timestamptz is null or kept.edited_at < $2)
-			order by kept.edited_at desc, kept.id desc
-			limit $3`
+			select id, body, edited_by, edited_at
+			from ` + kept + `
+			where ` + bounded + `
+			order by ` + order + `
+			limit $6 offset $7`
+		tallyRows = kept
 	}
+	tally, tallied := `, null::bigint, null::boolean`, ``
+	if window.counted {
+		tally = `, c.total, c.reached`
+		tallied = `
+		left join lateral (
+			select count(*) filter (where ` + bounded + `) as total,
+			       $4::timestamptz is null
+			       or coalesce(bool_or((edited_at, id) >= ($4::timestamptz, $5::bigint)), false) as reached
+			from ` + tallyRows + `
+		) c on true`
+	}
+	beforeAt, beforeID := window.before.args()
+	afterAt, afterID := window.after.args()
 	// A delete gives no part of the body on any read of the post, so the mark stands in place of
 	// every body this list would otherwise serve and the read answers none of them.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select p.deleted_at, p.deleted_by,
-		       case when p.deleted_at is null then h.body else '' end, h.edited_by, h.edited_at
+		       case when p.deleted_at is null then h.body else '' end, h.edited_by, h.edited_at, h.id`+tally+`
 		from `+items+` p
 		left join lateral (`+page+`
-		) h on true
+		) h on true`+tallied+`
 		where p.id = $1
-	`, id, cursor, contracts.PostHistoryPageLimit)
+	`, id, beforeAt, beforeID, afterAt, afterID, window.limit, window.offset)
 	if err != nil {
-		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
+		return postHistoryRead{}, postHistoryTally{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
 	}
 	defer rows.Close()
 	read := postHistoryRead{Entries: []postHistoryEntry{}}
+	var counted postHistoryTally
 	found := false
 	for rows.Next() {
 		var deletedAt, editedAt *time.Time
 		var deletedBy, editedBy []byte
 		var body *string
-		if err := rows.Scan(&deletedAt, &deletedBy, &body, &editedBy, &editedAt); err != nil {
-			return postHistoryRead{}, fmt.Errorf("scan a kept body of %s %s: %w", kind, id, err)
+		var total, rowID *int64
+		var reached *bool
+		if err := rows.Scan(&deletedAt, &deletedBy, &body, &editedBy, &editedAt, &rowID, &total, &reached); err != nil {
+			return postHistoryRead{}, postHistoryTally{}, fmt.Errorf("scan a kept body of %s %s: %w", kind, id, err)
 		}
 		if !found {
 			found = true
 			if read.DeletedAt, read.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
-				return postHistoryRead{}, err
+				return postHistoryRead{}, postHistoryTally{}, err
+			}
+			if total != nil && reached != nil {
+				counted = postHistoryTally{total: int(*total), reached: *reached}
 			}
 		}
 		// The post kept no body this page holds: the left join's one row carries the mark alone.
 		if editedAt == nil {
 			continue
 		}
-		entry := postHistoryEntry{Body: *body, EditedAt: editedAt.UTC()}
+		entry := postHistoryEntry{Body: *body, EditedAt: editedAt.UTC(), id: *rowID}
 		if err := json.Unmarshal(editedBy, &entry.EditedBy); err != nil {
-			return postHistoryRead{}, fmt.Errorf("decode the actor of a kept body of %s %s: %w", kind, id, err)
+			return postHistoryRead{}, postHistoryTally{}, fmt.Errorf("decode the actor of a kept body of %s %s: %w", kind, id, err)
 		}
 		read.Entries = append(read.Entries, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return postHistoryRead{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
+		return postHistoryRead{}, postHistoryTally{}, fmt.Errorf("read the body history of %s %s: %w", kind, id, err)
 	}
 	if !found {
-		return postHistoryRead{}, pgx.ErrNoRows
+		return postHistoryRead{}, postHistoryTally{}, pgx.ErrNoRows
 	}
-	return read, nil
+	return read, counted, nil
 }

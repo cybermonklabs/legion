@@ -32,6 +32,9 @@ It serves no repository of its own either
 — so a pair may be configured before the transfer and simply answers nothing until the events arrive under the new name.
 What moves a record onto another repository is Dispatch's own resolution of the issue, which `ApplyRepositoryChange` applies, and nothing else moves it.
 
+The Go Dispatch client (`internal/dispatch`, `New` with its `Release` option) takes the daemon's release from the workflow runtime (`openWorkflow`) and names it in every request's `User-Agent`, `legion-daemon/<release>`, or `legion-daemon/(devel)` when none is named, so Dispatch's access log tells the daemon's calls from every other client's.
+It still calls `/api/v1`, which Dispatch deprecates from the first `legion-envoy` release that carries pull request #4274 and serves until a deployment ends it.
+
 News of an approved new version reaches the holders of a tree's work from the record, never from a message composed when the gate moved.
 Migration `20261119203047_design_news` adds the told record, `design_news_told`, one row per issue and audience: the `holder` row is what the session holding that issue's phase took, the `architect` row of a tree root what that tree's root architect took, `versions` maps each gated step to the approved version taken, and `opening_owed` says the gate's opening is owed to that audience.
 A confirmed delivery's copy of the news its prompt carried (`pending_task_deliveries.carried_news`) is a credit, not a write to the row: every reader reads the told rows through `design_news_told_in`, which adds each standing credit, and a credit counts only in the run it was rendered in (`design_news_current`).

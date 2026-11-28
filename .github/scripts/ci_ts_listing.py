@@ -38,6 +38,10 @@ RENDERED = {
         "packages/contracts/schemas/dispatch-openapi.json",
         "packages/contracts/scripts/gen-api.ts",
     ),
+    "packages/contracts/src/dispatch-api-v2.generated.ts": (
+        "packages/contracts/schemas/dispatch-openapi-v2.json",
+        "packages/contracts/scripts/gen-api.ts",
+    ),
 }
 
 # The compiler a program is listed with: tsc, the one every typecheck job runs, unless the run says

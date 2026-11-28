@@ -6,9 +6,11 @@ import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
+import type { DispatchDelivery } from "@legion/envoy-client/delivery"
+import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
-import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
@@ -24,17 +26,21 @@ import codexHooks from "../codex/hooks/hooks.json" with { type: "json" }
 import codexPkg from "../codex/package.json" with { type: "json" }
 import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod-protocol"
 import pkg from "../package.json" with { type: "json" }
+import { CODEX_ENVOY_USER_AGENT, codexDispatchClient } from "../src/codex/codex-server"
 import {
   type ChannelNotifier,
   type ChannelSession,
+  CLAUDE_ENVOY_USER_AGENT,
   createChannelDelivery,
   MCP_SERVER_INFO,
+  postDispatchReply,
   sessionCapabilities,
   startChannelSession,
   userTurnDispatchClient,
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
+import type { UserTurnRouterOptions } from "../src/user-turn-router"
 import {
   deliveryRaw,
   directSubject,
@@ -74,6 +80,31 @@ function relayed(nats: FakeNats, seq: number, raw: string): void {
   nats.emitRelay("ses_claude", { subject: directSubject, seq, raw, reply: `_INBOX.${seq}` })
 }
 
+/** One answer `recordingReply` was asked to post: the delivery it answers, and the answer. */
+interface RecordedReply {
+  readonly target: DispatchDelivery
+  readonly result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean }
+}
+
+/**
+ * The session's answer to a delivery on Dispatch as `createChannelDelivery` is handed it, posting
+ * nothing: each answer it was asked to post goes into `replies`. The real answer, which
+ * `startChannelSession` builds, is read by "a session answers Dispatch under the User-Agent it
+ * was started with".
+ */
+function recordingReply(): {
+  readonly reply: UserTurnRouterOptions["reply"]
+  readonly replies: readonly RecordedReply[]
+} {
+  const replies: RecordedReply[] = []
+  return {
+    reply: async (target, result) => {
+      replies.push({ target, result })
+    },
+    replies,
+  }
+}
+
 /**
  * A role-lane envelope the listener forwarded to the direct subject, under the key the listener
  * minted for the publish behind the arbiter's forward mark.
@@ -93,7 +124,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply: recordingReply().reply,
     stderr: (line) => void process.stderr.write(line),
   })
 
@@ -149,7 +180,7 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply: recordingReply().reply,
     stderr: (line) => void process.stderr.write(line),
   })
   const subject = "notifications.dispatch.issue.CORE-1.comment"
@@ -319,7 +350,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply: recordingReply().reply,
     stderr: (line) => void process.stderr.write(line),
   })
 
@@ -418,7 +449,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply: recordingReply().reply,
     stderr: (line) => void process.stderr.write(line),
   })
 
@@ -459,7 +490,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply: recordingReply().reply,
     stderr: (line) => void process.stderr.write(line),
   })
   const unnamed = (summary: string): string =>
@@ -736,14 +767,109 @@ const rejectedCommentFrameRaw = JSON.stringify({
   trace_id: "dispatch-malformed-comment",
 })
 
-// The reply is Dispatch's own answer, which names the call's key back, so the channel reports it
-// as made: it writes no line saying it could not report the rejected delivery.
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
+  const notifier = new FakeNotifier()
+  const { reply, replies } = recordingReply()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", process.cwd()),
+    notifier,
+    reply,
+    stderr: (line) => void process.stderr.write(line),
+  })
+
+  // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
+  // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
+  expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+
+  expect(notifier.notifications).toEqual([])
+  expect(replies).toEqual([
+    {
+      target: {
+        resource: "message",
+        id: "44444444-4444-4444-8444-444444444444",
+        attempt: 1,
+        mode: "aside",
+        replyPath: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        replyFields: {},
+        issueKey: "CORE-1",
+        body: "Can this ship?",
+      },
+      result: { error: "Invalid Dispatch targeted delivery frame" },
+    },
+  ])
+})
+
+test("the Codex server names itself to Dispatch as codex-envoy and its release", async () => {
   let server: Server<undefined> | undefined
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+    server = Bun.serve({
+      port: 0,
+      fetch: keyedLayer((request: Request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({ kind: "user", login: "alice", scopes: [] })
+      }),
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const configFile = sessionConfigFile("codex", process.env)
+    const active = activeDispatchSettings(
+      (await sessionDispatchSettings(configFile, process.env, { cwd: process.cwd() })).dispatch,
+    )
+    if (active === null) throw new Error("Dispatch is off for the test's settings")
+
+    // The client the Codex user-turn router reads with, and the reply it posts to a delivery.
+    await codexDispatchClient(active, 5_000).whoami()
+    await postDispatchReply(
+      new SessionIdentity("ses_codex", process.cwd()),
+      configFile,
+      {
+        resource: "message",
+        id: "44444444-4444-4444-8444-444444444444",
+        attempt: 1,
+        mode: "btw",
+        replyPath: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        replyFields: {},
+        issueKey: null,
+        body: "A message Codex was not handed.",
+      },
+      { error: "not handed to Codex" },
+      CODEX_ENVOY_USER_AGENT,
+    )
+
+    expect(CODEX_ENVOY_USER_AGENT).toBe(`codex-envoy/${codexPkg.version}`)
+    expect(sent).toEqual([
+      { path: "/api/v1/whoami", userAgent: `codex-envoy/${codexPkg.version}` },
+      {
+        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        userAgent: `codex-envoy/${codexPkg.version}`,
+      },
+    ])
+  } finally {
+    server?.stop(true)
+  }
+})
+
+// The Codex server starts its session with its own User-Agent (codex-server.ts), so a rejected
+// frame of a Codex session is answered as codex-envoy, and so is every reply its router posts
+// (the `reply` the session hands the delivery path and the router); a session started with none
+// answers as this server, claude-envoy and its release. Each answer names this session as its
+// actor and carries the session's Dispatch token: the delivery path's own cases hand it a
+// recording reply (`recordingReply`), so this is where the real reply's request is read. The reply
+// is Dispatch's own answer, which names the call's key back, so the channel reports it as made: it
+// writes no line saying it could not report the rejected delivery.
+test("a session answers Dispatch under the User-Agent it was started with", async () => {
+  let server: Server<undefined> | undefined
+  const sessions: ChannelSession[] = []
   const stderr = spyOn(process.stderr, "write")
   try {
-    const replies: Array<{
+    const sent: Array<{
       readonly path: string
+      readonly userAgent: string | null
       readonly auth: string | null
       readonly body: unknown
     }> = []
@@ -751,8 +877,9 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     server = Bun.serve({
       port: 0,
       fetch: keyedLayer(async (request: Request) => {
-        replies.push({
+        sent.push({
           path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
@@ -761,34 +888,73 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
-    const notifier = new FakeNotifier()
-    const delivery = createChannelDelivery({
-      identity: new SessionIdentity("ses_claude", process.cwd()),
-      notifier,
-      configFile: sessionConfigFile("claude", process.env),
-      stderr: (line) => void process.stderr.write(line),
-    })
+    for (const [userAgent, want] of [
+      [CODEX_ENVOY_USER_AGENT, `codex-envoy/${codexPkg.version}`],
+      [undefined, `claude-envoy/${pkg.version}`],
+    ] as const) {
+      sent.length = 0
+      const nats = new FakeNats()
+      const replies: UserTurnRouterOptions["reply"][] = []
+      const session = await startChannelSession({
+        ...sessionOptions(new SessionIdentity("ses_claude", process.cwd()), scratchState(), {
+          connection: nats,
+          notifier: new FakeNotifier(),
+          router: (_state, reply) => {
+            replies.push(reply)
+            return { route: async () => false, observe: () => undefined }
+          },
+        }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      })
+      sessions.push(session)
 
-    // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
-    // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
-    expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+      relayed(nats, 1, rejectedFrameRaw)
+      await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the answer")
+      // The answer the router posts to a delivery it took, through the reply the session built.
+      const reply = replies.at(-1)
+      if (reply === undefined) throw new Error("the session built no router")
+      await reply(
+        {
+          resource: "message",
+          id: "66666666-6666-4666-8666-666666666666",
+          attempt: 1,
+          mode: "btw",
+          replyPath: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply",
+          replyFields: {},
+          issueKey: null,
+          body: "A question the router took.",
+        },
+        { error: "not answered" },
+      )
+
+      expect(sent).toEqual([
+        {
+          path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+          userAgent: want,
+          auth: `Bearer ${DISPATCH_TOKEN}`,
+          body: {
+            actor: { kind: "session", id: "ses_claude" },
+            attempt: 1,
+            error: "Invalid Dispatch targeted delivery frame",
+          },
+        },
+        {
+          path: "/api/v1/messages/66666666-6666-4666-8666-666666666666/reply",
+          userAgent: want,
+          auth: `Bearer ${DISPATCH_TOKEN}`,
+          body: {
+            actor: { kind: "session", id: "ses_claude" },
+            attempt: 1,
+            error: "not answered",
+          },
+        },
+      ])
+    }
     const lines = stderr.mock.calls.map(([chunk]) => String(chunk))
     expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
-
-    expect(notifier.notifications).toEqual([])
-    expect(replies).toEqual([
-      {
-        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
-        auth: `Bearer ${DISPATCH_TOKEN}`,
-        body: {
-          actor: { kind: "session", id: "ses_claude" },
-          attempt: 1,
-          error: "Invalid Dispatch targeted delivery frame",
-        },
-      },
-    ])
   } finally {
     stderr.mockRestore()
+    for (const session of sessions) await session.shutdown()
     server?.stop(true)
   }
 })
@@ -816,10 +982,18 @@ test("a rejected frame's report that landed with no answer back is not said to b
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const identity = new SessionIdentity("ses_claude", process.cwd())
     const delivery = createChannelDelivery({
-      identity: new SessionIdentity("ses_claude", process.cwd()),
+      identity,
       notifier: new FakeNotifier(),
-      configFile: sessionConfigFile("claude", process.env),
+      reply: (target, result) =>
+        postDispatchReply(
+          identity,
+          sessionConfigFile("claude", process.env),
+          target,
+          result,
+          CLAUDE_ENVOY_USER_AGENT,
+        ),
       stderr: (line) => void process.stderr.write(line),
     })
 
@@ -908,60 +1082,42 @@ test("a Dispatch frame the channel answered with an error is answered again when
 })
 
 test("answers a malformed targeted comment through its supplied comment reply address", async () => {
-  let server: Server<undefined> | undefined
-  try {
-    const replies: Array<{
-      readonly path: string
-      readonly auth: string | null
-      readonly body: unknown
-    }> = []
-    server = Bun.serve({
-      port: 0,
-      fetch: keyedLayer(async (request: Request) => {
-        replies.push({
-          path: new URL(request.url).pathname,
-          auth: request.headers.get("authorization"),
-          body: await request.json(),
-        })
-        return Response.json({})
-      }),
-    })
-    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
-    const notifier = new FakeNotifier()
-    const delivery = createChannelDelivery({
-      identity: new SessionIdentity("ses_claude", process.cwd()),
-      notifier,
-      configFile: sessionConfigFile("claude", process.env),
-      stderr: (line) => void process.stderr.write(line),
-    })
+  const notifier = new FakeNotifier()
+  const { reply, replies } = recordingReply()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", process.cwd()),
+    notifier,
+    reply,
+    stderr: (line) => void process.stderr.write(line),
+  })
 
-    await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
+  await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
 
-    expect(notifier.notifications).toEqual([])
-    expect(replies).toEqual([
-      {
-        path: "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply",
-        auth: `Bearer ${DISPATCH_TOKEN}`,
-        body: {
-          actor: { kind: "session", id: "ses_claude" },
-          attempt: 1,
-          target: "session:ses_claude",
-          error: "Invalid Dispatch targeted delivery frame",
-        },
+  expect(notifier.notifications).toEqual([])
+  expect(replies).toEqual([
+    {
+      target: {
+        resource: "comment",
+        id: "33333333-3333-4333-8333-333333333333",
+        attempt: 1,
+        mode: "aside",
+        replyPath: "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply",
+        replyFields: { target: "session:ses_claude" },
+        issueKey: "CORE-1",
+        body: "Please review this.",
       },
-    ])
-  } finally {
-    server?.stop(true)
-  }
+      result: { error: "Invalid Dispatch targeted delivery frame" },
+    },
+  ])
 })
 
 test("drops a malformed targeted frame that has no reply address", async () => {
   const notifier = new FakeNotifier()
+  const { reply, replies } = recordingReply()
   const delivery = createChannelDelivery({
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
-    configFile: sessionConfigFile("claude", process.env),
+    reply,
     stderr: (line) => void process.stderr.write(line),
   })
 
@@ -976,6 +1132,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
   expect(notifier.notifications).toEqual([])
   expect(delivery.inbox()).toEqual([])
+  expect(replies).toEqual([])
 })
 
 /** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -214,7 +215,7 @@ func cutTokenAnswerDifference(want, got asOfAnswer) string {
 // TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken builds every row's own chain as register
 // does (routeHandler), test hooks in, and sends each its probe body and a valid Idempotency-Key
 // under a read-only token cut an hour before the database's clock. The rows are read off the
-// table, not listed, and their kinds off their declarations (declared), not off the row
+// table, not listed, and their kinds off their declarations (declaredClass), not off the row
 // (apiRoute.Read). The walk runs four times: with no as_of, with an as_of half an hour after the
 // token's cut, with an as_of an hour after the database's clock, and with an as_of that is no
 // time (yesterday). A token with no cut is refused each of the last two 400 INVALID_AS_OF on a
@@ -223,7 +224,10 @@ func cutTokenAnswerDifference(want, got asOfAnswer) string {
 //   - a row of kind answers runs its handler, replaced by a recorder, once under the token's cut,
 //     and its answer names that cut in Dispatch-As-Of;
 //   - GET /api/v1/whoami runs its own handler once, with no cut on the context, and answers 200
-//     naming the token's cut;
+//     naming the token's cut, and so does its /api/v2 successor GET /api/v2/me on the pass with
+//     no as_of; on a pass with as_of, GET /api/v2/me, whose query the decoder reads and declares no
+//     as_of since /api/v2 stands at main's freeze (dispatch://INFRA-4071/spec R2), answers 400
+//     QUERY_KEY_UNKNOWN, and its handler does not run;
 //   - every other read answers 403 AS_OF_TOKEN_NOT_SERVED naming the cut and the row, and never
 //     a 400, and its handler does not run;
 //   - every row outside the read class, every write among them, answers 403 READ_ONLY_TOKEN, and
@@ -239,8 +243,7 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 	const token = "a-cut-token-walking-the-table"
 	credential := sayCutToken(t, rig, caller, token, cut)
 	table := readOnlyTable()
-	replays := rig.served.keyedReplays()
-	mounted := len(rig.served.routeIndex)
+	mounted := len(rig.served.routeIndex) + len(rig.served.routeIndexV2)
 
 	for _, pass := range []struct{ name, asOf string }{
 		{name: "no as_of"},
@@ -253,25 +256,31 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 			if pass.asOf != "" {
 				query = "?" + url.Values{asOfParameter: {pass.asOf}}.Encode()
 			}
-			walked, answered, refused, readOnly, scopes := 0, 0, 0, 0, 0
+			walked, answered, refused, readOnly, scopes, undeclared := 0, 0, 0, 0, 0, 0
 			for _, route := range table {
 				name := route.Method + " " + route.Pattern
-				entry := declared(name).Read
+				entry := declaredClass(route)
 				recorder := &cutRecorder{}
 				route.Handler = recorder.handler
-				if name == asOfCallerRow {
+				callerRow := name == asOfCallerRow || name == asOfCallerV2Row
+				if callerRow {
+					// The row's own handler, of the rig's server: whoami, or GET /api/v2/me's.
+					own := rig.served.whoami
+					if name == asOfCallerV2Row {
+						own = rig.served.getMeV2
+					}
 					route.Handler = func(w http.ResponseWriter, r *http.Request) {
 						recorder.runs = append(recorder.runs, "")
 						if seen, carried := asof.CutFrom(r.Context()); carried {
 							recorder.runs[len(recorder.runs)-1] = seen.String()
 						}
-						rig.served.whoami(w, r)
+						own(w, r)
 					}
 				}
 				request := caller.presenting(t, route.Method, readOnlyProbePath(route.Pattern)+query, token, json.RawMessage(routeProbeBody(route)))
 				request.Header.Set(contracts.IdempotencyKeyHeader, readOnlyProbeKey)
 				response := httptest.NewRecorder()
-				rig.served.routeHandler(route, replays[name]).ServeHTTP(response, request)
+				rig.served.routeHandler(route).ServeHTTP(response, request)
 
 				missingScope := ""
 				for _, scope := range route.OAuthScopes {
@@ -289,9 +298,9 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 					}
 					readOnly++
 				case entry.AsOf == asOfAnswers && missingScope != "":
-					if refusal := gateRefusalOf(response); len(recorder.runs) != 0 || response.Code != http.StatusForbidden || refusal.Code != codeScopeRequired {
+					if refusal := gateRefusalOf(response); len(recorder.runs) != 0 || response.Code != http.StatusForbidden || refusal.Code != readWalkScopeCode {
 						t.Errorf("%s ran its handler %d times and answered %d %s, want its scopes' 403 %s (%s) and no handler",
-							name, len(recorder.runs), response.Code, strings.TrimSpace(response.Body.String()), codeScopeRequired, missingScope)
+							name, len(recorder.runs), response.Code, strings.TrimSpace(response.Body.String()), readWalkScopeCode, missingScope)
 					}
 					scopes++
 				case entry.AsOf == asOfAnswers:
@@ -303,7 +312,14 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 						t.Errorf("%s answers as_of, and its %s header is %q, want the token's cut %s", name, contracts.DispatchAsOfHeader, named, cut)
 					}
 					answered++
-				case name == asOfCallerRow:
+				case name == asOfCallerV2Row && pass.asOf != "":
+					unknownKey := apicode.QueryKeyUnknown.Name()
+					if refusal := gateRefusalOf(response); len(recorder.runs) != 0 || response.Code != http.StatusBadRequest || refusal.Code != unknownKey {
+						t.Errorf("%s declares no as_of, and answered %d %s with %d handler runs, want 400 %s and none",
+							name, response.Code, strings.TrimSpace(response.Body.String()), len(recorder.runs), unknownKey)
+					}
+					undeclared++
+				case callerRow:
 					var answer struct {
 						Cut *string `json:"cut"`
 					}
@@ -327,8 +343,8 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 			if walked == 0 || walked != mounted {
 				t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
 			}
-			t.Logf("walked the table's %d rows (test hooks in): %d answered at the token's cut %s or named it, %d refused %s, %d refused %s, %d refused by their scopes",
-				walked, answered, cut, refused, contracts.DispatchAsOfTokenNotServed, readOnly, contracts.DispatchReadOnlyToken, scopes)
+			t.Logf("walked the table's %d rows (test hooks in): %d answered at the token's cut %s or named it, %d refused %s, %d refused %s, %d refused by their scopes, %d refused as_of as a key they do not declare",
+				walked, answered, cut, refused, contracts.DispatchAsOfTokenNotServed, readOnly, contracts.DispatchReadOnlyToken, scopes, undeclared)
 		})
 	}
 }

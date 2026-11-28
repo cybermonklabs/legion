@@ -11,7 +11,8 @@
  *  and not another run's stand-in's. Its /healthz names the commit and fleet_commit the settings
  *  say. It answers the full member's browser session (cookie `session=full`) on the routes the
  *  leg's controls read, and refuses that cookie's write whose Origin is not its own origin, 403
- *  `invalid request origin`, as Dispatch's router does; it answers the full member's personal
+ *  `ORIGIN_REFUSED` with the words `invalid request origin`, as Dispatch's router does; it answers
+ *  the full member's personal
  *  token (`Authorization: Bearer <fullToken>`) on whoami, the credential-grants list
  *  (`<state>/full-grants.json`) and the GitHub proxy's read, which `<state>/proxy-refuses-token`
  *  makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its access list names the test person
@@ -95,7 +96,10 @@ const server = Bun.serve({
       return Response.json({ code: "UNAUTHENTICATED" }, { status: 401 });
     }
     if (request.method !== "GET" && request.headers.get("origin") !== url.origin) {
-      return Response.json({ error: "invalid request origin" }, { status: 403 });
+      return Response.json(
+        { code: "ORIGIN_REFUSED", error: "invalid request origin" },
+        { status: 403 }
+      );
     }
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const code = typeof body.code === "string" ? body.code : "";

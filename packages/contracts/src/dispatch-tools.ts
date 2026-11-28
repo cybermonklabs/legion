@@ -14,7 +14,7 @@ import {
   SPEC_CHECK_OBSERVED_MAX,
 } from "./dispatch-api-limits";
 import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
-import { goBlankPattern } from "./go-blank";
+import { goBlankPattern, goTrimSpace } from "./go-blank";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -166,10 +166,19 @@ const CONTENT_IS_MARKDOWN =
 const DOCUMENT_IS_MARKDOWN =
   "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
+/**
+ * `--path` and what it stores, written to follow "with" in a rule or a refusal that offers it.
+ * `dispatch artifact` sends a file as the type its name says (uploadTypeFrom): under a name whose
+ * extension is .md or .markdown as Markdown, under a name with any other extension as that
+ * extension's own type, each whatever its path, and under a name with no extension as its path's
+ * type, which only a path that, as the command resolves it, ends in .md or .markdown makes
+ * Markdown. A name's trailing extensions of the digits 0 to 9 alone do not count. Dispatch stores
+ * a Markdown upload as a document, which it parses and renders, and any other upload as its bytes.
+ */
 export const PATH_KEEPS_BYTES =
-  "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
+  "path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path, as the command resolves it, does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)";
 
-const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
+const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name has the extension .md or .markdown or none, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
 /**
  * What `dispatch artifact` says of a name the owner already holds as a document, when the upload
@@ -180,7 +189,9 @@ const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name
  * upload among them. A replacement naming none is taken unchecked for now and refused 400
  * PRECONDITION_REQUIRED in a later release, so the rule names both. A name held as a file or a
  * picture is refused by fileNameExistsRule, and an upload of another kind than the name holds by
- * artifactKindConflictRule, both below.
+ * artifactKindConflictRule, both below (save a Markdown upload over an issue's role document held
+ * as a file or a picture, which Dispatch converts to a document; `artifactNameExistsProblem`
+ * advises `--force` alone for it).
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
   'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
@@ -216,7 +227,10 @@ export function fileNameExistsRule(kind: string, statesToken: boolean): string {
  * that are a PNG, JPEG, GIF or WebP are a picture, and anything else is a file. Dispatch refuses
  * such an upload under that name whatever it carries, `--force` and a token included (400
  * ARTIFACT_KIND_MISMATCH, "give it another name"), so the rule names another name and nothing
- * else.
+ * else. The one change of kind Dispatch takes is not this rule's: a Markdown upload under the name
+ * of an issue's plan, Verification document or decisions document that an earlier upload stored as
+ * a file or a picture, which it takes as that artifact's next version and makes the document; the
+ * command advises `--force` for it (`artifactNameExistsProblem`, packages/envoy-client).
  */
 export function artifactKindConflictRule(held: string, upload: string): string {
   return `This upload is a ${artifactKindWord(upload)}, and the name holds a ${artifactKindWord(held)}: Dispatch keeps one kind under one name, so this upload cannot be its next version, with force or without. Give the upload another name.`;
@@ -232,7 +246,7 @@ export function artifactKindConflictRule(held: string, upload: string): string {
  * a name that is not Markdown, and a Markdown name is parsed and rendered whichever flag sends
  * it, so its one way out is to send the stored text.
  */
-export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. A typed block whose attributes differ from Dispatch's only in their order is not refused: the command uploads it with them in Dispatch's order and names each such block. A refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. The refusal prints the text Dispatch stores: send that text. A name without the extension .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
 
 /**
  * The order in which `dispatch artifact` refuses a Markdown document's text before it asks
@@ -243,10 +257,57 @@ export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dis
  */
 const ARTIFACT_DOCUMENT_BYTES_ORDER = `in the order its upload refuses a Markdown file in: past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB with CAP_EXCEEDED, and otherwise at the first NUL character or byte that is not UTF-8, with NUL_CHARACTER or INVALID_UTF8, Dispatch's own refusal of it, naming the field (content, or file for path), the character and where it stands.`;
 
-/** A name's extension, or undefined for a name with none: what follows its last dot when that
- *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
- *  "plan v1.2", which takes content once it ends in .md. */
-const NAME_EXTENSION = /\.([^\s.]+)$/u;
+/** What an extension holds: Unicode letters, marks and digits, `_`, `-` and `+`, at most 32 of
+ *  them. One class, anchored at both ends, so it reads a part without backtracking. */
+const EXTENSION = /^[\p{L}\p{M}\p{N}_+-]{1,32}$/u;
+
+/**
+ * The name Dispatch stores an upload under: the name the upload is sent as, trimmed as
+ * `packages/envoy/internal/dispatch/api/artifacts.go` trims it, with Go's `strings.TrimSpace`,
+ * which is `goTrimSpace` and not `trim` (`GO_TRIM_SPLIT`, `./go-blank.ts`). Every client reading
+ * of an upload's name goes through it: the extension its type is read from (`uploadExtensionOf`),
+ * the held-name check (`artifactUnderName`, `packages/envoy-client/src/dispatch-commands/`), and
+ * AskGate's rules check and breaker (`uploadName` and `callKeys`,
+ * `packages/pi-envoy/extensions/askgate/`), so two names Dispatch stores as one are one name to
+ * each of them.
+ */
+export function uploadStoredName(name: string): string {
+  return goTrimSpace(name);
+}
+
+/**
+ * The extension that decides the type `dispatch artifact` sends an upload as, or undefined for a
+ * name with none, read once from the end of the name Dispatch stores (`uploadStoredName`), in time
+ * linear in its length, because the name is the writer's own argument and AskGate reads it on the
+ * session's thread. A last part of the digits 0 to 9 alone is a version or a date rather than a
+ * type, so it is cut and the part before it read: `rows.jsonl.1` reads as `jsonl`, `x.md.1` as `md`,
+ * and `Plan v1.2` as none. Any other last part is the extension when it holds only Unicode
+ * letters, marks and digits, `_`, `-` and `+` (`gz` in x.tar.gz, `jsonl_`, `данные`), and at most
+ * 32 of them; else the name has none: `x.`, `notes.md/`, `Dr. Smith's notes`, `notes v2. draft`.
+ * The bound is there because a longer tail is no type, and the type lookup (`x.<extension>`,
+ * `uploadedFile` in packages/envoy-client/src/dispatch-commands/stored-text.ts) must never get a
+ * path the OS refuses.
+ */
+export function uploadExtensionOf(name: string): string | undefined {
+  const trimmed = uploadStoredName(name);
+  let end = trimmed.length;
+  while (end > 0) {
+    const dot = trimmed.lastIndexOf(".", end - 1);
+    if (dot < 0 || dot + 1 === end) return undefined;
+    let at = dot + 1;
+    while (at < end) {
+      const code = trimmed.charCodeAt(at);
+      if (code < 48 || code > 57) break;
+      at++;
+    }
+    if (at < end) {
+      const part = trimmed.slice(dot + 1, end);
+      return EXTENSION.test(part) ? part : undefined;
+    }
+    end = dot;
+  }
+  return undefined;
+}
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
@@ -316,16 +377,37 @@ function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E
 }
 
 /**
- * Whether `--path` would store this name's text as the bytes it was written as: true for every
- * name that does not end in .md or .markdown, a name with no extension included. Dispatch reads
- * an upload's media type, which a Markdown path alone makes `text/markdown`, and parses and
- * renders only a document (`PATH_KEEPS_BYTES`). A refusal of inline text the store would change
- * names `--path` for such a name, and never for a Markdown one, which `--path` would change the
- * same way.
+ * What decides the type `dispatch artifact --path` sends a file under, from the extension that
+ * decides in the name it is sent as (uploadExtensionOf: `rows.jsonl.1` reads as `jsonl`,
+ * `Plan v1.2` and `notes.md/` as none): `markdown` for a name whose extension is .md or
+ * .markdown, sent as `text/markdown` whatever the path; `name` for a name with any other
+ * extension, sent as the type Bun gives that extension (`text/plain` for notes.txt.1, and
+ * `application/octet-stream` for one Bun gives none, as .jsonl in rows.jsonl.1) whatever the
+ * path; and `path` for a name with no extension, sent as the path's type. Dispatch stores a
+ * `text/markdown` upload as a document and any other as its bytes, so the name says the kind
+ * wherever it has an extension: `--name cases.txt --path cases.md` stores a file (INFRA-4071
+ * R15). Inline content goes only under a `markdown` or a `path` name (artifactProblem), and
+ * AskGate reviews an upload by the same reading (`uploadIsDocument`,
+ * packages/envoy-client/src/askgate-marker.ts).
+ */
+export function uploadTypeFrom(name: string): "markdown" | "name" | "path" {
+  const extension = uploadExtensionOf(name);
+  if (extension === undefined) return "path";
+  return MARKDOWN_EXTENSION.test(extension) ? "markdown" : "name";
+}
+
+/**
+ * Whether `--path` can store a file under this name as the bytes it was written as: true for
+ * every name whose extension, read as uploadTypeFrom reads it, is not .md or .markdown. Under a
+ * name with any other extension the upload keeps its bytes whatever its path, and under a name
+ * with no extension it keeps them when the path, as the command resolves it, does not end in .md
+ * or .markdown (`PATH_KEEPS_BYTES`). A name whose extension is .md or .markdown makes the upload
+ * Markdown whatever its path, and Dispatch stores a `text/markdown` upload as a document, which it
+ * parses and renders. A refusal of inline text the store would change names `--path` for a name
+ * this answers true, and never for a Markdown one, which `--path` would change the same way.
  */
 export function pathKeepsBytesOf(name: string): boolean {
-  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
-  return extension === undefined || !MARKDOWN_EXTENSION.test(extension);
+  return uploadTypeFrom(name) !== "markdown";
 }
 
 const artifactOwner = documentOwnerValidation(false);
@@ -394,14 +476,12 @@ function artifactProblem(value: unknown): string | undefined {
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const extension =
-    typeof input.path === "string" || typeof input.name !== "string"
-      ? undefined
-      : NAME_EXTENSION.exec(input.name.trim())?.[1];
   const nameProblem =
-    extension === undefined || MARKDOWN_EXTENSION.test(extension)
+    typeof input.path === "string" ||
+    typeof input.name !== "string" ||
+    uploadTypeFrom(input.name) !== "name"
       ? undefined
-      : `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
+      : `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name whose extension is .md or .markdown, or one with no extension.`;
   return brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
@@ -635,7 +715,7 @@ function issueReasonProblem(input: {
   readonly reason?: unknown;
 }): string | undefined {
   if (input.status === "done") {
-    return typeof input.reason !== "string" || input.reason.trim() === ""
+    return typeof input.reason !== "string" || goTrimSpace(input.reason) === ""
       ? `${ISSUE_UPDATE_DONE_RULE}.`
       : undefined;
   }
@@ -1051,7 +1131,7 @@ const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
     const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
     return (
       input.verdict !== "changes_requested" ||
-      (typeof input.reason === "string" && !goBlankPattern.test(input.reason))
+      (typeof input.reason === "string" && goTrimSpace(input.reason) !== "")
     );
   },
   message: REVIEW_REASON_RULE,
@@ -1172,7 +1252,7 @@ function resultProblem(value: unknown): string | undefined {
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
   if (typeof input.retract === "string") {
     const reason = input.reason;
-    if (typeof reason !== "string" || reason.trim() === "") {
+    if (typeof reason !== "string" || goTrimSpace(reason) === "") {
       return "retract needs reason, the words that say why the result is wrong.";
     }
     if (carried.length > 0) {
@@ -2875,7 +2955,7 @@ export const dispatchToolSpecs = [
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
-    dryRunHelp: `Before it asks Dispatch anything, and with Dispatch off too, it refuses with exit 1 a text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, whether it is read from --content-file, from stdin (--content-file -) or from a --path file ending in .md or .markdown, a file Dispatch stores as a Markdown document, ${ARTIFACT_DOCUMENT_BYTES_ORDER} It refuses such a text once the flags are read, before it checks the arguments as the call would and before anything that needs Dispatch, as the call does. Then, for text given inline, read from --content-file or from stdin, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling, but for typed blocks' attributes in another order, which the call uploads in Dispatch's order, or that the call refuses for the text alone: one past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB of UTF-8, which it refuses without asking, or one Dispatch refuses as its upload would, such as one making more elements than one write may, or holding markdown the parser refuses. For a Markdown --path file, it then sends Dispatch the file's bytes (POST /api/v1/markdown/file-round-trip), as the call does before it uploads them, and refuses, with the call's own refusal and exit code, what Dispatch refuses of them as their upload would, but never their spelling. Without force it also refuses what Dispatch refuses only of a new document, such as an ask block that breaks its content rule, a block id written twice, a check proved by CI that breaks its rules, or a rendering past the bytes one document holds; with force (--force), which may replace a document Dispatch judges by looser rules, it asks for none of those and checks the spelling Dispatch answers as for any text, so it passes with no warning a text the call can then refuse for one of those: under a name the owner does not hold, because the call uploads a new document; under a name the owner holds, because a replacement holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds over the version it replaces. It does not read whether the owner holds the name, which the call reads only after it checks the text: a text this check refuses is refused alike under a held name, and a text it passes the call without force still refuses under a held name, though the dry run passes it. Otherwise it prints the arguments as JSON. It stores nothing. For any other text but an empty one given inline, read from --content-file or from stdin, which it asks Dispatch nothing about and passes with no warning, when Dispatch cannot answer, or cannot check the text or the file, it says so on stderr and passes.`,
+    dryRunHelp: `Before it asks Dispatch anything, and with Dispatch off too, it refuses with exit 1 a text past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB, or holding a NUL character or a byte that is not UTF-8, whether it is read from --content-file, from stdin (--content-file -) or from a --path file Dispatch stores as a Markdown document, ${ARTIFACT_DOCUMENT_BYTES_ORDER} It refuses such a text once the flags are read, before it checks the arguments as the call would and before anything that needs Dispatch, as the call does. A --path file is such a Markdown file when the upload's name has the extension .md or .markdown, whatever the path, or has no extension and the path, as the command resolves it, ends in .md or .markdown. A name's trailing extensions of the digits 0 to 9 alone do not count (the name plan.md.1 reads as .md); a path counts only when it ends in .md or .markdown (the path plan.md.1 does not). Then, for text given inline, read from --content-file or from stdin, it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip), and refuses, with the call's own refusal and exit code, a text that Dispatch would store under another spelling, but for typed blocks' attributes in another order, which the call uploads in Dispatch's order, or that the call refuses for the text alone: one past ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB of UTF-8, which it refuses without asking, or one Dispatch refuses as its upload would, such as one making more elements than one write may, or holding markdown the parser refuses. For a Markdown --path file, it then sends Dispatch the file's bytes (POST /api/v1/markdown/file-round-trip), as the call does before it uploads them, and refuses, with the call's own refusal and exit code, what Dispatch refuses of them as their upload would, but never their spelling. Without force it also refuses what Dispatch refuses only of a new document, such as an ask block that breaks its content rule, a block id written twice, a check proved by CI that breaks its rules, or a rendering past the bytes one document holds; with force (--force), which may replace a document Dispatch judges by looser rules, it asks for none of those and checks the spelling Dispatch answers as for any text, so it passes with no warning a text the call can then refuse for one of those: under a name the owner does not hold, because the call uploads a new document; under a name the owner holds, because a replacement holds those rules for the blocks it adds or changes, and refuses a rendering that grows past the bytes one document holds over the version it replaces. It does not read whether the owner holds the name, which the call reads only after it checks the text: a text this check refuses is refused alike under a held name, and a text it passes the call without force still refuses under a held name, though the dry run passes it. Otherwise it prints the arguments as JSON. It stores nothing. For any other text but an empty one given inline, read from --content-file or from stdin, which it asks Dispatch nothing about and passes with no warning, when Dispatch cannot answer, or cannot check the text or the file, it says so on stderr and passes.`,
     description:
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
@@ -2898,7 +2978,7 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. It prints the text Dispatch stores, which is the text to send."
+          "Inline text to store as a Markdown document, under a name whose extension is .md or .markdown or with none (trailing extensions of the digits 0 to 9 alone do not count). The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. Nor is a typed block whose attributes differ only in their order: the upload puts them in Dispatch's order. The refusal names the first difference: a changed line by the attribute or the word that differs, a word of more than 200 characters by a window from its first character that differs, and a line the store adds or drops by a quote cut at 200 characters, each cut named. It prints the text Dispatch stores, which is the text to send."
         )
         .optional(),
       force: z
@@ -3394,7 +3474,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_api",
     example: { path: "/api/v1/issues/DSP-1/events?limit=200" },
     description:
-      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them), or, for an issue comment POST that carries an Idempotency-Key, through dispatch proxy: dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. When Dispatch answers a GET as of a past time, under a token that carries one or with as_of in path, the command writes to standard error the Left out at <time>: line that every read at a past time prints, naming each field the answer left out, so standard output stays the answer alone. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
+      "Send one request of a route of Dispatch's HTTP API under /api/v1, with this session's own credential, and print the answer's body: Dispatch's JSON, indented, for jq to read; any other body of a 2xx, such as a file version's bytes or a document version's Markdown, as it came. It sends a GET of path unless method names another: path is a route beginning /api/v1, with its query after ?; dispatch api --path /api/v1 lists every route. With method it sends POST, PUT, PATCH or DELETE instead, and body, when given, as the request's JSON body (Content-Type: application/json), read from a file with --body-file <file> or from stdin with --body-file -; a body goes only with a method. A write that a named dispatch command makes goes through that command (dispatch --help lists them), or, for an issue comment POST that carries an Idempotency-Key, through dispatch proxy: dispatch api is for a route no command sends. In a session whose AskGate reviews Dispatch writes it sends GET alone, and refuses each method, naming the dispatch command that makes that write, and exits 1. It sends the request once, and once more only after Dispatch answers that the token it presented is not live (Dispatch then authenticated nothing, so nothing ran), with no redirect followed and no Idempotency-Key. A write sent with method may or may not have taken effect when it failed in transport after it went out, its answer's body broke off after the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx: the command exits 1 saying so, and you read what the write would have changed before you send it again. On a 2xx answer it exits 0 and prints Dispatch's JSON as above, and any other body unchanged, with nothing added: an answer with Content-Disposition: attachment (a file version, a ?download=true read) is stored content, printed byte for byte whatever its type, JSON included. When Dispatch answers a GET as of a past time, under a token that carries one or with as_of in path, the command writes to standard error the Left out at <time>: line that every read at a past time prints, naming each field the answer left out, so standard output stays the answer alone. A 2xx whose body holds a credential the command presented (its token or its request's DPoP proof) is not printed: it exits 1 with CREDENTIAL_ECHOED, naming the status and saying a write may have been made. Any other answer exits 1 with its code: when Dispatch refuses the request, the command prints Dispatch's error with its code and, where Dispatch gives one, its hint; an answer that is neither a 2xx nor Dispatch's JSON, such as a proxy's page, is named by its status. A usage error, such as a path outside /api/v1 or a body with no method, exits 2. Where no host runs the command, as in a GitHub Actions job, it reads Dispatch from the environment alone, and a broker trade names the session of DISPATCH_SESSION_ID, else of AGENT_SECRETS_SESSION. Under Claude Code, a JSON answer longer than the output limit is written to a file the output names; a body printed as it came is written whole.",
     arguments: (z) => ({
       path: z
         .string({ min: 1 })

@@ -14,6 +14,7 @@ import {
   pidNamespace,
   processStart,
   setRecordMode,
+  uploadIsDocument,
   writeAskgateRecord,
 } from "@legion/envoy-client/askgate-marker";
 import { newAsks } from "@legion/envoy-client/askgate-new-asks";
@@ -22,6 +23,10 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
+import {
+  UPLOAD_MATRIX_NAMES,
+  UPLOAD_MATRIX_PATHS,
+} from "@legion/envoy-client/test/upload-type-matrix";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -58,6 +63,7 @@ import * as fx from "./askgate-fixtures";
 import askgateRequest from "./askgate-request.md" with { type: "text" };
 import askgateSystem from "./askgate-system.md" with { type: "text" };
 import askgateUpload from "./askgate-upload.md" with { type: "text" };
+import { callKeys } from "./breaker";
 import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "./decision-record";
 import ruleCheckSystem from "./rule-check-system.md" with { type: "text" };
 import askgateRules from "./rules.md" with { type: "text" };
@@ -1164,6 +1170,15 @@ describe("breaker (test 7)", () => {
     await g.device("b", "dispatch_message", { in_reply_to: "m-1", body: "two" });
     await g.device("c", "dispatch_message", { in_reply_to: "m-2", body: "other" });
     expect(g.entries.map((e) => e.outcome)).toEqual(["verdict", "verdict", "verdict"]);
+  });
+  test("an upload's key reads its name as Dispatch stores it, trimmed by Go's strings.TrimSpace", () => {
+    // goTrimSpace cuts U+0085, which `trim` keeps, so both names are the one document plan.md and
+    // the same text sent under either is the same upload; U+FEFF, which `trim` cuts, Go keeps.
+    const key = (name: string) =>
+      callKeys("dispatch_artifact", { issue: "X-1", name, content: "# Plan\n" });
+    expect(key("plan.md\u0085")).toEqual(key("plan.md"));
+    expect(key(" plan.md\u0085 ")).toEqual(key("plan.md"));
+    expect(key("plan.md\uFEFF")).not.toEqual(key("plan.md"));
   });
 });
 
@@ -3222,6 +3237,22 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       ]);
     }
   });
+  // INFRA-4071, review 6012684631 at e0d2289b: after `cd sub`, `--path ../notes.md/` resolves to
+  // the work directory's notes.md, so `--name Plan` sends a Markdown document, which the CLI gates
+  // and the gate holds for review, as it holds `--name Plan --path notes.md/` run from the work
+  // directory ("(o2)" below).
+  test("a leading cd and a --path that resolves to a Markdown file above it are reviewed, as the CLI gates the upload", async () => {
+    const notes = "# Notes\n\nThe person said: ship it on Friday.\n";
+    fs.mkdirSync(path.join(work, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(work, "notes.md"), notes);
+    const g = bind({ env: STUB, cwd: work });
+    await g.bash("cd", "cd sub && dispatch artifact --issue X-1 --name Plan --path ../notes.md/");
+    expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+    expect(g.dryRuns[0]).toMatchObject({ script: "cd sub >/dev/null && pwd -P", cwd: work });
+    expect(g.calls).toHaveLength(1);
+    expect(g.calls[0].user).toContain(JSON.stringify(notes));
+    expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+  }, 30_000);
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
       "dispatch comment --issue X-1 --body-file - <<'EOF' 2>&1\nhi\nEOF"
@@ -4579,9 +4610,10 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       await expectUnread("dispatch artifact --issue DSP-1 --name brief.md --path brief.md | cat");
     });
     // What Dispatch stores as a markdown document: an upload of inline text (`--content`,
-    // `--content-file`), which the CLI takes only under a name ending in .md or .markdown or with
-    // no extension, or a `--path` file the CLI sends as text/markdown (its name ends in .md or
-    // .markdown); and the gate also reviews any upload whose name ends in .md.
+    // `--content-file`), which the CLI takes only under a name whose extension is .md or .markdown
+    // or with none, or a `--path` file the CLI sends as text/markdown (uploadTypeFrom: its name's
+    // extension is .md or .markdown, or it has none and its path, as the command resolves it, ends
+    // in .md or .markdown).
     beforeAll(() => {
       fs.writeFileSync(path.join(work, "notes.txt"), "The person said: ship it on Friday.\n");
       fs.writeFileSync(path.join(work, "name-md.txt"), "brief.md\n");
@@ -4629,6 +4661,34 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ["dispatch_artifact", "verdict"],
       ]);
     });
+    // The name says the kind wherever it has an extension, whatever the path, and a last part of
+    // the digits 0 to 9 alone is no extension (uploadTypeFrom): x.markdown sent from x.txt is a
+    // document, Plan v1.2 has no extension so its .md path makes it one, and cases.txt sent from
+    // cases.md is a file.
+    test("(m) x.markdown sent from x.txt and Plan v1.2 sent from plan.md are reviewed and marked", async () => {
+      fs.writeFileSync(path.join(work, "x.txt"), BRIEF);
+      fs.writeFileSync(path.join(work, "plan.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("m1", "dispatch artifact --issue DSP-1 --name x.markdown --path x.txt");
+      await g.bash("m2", "dispatch artifact --issue DSP-1 --name 'Plan v1.2' --path plan.md");
+      expect(g.calls).toHaveLength(2);
+      for (const call of g.calls) expect(call.user).toContain(uploadRule);
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([
+        ["dispatch_artifact", "verdict"],
+        ["dispatch_artifact", "verdict"],
+      ]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }, { outcome: "verdict" }]);
+    });
+    test("(n) cases.txt sent from cases.md stays unreviewed and unrecorded", async () => {
+      fs.writeFileSync(path.join(work, "cases.md"), BRIEF);
+      const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
+      expect(
+        await g.bash("n1", "dispatch artifact --issue DSP-1 --name cases.txt --path cases.md")
+      ).toBeUndefined();
+      expect(g.dryRuns).toHaveLength(0);
+      expect(g.calls).toHaveLength(0);
+      expect(g.entries).toHaveLength(0);
+    });
     // The attack on the marker design at cf3f1e021, N7: the CLI's predicate trims the name, as
     // Dispatch does, and the gate's did not, so the gate let `brief.md ` through unread and the CLI
     // refused it for its missing marker. Both sides now use one predicate.
@@ -4639,6 +4699,63 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.calls).toHaveLength(1);
       expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
       expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
+    // INFRA-4071 R15, review 6011588028: notes.md/'s last part holds a `/`, so it is no extension
+    // (uploadExtensionOf) and its .md path makes the upload a document, which the CLI sends as
+    // text/markdown and gates. The gate read it as a .md/ name, a file, and let it run unread.
+    test("(o) notes.md/ sent from notes.md is reviewed and marked, as the CLI gates it", async () => {
+      fs.writeFileSync(path.join(work, "notes.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("o1", "dispatch artifact --issue DSP-1 --name notes.md/ --path notes.md");
+      expect(g.calls).toHaveLength(1);
+      expect(g.calls[0].user).toContain(uploadRule);
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
+    // INFRA-4071, review at 1299d195: the CLI resolves --path, which drops a trailing `/`, so
+    // `--name Plan --path notes.md/` sends notes.md as text/markdown, a document, and the CLI
+    // gates it (uploadIsDocument reads the resolved path). The gate read the path as written,
+    // which ends in `/`, and let the upload run unread.
+    test("(o2) Plan sent from notes.md/ is reviewed and marked, as the CLI gates it", async () => {
+      fs.writeFileSync(path.join(work, "notes.md"), BRIEF);
+      const g = bind({ env: STUB, cwd: work });
+      await g.bash("o2", "dispatch artifact --issue DSP-1 --name Plan --path notes.md/");
+      expect(g.calls).toHaveLength(1);
+      expect(g.calls[0].user).toContain(uploadRule);
+      expect(g.calls[0].user).toContain(JSON.stringify(BRIEF));
+      expect(g.entries.map((e) => [e.tool, e.outcome])).toEqual([["dispatch_artifact", "verdict"]]);
+      expect(markersIn(g.store)).toMatchObject([{ outcome: "verdict" }]);
+    });
+    // INFRA-4071, review 6012684631 at e0d2289b: the pre-check (uploadMayBeDocument) is the
+    // gate's first, quick read of an upload, before it knows the directory the call runs in, so
+    // it never says no where the CLI's gate (uploadIsDocument) says yes in any directory. The
+    // names and paths are the tester's matrix (packages/envoy-client/test/upload-type-matrix.ts,
+    // which the CLI's "on the tester's matrix" test in dispatch-execute.test.ts reads too), each
+    // pair asked under two working directories; each pair the CLI holds there and the pre-check
+    // lets run unread is named.
+    test("the pre-check holds every upload the CLI's gate holds, in either of two working directories", () => {
+      // Each value as one single-quoted literal word, as the shell scan reads one; no name or
+      // path here holds a single quote.
+      const quoted = (value: string) => ({ raw: `'${value}'`, value });
+      const missed: Array<{ name: string; path: string; cwd: string }> = [];
+      for (const cwd of ["/workspace", "/workspace/sub"]) {
+        for (const name of UPLOAD_MATRIX_NAMES) {
+          for (const file of [...UPLOAD_MATRIX_PATHS, `${cwd}/notes.md/.`]) {
+            const flags = [
+              { raw: "--issue", value: "--issue" },
+              quoted("DSP-1"),
+              { raw: "--name", value: "--name" },
+              quoted(name),
+              { raw: "--path", value: "--path" },
+              quoted(file),
+            ];
+            if (uploadIsDocument({ name, path: file }, cwd) && !core.uploadMayBeDocument(flags)) {
+              missed.push({ name, path: file, cwd });
+            }
+          }
+        }
+      }
+      expect(missed).toEqual([]);
     });
     test("other writes keep the full rules and do not get the upload instruction", async () => {
       const g = bind({ env: STUB, cwd: work });
@@ -5554,6 +5671,7 @@ describe("askgate.ts, the entry", () => {
         logger: { warn: (message: string) => warnings.push(message) },
         runtimeLogger: { warn: () => {} },
         session: () => "gate-session",
+        userAgent: "pi-envoy/test",
       }
     ).loaded;
     const roles = opts.roles ?? { askgate: MODEL };
@@ -5713,6 +5831,7 @@ describe("askgate.ts, the entry", () => {
         logger: { warn: () => {} },
         runtimeLogger: { warn: () => {} },
         session: () => "gate-session",
+        userAgent: "pi-envoy/test",
       }
     );
     const { loaded } = registration;

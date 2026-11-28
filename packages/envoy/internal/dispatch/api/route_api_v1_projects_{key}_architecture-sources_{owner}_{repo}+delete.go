@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Remove one architecture source of a project and the components it projected; every other source's components stay.",
 	Handler:     (*server).deleteArchitectureSource,
+	Successor:   successorIs(http.MethodDelete, "/projects/{key}/architecture-sources/{owner}/{repo}"),
 	WriteClass:  scopeProject,
 	Shape: routeShape{
 		Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true,

@@ -58,8 +58,18 @@ test("a second attempt under one key sends the base the first did and takes the 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:moved-on", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:chosen",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:moved-on",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact")
     .mockRejectedValueOnce(
       new ApiError(409, { code: "KEY_IN_FLIGHT", error: "the first attempt is running" }, 1_000)
@@ -99,8 +109,18 @@ test("a second attempt under one key sends the base the first did and takes the 
 test("pressing Upload again after a refusal reads the base again, under a key of its own", async () => {
   const user = userEvent.setup();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:stale", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:now", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:stale",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:now",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact")
     .mockRejectedValueOnce(
       new ApiError(409, { code: "PRECONDITION_FAILED", error: "document changed" })
@@ -160,8 +180,18 @@ test("pressing Upload again after a stopped press sends that press's base under 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:stored", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:chosen",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:stored",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
 
@@ -201,6 +231,7 @@ test("pressing Upload again after a stopped press sends that press's summary, no
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
@@ -246,6 +277,7 @@ test("a stopped press holds the summary field at its own summary, and Upload sen
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
@@ -306,6 +338,7 @@ test("pressing Upload again after a stopped press sends that press's summary, wh
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   let upload: ArtifactUpload | undefined;
@@ -370,6 +403,7 @@ test("pressing Upload again after a stopped press sends the name that press sent
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderWith(<NamedHarness name="Launch notes" />);
@@ -427,6 +461,7 @@ test("a press of another file after a stopped press goes under a key of its own"
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
@@ -482,6 +517,7 @@ test("a press made again from the form goes out under its own key and is told th
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
@@ -532,8 +568,18 @@ test("a draft's Retry after a stopped upload sends that press's base under its k
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const ownerArtifactText = spyOn(api, "ownerArtifactText")
-    .mockResolvedValueOnce({ markdown: "# Notes\n", token: "sha256:chosen", version: 1 })
-    .mockResolvedValue({ markdown: "# Notes\n", token: "sha256:stored", version: 2 });
+    .mockResolvedValueOnce({
+      markdown: "# Notes\n",
+      token: "sha256:chosen",
+      version: 1,
+      unsettled: false,
+    })
+    .mockResolvedValue({
+      markdown: "# Notes\n",
+      token: "sha256:stored",
+      version: 2,
+      unsettled: false,
+    });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderWith(<DraftHarness />);
 
@@ -570,6 +616,7 @@ test("an upload the reader stopped says what Upload does, staged and let go", as
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderHarness();
@@ -611,6 +658,7 @@ test("a draft's upload the reader stopped says Retry makes it again, not that it
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderWith(<DraftHarness />);
@@ -653,6 +701,7 @@ test("a draft's Retry with two presses stopped sends the file whose refusal it s
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
   const view = renderWith(<DraftHarness />);
@@ -718,6 +767,7 @@ test("a draft's Retry after Dispatch's refusal sends that file and leaves the st
     markdown: "# Notes\n",
     token: "sha256:chosen",
     version: 1,
+    unsettled: false,
   });
   const notes = new File(["content"], "notes.md", { type: "text/markdown" });
   const chart = new File(["bytes"], "chart.png", { type: "image/png" });

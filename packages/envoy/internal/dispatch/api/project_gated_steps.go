@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -53,44 +56,88 @@ type projectGatedStepsInput struct {
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	var input projectGatedStepsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	if input.Steps == nil {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
-			"steps is required: the design-gate steps this deployment gates (%s), in the order it gates them, or [] for a deployment that gates none",
-			strings.Join(model.GatedStepsKnown, ", ")))
+	steps, ok := validGatedSteps(w, r, "steps", input.Steps)
+	if !ok {
 		return
+	}
+
+	// The project is read under its owner lock, in the write's transaction (writeProjectGatedSteps):
+	// an unknown project is 404 PROJECT_NOT_FOUND there, before anything is written.
+	project := model.Project{Key: r.PathValue("key")}
+
+	tx, err := s.begin(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	event, err := s.writeProjectGatedSteps(r.Context(), tx, actor, &project, steps)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if event == nil {
+		// The deployment published the list the row already holds. Nothing changed, so
+		// nothing is written and no event is appended; the answer is still the stored row.
+		WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.publish(r.Context(), *event)
+	WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: project.GatedSteps})
+}
+
+// validGatedSteps is the list of design-gate steps a publish sent in member, or false once it has
+// written the refusal (400 INVALID_PROJECT): a body that names no list, a step that is none of
+// the three, and a step named twice. A nil list behind the pointer and an empty one are the same
+// publish, the empty array; a JSON null names no list. PUT /api/v1/projects/{key}/gated-steps
+// (steps) and PATCH /api/v2/projects/{key} (gated_steps) hold the list to it alike.
+func validGatedSteps(w http.ResponseWriter, r *http.Request, member string, sent *[]string) ([]string, bool) {
+	if sent == nil {
+		writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+			"%s is required: the design-gate steps this deployment gates (%s), in the order it gates them, or [] for a deployment that gates none",
+			member, strings.Join(model.GatedStepsKnown, ", ")))
+		return nil, false
 	}
 	// A nil list and an empty one are the same publish, and the column is not null: the empty
 	// array, which reads as a deployment that gates nothing.
-	steps := *input.Steps
+	steps := *sent
 	if steps == nil {
 		steps = []string{}
 	}
 	for index, step := range steps {
 		if !slices.Contains(model.GatedStepsKnown, step) {
-			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
-				"%q is not a design-gate step: steps names %s", step, strings.Join(model.GatedStepsKnown, ", ")))
-			return
+			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+				"%q is not a design-gate step: %s names %s", step, member, strings.Join(model.GatedStepsKnown, ", ")))
+			return nil, false
 		}
 		if slices.Contains(steps[:index], step) {
-			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
-				"%q is named twice: steps names each design-gate step once, in the order this deployment gates them", step))
-			return
+			writeError(w, r, apicode.InvalidProject, fmt.Sprintf(
+				"%q is named twice: %s names each design-gate step once, in the order this deployment gates them", step, member))
+			return nil, false
 		}
 	}
+	return steps, true
+}
 
-	tx, err := s.begin(r.Context())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	defer tx.Rollback(r.Context())
+// writeProjectGatedSteps stores steps as project's gated steps in tx where they differ from the
+// list the row holds, setting *project to the row as the write leaves it, and appends
+// project.updated, answering the event for the caller to publish once tx commits. A list the row
+// already holds writes nothing and answers no event. project names the project by its Key; the
+// row is read again here, under the owner lock, and an unknown project is 404 PROJECT_NOT_FOUND
+// before anything is written. PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps) and
+// PATCH /api/v2/projects/{key} (patchProjectV2) write the list through it alike.
+func (s *server) writeProjectGatedSteps(ctx context.Context, tx pgx.Tx, actor model.Actor, project *model.Project, steps []string) (*model.Event, error) {
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, putProjectDefaultAssignee, lockEventOwner). Taking the row first and the lock
 	// at the append below waited, holding the row, on an issue create that holds the lock in its
@@ -99,45 +146,32 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
 	// update is the first statement that writes, and one that finds the list unchanged writes
 	// nothing.
-	key := r.PathValue("key")
-	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(key)); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project.Key)); err != nil {
+		return nil, err
 	}
 	// The row is read under the owner lock, which every writer of the row takes first, so the
 	// event carries the row as this write leaves it. The read comes before the update, which
 	// assigns the transaction id, so it adds no statement to the window an open transaction id
-	// holds (TestXidWindowRouteTable). An unknown project is 404 PROJECT_NOT_FOUND here, before
-	// anything is written.
-	project, err := s.loadProject(r.Context(), tx, key)
+	// holds (TestXidWindowRouteTable).
+	read, err := s.loadProject(ctx, tx, project.Key)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	written, err := tx.Exec(r.Context(), `
+	*project = read
+	written, err := tx.Exec(ctx, `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2
-	`, key, steps)
+	`, project.Key, steps)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 	if written.RowsAffected() == 0 {
-		// The deployment published the list the row already holds. Nothing changed, so
-		// nothing is written and no event is appended; the answer is still the stored row.
-		WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
-		return
+		return nil, nil
 	}
 	project.GatedSteps = steps
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
+	event, err := s.appendEvent(ctx, tx, projectOwner(project.Key).event("project.updated", actor, *project))
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: project.GatedSteps})
+	return &event, nil
 }

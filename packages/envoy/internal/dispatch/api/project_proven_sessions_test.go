@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -197,8 +198,8 @@ func TestSpecWriteProvenSessionsSettingStartsOffAndOnlyAPersonTurnsItOff(t *test
 		}},
 	} {
 		response := refusal.send(t)
-		if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != codeScopeRequired {
-			t.Errorf("%s: status=%d body=%s, want 403 %s", refusal.what, response.Code, response.Body.String(), codeScopeRequired)
+		if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != apicode.OAuthScopeRequired.V1Name() {
+			t.Errorf("%s: status=%d body=%s, want 403 %s", refusal.what, response.Code, response.Body.String(), apicode.OAuthScopeRequired.V1Name())
 		}
 		requireSetting(t, "after "+refusal.what, true, 3)
 	}

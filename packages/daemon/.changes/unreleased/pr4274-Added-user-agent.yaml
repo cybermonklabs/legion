@@ -1,0 +1,9 @@
+kind: Added
+custom:
+  Issue: pr4274
+body: |-
+  The daemon's Dispatch client names the daemon and its build in every request's `User-Agent`,
+  `legion-daemon/<release>`: the release a release binary was built for, which `legion version`
+  prints as its version, else the commit its build links, which `legion version` prints after
+  `commit`, else `(devel)`, so Dispatch's access log tells the daemon's calls from every other
+  client's. The calls still go to `/api/v1`, which Dispatch now marks deprecated.

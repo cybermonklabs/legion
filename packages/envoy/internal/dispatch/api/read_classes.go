@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -54,19 +56,31 @@ const (
 	// plan's table "Routes and their kinds" (INFRA-4620).
 	asOfAnswers
 	// asOfNoHistory is a row that holds no history: it answers the present only, refuses every
-	// as_of 400 AS_OF_NOT_SERVED (asOfGate), and refuses a read-only token that carries a cut
-	// 403 AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken).
+	// as_of 400 AS_OF_NOT_SERVED (asOfGate), or 400 QUERY_KEY_UNKNOWN on a row whose query the
+	// decoder reads, which declares no as_of (asOfGate, apiRoute.decoded), and refuses a read-only
+	// token that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken).
 	asOfNoHistory
-	// asOfCaller is GET /api/v1/whoami alone (asOfCallerRow): it describes the caller now, the
-	// cut its token carries included, and refuses as_of as a row that holds no history does.
-	// readClassRefusals refuses it on every other row. The limited-token gate lets a token that
-	// carries a cut reach such a row (refuseLimitedToken), and the as_of gate runs the row with
-	// no cut on its reads (asOfGate), so the row would answer that token with the present.
+	// asOfCaller is GET /api/v1/whoami and its /api/v2 successor GET /api/v2/me alone
+	// (asOfCallerRows): each describes the caller now, the cut its token carries included, and
+	// refuses as_of as a row that holds no history does. readClassRefusals refuses it on every
+	// other row. The limited-token gate lets a token that carries a cut reach such a row
+	// (refuseLimitedToken), and the as_of gate runs the row with no cut on its reads (asOfGate),
+	// so the row would answer that token with the present.
 	asOfCaller
 )
 
-// asOfCallerRow is the one row of kind asOfCaller.
+// asOfCallerRow is the /api/v1 row of kind asOfCaller.
 const asOfCallerRow = "GET /api/v1/whoami"
+
+// asOfCallerV2Row is the /api/v2 row of kind asOfCaller, GET /api/v1/whoami's successor, which
+// names the cut its token carries as whoami does (getMeV2).
+const asOfCallerV2Row = "GET /api/v2/me"
+
+// asOfCallerRows reports whether name, "<method> <pattern>", is a row that may be of kind
+// asOfCaller: GET /api/v1/whoami and GET /api/v2/me.
+func asOfCallerRows(name string) bool {
+	return name == asOfCallerRow || name == asOfCallerV2Row
+}
 
 // readEntry is the read class of one GET row of the table: what the row writes, the note that
 // says so where the class alone does not, how the row answers a read at a past time, and, for a
@@ -228,11 +242,192 @@ const asOfThreadPageAtACut = "At a cut, from as_of or from a token, order is 400
 // read_classes.go holds what a read class is: the two classes, what each means, and the note a
 // class carries, and the as_of kinds, with what each says in a GET route's description
 // (asOfDescription). Which class and which kind a route has is the route's own declaration
-// (routeDecl.Read, one file per route), which routes() answers as apiRoute.Read and the read-only
-// gate and the as_of gate read (refuseLimitedToken, asOfGate). The routes of the plan's table
-// "Routes and their kinds" (INFRA-4620) answer as_of (asOfAnswers), GET /api/v1/whoami describes
-// the caller now (asOfCaller), and every other GET route holds no history (asOfNoHistory); each
-// route of kind answers also says what it answers at a cut (AtACut). register refuses to mount a
-// table whose GET routes are not all classed with a kind, or whose write states a class
-// (readClassRefusals, routes_table.go), so a GET route added later is served to no read-only
-// credential and answers no as_of until someone has read its handler and classed it.
+// (routeDecl.Read, one file per route), or a routeRow's entry of v2ReadClasses, which routes()
+// answers as apiRoute.Read and the read-only gate and the as_of gate read (refuseLimitedToken,
+// asOfGate). The routes of the plan's table "Routes and their kinds" (INFRA-4620) answer as_of
+// (asOfAnswers), GET /api/v1/whoami and its /api/v2 successor GET /api/v2/me describe the caller
+// now (asOfCaller), and every other GET route holds no history (asOfNoHistory); each route of kind
+// answers also says what it answers at a cut (AtACut). register refuses to mount a table whose GET
+// routes are not all classed with a kind, or whose write states a class (readClassRefusals,
+// routes_table.go), so a GET route added later is served to no read-only credential and answers
+// no as_of until someone has read its handler and classed it.
+
+// v2ReadClasses is the read class of every GET routeRow, keyed "GET /api/v2<pattern>", for each
+// version the row is served in: a routeRow states no class of its own, and one served in both
+// versions has one class at both paths (stampV2ReadClasses). It records each mounted GET
+// explicitly, so a new GET needs a review even when it resembles an existing read. Most rows copy
+// the class and note of the /api/v1 route they share a core with, from its declaration, with the
+// as_of kind /api/v2 takes (declaredRead); the INFRA-979 rows served in both versions, and each row
+// whose read is not its /api/v1 route's or that has none (GET /api/v2/issues/{key},
+// /artifacts/{id}, /asks, /me/marks, /references and others), state their own. No row answers
+// as_of (asOfAnswers): /api/v2 stands at main's freeze commit 67bcd7c7, which answered no read at a
+// past time (dispatch://INFRA-4071/spec R2), so every row holds no history but GET /api/v2/me,
+// which describes the caller now as GET /api/v1/whoami does (asOfCaller). The INFRA-979 rows hold
+// no history at both paths, as their /api/v1 route files said on main before they became rows.
+func v2ReadClasses() map[string]readEntry {
+	read := readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory}
+	withNote := func(note string) readEntry {
+		return readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory, WriteNote: note}
+	}
+	return map[string]readEntry{
+		"GET /api/v2":        declaredRead("GET /api/v1"),
+		"GET /api/v2/agents": declaredRead("GET /api/v1/agents"),
+		"GET /api/v2/agents/{session_id}/answers":                  declaredRead("GET /api/v1/agents/{session_id}/answers"),
+		"GET /api/v2/agents/{session_id}/artifacts":                read, // Reads the conversation's artifact rows and stored versions.
+		"GET /api/v2/agents/{session_id}/messages":                 declaredRead("GET /api/v1/agents/{session_id}/messages"),
+		"GET /api/v2/artifacts/{id}":                               withNote("include=text or blocks reads live document text or blocks. " + docsCompactionNote),
+		"GET /api/v2/artifacts/{id}/asks":                          declaredRead("GET /api/v1/artifacts/{id}/asks"),
+		"GET /api/v2/artifacts/{id}/blocks/{block_id}":             declaredRead("GET /api/v1/artifacts/{id}/blocks/{block_id}"),
+		"GET /api/v2/artifacts/{id}/changes":                       declaredRead("GET /api/v1/artifacts/{id}/changes"),
+		"GET /api/v2/artifacts/{id}/comments":                      declaredRead("GET /api/v1/artifacts/{id}/comments"),
+		"GET /api/v2/artifacts/{id}/events":                        declaredRead("GET /api/v1/artifacts/{id}/events"),
+		"GET /api/v2/artifacts/{id}/references":                    declaredRead("GET /api/v1/artifacts/{id}/references"),
+		"GET /api/v2/artifacts/{id}/reviews":                       declaredRead("GET /api/v1/artifacts/{id}/reviews"),
+		"GET /api/v2/artifacts/{id}/subscribers":                   declaredRead("GET /api/v1/artifacts/{id}/subscribers"),
+		"GET /api/v2/artifacts/{id}/versions":                      read, // Reads the artifact's stored version rows.
+		"GET /api/v2/artifacts/{id}/versions/{number}":             declaredRead("GET /api/v1/artifacts/{id}/versions/{number}"),
+		"GET /api/v2/asks":                                         read, // Reads ask rows, optional source mapping and caller marks.
+		"GET /api/v2/asks/{id}":                                    declaredRead("GET /api/v1/asks/{id}"),
+		"GET /api/v2/block-links":                                  declaredRead("GET /api/v1/block-links"),
+		"GET /api/v2/block-schema":                                 declaredRead("GET /api/v1/schema/blocks"),
+		"GET /api/v2/broadcasts":                                   declaredRead("GET /api/v1/broadcasts"),
+		"GET /api/v2/broadcasts/{id}":                              declaredRead("GET /api/v1/broadcasts/{id}"),
+		"GET /api/v2/ci-reconcile-passes":                          declaredRead("GET /api/v1/ci-reconcile/passes"),
+		"GET /api/v2/comments/{id}":                                declaredRead("GET /api/v1/comments/{id}"),
+		"GET /api/v2/comments/{id}/corrections":                    declaredRead("GET /api/v1/comments/{id}/history"),
+		"GET /api/v2/credential-grants":                            declaredRead("GET /api/v1/credential-grants"),
+		"GET /api/v2/credential-requests":                          declaredRead("GET /api/v1/credential-requests"),
+		"GET /api/v2/dashboard-builds":                             declaredRead("GET /api/v1/dashboard/builds"),
+		"GET /api/v2/delivery/measures":                            {Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "As the timeline's: an insert into delivery_run_warnings for a deploy run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
+		"GET /api/v2/delivery/pipeline":                            {Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "As the timeline's, for the deploy runs on main since the first day it shows: an insert into delivery_run_warnings for a run with no matching production job or apply step, on the request's context, once per process for each run and configuration (firstToWarn)."},
+		"GET /api/v2/delivery/timeline":                            {Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "When a deploy run has no configured production job, or its production job has no configured apply step, the read inserts a delivery_run_warnings row on the request's context (firstToWarn, on conflict doing nothing), once per process for each run and configuration."},
+		"GET /api/v2/deploy-runs/{id}":                             declaredRead("GET /api/v1/delivery/runs/{id}"),
+		"GET /api/v2/deploys":                                      declaredRead("GET /api/v1/deploys"),
+		"GET /api/v2/events":                                       declaredRead("GET /api/v1/events/log"),
+		"GET /api/v2/going-actions":                                declaredRead("GET " + goingCataloguePath),
+		"GET /api/v2/going-requests/{id}/stream":                   declaredRead("GET /api/v1/going/requests/{id}/stream"),
+		"GET /api/v2/handoffs/{id}":                                declaredRead("GET /api/v1/handoffs/{id}"),
+		"GET /api/v2/issues":                                       declaredRead("GET /api/v1/issues"),
+		"GET /api/v2/issues/{key}":                                 read, // The includes read issue facts, reach, design gates and sampled Legion state.
+		"GET /api/v2/issues/{key}/artifacts":                       withNote("include=text or blocks reads live document text or blocks. " + docsCompactionNote),
+		"GET /api/v2/issues/{key}/asks":                            declaredRead("GET /api/v1/issues/{key}/asks"),
+		"GET /api/v2/issues/{key}/checks":                          declaredRead("GET /api/v1/issues/{key}/results"),
+		"GET /api/v2/issues/{key}/collaborators":                   declaredRead("GET /api/v1/issues/{key}/collaborators"),
+		"GET /api/v2/issues/{key}/comments":                        declaredRead("GET /api/v1/issues/{key}/comments"),
+		"GET /api/v2/issues/{key}/coverage":                        declaredRead("GET /api/v1/issues/{key}/coverage"),
+		"GET /api/v2/issues/{key}/decisions":                       declaredRead("GET /api/v1/issues/{key}/decisions"),
+		"GET /api/v2/issues/{key}/events":                          declaredRead("GET /api/v1/issues/{key}/events"),
+		"GET /api/v2/issues/{key}/handoffs":                        declaredRead("GET /api/v1/issues/{key}/handoffs"),
+		"GET /api/v2/issues/{key}/messages":                        declaredRead("GET /api/v1/issues/{key}/messages"),
+		"GET /api/v2/issues/{key}/references":                      declaredRead("GET /api/v1/issues/{key}/references"),
+		"GET /api/v2/issues/{key}/role-holder-set":                 declaredRead("GET /api/v1/issues/{key}/role-holders"),
+		"GET /api/v2/issues/{key}/step-tasks":                      declaredRead("GET /api/v1/issues/{key}/steps"),
+		"GET /api/v2/issues/{key}/steps":                           declaredRead("GET /api/v1/issues/{key}/steps"),
+		"GET /api/v2/issues/{key}/subscribers":                     declaredRead("GET /api/v1/issues/{key}/subscribers"),
+		"GET /api/v2/known-sessions":                               declaredRead("GET /api/v1/agents/known"),
+		"GET /api/v2/limit-set":                                    declaredRead("GET /api/v1/limits"),
+		"GET /api/v2/machine-logins":                               declaredRead("GET /api/v1/machine-logins"),
+		"GET /api/v2/me":                                           declaredRead(asOfCallerRow),
+		"GET /api/v2/me/agent-tokens":                              declaredRead("GET /api/v1/me/agent-tokens"),
+		"GET /api/v2/me/answers":                                   declaredRead("GET /api/v1/me/answers"),
+		"GET /api/v2/me/marks":                                     read, // Pages stored issue, agent, document, thread, message and ask marks.
+		"GET /api/v2/me/marks/{kind}/{id}":                         read, // Reads one stored mark without setting it.
+		"GET /api/v2/me/signins":                                   declaredRead("GET /api/v1/signins"),
+		"GET /api/v2/me/threads":                                   declaredRead("GET /api/v1/me/replies"),
+		"GET /api/v2/messages/{id}":                                declaredRead("GET /api/v1/messages/{id}"),
+		"GET /api/v2/messages/{id}/corrections":                    declaredRead("GET /api/v1/messages/{id}/history"),
+		"GET /api/v2/near-copy-checks/{id}":                        declaredRead("GET /api/v1/near-copy-checks/{id}"),
+		"GET /api/v2/nodes":                                        declaredRead("GET /api/v1/people/{login}/nodes"),
+		"GET /api/v2/priorities":                                   declaredRead("GET /api/v1/priorities"),
+		"GET /api/v2/priorities/{id}/acts":                         declaredRead("GET /api/v1/priorities/{id}/history"),
+		"GET /api/v2/projects":                                     read, // The optional default assignee comes from stored project settings.
+		"GET /api/v2/projects/{key}/architecture":                  declaredRead("GET /api/v1/projects/{key}/architecture"),
+		"GET /api/v2/projects/{key}/architecture-sources":          declaredRead("GET /api/v1/projects/{key}/architecture-sources"),
+		"GET /api/v2/projects/{key}/artifacts":                     withNote("include=text or blocks reads live document text or blocks. " + docsCompactionNote),
+		"GET /api/v2/projects/{key}/issues":                        declaredRead("GET /api/v1/issues"),
+		"GET /api/v2/projects/{key}/legion/board":                  read,
+		"GET /api/v2/projects/{key}/legion/daemon":                 read,
+		"GET /api/v2/projects/{key}/near-copy-checks":              declaredRead("GET /api/v1/near-copy-checks"),
+		"GET /api/v2/projects/{key}/plans":                         declaredRead("GET /api/v1/projects/{key}/plans"),
+		"GET /api/v2/reference-targets":                            declaredRead("GET /api/v1/reference-targets"),
+		"GET /api/v2/references":                                   withNote("Writes nothing itself. With an after position, readReferences waits on the event horizon; the observation may persist event_horizon through writePersisted on its own context, as with since on /api/v1."),
+		"GET /api/v2/related-check-stats":                          declaredRead("GET /api/v1/related-checks"),
+		"GET /api/v2/repositories":                                 declaredRead("GET /api/v1/settings/repo-projects"),
+		"GET /api/v2/repositories/{owner}/{repo}/app-installation": declaredRead("GET /api/v1/github/app-installation/{owner}/{repo}"),
+		"GET /api/v2/search-coverage":                              declaredRead("GET /api/v1/search/coverage"),
+		"GET /api/v2/search-results":                               declaredRead("GET /api/v1/search/results"),
+		"GET /api/v2/settings/credential-broker":                   declaredRead("GET /api/v1/credentials/capabilities"),
+		"GET /api/v2/settings/delivery":                            read,
+		"GET /api/v2/settings/new-issue":                           declaredRead("GET /api/v1/settings/new-issue"),
+		"GET /api/v2/settings/text-model":                          declaredRead("GET /api/v1/going/capability"),
+		"GET /api/v2/users":                                        declaredRead("GET /api/v1/users"),
+	}
+}
+
+// declaredRead is the read class the route file of name declares, by "<method> <pattern>", as a
+// routeRow that shares that route's core takes it (v2ReadClasses): the route's class and note,
+// and the as_of kind of a /api/v2 row (v2AsOf). It is the zero entry, which classes nothing, where
+// no route file declares name: a routeRow that names a route nobody declares is then a GET with no
+// class, which register refuses (readClassRefusals).
+func declaredRead(name string) readEntry {
+	route, declared := declaredRoute(name)
+	if !declared {
+		return readEntry{}
+	}
+	return v2AsOf(route.Read)
+}
+
+// v2AsOf is entry, a /api/v1 route's read class, with the as_of kind the /api/v2 row that shares
+// its core takes. A route that describes the caller now (asOfCaller, GET /api/v1/whoami) keeps it:
+// its successor GET /api/v2/me names the cut a token carries as whoami does. Every other kind
+// holds no history at /api/v2 (asOfNoHistory), and says nothing of a cut. /api/v2 stands at the
+// freeze, which answered no read at a past time (v2ReadClasses), and a past-time answer names the
+// members it leaves out by the /api/v1 route's own answer (asof.AbsentFields), which is no
+// /api/v2 answer's shape: a /api/v2 row that answered a cut would name members its answer does not
+// hold. So a /api/v2 row refuses a read-only token that carries a cut 403 AS_OF_TOKEN_NOT_SERVED
+// (refuseLimitedToken) and an as_of 400 QUERY_KEY_UNKNOWN (asOfGate), and never answers either
+// with the present.
+func v2AsOf(entry readEntry) readEntry {
+	if entry.AsOf != asOfCaller {
+		entry.AsOf, entry.AtACut = asOfNoHistory, ""
+	}
+	return entry
+}
+
+// stampV2ReadClasses stamps each GET routeRow's class from v2ReadClasses onto its mounts, at
+// /api/v2 and, for a row served in both versions, at /api/v1. A route file's declaration carries
+// its own class (v1Route).
+func stampV2ReadClasses(routes []apiRoute) {
+	classes := v2ReadClasses()
+	for index, route := range routes {
+		if route.columns && route.Method == http.MethodGet {
+			routes[index].Read = classes[v2ReadClassKey(route)]
+		}
+	}
+}
+
+// v2ReadClassKey is the key v2ReadClasses holds a routeRow mount's class under: GET and the row's
+// /api/v2 pattern, whichever version the mount serves.
+func v2ReadClassKey(route apiRoute) string {
+	return route.Method + " /api/v2" + strings.TrimPrefix(route.Pattern, versionPrefix(route.Version))
+}
+
+// v2ReadClassesUnmounted names, sorted, each entry of v2ReadClasses that classes no GET routeRow
+// of routes: a row renamed or deleted and its entry left behind reads as though it classed a
+// route that is not there (readClassRefusals).
+func v2ReadClassesUnmounted(routes []apiRoute) []string {
+	mounted := map[string]bool{}
+	for _, route := range routes {
+		if route.columns && route.Method == http.MethodGet {
+			mounted[v2ReadClassKey(route)] = true
+		}
+	}
+	var unmounted []string
+	for name := range v2ReadClasses() {
+		if !mounted[name] {
+			unmounted = append(unmounted, name+": v2ReadClasses names it, and it is no GET routeRow the table mounts")
+		}
+	}
+	sort.Strings(unmounted)
+	return unmounted
+}

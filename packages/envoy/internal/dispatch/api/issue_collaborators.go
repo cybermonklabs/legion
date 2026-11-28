@@ -63,7 +63,9 @@ const (
 	legionRegistryUnavailable = "unavailable"
 )
 
-// issueCollaborators is GET /api/v1/issues/{key}/collaborators.
+// issueCollaborators is GET /api/v1/issues/{key}/collaborators, and the read GET
+// /api/v2/issues/{key}/collaborators pages into its own answer (issueCollaboratorsOf,
+// listIssueCollaboratorsV2).
 type issueCollaborators struct {
 	IssueKey string               `json:"issue_key"`
 	People   []collaboratorPerson `json:"people"`
@@ -153,12 +155,21 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	ctx := r.Context()
-	key := r.PathValue("key")
+	collaborators, err := s.issueCollaboratorsOf(r.Context(), r.PathValue("key"))
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, collaborators)
+}
+
+// issueCollaboratorsOf is everyone who worked the issue key, as both versions of GET
+// collaborators read them: the people, newest first, and the agent sessions, with the state of
+// the listener's Legion agent registry. A key no issue carries is pgx.ErrNoRows.
+func (s *server) issueCollaboratorsOf(ctx context.Context, key string) (issueCollaborators, error) {
 	var assignee *string
 	if err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, key).Scan(&assignee); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCollaborators{}, err
 	}
 	people := map[string]*collaboratorTally{}
 	sessions := map[string]*collaboratorTally{}
@@ -168,21 +179,19 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.tallyCollaboratorEvents(ctx, key, people, sessions); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCollaborators{}, err
 	}
 	registry, registryState := s.issueLegionAgents(ctx, key)
 	agents, err := s.collaboratorAgents(ctx, sessions, registry)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCollaborators{}, err
 	}
-	WriteJSON(w, http.StatusOK, issueCollaborators{
+	return issueCollaborators{
 		IssueKey:       key,
 		People:         collaboratorPeople(people),
 		Agents:         agents,
 		LegionRegistry: registryState,
-	})
+	}, nil
 }
 
 // tallyCollaboratorEvents reads the issue's claim, writing and answer events, one row per actor

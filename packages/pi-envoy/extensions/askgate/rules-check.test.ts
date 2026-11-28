@@ -313,6 +313,20 @@ describe("runRulesCheck: which asks a call opens", () => {
     });
     expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
   });
+  test("a re-upload whose name ends in U+0085, which Go's strings.TrimSpace cuts, judges only the asks the stored version does not hold", async () => {
+    // Dispatch trims a name with Go's strings.TrimSpace (goTrimSpace), which cuts U+0085 and
+    // `trim` keeps, so this upload writes brief.md's next version and its stored ask is not new.
+    const check = await checkRules({
+      toolName: "dispatch_artifact",
+      tool: "dispatch artifact",
+      input: {
+        issue: "X-1",
+        name: "brief.md\u0085",
+        content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
+      },
+    });
+    expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
+  });
   test("an upload named after the document's slug replaces it too, so its stored asks are not new", async () => {
     const check = await checkRules({
       toolName: "dispatch_artifact",

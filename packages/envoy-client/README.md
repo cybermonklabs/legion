@@ -981,8 +981,9 @@ and the write ends unsettled with its key; before that, a repeat reaches no hand
 new identity. One change no identity sees is the broker binding another person to the same sign-in
 between two trades of one write; the broker does not do that today. When the write ends unsettled,
 the error says Dispatch finishes an attempt it received, and to read the write back before sending
-it again, since a new command sends it under a new key. A conversion that writes nothing (the
-markdown round trip) never leaves "nothing sent", so it keeps its own answers.
+it again, since a new command sends it under a new key. A call that writes nothing (the markdown
+round trip, the related search, a result's dry run) never leaves "nothing sent", so it keeps its
+own answers.
 
 The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when the table settles on it (it names this call's key back, and its body, read whole, is JSON or a bodiless 204 or 205) and it matches the row; extra members from a newer server are allowed. Such a 2xx proves commitment even when its JSON is not the row, or it carries no body where the row needs one: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
 
@@ -1006,7 +1007,11 @@ would read as nothing written. A fleet commit that names `b1c42d1d7d` while a ro
 going does not prove that every replica runs it. Do not roll Dispatch back below that build while
 sessions use this client; fix forward instead.
 
-A non-2xx answer is thrown as `DispatchServiceError`. Dispatch's own refusal, JSON with a string
+A non-2xx answer is thrown as `DispatchServiceError`, unless it leaves a write unsettled, is a
+`409 KEY_COMMITTED` (a `DispatchWriteLandedError`, or a `DispatchAnswerMissingError` for a call
+that stores nothing; below), or is an answer the airlock proxy wrote itself before anything of the
+write left it (`Cipher-Proxy-Forwarded: false`), which is an `AirlockRefusedError`.
+Dispatch's own refusal, JSON with a string
 `error`, is the error's message under its `code` (`HTTP_<status>` when the server set none), with
 `fromDispatch` true. Any other body — a gateway's HTML page, an empty body, JSON of another shape —
 did not come from Dispatch, so it is a `DispatchGatewayError` (`fromDispatch` false) whose message
@@ -1023,7 +1028,9 @@ cut short, split by markup or overlapping another leaves no such piece. A body n
 part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever
-answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, and so
+answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, as may
+a POST whose route stores nothing (the markdown round trip, the related search, a result's dry
+run), and so
 may a write answered 429, the gateway's own rate limit, which it sends before it forwards anything
 (`mayHaveReachedDispatch` false); a write answered 5xx or 408 may or may not have reached Dispatch,
 since a gateway can time a request out after it forwarded it, so the advice is to check whether it
@@ -1051,14 +1058,46 @@ route of Dispatch's answers the caller's own credential.
 
 `DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
 one as a refusal Dispatch decided: its message is the last answer or failure, the number of
-attempts, whether an earlier attempt may have reached Dispatch or Dispatch was still running one,
-and that the write may or may not have taken effect, so check before running it again - a new
-command is a new key. `key` is the key every attempt carried and `last` what ended the write. A
-write that ends with no answer at all names the request: its last attempt cut off for silence
-("made no progress for 20 s, so it was cut off"), or the call's deadline ending it while an
-attempt was out or after one that may have reached Dispatch ("had no definitive answer when its
-deadline ended it"). A write Dispatch
-made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
+attempts, why the write may have landed (Dispatch's own 5xx, which it answers when a write fails,
+which can be after it committed; an attempt or an earlier attempt that may have reached Dispatch;
+or one Dispatch was still running), and that the write may or may not have taken effect, so check
+before running it again - a new command is a new key. `key` is the key every attempt carried and
+`last` what ended the write, so a caller still reads a 5xx's code and status there; its `answer`
+is the message's first clause, which a caller with its own account of the write, such as
+`dispatch issue-update`'s close path, joins that account to in place of the rest. A write that
+ends with no answer at all names the request: its last attempt failed on the network ("failed on
+its last attempt (<the failure>)"), was cut off for silence ("made no progress for 20 s, so it was
+cut off"), could not present its credential for another attempt ("could not present its credential
+for another attempt (<the failure>)"), was stopped by its caller ("was stopped by its caller with
+no definitive answer"), or the call's deadline ended it while an attempt was out or after one
+that may have reached Dispatch ("had no definitive answer when its deadline ended it"). The client
+throws a transport failure as a `DispatchUnreachableError`, naming the configured URL and the
+failure's class, never the runtime's message, and the advice for a moved URL ("Dispatch at <url>
+is unreachable: …"): a read prints it as it stands, and an unsettled write quotes it whole as its
+failure. A PUT or a DELETE, and `dispatch api`'s write through `sendRoute` (any method but GET, a
+POST or a PATCH among them), carry no key, and each goes once but for a resend after
+`401 BROKER_TOKEN_NOT_ACTIVE` and, for a PUT or a DELETE, after an old build's answer of no route,
+neither of which Dispatch ran. Each is unsettled the same way, with one attempt and no `key`, when
+its transport fails after it went out, its answer's body breaks off after the status came, the
+call's deadline ends it in flight or Dispatch answers its own 5xx (`#send`, which reads such a
+write's whole body inside the request), but for its `503 BROKER_UNAVAILABLE`, which it answers
+before any handler runs (`tokenNotChecked`); its message says to check whether it took effect
+before retrying it, with no words of a key. A body lost so names the request and the status
+("lost the body of its <status> answer (<the failure's class>)"), as a keyed write's does. A
+gateway's 5xx to it stays a `DispatchGatewayError`, whose advice already says the write may or may
+not have reached Dispatch, and its caller's cancellation in flight and a transport failure that
+reached no server, such as a refused connection or a CONNECT the airlock proxy refused
+(`AirlockTunnelRefusedError`), are thrown as they are. A GET is never unsettled. The POSTs whose
+routes store nothing (`rowStores`), the markdown round trip, the related search and a result's
+dry run, keep their key and their attempts but are no writes, so none of their endings is a
+`DispatchWriteUnsettledError`: a refusal or a transport failure is thrown as a read's would be,
+with none of these words; a silence cut names the request ("<request> made no progress for 20 s,
+so it was cut off."); an answer that is not their row, a `409 KEY_COMMITTED` among them, is a
+`DispatchAnswerMissingError`; and a second replay Dispatch kept no copy of is a
+`DispatchAnswerNotKeptError`.
+
+A write Dispatch made whose answer is gone is a `DispatchWriteLandedError` (`code`, a
+`DispatchLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
@@ -1337,10 +1376,13 @@ write's refusal while nothing may have landed and the write is `DispatchWriteUns
 something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in
 the broker's words, unless an attempt of a keyed write may have landed: then that write asks again
 on its pacing, and with no ask left it is `DispatchWriteUnsettledError`. `dispatch api`'s request,
-its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`,
-never on a pacing, and never `DispatchWriteUnsettledError`. Dispatch's answer of no route does not
-repeat it, and the command prints a refusal, the broker's refusal of the trade among them, as it
-came.
+its GET or its write, goes through one `#send`: one resend after `401 BROKER_TOKEN_NOT_ACTIVE`, and
+never on a pacing. Its GET is never `DispatchWriteUnsettledError`. Its write is one, of one attempt
+and no key, where Dispatch answers it with its own 5xx, but for its `503 BROKER_UNAVAILABLE`, or
+where it got no answer after it went out or its answer's body broke off after the status came,
+but for the caller's own stop in flight and a transport failure that reached no server, which are
+thrown as they are (`#send`, above). Dispatch's answer of no route does not repeat it, and the
+command prints a refusal, the broker's refusal of the trade among them, as it came.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -1546,21 +1588,28 @@ does not hold, because `--force` uploads a new document; under a name the owner 
 replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
 grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
 the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
-whatever its status. A
-`--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown, which the
-upload carries as `text/markdown`) is held to the same checks, in the same place: once the flags
-are read, before the argument check and before anything that needs Dispatch, the command reads it
-once, as its upload reads it (`documentFileRead`; the command table names the field,
-`DispatchCommand.documentPathField`), and refuses a file past 1 MiB by its size before it reads
-it and then by the bytes it read, and then the first U+0000 or byte that is not UTF-8 in those
-bytes, in the upload's words, which name the field `file` (`documentBytesRefusal`). All of this
-comes before AskGate's gate of the call too. The command hands the bytes it read to the dry run's
-step, which checks those bytes and does not read the file again, and to the call. Where AskGate
-reviews the call, its check reads the file a second time for its digest, and the call checks and
-sends the bytes that read took in place of the command's; otherwise the call checks and sends the
-command's bytes and does not read the file again. A file the command cannot read (missing, not
-readable, a directory) is no refusal of its text: the argument check comes first, and then the
-dry run's step, where it runs, and the call read the file and answer with the read's own error.
+whatever its status. The upload's `--name`, and its path only where the name has no extension,
+decides which `--path` file Dispatch stores as a Markdown document, which the upload carries as
+`text/markdown` (`uploadIsDocument`). A
+name's trailing extensions of the digits 0 to 9 alone do not count, so the name `plan.md.1` reads
+as .md and `Plan v1.2` has no extension. A name whose extension is .md or .markdown makes one
+whatever the path, a name with another extension makes a file whatever the path (`cases.txt` sent
+from cases.md), and a name with no extension makes one only when the path, as the command
+resolves it, ends in .md or .markdown: the path skips no digits, so `--name plan --path plan.md.1`
+makes a file. Such a
+file is held to the same checks, in the same place: once the flags are read, before the argument
+check and before anything that needs Dispatch, the command reads it once, as its upload reads it
+(`documentFileRead`; the command table names the field, `DispatchCommand.documentPathField`), and
+refuses a file past 1 MiB by its size before it reads it and then by the bytes it read, and then
+the first U+0000 or byte that is not UTF-8 in those bytes, in the upload's words, which name the
+field `file` (`documentBytesRefusal`). All of this comes before AskGate's gate of the call too. The
+command hands the bytes it read to the dry run's step, which checks those bytes and does not read
+the file again, and to the call. Where AskGate reviews the call, its check reads the file a second
+time for its digest, and the call checks and sends the bytes that read took in place of the
+command's; otherwise the call checks and sends the command's bytes and does not read the file
+again. A file the command cannot read (missing, not readable, a directory) is no refusal of its
+text: the argument check comes first, and then the dry run's step, where it runs, and the call
+read the file and answer with the read's own error.
 A file that is neither a regular file nor a directory (a FIFO, a device, a socket), whose read can
 wait forever, the command does not read, nor does the dry run's step, which asks Dispatch nothing
 about it: the call uploads it unchecked, and Dispatch's upload judges it. The call and its dry run
@@ -1740,20 +1789,26 @@ would send percent-encoded, and one with a `.` or `..` segment, plain or percent
 URL parser would resolve any of those out of `/api/v1`; each refusal names the path, so the
 credential goes to no other server and no other route. It sends the request once, and once more
 only after Dispatch answers that the token it presented is not live (Dispatch authenticated
-nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. On a 2xx answer it
-exits 0 and prints Dispatch's JSON, indented as every command prints it; any other 2xx body as it
-came, byte for byte, with nothing added and nothing else on standard output: a bodiless 204 as
-nothing, a body typed JSON that is empty or does not parse, and stored content, such as a file
-version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a document version's Markdown
-(`?download=true`). An answer that carries `Content-Disposition: attachment` is stored content
-whatever its type, so a file stored as JSON prints as it was stored and is never parsed. Under a
-host, the session's ledger records a body printed as it came by its Content-Type and size, never
-its bytes. A 2xx whose body holds a credential the command presented (its token, or the DPoP
-proof of its request) is not printed: something in Dispatch's place echoed the request, so the
-command exits 1 with `CREDENTIAL_ECHOED`, naming the status, saying that a write may have been
-made and to check whether it took effect before sending it again, and naming nothing of the
-body. Any other answer exits 1 with its code: a refusal is Dispatch's error with its code and,
-where Dispatch gives one, its hint
+nothing, so nothing ran), with no redirect followed and no `Idempotency-Key`. A write may or may
+not have taken effect when it failed in transport after it went out, its answer's body broke off
+after the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx
+other than its `503 BROKER_UNAVAILABLE`: it
+exits 1 with the message of a `DispatchWriteUnsettledError` of one attempt and no key (`#send`),
+which says so and to check whether it took effect before retrying it. On a 2xx answer it exits 0
+and prints Dispatch's JSON, indented as every command prints it;
+any other 2xx body as it came, byte for byte, with nothing added and nothing else on standard
+output: a bodiless 204 as nothing, a body typed JSON that is empty or does not parse, and stored
+content, such as a file version's bytes (`GET /api/v1/artifacts/{id}/versions/{number}`) or a
+document version's Markdown (`?download=true`). An answer that carries
+`Content-Disposition: attachment` is stored content whatever its type, so a file stored as JSON
+prints as it was stored and is never parsed. Under a host, the session's ledger records a body
+printed as it came by its Content-Type and size, never its bytes. A 2xx whose body holds a
+credential the command presented (its token, or the DPoP proof of its request) is not printed:
+something in Dispatch's place echoed the request, so the command exits 1 with
+`CREDENTIAL_ECHOED`, naming the status, saying that a write may have been made and to check
+whether it took effect before sending it again, and naming nothing of the body. Any other answer
+exits 1 with its code: a refusal is Dispatch's error with its code and, where Dispatch gives one,
+its hint
 (`NOT_FOUND: no route for GET /api/v1/x; GET /api/v1 lists every route`), and an answer that is
 neither a 2xx nor Dispatch's JSON, such as a proxy's page or a redirect, is named by its status. A
 usage error, such as a path outside `/api/v1` or a body with no method, exits 2. Under Claude

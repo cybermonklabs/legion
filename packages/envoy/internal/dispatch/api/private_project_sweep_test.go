@@ -32,6 +32,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // sweepObjects are the ids of the objects one project holds, as a route's path names them.
@@ -211,11 +213,11 @@ func TestEveryProjectRouteWritesAnotherPublicProjectsObject(t *testing.T) {
 		if absent.code == "OAUTH_SCOPE_REQUIRED" || absent.code == "NOT_JSON" {
 			continue
 		}
-		if absent.code != codeProjectScope {
-			t.Errorf("%s at an object that does not exist: %d %s, want 403 %s", route, absent.status, absent.code, codeProjectScope)
+		if absent.code != apicode.ProjectScope.V1Name() {
+			t.Errorf("%s at an object that does not exist: %d %s, want 403 %s", route, absent.status, absent.code, apicode.ProjectScope.V1Name())
 		}
 		for _, path := range held {
-			if got := rig.sweepSend(t, scopedToken, method, path); got.code == codeProjectScope {
+			if got := rig.sweepSend(t, scopedToken, method, path); got.code == apicode.ProjectScope.V1Name() {
 				t.Errorf("%s at %s: %d %s, want the handler's answer, as a credential that names no project gets", route, path, got.status, got.code)
 			}
 			reached++
@@ -263,7 +265,7 @@ func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.
 			if got != absent {
 				t.Errorf("%s at %s: %d %s, and at an object that does not exist %d %s, want one answer", set.route, path, got.status, got.code, absent.status, absent.code)
 			}
-			if got.code == codeProjectScope {
+			if got.code == apicode.ProjectScope.V1Name() {
 				refused++
 			}
 		}
@@ -278,7 +280,7 @@ func TestEveryProjectRouteAnswersAPrivateProjectsObjectAsAMissingOne(t *testing.
 		method, pattern, _ := strings.Cut(route, " ")
 		held, _ := rig.sweepMake(t, privateTestProject).targets(pattern)
 		for _, path := range held {
-			if got := rig.sweepSend(t, namingToken, method, path); got.code == codeProjectScope {
+			if got := rig.sweepSend(t, namingToken, method, path); got.code == apicode.ProjectScope.V1Name() {
 				t.Errorf("%s at %s by the token that names the private project: %d %s, want the handler's answer", route, path, got.status, got.code)
 			}
 		}

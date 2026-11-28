@@ -10,29 +10,33 @@
 # commit as @). A checkout `jj root` answers for is resolved with jj, since jj tracks files itself
 # and reads no git index; every other checkout with git.
 #
-# It changes only these generated files. Each other conflict stays yours: it lists them when it
-# ends. Run it again after you resolve a Go file it names.
+# It changes only these generated files: the two OpenAPI documents, one per version of the API
+# (packages/contracts/schemas/dispatch-openapi.json for /api/v1, dispatch-openapi-v2.json for
+# /api/v2), and the module scripts/gen-api.ts renders from each
+# (packages/contracts/src/dispatch-api.generated.ts, dispatch-api-v2.generated.ts). Each other
+# conflict stays yours: it lists them when it ends. Run it again after you resolve a file of
+# packages/envoy it names.
 #
 #   1. It refuses to run before main's root .gitignore names
-#      packages/contracts/src/dispatch-api.generated.ts, where it would only delete the file from
+#      packages/contracts/src/dispatch-api.generated.ts, where it would only delete the modules from
 #      the branch. It reads that line itself: a local or global exclude is not main's layout.
-#   2. packages/contracts/schemas/dispatch-openapi.json is emitted from the Go route table, so a
-#      conflict in it is resolved by emitting it again from the merged Go
-#      (`go run ./cmd/dispatch openapi --out ...`), never by hand. That waits until no Go file of
-#      packages/envoy is still in conflict, since the document is emitted from them.
-#   3. The generated types are rendered again from the document the tree now holds.
-#   4. The module leaves the commit (`git rm --cached`, `jj file untrack`) and stays on disk,
-#      ignored: main holds it in no commit and every `bun install` renders it. A branch that changed
-#      it met main's deletion as a conflict, which this resolves.
-#   5. It fails while the commit still holds the module, so a merge that would carry it back stops
+#   2. The documents are emitted from the Go route table, so a conflict in either is resolved by
+#      emitting both again from the merged Go (`go run ./cmd/dispatch openapi`, which writes each
+#      where the repository commits it), never by hand. That waits until no file of packages/envoy
+#      is still in conflict, since the documents are emitted from its Go and the files that reads.
+#   3. The generated types are rendered again from the documents the tree now holds.
+#   4. Each module leaves the commit (`git rm --cached`, `jj file untrack`) and stays on disk,
+#      ignored: main holds neither in a commit and every `bun install` renders both. A branch that
+#      changed one met main's deletion as a conflict, which this resolves.
+#   5. It fails while the commit still holds a module, so a merge that would carry one back stops
 #      here rather than reaching main.
 #
 # A step that main's later layout changes add (the document's line format, one file per route)
 # is added here by the change that makes it.
 set -euo pipefail
 
-generated=packages/contracts/src/dispatch-api.generated.ts
-document=packages/contracts/schemas/dispatch-openapi.json
+generated=(packages/contracts/src/dispatch-api.generated.ts packages/contracts/src/dispatch-api-v2.generated.ts)
+documents=(packages/contracts/schemas/dispatch-openapi.json packages/contracts/schemas/dispatch-openapi-v2.json)
 
 if root=$(jj root 2>/dev/null); then
   vcs=jj
@@ -51,63 +55,66 @@ unmerged() {
   fi
 }
 
-# The module, if the commit being made still holds it.
+# The modules the commit being made still holds, one per line.
 tracked() {
   if [ "$vcs" = jj ]; then
-    jj file list -r @ -- "$generated" 2>/dev/null
+    jj file list -r @ -- "${generated[@]}" 2>/dev/null
   else
-    git ls-files -- "$generated"
+    git ls-files -- "${generated[@]}"
   fi
 }
 
 # Step 1.
-if ! grep -qxF -- "$generated" .gitignore; then
-  echo "adopt-api-layout: the root .gitignore does not name $generated, so main's layout is not in this" \
-    "tree yet: merge main first, then run this again" >&2
+if ! grep -qxF -- "${generated[0]}" .gitignore; then
+  echo "adopt-api-layout: the root .gitignore does not name ${generated[0]}, so main's layout is not in" \
+    "this tree yet: merge main first, then run this again" >&2
   exit 1
 fi
 
 # Step 2.
-if [ -n "$(unmerged "$document")" ]; then
+if [ -n "$(unmerged "${documents[@]}")" ]; then
   go_conflicts=$(unmerged packages/envoy)
   if [ -n "$go_conflicts" ]; then
-    echo "adopt-api-layout: $document is emitted from the Go route table, and these files of it are" \
-      "still in conflict; resolve them, then run this again:" >&2
+    echo "adopt-api-layout: ${documents[*]} are emitted from the Go route table, and these files of it" \
+      "are still in conflict; resolve them, then run this again:" >&2
     printf '  %s\n' "${go_conflicts//$'\n'/$'\n'  }" >&2
     exit 1
   fi
-  (cd packages/envoy && go run ./cmd/dispatch openapi --out "../../$document")
+  (cd packages/envoy && go run ./cmd/dispatch openapi)
   if [ "$vcs" = git ]; then
-    git add -- "$document"
+    git add -- "${documents[@]}"
   fi
-  echo "adopt-api-layout: $document emitted again from the merged route table"
+  echo "adopt-api-layout: ${documents[*]} emitted again from the merged route table"
 fi
 
 # Step 3.
-if [ -n "$(unmerged "$document")" ] || ! bun packages/contracts/scripts/gen-api.ts; then
-  echo "adopt-api-layout: $generated was not rendered: run \`bun install\` at the repository root" \
-    "once the document has no conflict, then run this again" >&2
+if [ -n "$(unmerged "${documents[@]}")" ] || ! bun packages/contracts/scripts/gen-api.ts; then
+  echo "adopt-api-layout: ${generated[*]} were not rendered: run \`bun install\` at the repository" \
+    "root once the documents have no conflict, then run this again" >&2
   exit 1
 fi
-echo "adopt-api-layout: $generated rendered from $document"
+echo "adopt-api-layout: ${generated[*]} rendered from ${documents[*]}"
 
 # Step 4. A refusal here (jj refuses to untrack a file no ignore rule covers) is step 5's to report.
-if [ -n "$(tracked)" ]; then
+while IFS= read -r module; do
+  [ -n "$module" ] || continue
   if [ "$vcs" = jj ]; then
-    jj file untrack -- "$generated" || true
+    jj file untrack -- "$module" || true
   else
-    git rm -q --cached -- "$generated" || true
+    git rm -q --cached -- "$module" || true
   fi
-fi
+done <<<"$(tracked)"
 
 # Step 5.
-if [ -n "$(tracked)" ]; then
-  echo "adopt-api-layout: the commit still holds $generated, which main holds in no commit: take it" \
-    "out (\`git rm --cached\`, or \`jj file untrack\` once no ignore rule re-includes it) before this" \
-    "merge goes further" >&2
+held=$(tracked || true)
+if [ -n "$held" ]; then
+  echo "adopt-api-layout: the commit still holds ${held//$'\n'/ and }, which main holds in no commit:" \
+    "take each out (\`git rm --cached\`, or \`jj file untrack\` once no ignore rule re-includes it)" \
+    "before this merge goes further" >&2
   exit 1
 fi
-echo "adopt-api-layout: $generated is in no commit (every bun install renders it); the file stays on disk"
+echo "adopt-api-layout: ${generated[*]} are in no commit (every bun install renders them); the files" \
+  "stay on disk"
 
 left=$(unmerged)
 if [ -n "$left" ]; then

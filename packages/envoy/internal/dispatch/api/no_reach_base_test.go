@@ -3,7 +3,6 @@
 package api
 
 import (
-	"bytes"
 	"encoding/json"
 	"os/exec"
 	"slices"
@@ -36,11 +35,7 @@ func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := testbaseline.Commit(t)
 	base := decodeServedDocument(t, "the fork point's document", []byte(gitOutput(t, root, "show", commit+":"+OpenAPIDocumentPath)))
-	var rendered bytes.Buffer
-	if err := WriteOpenAPI(&rendered); err != nil {
-		t.Fatalf("render this build's route table: %v", err)
-	}
-	now := decodeServedDocument(t, "this build's render", rendered.Bytes())
+	now := decodeServedDocument(t, "this build's render", renderOpenAPI(t, apiV1))
 	t.Logf("the fork point is %s: %d paths and %d schemas, against %d paths and %d schemas now",
 		commit, len(base.paths), len(base.schemas), len(now.paths), len(now.schemas))
 	if len(base.paths) < 100 || len(base.schemas) < 100 {

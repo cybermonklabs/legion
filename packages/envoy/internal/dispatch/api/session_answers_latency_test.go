@@ -49,7 +49,7 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 		t.Fatalf("the unheld read answered %d: %s", response.Code, response.Body.String())
 	}
 	began, ended := nextInstant(t, instants, "an unheld read's begin"), nextInstant(t, instants, "an unheld read's end")
-	requireTimedAsLogged(t, records, 0, ended.Sub(began))
+	requireTimedAsLogged(t, records, answersRoute, 0, ended.Sub(began))
 	if latency.Slow(ended) {
 		t.Errorf("a read timed %v, under %v, is a slow read once it ended", ended.Sub(began), sessionanswers.SlowRead)
 	}
@@ -88,7 +88,7 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	if latency.Slow(ended.Add(sessionanswers.SlowWithin)) {
 		t.Errorf("a read that took over %v is still a slow read %v after its end", sessionanswers.SlowRead, sessionanswers.SlowWithin)
 	}
-	requireTimedAsLogged(t, records, 1, ended.Sub(began))
+	requireTimedAsLogged(t, records, answersRoute, 1, ended.Sub(began))
 
 	if response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/agents/"+answersSession+"/messages", nil, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("the session's messages answered %d: %s", response.Code, response.Body.String())
@@ -100,8 +100,43 @@ func TestTheAnswersReadIsTimedAsTheAccessLogTimesIt(t *testing.T) {
 	}
 }
 
-// nextInstant is the next instant the Latency's clock read. Its one bound is the test binary's
-// deadline less testwait's margin.
+// TestTheV2AnswersReadIsTimedToo reads a session's answers through GET
+// /api/v2/agents/{session_id}/answers, which reads sessionanswers.List as the /api/v1 route does, so
+// a slow read of it is one the keyword fill pauses on as well: the read is timed, on the server's
+// clock as the /api/v1 read is, at the time its access-log line records, and an /api/v2 read of the
+// session's messages is not timed.
+func TestTheV2AnswersReadIsTimedToo(t *testing.T) {
+	fake := clocktest.New(time.Date(2026, time.November, 22, 12, 0, 0, 0, time.UTC))
+	_, _, deps := newTestServer(t, testServerOptions{clock: fake})
+	instants := make(chan time.Time, 8)
+	deps.AnswersLatency = sessionanswers.NewLatency(func() time.Time {
+		now := fake.Now()
+		instants <- now
+		return now
+	})
+	mux := http.NewServeMux()
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitBackgroundOf(t, served) })
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+
+	if response := dispatchRequest(t, mux, http.MethodGet, "/api/v2/agents/"+answersSession+"/answers", nil, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("the /api/v2 answers read answered %d: %s", response.Code, response.Body.String())
+	}
+	began, ended := nextInstant(t, instants, "the /api/v2 read's begin"), nextInstant(t, instants, "the /api/v2 read's end")
+	requireTimedAsLogged(t, records, "/api/v2/agents/{session_id}/answers", 0, ended.Sub(began))
+
+	if response := dispatchRequest(t, mux, http.MethodGet, "/api/v2/agents/"+answersSession+"/messages", nil, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("the session's /api/v2 messages answered %d: %s", response.Code, response.Body.String())
+	}
+	select {
+	case instant := <-instants:
+		t.Errorf("an /api/v2 read of the session's messages was timed (at %v)", instant)
+	default:
+	}
+}
+
+// nextInstant is the next instant the Latency's clock read, bounded by the test binary's deadline.
 func nextInstant(t *testing.T, instants <-chan time.Time, what string) time.Time {
 	t.Helper()
 	return testwait.Receive(t, "the Latency to read "+what, instants)
@@ -110,12 +145,12 @@ func nextInstant(t *testing.T, instants <-chan time.Time, what string) time.Time
 // answersRoute is the answers read's route as its access-log line names it.
 const answersRoute = "/api/v1/agents/{session_id}/answers"
 
-// requireTimedAsLogged fails unless the answers read the access log logged n-th (from 0) took
-// timed, as the line times it. The Latency times the read inside the line's own timing and on the
-// same clock, the server's fake, which moves only while the test holds a read, so the two read the
-// same moments and the line's time, its record's elapsed_ms as the access log logged it, is the
-// Latency's to the millisecond the line keeps.
-func requireTimedAsLogged(t *testing.T, records *logtest.Recorder, n int, timed time.Duration) {
+// requireTimedAsLogged fails unless the read of the route pattern the access log logged n-th (from
+// 0) took timed, as the line times it. The Latency times the read inside the line's own timing and
+// on the same clock, the server's fake, which moves only while the test holds a read, so the two
+// read the same moments and the line's time, its record's elapsed_ms as the access log logged it,
+// is the Latency's to the millisecond the line keeps.
+func requireTimedAsLogged(t *testing.T, records *logtest.Recorder, pattern string, n int, timed time.Duration) {
 	t.Helper()
 	var reads []int64
 	for _, record := range records.Records() {
@@ -132,7 +167,7 @@ func requireTimedAsLogged(t *testing.T, records *logtest.Recorder, n int, timed 
 			}
 			return true
 		})
-		if route == answersRoute {
+		if route == pattern {
 			reads = append(reads, elapsed)
 		}
 	}

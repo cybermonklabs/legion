@@ -67,7 +67,7 @@ type mentionSend struct {
 	// send its comment queues, the owed row's for a send a keyed repeat of that comment queues.
 	attempt int
 	// claimed is the claim this process holds on that row: taken when the row was committed
-	// (createCommentFor) or when a keyed repeat put an owed row back on a lane (replayComment),
+	// (writeComment) or when a keyed repeat put an owed row back on a lane (replayComment),
 	// written again while the send waits on its lane (refreshHeldClaims), given back when the
 	// sender refuses the send (enqueue), taken over by the send itself when its lane starts it
 	// (claimCommentDeliveryAttempt), and handed back to the lane by a send that waited for an
@@ -176,7 +176,7 @@ func (m mentionSend) lane() laneKey {
 // waits moves on to the waiting lane, so one busy recipient cannot hold the others back.
 //
 // A queued send holds its attempt's claim, so nothing else sends it: the attempt is committed
-// claimed (createCommentFor), this sender writes that claim again every mentionClaimRefresh while
+// claimed (writeComment), this sender writes that claim again every mentionClaimRefresh while
 // the send waits (refreshHeldClaims), and the lane's own send takes it over
 // (claimCommentDeliveryAttempt, which accepts this sender's live claim and refuses another
 // sender's). That is what keeps a held lane in order: however long a recipient's first send

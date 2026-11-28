@@ -40,15 +40,6 @@ type adviceDeclinedAsk struct {
 	Note     string `json:"note"`
 }
 
-// The routes of the two writes whose author may be about to put a question to a person: the ask
-// route, and a document edit, whose ops can add the ask blocks that settle into asks. Each names
-// itself in its own writeAdvice call, which is where the log line of an omitted advice query
-// gets its route, and routeEditDocument names the same write to supersededApprovalAdvice.
-const (
-	routeOpenAsk      = "POST /api/v1/issues/{key}/asks"
-	routeEditDocument = "POST /api/v1/artifacts/{id}/edits"
-)
-
 type writeAdvice struct {
 	IssueStatus             string      `json:"issue_status"`
 	SessionWritesSinceHuman int         `json:"session_writes_since_human"`
@@ -561,7 +552,7 @@ type decisionBlockCheck struct {
 // new approval of the new version restores it. A person's review restores the approval of a
 // document that is not a plan; a plan's comes back through a plan review recorded with
 // `dispatch plan-approve`, since Dispatch refuses a request for a person's approval of any plan
-// (requestArtifactApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
+// (requestApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
 // supersedes an approval is reported, whatever the document is: the approval it made stale is a
 // fact about that document and nothing else. The writer is the only one who can be told in time,
 // and only the write that superseded the approval is told: a write on a document whose approval
@@ -569,11 +560,11 @@ type decisionBlockCheck struct {
 //
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
-// PUT /api/v1/issues/{key}/design-gates), and the list is that record read for this document,
-// kept to the live gates: the issue is not done, and the row holds its tree, as the daemon that
-// published it says or, where it said nothing, as the project's own list of gated steps says
-// (supersededApprovalGates). Where nothing is left, this write closed no gate anyone here knows
-// of.
+// PUT /api/v1/issues/{key}/design-gates and PATCH /api/v2/issues/{key}'s design_gates), and the
+// list is that record read for this document, kept to the live gates: the issue is not done, and
+// the row holds its tree, as the daemon that published it says or, where it said nothing, as the
+// project's own list of gated steps says (supersededApprovalGates). Where nothing is left, this
+// write closed no gate anyone here knows of.
 type supersededApproval struct {
 	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
@@ -660,8 +651,9 @@ func (s *server) supersededApprovalAdvice(
 }
 
 // supersededApprovalGates reads Dispatch's record of which issues' design gates record this
-// document (design_gates, written by PUT /api/v1/issues/{key}/design-gates), keeping the live
-// rows and no others. Two things decide that.
+// document (design_gates, written by PUT /api/v1/issues/{key}/design-gates and by PATCH
+// /api/v2/issues/{key}'s design_gates), keeping the live rows and no others. Two things decide
+// that.
 //
 // The issue must not be done, since the approved requirement says "A gate is live for this
 // sentence while the issue holding it is not `done` in Dispatch". Nothing clears a parked
@@ -671,12 +663,13 @@ func (s *server) supersededApprovalAdvice(
 //
 // The row must hold its tree, and the daemon that published it says whether it does
 // (design_gates.holds): which steps a tree is gated on is the daemon's rule, and the project's
-// own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps) is not the
-// whole of it. A root's architect may register its Verification document as `criteria` beside a
-// deployment whose list names `spec` and not `criteria`, and that row holds the tree although the
-// list does not name its step. A daemon also records a gate row for a step it does not gate - with
-// `gates.design: off` the registration records the spec step, approves it, and no later event ever
-// moves it - and that row holds nothing.
+// own list (projects.gated_steps, written by PUT /api/v1/projects/{key}/gated-steps, the
+// publication of the same boot that writes these rows, or by PATCH /api/v2/projects/{key}'s
+// gated_steps) is not the whole of it. A root's architect may register its Verification document
+// as `criteria` beside a deployment whose list names `spec` and not `criteria`, and that row holds
+// the tree although the list does not name its step. A daemon also records a gate row for a step
+// it does not gate - with `gates.design: off` the registration records the spec step, approves
+// it, and no later event ever moves it - and that row holds nothing.
 //
 // A null holds is a row whose publish did not say whether it holds its tree, and the rule keeps it
 // where the project's list names its step (`coalesce`), which is how every row was read before

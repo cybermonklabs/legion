@@ -51,7 +51,7 @@
 //     down the text the gate reviewed under `comment` and `message`), `doc-edit`,
 //     `request-approval` (its `summary` is what the person approves), `issue` with `--spec` or
 //     `--spec-file`, or
-//     `artifact` unless its literal `--name` and literal `--path` both show it is no markdown
+//     `artifact` unless its literal `--name` and literal `--path` together show it is no markdown
 //     document (`uploadMayBeDocument`): its dry run then decides, from the name and path it
 //     prints, and an upload that is no markdown document runs with no entry. The gate learns
 //     the exact arguments by running that command with `--dry-run` after the command name, in the
@@ -336,9 +336,10 @@ const SPEC_FLAGS = ["--spec", "--spec-file"];
 /**
  * `dispatch artifact` is reviewed only as an upload of a markdown document. Dispatch stores an
  * upload as one when the CLI sends it as text/markdown: inline text (`--content`, `--content-file`),
- * which the CLI takes only under a name ending in `.md` or `.markdown` or with no extension, or a
- * `--path` file whose own name ends in `.md` or `.markdown`, since Bun takes a file's type from its
- * path. The gate also reviews an upload whose `--name` ends in `.md`.
+ * which the CLI takes only under a name whose extension is `.md` or `.markdown` or with none, or a
+ * `--path` file its name makes Markdown (`uploadTypeFrom`): under a name whose extension is `.md`
+ * or `.markdown`, whatever the path, or under a name with no extension and a path that, resolved
+ * as the CLI resolves it, ends in `.md` or `.markdown` (`uploadIsDocument`).
  */
 const UPLOAD_COMMAND = "artifact";
 /** The upload flags whose text is the document itself. */
@@ -1387,12 +1388,27 @@ const flagName = (flag: Word) => flag.value.split("=", 1)[0];
 
 /**
  * Whether an upload's words leave it possibly a markdown document: inline text, a name or path read
- * from a file, or a name or path that is not literal (an expansion, a glob), or whose literal value
- * makes one by the CLI's own predicate (`uploadIsDocument`, which trims the name as Dispatch does).
- * Only an upload whose literal name and literal path are both no markdown's is not one. An upload
- * with no `--name` or no `--path` and no inline text is one the CLI refuses before it sends.
+ * from a file, or a name or path that is not literal (an expansion, a glob), or a literal name and
+ * path that make one by the CLI's own predicate (`uploadIsDocument`, which reads the name as
+ * `uploadTypeFrom` does, trimmed as Dispatch trims it with Go's `strings.TrimSpace`,
+ * `goTrimSpace`, and the path as the CLI resolves it). Only literal words that predicate answers
+ * no to are not one: a name with an extension other than .md or .markdown, whatever the path
+ * (`--name cases.txt --path cases.md`), or a name with no extension and a path that, resolved,
+ * does not end in .md or .markdown (`notes.md/` resolves to notes.md, and is one). An upload with
+ * no `--name` is one the CLI refuses before it sends, and one with a name but no `--path` and no
+ * inline text makes an empty document, which writes no text and which the CLI's predicate does
+ * not gate either.
+ *
+ * The CLI resolves the path against the directory the command runs in, which the gate learns only
+ * as it reads the files, before the dry run whose arguments decide (`readArgs`, which gives that
+ * directory to `gatedWrite`). Resolved anywhere, a path ends in the same last part, so the root
+ * stands in for the directory here. The one exception is a path that names the directory itself
+ * or one above it (`.`, `..`, `x/..`), whose last part is that directory's own name: it may be a
+ * document, and the read decides.
+ *
+ * Exported for its table test in askgate.test.ts, which holds it to `uploadIsDocument`.
  */
-function uploadMayBeDocument(flags: readonly Word[]): boolean {
+export function uploadMayBeDocument(flags: readonly Word[]): boolean {
   if (flags.some((flag) => [...INLINE_FLAGS, ...INDIRECT_FLAGS].includes(flagName(flag))))
     return true;
   const flagValue = (name: string): { value: string; literal: boolean } | undefined => {
@@ -1410,9 +1426,9 @@ function uploadMayBeDocument(flags: readonly Word[]): boolean {
   const named = flagValue("--name");
   const file = flagValue("--path");
   if (named === undefined || file === undefined) return false;
-  return (
-    !named.literal || !file.literal || uploadIsDocument({ name: named.value, path: file.value })
-  );
+  if (!named.literal || !file.literal) return true;
+  if (!path.isAbsolute(file.value) && path.resolve("/", file.value) === "/") return true;
+  return uploadIsDocument({ name: named.value, path: file.value }, "/");
 }
 
 type UnsafeFile = { flag: string; path: string; reason: string };
@@ -3367,11 +3383,13 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
 
       // Each file the argv names, read here in place, as the CLI will open it: the model reviews
       // these bytes, and the marker binds their digests, which the CLI checks before it posts.
+      // `base` is the directory a relative operand resolves against, as the CLI resolves it; the
+      // CLI's predicate reads an upload's path against it too, below.
       const files: FileDigest[] = [];
       let uploadText: string | undefined;
+      let base = cwd;
       if (scoped.fileInputs.length > 0) {
         const relativeFile = scoped.fileInputs.find((file) => !path.isAbsolute(file.operand));
-        let base = cwd;
         if (relativeFile !== undefined) {
           try {
             // A child shell's process.cwd() is physical even when the tool's cwd used a symlink.
@@ -3482,9 +3500,10 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
         const printed = clipBytes((dry.stdout || dry.stderr).trim(), GATE_PRINTED_MAX_BYTES);
         return { failure: `${scoped.label} --dry-run printed no JSON object: ${printed}` };
       }
-      // The CLI's own predicate, over the arguments it will parse: an upload that is no markdown
-      // document is no gated write, and needs neither a review nor a marker.
-      if (!gatedWrite(scoped.tool, args)) return { unscoped: true };
+      // The CLI's own predicate, over the arguments it will parse and an upload's path resolved
+      // where the gate read it: an upload that is no markdown document is no gated write, and
+      // needs neither a review nor a marker.
+      if (!gatedWrite(scoped.tool, args, base)) return { unscoped: true };
       // An upload's dry run prints its `--path`, not its text: the model reviews the bytes the
       // gate read from that path, which the marker binds and the CLI uploads.
       if (!scoped.upload || typeof args.path !== "string" || args.content !== undefined)

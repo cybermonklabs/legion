@@ -3,10 +3,10 @@
 // (whether a person may see a project, and their member kind) and internal/cipher/projectrepos
 // (the repositories a project's issues resolve to). It holds what the two must not do two ways:
 // the read of the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), the bound on one
-// call, the headers, the bounded read of the body, which failures are that token's and not
-// Dispatch's (ErrBrokerRefused), and which are Dispatch giving no answer at all (ErrNoAnswer). It
-// decodes no answer: each client reads its own route's body, so no field of one answer reaches a
-// reader of the other.
+// call, the headers (the User-Agent naming which client asks among them), the bounded read of the
+// body, which failures are that token's and not Dispatch's (ErrBrokerRefused), and which are
+// Dispatch giving no answer at all (ErrNoAnswer). It decodes no answer: each client reads its own
+// route's body, so no field of one answer reaches a reader of the other.
 package dispatchread
 
 import (
@@ -44,9 +44,11 @@ var ErrBrokerRefused = errors.New("dispatchread: the broker's own account token 
 // are no such failure (transportAnswers): each lasts until somebody fixes the deployment.
 var ErrNoAnswer = errors.New("dispatchread: dispatch gave no whole answer")
 
-// Reader reads Dispatch's routes at one base URL, presenting the broker's own account token, each
-// call bounded by its timeout and each body by its limit.
+// Reader reads Dispatch's routes at one base URL, presenting the broker's own account token and
+// naming its client in each call's User-Agent, each call bounded by its timeout and each body by
+// its limit.
 type Reader struct {
+	program string
 	base    string
 	account ciphertoken.Account
 	http    *http.Client
@@ -54,15 +56,15 @@ type Reader struct {
 	limit   int
 }
 
-// New is a reader of the Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
-// (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
-// http.DefaultClient. Each call, the dial and the body's read included, is bounded by timeout
-// whatever the client, and a body longer than limit bytes is an error.
-func New(baseURL string, account ciphertoken.Account, httpClient *http.Client, timeout time.Duration, limit int) Reader {
+// New is a reader of the Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL) for the client program
+// names, presenting account (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil
+// httpClient is http.DefaultClient. Each call, the dial and the body's read included, is bounded by
+// timeout whatever the client, and a body longer than limit bytes is an error.
+func New(program, baseURL string, account ciphertoken.Account, httpClient *http.Client, timeout time.Duration, limit int) Reader {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return Reader{base: strings.TrimRight(baseURL, "/"), account: account, http: httpClient, timeout: timeout, limit: limit}
+	return Reader{program: program, base: strings.TrimRight(baseURL, "/"), account: account, http: httpClient, timeout: timeout, limit: limit}
 }
 
 // Answer is what Dispatch answered one call: its status, and its whole body.
@@ -73,7 +75,10 @@ type Answer struct {
 
 // Get asks path, with query when it holds any, and answers Dispatch's status and body for the
 // caller to read, whatever the status, but for these errors, each naming what failed and never the
-// token. An account token it cannot read is ErrBrokerRefused naming
+// token. Every call names the broker in its User-Agent as `<program>/<commit>`, commit being the
+// commit the broker was built from (cmd/cipherd's buildRelease) and `(devel)` when it is empty, a
+// build that holds none, so Dispatch's access log tells each client's calls from every other
+// caller's. An account token it cannot read is ErrBrokerRefused naming
 // BROKER_PROJECT_ACCESS_TOKEN_FILE, and Dispatch is asked nothing. A 401 or a 403 is
 // ErrBrokerRefused too, Dispatch refusing that token, decided by the status alone before the body
 // is read: a body cut short or past the limit only leaves the error without the code it names, and
@@ -81,7 +86,7 @@ type Answer struct {
 // body it could not read are ErrNoAnswer, but for a certificate that does not verify and a name
 // that does not resolve (transportAnswers), each an error of its own; a body past the limit is an
 // error of its own too, an answer too long rather than none.
-func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer, error) {
+func (r Reader) Get(ctx context.Context, commit, path string, query url.Values) (Answer, error) {
 	bearer, err := r.account.Read()
 	if err != nil {
 		return Answer{}, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
@@ -98,6 +103,10 @@ func (r Reader) Get(ctx context.Context, path string, query url.Values) (Answer,
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	request.Header.Set("Accept", "application/json")
+	if commit == "" {
+		commit = "(devel)"
+	}
+	request.Header.Set("User-Agent", r.program+"/"+commit)
 	response, err := r.http.Do(request)
 	if err != nil {
 		if transportAnswers(err) {

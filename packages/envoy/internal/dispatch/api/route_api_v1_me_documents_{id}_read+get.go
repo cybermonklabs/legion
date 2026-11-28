@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,7 +13,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none.",
 	Handler:     (*server).getDocumentRead,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	Successor:   successorIs(http.MethodGet, "/me/marks/{kind}/{id}", "kind=document"),
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.DocumentRead{}},

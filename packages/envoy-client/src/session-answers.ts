@@ -473,6 +473,9 @@ export interface ReadSessionAnswersOptions {
    *  plain path segment keeps the cache in memory only. */
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly fetchImpl?: typeof fetch | undefined;
+  /** The `User-Agent` the read sends, the host program that reads (`DispatchClient`'s
+   *  `userAgent`). A request that joins a read already in flight sends nothing of its own. */
+  readonly userAgent?: string | undefined;
   /** The request's own abort: it stops this call's wait, never the shared read. */
   readonly signal?: AbortSignal | undefined;
   /** The clock (epoch ms): the read time, the 404 back-off and the window of a list of the
@@ -675,6 +678,7 @@ export async function readSessionAnswers(
     const client = new DispatchClient(url, dispatch.credential, options.fetchImpl ?? fetch, {
       retryNoRoute: false,
       deadlineMs: READ_TIMEOUT_MS,
+      userAgent: options.userAgent,
     });
     // A replayed agent reads under a token that carries a cut, and Dispatch answers it at that
     // cut whatever the read sends, leaving out each question the records at the cut cannot give:

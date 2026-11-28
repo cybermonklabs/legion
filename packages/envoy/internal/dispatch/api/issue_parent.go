@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -30,11 +30,11 @@ func parseIssueParent(raw json.RawMessage) (parent *string, provided bool, err e
 	}
 	var key string
 	if err := json.Unmarshal(raw, &key); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be an issue key or null")
+		return nil, true, errorf(apicode.ParentInput, "parent must be an issue key or null")
 	}
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return nil, true, errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must not be blank")
+		return nil, true, errorf(apicode.ParentInput, "parent must not be blank")
 	}
 	return &key, true, nil
 }
@@ -157,7 +157,7 @@ func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key, project strin
 
 func normalizeIssueBlockers(targets []string) ([]string, error) {
 	if len(targets) > contracts.MaxIssueBlockers {
-		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
+		return nil, countExceededError(apicode.BlockedByInput, "blocked_by", len(targets), contracts.MaxIssueBlockers)
 	}
 	slices.Sort(targets)
 	return slices.Compact(targets), nil
@@ -245,7 +245,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // names and no key of the body (project_scope.go), so this is the first point at which a target's
 // or the parent's project is known, and a caller that may not write the link would otherwise take
 // the deployment-wide lock first. A create asks the same earlier still, before its near-copy gate
-// writes anything (createIssue), and a PATCH before a close settles the issue's documents
+// writes anything (createIssueFrom), and a PATCH before a close settles the issue's documents
 // (writeIssue). For such a caller each step refuses a key that no issue holds and a key of a
 // private project that the credential does not name with one answer, the answer of a key that
 // does not exist (parentNotFound, blockedByNotFound). The write reads each key again under the
@@ -355,7 +355,7 @@ func readDependencyKeys(ctx context.Context, q queryer, keys []string) ([]depend
 // that asks about a parent (foreignDependencyTargets, validateIssueParent and the create's read of
 // its parent), so the two answers cannot drift.
 func parentNotFound(parent string) error {
-	return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent issue %s not found", parent)
+	return errorf(apicode.ParentInput, "parent issue %s not found", parent)
 }
 
 // blockedByNotFound is the 400 BLOCKED_BY_INPUT of a blocked_by target that does not exist. A
@@ -363,7 +363,7 @@ func parentNotFound(parent string) error {
 // not name, at each step that asks about a target (foreignDependencyTargets and writeBlockedBy),
 // so the two answers cannot drift.
 func blockedByNotFound(target string) error {
-	return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
+	return errorf(apicode.BlockedByInput, "blocked_by issue %s not found", target)
 }
 
 // lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
@@ -387,12 +387,6 @@ func lockIssueOwners(ctx context.Context, tx pgx.Tx, key string, others ...strin
 	}
 	return parent, nil
 }
-
-// parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
-// every lock attempt. The Legion daemon retries a status write it refuses
-// (packages/daemon/internal/dispatch/types.go:113, ParentContended) rather than dropping it, so
-// the two spellings change together: no mechanism shares a value between the two Go modules.
-const parentContended = "PARENT_CONTENDED"
 
 // parentLockAttempts bounds how many times lockPatchOwnersAndParent reads the issue's parent and
 // locks it: the first, and one redo for a parent a concurrent reparent changed in between.
@@ -444,7 +438,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 			return err
 		}
 	}
-	return errorf(http.StatusConflict, parentContended,
+	return errorf(apicode.ParentContended,
 		"%s's parent changed at each of %d attempts while this request waited to lock it, so nothing was applied: read the issue and retry", key, parentLockAttempts)
 }
 
@@ -457,7 +451,7 @@ func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, key string, named 
 // that lockIssueDependencyWrite asked about before its locks.
 func validateIssueParent(ctx context.Context, tx pgx.Tx, key, caller, parent string) error {
 	if parent == key {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "an issue cannot be its own parent")
+		return errorf(apicode.ParentInput, "an issue cannot be its own parent")
 	}
 	parentProject, parentPrivate, err := issueProject(ctx, tx, parent)
 	if err != nil {
@@ -477,16 +471,17 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, key, caller, parent str
 	for index, ancestor := range chain {
 		if ancestor == key {
 			path := key + " → " + strings.Join(chain[:index+1], " → ")
-			return errorf(http.StatusConflict, "PARENT_INPUT", "would create a cycle: %s", path)
+			return errorf(apicode.ParentCycle, "would create a cycle: %s", path)
 		}
 	}
 	return refuseParentTooDeep(ctx, tx, key, parent)
 }
 
 // refuseParentTooDeep refuses a parent link that would put an issue, or the deepest issue under
-// it, more than parentDepthCap links below its root: 409 PARENT_INPUT. child is the issue being
-// moved, or "" for one being created, which has nothing under it. The chain may cross projects,
-// and the cap counts every link of it. The caller holds the dependency locks
+// it, more than parentDepthCap links below its root: 409 PARENT_INPUT under /api/v1, and
+// PARENT_TOO_DEEP under /api/v2, which tells it from a parent loop (apicode.ParentTooDeep). child
+// is the issue being moved, or "" for one being created, which has nothing under it. The chain may
+// cross projects, and the cap counts every link of it. The caller holds the dependency locks
 // (lockIssueDependencyWrite), which every create with a parent and every reparent takes, and the
 // deployment-wide one among them orders every such write whatever projects it names, so two
 // writes cannot each pass alone and together pass the cap. Both walks stop one link past the
@@ -520,10 +515,10 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 		depth = "more than " + parentDepthCapSQL + " links"
 	}
 	if child == "" {
-		return errorf(http.StatusConflict, "PARENT_INPUT",
+		return errorf(apicode.ParentTooDeep,
 			"an issue under %s would sit %s below its root; an issue sits at most %d links below its root", parent, depth, parentDepthCap)
 	}
-	return errorf(http.StatusConflict, "PARENT_INPUT",
+	return errorf(apicode.ParentTooDeep,
 		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
@@ -537,9 +532,9 @@ type foreignChildOpen struct {
 	private bool
 }
 
-// foreignChildOpenError is the 409 FOREIGN_CHILD_OPEN body PATCH /api/v1/issues/{key} answers an
-// acceptance write that refuseOpenForeignChildren refuses, naming each open child of another
-// project in key order that the caller sees.
+// foreignChildOpenError is the 409 FOREIGN_CHILD_OPEN body PATCH /api/v1/issues/{key} and PATCH
+// /api/v2/issues/{key} answer an acceptance write that refuseOpenForeignChildren refuses, naming
+// each open child of another project in key order that the caller sees.
 type foreignChildOpenError struct {
 	Code   string             `json:"code"`
 	Error  string             `json:"error"`
@@ -568,8 +563,10 @@ func (e openForeignChildrenError) Error() string {
 		e.issue, named)
 }
 
-func (e openForeignChildrenError) body() foreignChildOpenError {
-	return foreignChildOpenError{Code: "FOREIGN_CHILD_OPEN", Error: e.Error(), Issues: e.children}
+// body is the refusal's body under code, the name the request's version gives FOREIGN_CHILD_OPEN
+// (refusalPair).
+func (e openForeignChildrenError) body(code string) foreignChildOpenError {
+	return foreignChildOpenError{Code: code, Error: e.Error(), Issues: e.children}
 }
 
 // refuseOpenForeignChildren refuses an acceptance write - a status of retro or done that carries
@@ -652,7 +649,7 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // lockIssueDependencyWrite asks the same before any lock is taken, and refuses in the same words.
 func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
 	if slices.Contains(targets, issue) {
-		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
+		return errorf(apicode.BlockedByInput, "%s cannot be blocked by itself", issue)
 	}
 	for _, target := range targets {
 		targetProject, targetPrivate, err := issueProject(ctx, tx, target)
@@ -694,7 +691,7 @@ func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal wait
 	frontier := from
 	for depth := 0; len(frontier) > 0; depth++ {
 		if depth > parentDepthCap {
-			return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "the dependency graph is deeper than %d links", parentDepthCap)
+			return errorf(apicode.DependencyCycle, "the dependency graph is deeper than %d links", parentDepthCap)
 		}
 		var starts, dones []string
 		for _, node := range frontier {
@@ -704,7 +701,7 @@ func assertNoWaitPath(ctx context.Context, tx pgx.Tx, from []waitNode, goal wait
 			}
 			for _, half := range halves {
 				if half == goal {
-					return errorf(http.StatusConflict, "DEPENDENCY_CYCLE", "%s would wait on itself through blocked_by and parent links", goal.key)
+					return errorf(apicode.DependencyCycle, "%s would wait on itself through blocked_by and parent links", goal.key)
 				}
 				if seen[half] {
 					continue

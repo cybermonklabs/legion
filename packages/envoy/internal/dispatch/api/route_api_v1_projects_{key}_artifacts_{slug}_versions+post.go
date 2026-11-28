@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Name the current version of a project document, by slug or unambiguous filename.",
 	Handler:     (*server).createNamedVersion,
+	Successor:   deletedFor(http.MethodPost, "/artifacts/{id}/versions"),
 	WriteClass:  scopeProject,
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},

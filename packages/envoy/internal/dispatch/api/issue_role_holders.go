@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -125,10 +126,11 @@ type issueRoleHolders struct {
 	Holders []issueRoleHolderRecord `json:"holders"`
 }
 
-// issueRoleHoldersInput is the body PUT /api/v1/issues/{key}/role-holders takes. Holders is the
-// issue's whole set. It is required, and a pointer, so a body that names no list is refused rather
-// than read as the empty one: a malformed publication cannot clear the roles of an issue, while an
-// explicit [] is the publication of an issue where no session holds a role.
+// issueRoleHoldersInput is the body PUT /api/v1/issues/{key}/role-holders and PUT
+// /api/v2/issues/{key}/role-holder-set (putIssueRoleHoldersV2) take. Holders is the issue's whole
+// set. It is required, and a pointer, so a body that names no list is refused rather than read as
+// the empty one: a malformed publication cannot clear the roles of an issue, while an explicit []
+// is the publication of an issue where no session holds a role.
 type issueRoleHoldersInput struct {
 	Holders *[]issueRoleHolder `json:"holders" required:"true"`
 	Actor   *model.Actor       `json:"actor"`
@@ -235,8 +237,18 @@ func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issu
 // daemon ends a publication on this code alone, as it ends a design-gate publication
 // (issue_design_gates.go): a Dispatch that does not serve the route answers its router's 404 under
 // the code NOT_FOUND, which the daemon retries until the release that has the route.
-func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
-	writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
+func writeRoleHoldersIssueNotFound(w http.ResponseWriter, r *http.Request, key string) {
+	writeError(w, r, apicode.IssueNotFound, fmt.Sprintf("no issue %s", key))
+}
+
+// writeRoleHoldersNotProven answers 403 ROLE_HOLDER_NOT_PROVEN: project records proven sessions
+// (projects.proven_sessions), and the request's credential does not prove the session
+// legion-daemon:<project> that a publication of key's role holders must name.
+func writeRoleHoldersNotProven(w http.ResponseWriter, r *http.Request, project, key string) {
+	daemon := legionDaemonSessionOf(key)
+	writeError(w, r, apicode.RoleHolderNotProven, fmt.Sprintf(
+		"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves the session it publishes as: session %s, or session legion-daemon:<P> on a broker token that names project P. This request's credential does not prove session %s.",
+		project, key, daemon, daemon))
 }
 
 // maxRoleHolderSessionBytes is the longest session the route stores. A Legion session id is far
@@ -245,13 +257,25 @@ func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
 // at most 2704 bytes, so no body reaches the index with a session it cannot hold.
 const maxRoleHolderSessionBytes = 256
 
-// putIssueRoleHolders publishes the session of each Legion role of an issue. It reads the
-// request's credential as optionalActor resolved it (requestWriter), and refuses what requireActor
-// refuses. The credential is a daemon's own when it holds model.ScopeLegionStatus and proves the
-// session legion-daemon:<project> of the issue's project, or proves the session
-// legion-daemon:<P> of another project's daemon and names that project P (isIssueDaemon). With
-// Deps.LegionStatusScope on, every other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it
-// off, the actor must be that session (this file's comment).
+// putIssueRoleHolders answers PUT /api/v1/issues/{key}/role-holders: the publication
+// putIssueRoleHoldersFrom makes of the body it decodes.
+func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
+	var input issueRoleHoldersInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.putIssueRoleHoldersFrom(w, r, input, nil)
+}
+
+// putIssueRoleHoldersFrom publishes the session of each Legion role of an issue, the set input
+// names, which both versions' PUT make. It reads the request's credential as optionalActor
+// resolved it (requestWriter), and refuses what requireActor refuses. The credential is a daemon's
+// own when it holds model.ScopeLegionStatus and proves the session legion-daemon:<project> of the
+// issue's project, or proves the session legion-daemon:<P> of another project's daemon and names
+// that project P (isIssueDaemon). With Deps.LegionStatusScope on, every other credential is
+// refused 403 ROLE_HOLDER_FORBIDDEN. With it off, the actor must be that session (this file's
+// comment).
 //
 // The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
 // body does not name, then inserts the pairs that are not stored yet. A pair that changed is
@@ -268,15 +292,18 @@ const maxRoleHolderSessionBytes = 256
 // session of the issue's project's daemon or of another project's daemon (isIssueDaemon), is 403
 // ROLE_HOLDER_NOT_PROVEN, after those refusals; a write the route takes marks the issue's project
 // in its transaction (project_role_holder_marks).
-func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
-	var input issueRoleHoldersInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+//
+// unchanged, where it is given, is asked of the stored set once the body has passed every check:
+// true answers that set and writes nothing, which is the no-op PUT of /api/v2
+// (putIssueRoleHoldersV2), once the proof the write would ask for has been asked too, and only on
+// a project a publication has marked already and where every stored pair's daemon_proven is what
+// this write would write: a publication of an unmarked project is a write, which marks it, and so
+// is one that would change a pair's mark. /api/v1 gives none, and runs the write whatever the
+// stored set is.
+func (s *server) putIssueRoleHoldersFrom(w http.ResponseWriter, r *http.Request, input issueRoleHoldersInput, unchanged func(stored issueRoleHolders) bool) {
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	key := r.PathValue("key")
@@ -292,19 +319,19 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		(credential.Session == daemon || issueDaemon)
 	if s.deps.LegionStatusScope {
 		if !daemonProven {
-			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
+			writeError(w, r, apicode.RoleHolderForbidden, fmt.Sprintf(
 				"only a Legion daemon's own broker token publishes the roles of %s. It holds the %s scope, and it proves session %s, or it proves session legion-daemon:<P> and names project P.",
 				key, model.ScopeLegionStatus, daemon))
 			return
 		}
 	} else if !issueDaemon {
-		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.RoleHolderForbidden, fmt.Sprintf(
 			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
 			key, legionProjectOf(key), legionDaemonSessionOf(key)))
 		return
 	}
 	if input.Holders == nil {
-		writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+		writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 			"holders is required: the session of each role of %s, or [] when no session holds a role.", key))
 		return
 	}
@@ -313,38 +340,66 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	sessions := make([]string, len(holders))
 	for index, holder := range holders {
 		if !slices.Contains(legionagents.Roles, holder.Role) {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 				"%s is not a Legion role. A role is architect, planner, implementer, tester, reviewer or merger.", holder.Role))
 			return
 		}
 		if slices.Contains(roles[:index], holder.Role) {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 				"%s is named twice. Name each role once.", holder.Role))
 			return
 		}
 		if strings.TrimSpace(holder.Session) == "" {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 				"the session of %s is empty.", holder.Role))
 			return
 		}
 		if !text.IsSessionID(holder.Session) || len(holder.Session) > maxRoleHolderSessionBytes {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 				"the session of %s is not a session id. A session id is at most %d bytes, and it holds no whitespace, no control character and none of / ? # < > \" ' ` [ ] |.",
 				holder.Role, maxRoleHolderSessionBytes))
 			return
 		}
 		if slices.Contains(sessions[:index], holder.Session) {
-			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidRoleHolder, fmt.Sprintf(
 				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
 			return
 		}
 		roles[index] = holder.Role
 		sessions[index] = holder.Session
 	}
+	if unchanged != nil {
+		stored, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		if found && unchanged(stored) {
+			var project string
+			var provenSessions, marked, pairsMarked bool
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+				select i.project_key, p.proven_sessions,
+					exists (select 1 from project_role_holder_marks m where m.project_key = i.project_key),
+					not exists (select 1 from issue_role_holders h where h.issue_key = i.key and h.daemon_proven <> $2)
+				from issues i join projects p on p.key = i.project_key where i.key = $1
+			`, key, daemonProven).Scan(&project, &provenSessions, &marked, &pairsMarked); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+			if provenSessions && !writer.actor.Proven {
+				writeRoleHoldersNotProven(w, r, project, key)
+				return
+			}
+			if marked && pairsMarked {
+				WriteJSON(w, http.StatusOK, stored)
+				return
+			}
+		}
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -362,18 +417,16 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		select i.key, i.project_key, p.proven_sessions from issues i join projects p on p.key = i.project_key where i.key = $1
 	`, []any{key}, &issue, &project, &provenSessions); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeRoleHoldersIssueNotFound(w, key)
+			writeRoleHoldersIssueNotFound(w, r, key)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Another project's daemon passes isIssueDaemon only on a broker token that proves its session,
 	// so the one actor this refuses names the issue's project's daemon without proving it.
 	if provenSessions && !writer.actor.Proven {
-		writeError(w, "ROLE_HOLDER_NOT_PROVEN", http.StatusForbidden, fmt.Sprintf(
-			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves the session it publishes as: session %s, or session legion-daemon:<P> on a broker token that names project P. This request's credential does not prove session %s.",
-			project, key, daemon, daemon))
+		writeRoleHoldersNotProven(w, r, project, key)
 		return
 	}
 	// The set before this write, read under the owner lock that every writer of the set takes, so
@@ -381,7 +434,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// transaction's first write, so it holds no transaction id.
 	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Mark the project even if the body lists no holders. Update the provenance of each
@@ -399,7 +452,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
 	`, issue, roles, sessions, daemonProven, project); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The delete above is the whole of the publication that names no holder, so the insert runs
@@ -411,13 +464,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 			from unnest($2::text[], $3::text[]) as published(role, session)
 			on conflict (issue_key, role) do nothing
 		`, issue, roles, sessions, daemonProven); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var changed []model.Event
@@ -425,21 +478,22 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
 			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		changed = append(changed, event)
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), changed...)
 	WriteJSON(w, http.StatusOK, stored)
 }
 
-// getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders. A
-// closed issue reads as an open one does.
+// getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders,
+// and GET /api/v2/issues/{key}/role-holder-set, which answers it alike. A closed issue reads as an
+// open one does.
 func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -447,11 +501,11 @@ func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !found {
-		writeRoleHoldersIssueNotFound(w, key)
+		writeRoleHoldersIssueNotFound(w, r, key)
 		return
 	}
 	WriteJSON(w, http.StatusOK, read)

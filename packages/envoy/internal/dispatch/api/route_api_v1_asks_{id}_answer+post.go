@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,13 +13,16 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec.",
 	Handler:     (*server).answerAsk,
+	Successor:   successorIs(http.MethodPut, "/asks/{id}/state"),
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "ask", NotFound: "NOT_FOUND"},
+	ID:          &idRoute{Kind: "ask", NotFound: apicode.NotFound},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	// An approve-only token reaches this route for an approval request alone: answerAsk refuses it
 	// the answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
 	// (ask_transitions.go).
-	ApproveOnly: true,
+	ApproveOnly:         true,
+	ApproveState:        "answered",
+	ApproveApprovalAsks: true,
 	Shape: routeShape{
 		Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},

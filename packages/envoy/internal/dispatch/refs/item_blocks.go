@@ -159,10 +159,10 @@ func ParseItemBlockNode(nodeID string) (kind ItemKind, itemID, blockID string, o
 	return kind, itemID, blockID, true
 }
 
-// CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s
-// `blocks` and `base_revision`): the comment's revision the editor read its blocks at, and each
-// carried block's id with its From in UTF-16 code units into the body the edit writes, in body
-// order.
+// CarriedEdit is the block ids an edit of a comment carries (PATCH /api/v1/comments/{id}'s and
+// PATCH /api/v2/comments/{id}'s `blocks` and `base_revision`): the comment's revision the editor
+// read its blocks at, and each carried block's id with its From in UTF-16 code units into the body
+// the edit writes, in body order.
 type CarriedEdit struct {
 	BaseRevision int
 	Blocks       []itemblocks.Carried
@@ -745,7 +745,7 @@ func (i ItemIndexing) Queue(b *store.WriteBatch) {
 // leaves the item owed its windows rather than silently windowless.
 //
 // An item indexed to no block is marked like any other, and the arm lists it: a comment whose
-// body is empty holds none (api's createCommentFor takes such a comment when it carries a
+// body is empty holds none (api's writeComment takes such a comment when it carries a
 // suggestion), and so does one whose last block an edit removed, which still holds the windows
 // of the text it had. The sum written here is what the arm finds it by, since it has no current
 // block row to be found by (ItemsOwedWindows, INFRA-988).
@@ -1014,8 +1014,9 @@ func (i ItemIndexing) queueBlocks(b *store.WriteBatch) {
 		} else {
 			// A message records no revisions, so a block it writes takes the time of the write
 			// as its made_at and its changed_at: the moment the message was sent, or the edit
-			// that added it (PATCH /api/v1/messages/{id}, indexed at edited_at). A block an edit
-			// rewrote keeps the made_at it was written with and takes the edit as its changed_at;
+			// that added it (PATCH /api/v1/messages/{id} or PATCH /api/v2/messages/{id}, indexed at
+			// edited_at). A block an edit rewrote keeps the made_at it was written with and takes
+			// the edit as its changed_at;
 			// a reindex under another parser moves only those of new text. A message stored
 			// before blocks existed and edited before its first index was never indexed at the
 			// moment it was sent, so every block of that first index is made at the edit, the
@@ -1166,8 +1167,9 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // every writer of the item takes, and reads the item in the statement after it, so a write
 // committed while it waited is seen; a direct message, whose conversation is no owner, has no
 // such lock and needs none, since nothing ever rewrites a direct message's body: only an issue
-// message is edited or deleted (PATCH and DELETE /api/v1/messages/{id}). It takes no item row: a
-// row lock would assign the transaction a transaction id to hold through everything it reads and
+// message is edited or deleted (PATCH and DELETE /api/v1/messages/{id} and
+// /api/v2/messages/{id}). It takes no item row: a row lock would assign the transaction a
+// transaction id to hold through everything it reads and
 // plans, and what it would exclude beyond the owner lock is a writer of the item row that takes
 // no owner lock, which no writer a server runs is: api's lock table holds behind a held owner
 // lock the serving writers of these rows that open their own transaction
@@ -1178,9 +1180,9 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // Reading and planning come first and its writes follow back to back (IndexItemIfOwed). A new
 // block and a new mention take the time the item's text was written, read the same way for all
 // three kinds: the row's coalesce(edited_at, created_at), a message's edited_at among them since
-// PATCH /api/v1/messages/{id}. An item a write site indexed since it was listed is no longer owed
-// and is left alone; one deleted since, before the lock or while it waited, took its state row
-// with it (on delete cascade), so nothing is owed.
+// an issue message could be edited. An item a write site indexed since it was listed is no
+// longer owed and is left alone; one deleted since, before the lock or while it waited, took its
+// state row with it (on delete cascade), so nothing is owed.
 //
 // It runs from the block-index reconciliation (docs.(*Service).ReconcileBlockIndex) and indexes
 // through IndexItemIfOwed, which indexes nothing unless the item's index is owed, so every
@@ -1457,7 +1459,7 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 // does (documentsOwedWindowsQuery): an item the block index has reached - its state row
 // carries the sum of the text it was indexed from - and an item holding a current block, which
 // an index older than that sum left behind. An item indexed to no block at all is the first
-// kind and not the second: a comment whose body is empty, which api's createCommentFor takes
+// kind and not the second: a comment whose body is empty, which api's writeComment takes
 // when the comment carries a suggestion, and an item whose last block an edit removed, whose
 // block rows all read `position is null`. The arm windows such an item to no window, which
 // deletes the windows its old text left and clears the marker in the one statement

@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authPublic,
 	Description: "This index: every route with its method, auth, and purpose.",
 	Handler:     (*server).getRouteIndex,
+	Successor:   successorIs(http.MethodGet, ""),
 	// The other reads.
 	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{Status: http.StatusOK, Response: routeIndex{}},

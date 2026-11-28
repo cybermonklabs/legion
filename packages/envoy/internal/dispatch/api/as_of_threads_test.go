@@ -83,7 +83,7 @@ func (w *asOfThreadWorld) readAt(t *testing.T, target string, cut asof.Cut) (any
 	if named := response.Header().Get(contracts.DispatchAsOfHeader); named != cut.String() {
 		t.Fatalf("GET %s as of the cut: %s is %q, want the cut %s: the route answers the present", target, contracts.DispatchAsOfHeader, named, cut)
 	}
-	return decodeAnswer(t, target, response), absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))
+	return decodeAsOfAnswer(t, target, response), absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))
 }
 
 // readNow reads target as alice at the present and answers the decoded body.
@@ -93,10 +93,11 @@ func (w *asOfThreadWorld) readNow(t *testing.T, target string) any {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET %s at the present: status=%d body=%s", target, response.Code, response.Body.String())
 	}
-	return decodeAnswer(t, target, response)
+	return decodeAsOfAnswer(t, target, response)
 }
 
-func decodeAnswer(t *testing.T, target string, response *httptest.ResponseRecorder) any {
+// decodeAsOfAnswer is the decoded body of the answer to GET target (decodeAsOfBody).
+func decodeAsOfAnswer(t *testing.T, target string, response *httptest.ResponseRecorder) any {
 	t.Helper()
 	doc, err := decodeAsOfBody(response.Body.Bytes())
 	if err != nil {
@@ -192,7 +193,7 @@ func requireAskPartsNow(t *testing.T, handler http.Handler, id string) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET %s at the present: status=%d body=%s", target, response.Code, response.Body.String())
 	}
-	read, _ := decodeAnswer(t, target, response).(map[string]any)
+	read, _ := decodeAsOfAnswer(t, target, response).(map[string]any)
 	ask, _ := read["ask"].(map[string]any)
 	revision, _ := strconv.Atoi(fmt.Sprint(ask["revision"]))
 	shown := revision > 0

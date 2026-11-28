@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -27,7 +28,7 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	}
 	var login string
 	if err := json.Unmarshal(raw, &login); err != nil {
-		return nil, true, errorf(http.StatusBadRequest, "INVALID_ISSUE", "assignee must be a person's email or null")
+		return nil, true, errorf(apicode.InvalidIssue, "assignee must be a person's email or null")
 	}
 	canonical, err := s.allowedLogin(ctx, login)
 	if err != nil {
@@ -46,7 +47,7 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 		}
 	}
 	if !known {
-		return "", errorf(http.StatusBadRequest, "ASSIGNEE_NOT_ALLOWED", "%q has not signed in to Dispatch", strings.TrimSpace(login))
+		return "", errorf(apicode.AssigneeNotAllowed, "%q has not signed in to Dispatch", strings.TrimSpace(login))
 	}
 	return canonical, nil
 }
@@ -61,8 +62,8 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 // The login is returned as model.CanonicalLogin leaves it, blank included: an actor that names
 // the person it acts for with a blank login still named one, and the two callers decide what to
 // do with that themselves. defaultAssignee (below) takes it as the new issue's assignee, and
-// createProject (api/projects.go) falls through to its refusal, each as it did when both
-// spelled these two steps out.
+// createProjectFrom (api/projects.go), the create both versions make, falls through to its
+// refusal, each as it did when both spelled these two steps out.
 func actorPerson(actor model.Actor) (string, bool) {
 	if actor.Kind == "user" {
 		return model.CanonicalLogin(actor.ID), true
@@ -77,18 +78,19 @@ func actorPerson(actor model.Actor) (string, bool) {
 // or a JSON null, in order: the person the creating credential acts for (actorPerson - the human
 // who created it, else the owner of the token that did), the parent's assignee when the parent is
 // in the issue's own project, and the project's default assignee (projectDefault, the column a
-// human sets through PUT /api/v1/projects/{key}/default-assignee). parent is nil for a parent of
-// another project, which passes on no assignee (createIssue), so such an issue falls to its own
-// project's default. A create that names a person never reaches here:
-// parseIssueAssignee checks that login instead. So no create leaves an issue nobody holds, under
-// a parent that holds nobody included; only PATCH /api/v1/issues/{key} with a null assignee does.
+// human sets through PUT /api/v1/projects/{key}/default-assignee or PATCH /api/v2/projects/{key}
+// with default_assignee). parent is nil for a parent of another project, which passes on no
+// assignee (createIssueFrom), so such an issue falls to its own project's default. A create that
+// names a person never reaches here: parseIssueAssignee checks that login instead. So no create
+// leaves an issue nobody holds, under a parent that holds nobody included; only PATCH
+// /api/v1/issues/{key} or PATCH /api/v2/issues/{key} with a null assignee does.
 //
 // The last step is the stored column as it stands, which every project names
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql): a shared token
 // creating a root issue lands on that person rather than on nobody. The create's own update of
-// the project row returns it (see the `returning` in createIssue), so no extra round trip runs
-// under the project row lock, and a default left stale by a restore or a direct write is used
-// as it stands rather than refusing the create.
+// the project row returns it (see the `returning` in createIssueFrom, the create both versions of
+// POST issues make), so no extra round trip runs under the project row lock, and a default left
+// stale by a restore or a direct write is used as it stands rather than refusing the create.
 func defaultAssignee(actor model.Actor, parent *string, projectDefault string) *string {
 	if login, acts := actorPerson(actor); acts {
 		return &login
@@ -113,10 +115,20 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
+	users, err := s.signedInUsers(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+}
+
+// signedInUsers is everyone who has signed in, sorted by email, which both versions of the users
+// route answer.
+func (s *server) signedInUsers(ctx context.Context) ([]dispatchUser, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `select email from people order by email`)
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
 	}
 	users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (dispatchUser, error) {
 		var user dispatchUser
@@ -124,10 +136,9 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return user, err
 	})
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("list people: %w", err))
-		return
+		return nil, fmt.Errorf("list people: %w", err)
 	}
-	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+	return users, nil
 }
 
 // whoamiUser is the body GET /api/v1/whoami answers a person at a browser.
@@ -217,7 +228,7 @@ type whoamiAgent struct {
 func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	scopes := whoamiScopes(actor.Credential)

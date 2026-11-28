@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -10,8 +12,9 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
 	Handler:     (*server).createArtifactAsk,
+	Successor:   successorIs(http.MethodPost, "/artifacts/{id}/asks"),
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	Shape: routeShape{
 		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
 	},

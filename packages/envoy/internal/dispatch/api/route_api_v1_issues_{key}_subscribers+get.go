@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Sessions subscribed to an issue's topics.",
 	Handler:     (*server).listIssueSubscribers,
+	Successor:   successorIs(http.MethodGet, "/issues/{key}/subscribers"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []subscriber{}},

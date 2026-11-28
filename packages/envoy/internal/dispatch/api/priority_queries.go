@@ -1,6 +1,6 @@
-// priority_queries.go is the read behind GET /api/v1/priorities: every live priority with the
-// work that advances it, and the two faults. It is the query half of priorities.go, as
-// issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
+// priority_queries.go is the read behind GET /api/v1/priorities and GET /api/v2/priorities: every
+// live priority with the work that advances it, and the two faults. It is the query half of
+// priorities.go, as issue_queries.go is of the issue routes. It writes neither `priority_nodes` nor
 // `priority_tuples`, which prioritystore alone writes; it reads them through prioritystore.List
 // and through the SQL below, which splices prioritystore.AdvancesTupleRead, the one reading of
 // the `advances` relation, and joins it to the issues it counts. The rows of the second fault
@@ -13,9 +13,11 @@
 // event under each priority and the two fault lists from that one walk, as four jsonb columns of
 // one row.
 //
-// `?summary=true` answers the two fault counts alone, so its one statement (prioritySummaryQuery)
-// counts the first fault from one scan of the open issues that stand in flight and the second from
-// the relations' own issues in backlog or icebox, and reads nothing that fills a priority's row.
+// A summary, /api/v1's `?summary=true` and /api/v2's limit=0 with no include=fault_issues
+// (listPrioritiesV2), answers the two fault counts alone, so its one statement
+// (prioritySummaryQuery) counts the first fault from one scan of the open issues that stand in
+// flight and the second from the relations' own issues in backlog or icebox, and reads nothing
+// that fills a priority's row.
 package api
 
 import (
@@ -415,17 +417,19 @@ func backlogMoveLateral(issue, gate string) string {
 }
 
 // readPriorities answers the whole body of GET /api/v1/priorities: the priorities in rank order,
-// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all.
+// the work under each, and the two faults, narrowed to `projects` where it is narrowed at all; and
+// how many live priorities there are, which a summary's empty list does not say and GET
+// /api/v2/priorities answers as its total.
 //
 // It is two round trips: prioritystore.List, then the one statement of the form asked for, which
 // takes the live priority ids and reads their relations itself. A summary reads no issue of a
 // priority that has no fault under it beyond the walk, and fills no priority's row. A deployment
 // that has written no priority sends an empty list of ids, so the walk starts from no relation and
 // every open issue in flight is work under no priority.
-func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, error) {
+func (s *server) readPriorities(ctx context.Context, projects []string, summary bool) (model.Priorities, int, error) {
 	nodes, err := prioritystore.List(ctx, s.deps.Store.Pool)
 	if err != nil {
-		return model.Priorities{}, err
+		return model.Priorities{}, 0, err
 	}
 	body := model.Priorities{
 		Priorities:          make([]model.PriorityRow, 0, len(nodes)),
@@ -443,13 +447,13 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 	if summary {
 		if err := s.deps.Store.Pool.QueryRow(ctx, prioritySummaryQuery, ids, projects).
 			Scan(&body.WorkUnderNoPriority.Count, &body.PriorityWorkParked.Count); err != nil {
-			return model.Priorities{}, fmt.Errorf("count the work under no priority and the work in backlog or icebox: %w", err)
+			return model.Priorities{}, 0, fmt.Errorf("count the work under no priority and the work in backlog or icebox: %w", err)
 		}
-		return body, nil
+		return body, len(nodes), nil
 	}
 	var answer priorityReadAnswer
 	if err := s.deps.Store.Pool.QueryRow(ctx, priorityReadQuery, ids, projects).Scan(answer.targets()...); err != nil {
-		return model.Priorities{}, fmt.Errorf("read the work under the priorities: %w", err)
+		return model.Priorities{}, 0, fmt.Errorf("read the work under the priorities: %w", err)
 	}
 	// Each priority is placed by its index in the answer's own slice rather than by a pointer
 	// into it, which the appends below would leave behind the moment the slice grew.
@@ -462,7 +466,7 @@ func (s *server) readPriorities(ctx context.Context, projects []string, summary 
 		})
 	}
 	answer.fill(&body, at)
-	return body, nil
+	return body, len(nodes), nil
 }
 
 // zeroPriorityStatusCounts is a priority's status counts before any row is read: every status of

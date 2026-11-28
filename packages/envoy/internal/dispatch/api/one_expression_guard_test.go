@@ -1,6 +1,6 @@
 //go:build !race
 
-// An eleventh static check beside the ten source guards, under the tag they carry and for the same
+// A static check beside the source guards, under the tag they carry and for the same
 // saving: it reads text - the api package's parsed declarations, the bytes of every non-test .go
 // file of the module and the SQL of every .sql file of it - and opens no database and starts no
 // goroutine, so the race detector has nothing here to watch. Behind the tag the race build neither
@@ -276,7 +276,7 @@ func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
 	}
 	for _, read := range []string{
 		"askReadColumns", "listInbox's query", "listOpenAsks's query", "myRepliesOwner",
-		"putAskAskedOf's query", "askWaitingOnPerson's query",
+		"handAskOn's query", "askWaitingOnPerson's query",
 	} {
 		node, declared := declarations[read]
 		if !declared {

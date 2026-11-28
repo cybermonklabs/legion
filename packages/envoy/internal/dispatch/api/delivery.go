@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,8 +29,8 @@ const defaultDeliveryWindow = 7 * 24 * time.Hour
 // maxDeliveryWindow bounds how wide [from, to) may be: CONTRACT.md measures 28 days of this
 // population at roughly 3,500 pull requests, so three times that backfill window is generous
 // headroom for a real dashboard query while still refusing the unbounded "from the epoch" request
-// an authenticated-but-careless caller (any agent session; GET /api/v1/delivery/timeline is
-// authAny) could otherwise send against the shared pool.
+// an authenticated-but-careless caller (any agent session; GET /api/v1/delivery/timeline and GET
+// /api/v2/delivery/timeline are authAny) could otherwise send against the shared pool.
 const maxDeliveryWindow = 3 * 28 * 24 * time.Hour
 
 // The timeline's facets, by the query parameter that selects each and the facet_counts key that
@@ -98,13 +99,6 @@ func parseRFC3339(name, text string) (time.Time, error) {
 	return parsed, nil
 }
 
-// deliveryNotConfiguredCode and deliveryNotConfiguredMessage are the one refusal a Dispatch with
-// no delivery settings gives, from this route and from the live hub's worker alike.
-const (
-	deliveryNotConfiguredCode    = "DELIVERY_NOT_CONFIGURED"
-	deliveryNotConfiguredMessage = "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"
-)
-
 // parseOptionalWindow is a record route's [from, to) window (parseWindow).
 func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
 	return parseWindow(windowBound{name: "from", text: query.Get("from")}, windowBound{name: "to", text: query.Get("to")})
@@ -149,24 +143,32 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
-			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
+			writeError(w, r, apicode.DeliveryNotConfigured, deliveryNotConfigured(requestAPIVersion(r)))
 			return delivery.DeliverySettings{}, false
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return delivery.DeliverySettings{}, false
 	}
 	return settings, true
 }
 
-// getDeliveryTimeline answers GET /api/v1/delivery/timeline: merges, deploys, pipeline failures
-// and waiting-to-deploy PRs within [from, to) and the given facets and search, computed from
+// deliveryNotConfigured is the refusal of a delivery read made before its settings are written,
+// naming the write of the version that answers: PUT <version>/settings/delivery. The live socket,
+// which no version serves, names /api/v2's, the version that outlives /api/v1.
+func deliveryNotConfigured(version apiVersion) string {
+	return "delivery is not configured; set delivery_settings through PUT " + versionPrefix(version) + "/settings/delivery"
+}
+
+// getDeliveryTimeline answers GET /api/v1/delivery/timeline and GET /api/v2/delivery/timeline, one
+// row served in both versions (OfINFRA979): merges, deploys, pipeline failures and
+// waiting-to-deploy PRs within [from, to) and the given facets and search, computed from
 // stored facts at request time (deployed_status, root_failing_job, the Parent agent and session
 // labels, the issue facts and every count are never stored -- "the server computes every
 // measure from stored facts on request"), and the measures of that same window and selection, so a
-// page showing both reads the population once. GET /api/v1/delivery/measures is the measures
-// alone, for another window. The answer is readDeliveryPopulation's read and
-// deliveryTimelineCompute's compute, the two halves the live hub calls too, so a live page's
-// snapshot is this body.
+// page showing both reads the population once. GET /api/v1/delivery/measures and GET
+// /api/v2/delivery/measures are the measures alone, for another window. The answer is
+// readDeliveryPopulation's read and deliveryTimelineCompute's compute, the two halves the live hub
+// calls too, so a live page's snapshot is this body.
 func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -174,7 +176,7 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	from, to, err := parseDeliveryWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -183,15 +185,15 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 	}
 	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, true)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, deliveryTimelineCompute(settings, population, from, to, time.Now().UTC()))
 }
 
-// deliveryTimelineCompute is GET /api/v1/delivery/timeline's body (deliveryTimelineWithMeasures)
-// for [from, to) from a population read for that window or narrowed to it. It reads nothing; now
-// is only the measures' computed_at.
+// deliveryTimelineCompute is the body of GET /api/v1/delivery/timeline and GET
+// /api/v2/delivery/timeline (deliveryTimelineWithMeasures) for [from, to) from a population read
+// for that window or narrowed to it. It reads nothing; now is only the measures' computed_at.
 func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) deliveryTimelineWithMeasures {
 	derived := pop.derive(settings)
 
@@ -715,16 +717,18 @@ func nextUTCMidnight(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 }
 
-// getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of the deploy repository with
-// every job it ran, in ListRunJobs' order (by when each started, a job that never started last,
-// then by name), for the drill-down's job lists.
+// getDeliveryRun answers GET /api/v1/delivery/runs/{id} and GET /api/v2/deploy-runs/{id}: one run
+// of the deploy repository with every job it ran, in ListRunJobs' order (by when each started, a
+// job that never started last, then by name), for the drill-down's job lists. A run of the
+// deploy repository Dispatch holds no record of is 404 NOT_FOUND on /api/v1 and
+// DEPLOY_RUN_NOT_FOUND on /api/v2 (apicode.DeployRunNotFound).
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	runID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || runID < 1 {
-		writeError(w, "RUN_ID_INPUT", http.StatusBadRequest, "run id must be a positive integer")
+		writeError(w, r, apicode.RunIDInput, "run id must be a positive integer")
 		return
 	}
 	settings, ok := s.deliverySettings(w, r)
@@ -736,15 +740,15 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, settings.DeployRepo, runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
+			writeError(w, r, apicode.DeployRunNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+settings.DeployRepo)
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	jobs, err := delivery.ListRunJobs(ctx, pool, settings.DeployRepo, runID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	views := make([]delivery.DeliveryRunJobDetailView, len(jobs))

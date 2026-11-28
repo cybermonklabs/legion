@@ -87,8 +87,9 @@ func TestUnicodeIsSpaceReportsTheCommittedScalars(t *testing.T) {
 		"Unicode version moves the first line, editing the file by hand moves the second.\n"+
 		"goBlankPattern in packages/contracts/src/go-blank.ts writes the same set out as a "+
 		"regular expression: `dispatch artifact` and the `legion` tool read it to tell whether "+
-		"the Dispatch server or the daemon will call a text blank, and the Envoy plugin's "+
-		"listenerRoleName reads it to trim a role's name as the Envoy listener trims a claim's; "+
+		"the Dispatch server or the daemon will call a text blank, and goTrimSpace trims a role's "+
+		"name as the Envoy listener trims a claim's, in packages/pi-envoy/extensions/envoy.ts's "+
+		"session-role read and the Envoy plugin's listenerRoleName; "+
 		"those three servers read strings.TrimSpace, which trims what this test measured. Measure "+
 		"the two together: write what this test reports into "+
 		"the list, correct the pattern to the same characters, and run this test and `goBlankPattern` "+

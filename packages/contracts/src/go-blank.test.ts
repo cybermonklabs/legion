@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import goUnicodeIsSpace from "../fixtures/go-unicode-isspace.json";
-import { goBlankPattern } from "./go-blank";
+import { goBlankPattern, goTrimSpace } from "./go-blank";
 
 describe("goBlankPattern", () => {
   // The pattern writes Go's `unicode.IsSpace` set out, and the rows of its readers pin the two
@@ -58,5 +58,23 @@ describe("goBlankPattern", () => {
         "holds: measure the pattern and the list again together, or the clients and the servers " +
         "read the same text differently."
     );
+  });
+});
+
+describe("goTrimSpace", () => {
+  // Go's strings.TrimSpace, which Dispatch trims an upload's name with (uploadExtensionOf):
+  // U+0085 is cut and U+FEFF kept, the other way round from JavaScript's `trim` (GO_TRIM_SPLIT).
+  test("cuts from both ends what Go's strings.TrimSpace cuts, and nothing else", () => {
+    const rows: Array<[string, string]> = [
+      ["cases.txt\u0085", "cases.txt"],
+      ["\u0085cases.txt", "cases.txt"],
+      ["notes.md\uFEFF", "notes.md\uFEFF"],
+      ["\uFEFFnotes.md", "\uFEFFnotes.md"],
+      ["\t x \n", "x"],
+      ["\t\n\v\f\r \u0085\u00A0\u1680\u2000\u200A\u2028\u2029\u202F\u205F\u3000", ""],
+      ["", ""],
+      [" a \u0085 b ", "a \u0085 b"],
+    ];
+    expect(rows.map(([text]) => [text, goTrimSpace(text)])).toEqual(rows);
   });
 });

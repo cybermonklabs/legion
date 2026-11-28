@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { version as envoyClientVersion } from "../../package.json" with { type: "json" };
 import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential, type RequestCredential } from "../bearer";
@@ -613,7 +614,7 @@ describe("DispatchClient", () => {
       const headers = request.init.headers as Record<string, string>;
       expect(headers.Authorization).toBe("Bearer secret");
       expect(headers.Accept).toBe("application/json");
-      // Every write carries a key of its own; no read carries one.
+      // Every POST here carries a key of its own; no read carries one.
       if (request.init.method === "GET") expect(headers["Idempotency-Key"]).toBeUndefined();
       else expect(headers["Idempotency-Key"]).toBeString();
     }
@@ -2354,6 +2355,72 @@ describe("a broker token Dispatch says is not live", () => {
       expect(stales).toHaveLength(1);
       expect(requests).toHaveLength(1);
     }
+  });
+});
+
+describe("the User-Agent", () => {
+  const userAgentOf = (request: RecordedRequest) =>
+    new Headers(request.init.headers).get("user-agent");
+
+  test("every request names the program the client was made for, over any the credential presents", async () => {
+    // A credential that presents a User-Agent of its own, in two letter cases, beside its
+    // Authorization: neither reaches Dispatch, alone or joined to the client's.
+    const credential: RequestCredential = {
+      scheme: "Bearer",
+      headers: () => ({
+        Authorization: "Bearer secret",
+        "User-Agent": "credential/1",
+        "user-agent": "credential/2",
+      }),
+      secret: () => "secret",
+    };
+    // A read, then a write whose first attempt fails in transport, so the write asks again under
+    // its key, with nothing asked first, and Dispatch's answer carries the key back as it does for
+    // every keyed write.
+    const requests: RecordedRequest[] = [];
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init: init ?? {} });
+      if (init?.method !== "POST") return jsonResponse([]);
+      posts += 1;
+      if (posts === 1) throw new TypeError("fetch failed");
+      const answer = jsonResponse({ id: "message-1" }, 201);
+      answer.headers.set("Idempotency-Key", new Headers(init.headers).get("idempotency-key") ?? "");
+      return answer;
+    }) as typeof fetch;
+    const client = new DispatchClient("http://user-agent.test", credential, fetchImpl, {
+      writeRetry: { ...DISPATCH_WRITE_RETRY, pause: async () => {} },
+      userAgent: "example-program/1.2.3",
+    });
+
+    await client.listAllIssues({});
+    await client.message("DSP-1", { body: "Shipped.", actor });
+
+    // The resend names the program as the first attempt does.
+    expect(
+      requests.map((request) => [new URL(request.url).pathname, userAgentOf(request)])
+    ).toEqual([
+      ["/api/v1/issues", "example-program/1.2.3"],
+      ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
+      ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
+    ]);
+    // The credential's other headers still go out where it presents.
+    expect(
+      requests.map((request) => new Headers(request.init.headers).get("authorization"))
+    ).toEqual(["Bearer secret", "Bearer secret", "Bearer secret"]);
+  });
+
+  test("a client made with no program named sends dispatch-client and envoy-client's version", async () => {
+    const { fetchImpl, requests } = fakeFetch([jsonResponse([])]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.listAllIssues({});
+
+    expect(requests.map(userAgentOf)).toEqual([`dispatch-client/${envoyClientVersion}`]);
   });
 });
 

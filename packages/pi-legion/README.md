@@ -94,7 +94,7 @@ From this directory:
 ```sh
 bun run test
 bun test src/tools.test.ts   # one file
-bun run typecheck   # renders the Dispatch API types from the document first, then tsc --noEmit
+bun run typecheck   # renders the Dispatch API types from the documents first, then tsc --noEmit
 bunx biome check extensions/ src/
 ```
 

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -64,7 +65,7 @@ const mentionLookupTimeout = 250 * time.Millisecond
 // leaves the lookup bounded by the listener client's own window. A lookup that timeout cut short,
 // while ctx itself is still live, yields the target unanswered, with no pinned session and no
 // resolve error: the listener has not answered, so nothing is known to refuse and nothing is
-// pinned. createCommentFor still counts the session a session:<id> target names
+// pinned. writeComment still counts the session a session:<id> target names
 // (mentionedSession) when it decides what the mention makes redundant. Its attempt row records
 // neither a session nor an error, which is the shape of an attempt stranded before anything was
 // resolved, so the sender resolves it when it sends (mentionResolutionFor).
@@ -326,14 +327,14 @@ func openCommentDeliveryAttempt(
 // is never sent in that attempt's place.
 //
 // A later attempt of the same mention - a Retry from the card opened while this one waited on its
-// lane (createCommentDelivery) - decides the bound attempt only once it is delivered: a Retry
-// recorded failed is an outcome unknown, since a receipt timeout and a reply callback's error
-// both leave an attempt failed whose frame the session may hold, so the bound attempt stands
-// (model.MentionAttemptStandsSQL) and this call sends it, under its own number and the mention's
-// one idempotency key (model.CommentMentionIdempotencyKey) - the key that Retry's own send went
-// under, so a Retry that did land leaves this send a repeat the recipient's host drops. One that
-// was sent handed the recipient the comment (model.MentionAttemptDeliveredLaterSQL), so this call
-// reports the bound attempt superseded and its caller settles it failed
+// lane (retryCommentMention, the retry of both versions) - decides the bound attempt only once it
+// is delivered: a Retry recorded failed is an outcome unknown, since a receipt timeout and a reply
+// callback's error both leave an attempt failed whose frame the session may hold, so the bound
+// attempt stands (model.MentionAttemptStandsSQL) and this call sends it, under its own number and
+// the mention's one idempotency key (model.CommentMentionIdempotencyKey) - the key that Retry's own
+// send went under, so a Retry that did land leaves this send a repeat the recipient's host drops.
+// One that was sent handed the recipient the comment (model.MentionAttemptDeliveredLaterSQL), so
+// this call reports the bound attempt superseded and its caller settles it failed
 // (supersedeCommentDelivery), leaving the recipient one copy. While that later attempt is still
 // pending neither holds, so this call stands down: it sends nothing, gives its claim back and
 // leaves the attempt pending, for the delivery sweep to send once the later attempt failed
@@ -361,7 +362,7 @@ func (s *server) claimCommentDeliveryAttempt(
 	// An unbound call is a Retry, which resumes or opens an attempt of the comment, so it is the
 	// comment as this owner lock leaves it that decides whether any text is left to send: a
 	// delete that committed while the Retry waited on the lock refuses it here, where the route's
-	// own check read the comment before the lock (createCommentDelivery). A bound call takes its
+	// own check read the comment before the lock (retryCommentMention). A bound call takes its
 	// own attempt and no other, which that delete has already settled (queueDeletedPostSettlement),
 	// so it finds the attempt settled below and sends nothing.
 	if resume.attempt == 0 && stored.DeletedAt != nil {
@@ -789,7 +790,7 @@ func (s *server) holdCommentDeliveryClaim(
 // try and settles nothing: the attempt stays pending under the claim this call renewed, and the
 // call answers, beside that pending attempt, a *mentionHeldForOrder carrying that claim, which its
 // caller hands to the mention sender's lane for that session (sendCommentMention,
-// resumeOwedDelivery, createCommentDelivery), so the send is made again once the outbox has sent
+// resumeOwedDelivery, retryCommentMention), so the send is made again once the outbox has sent
 // what comes first. A read of that rule that fails is answered the same way, as a wait behind no
 // event (mentionHeldForOrder.unread): the send keeps its claim and its place on its lane, so the
 // owner's later comments to the session stay behind it, and it tries again a moment later by
@@ -991,7 +992,7 @@ type mentionHeldForOrder struct {
 }
 
 // send is the mention sender's send that takes the held attempt up again, for a caller that holds
-// no lane of its own (resumeOwedDelivery, createCommentDelivery): bound to the attempt and the
+// no lane of its own (resumeOwedDelivery, retryCommentMention): bound to the attempt and the
 // claim the held call left on it, queued on the lane of the session it waits to reach, as actor,
 // with a take-over window of its own, held from now behind the event it waits behind, or behind
 // none when the read of the rule failed (held).
@@ -1230,7 +1231,8 @@ func loadCommentDelivery(ctx context.Context, q queryer, commentID, target strin
 	`, commentID, target, attemptNumber))
 }
 
-// createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries.
+// createCommentDeliveryInput is the body of POST /api/v1/comments/{id}/deliveries and of POST
+// /api/v2/comments/{id}/deliveries (createCommentDeliveryV2).
 type createCommentDeliveryInput struct {
 	Actor    *model.Actor `json:"actor"`
 	Target   *string      `json:"target"`
@@ -1240,64 +1242,72 @@ type createCommentDeliveryInput struct {
 func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return
 	}
 	var input createCommentDeliveryInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if !human {
 		if actor, err = bearerSessionActor(r, actor, input.Actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
+	s.retryCommentMention(w, r, actor, input)
+}
+
+// retryCommentMention opens a new delivery attempt of one mention of the comment the path's {id}
+// names, in the mode input asks, for actor, once the route has read its body and resolved who
+// acts: the work of POST /api/v1/comments/{id}/deliveries and POST /api/v2/comments/{id}/deliveries.
+// It answers the attempt as it settled, or the refusal.
+func (s *server) retryCommentMention(w http.ResponseWriter, r *http.Request, actor model.Actor, input createCommentDeliveryInput) {
 	if !validDelivery(input.Delivery) {
-		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "delivery must be one of btw, aside, steer")
+		writeError(w, r, apicode.MentionInput, "delivery must be one of btw, aside, steer")
 		return
 	}
 	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
-		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
+		writeError(w, r, apicode.CommentNotFound, "comment not found")
 		return
 	}
 	// A delivery of a deleted comment would send the text the delete withdrew, so there is
 	// nothing left to send.
 	if comment.DeletedAt != nil {
-		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+		s.writeHandlerError(w, r, deletedPostError(refs.ItemComment))
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	targets := []string{}
 	for rows.Next() {
 		var target string
 		if err := rows.Scan(&target); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
 	if len(targets) == 0 {
-		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment has no mentions")
+		writeError(w, r, apicode.CommentNotFound, "comment has no mentions")
 		return
 	}
 	target := ""
 	if input.Target == nil {
 		if len(targets) != 1 {
-			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "target is required when a comment has multiple mentions")
+			writeError(w, r, apicode.MentionInput, "target is required when a comment has multiple mentions")
 			return
 		}
 		target = targets[0]
@@ -1311,13 +1321,13 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "target must name one of the comment mentions")
+			writeError(w, r, apicode.MentionInput, "target must name one of the comment mentions")
 			return
 		}
 	}
 	created, err := s.loadCommentCreatedEvent(r.Context(), s.deps.Store.Pool, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	resolved := ResolvedMention{Target: target, Delivery: input.Delivery}
@@ -1328,7 +1338,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		context.WithoutCancel(r.Context()), comment, created, resolved, actor, attemptClaim{}, s.newTakeoverRetry(),
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if held != nil {
@@ -1341,7 +1351,8 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, attempt)
 }
 
-// commentReplyInput is the body of POST /api/v1/comments/{id}/reply.
+// commentReplyInput is the body of POST /api/v1/comments/{id}/reply and of POST
+// /api/v2/comments/{id}/replies (replyCommentV2).
 type commentReplyInput struct {
 	Actor   *model.Actor `json:"actor"`
 	Target  *string      `json:"target"`
@@ -1391,7 +1402,7 @@ func (s *server) planCommentReply(
 		return plan, err
 	}
 	if replyToBlock != nil {
-		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", "INVALID_COMMENT", quote, occurrence)
+		repair, block, err := s.planReplyBlock(ctx, tx, who, refs.ItemComment, comment.ID, *replyToBlock, "reply_to_block", apicode.InvalidComment, quote, occurrence)
 		if err != nil {
 			plan.refusal, err = deferredRefusal(err)
 			return plan, err
@@ -1423,39 +1434,48 @@ func (s *server) planCommentReply(
 
 func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires an agent bearer token")
+		writeError(w, r, apicode.ReplyForbidden, "reply requires an agent bearer token")
 		return
 	}
 	var input commentReplyInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.answerCommentDelivery(w, r, input)
+}
+
+// answerCommentDelivery is the mentioned session's answer to one delivery attempt of the comment
+// the path's {id} names - a reply's body, or the error the session met - once the route has read
+// its body: the work of POST /api/v1/comments/{id}/reply and POST /api/v2/comments/{id}/replies,
+// whose caller has already shown a bearer credential. It answers the reply, an answered attempt's
+// stored reply, the failed attempt, or the refusal.
+func (s *server) answerCommentDelivery(w http.ResponseWriter, r *http.Request, input commentReplyInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
 	if actor.Kind != "session" || input.Attempt < 1 || (input.Body == nil) == (input.Error == nil) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
+		writeError(w, r, apicode.ReplyForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}
 	if input.Body != nil {
 		if strings.TrimSpace(*input.Body) == "" {
-			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "comment body is required")
+			writeError(w, r, apicode.MentionInput, "comment body is required")
 			return
 		}
 		// A reply is stored as a comment of its own, so it takes the comment routes' bound.
 		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 	if input.ReplyToBlock != nil && input.Body == nil {
-		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
+		writeError(w, r, apicode.InvalidComment, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
-	if err := replyQuoteRefusal("INVALID_COMMENT", "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
-		s.writeHandlerError(w, err)
+	if err := replyQuoteRefusal(apicode.InvalidComment, "reply_to_block", input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The mention the reply answers and the session its attempt names are read before the
@@ -1480,30 +1500,30 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		limit 1
 	`, input.Target, input.Attempt)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
 	comment, err := s.lockedCommentAllowingClosed(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
+			writeError(w, r, apicode.CommentNotFound, "comment not found")
 			return
 		}
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A reply adds text under the post, which a deleted one no longer holds; the session's own
 	// text is not withdrawn by it, so the refusal names the post and not the reply.
 	if comment.DeletedAt != nil {
-		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+		s.writeHandlerError(w, r, deletedPostError(refs.ItemComment))
 		return
 	}
 	// Everything this reply is decided on, its own body included, is read here, before the
@@ -1516,7 +1536,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	var plan commentReplyPlan
 	if input.Body != nil {
 		if plan, err = s.planCommentReply(r.Context(), tx, actor, comment, *input.Body, input.ReplyToBlock, input.Quote, input.Occurrence); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -1528,7 +1548,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	targets := []string{}
@@ -1536,21 +1556,21 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		var target string
 		if err := rows.Scan(&target); err != nil {
 			rows.Close()
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	rows.Close()
 	target := ""
 	if input.Target == nil {
 		if len(targets) != 1 {
-			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "target is required when a comment has multiple mentions")
+			writeError(w, r, apicode.MentionInput, "target is required when a comment has multiple mentions")
 			return
 		}
 		target = targets[0]
@@ -1564,7 +1584,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !found {
-			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "target must name one of the comment mentions")
+			writeError(w, r, apicode.MentionInput, "target must name one of the comment mentions")
 			return
 		}
 	}
@@ -1573,7 +1593,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
 	// one, before any query is made with it.
 	if !fitsIntegerColumn(input.Attempt) {
-		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		writeError(w, r, apicode.CommentNotFound, "comment delivery not found")
 		return
 	}
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
@@ -1581,7 +1601,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
 	`, comment.ID, target, input.Attempt))
 	if err != nil {
-		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		writeError(w, r, apicode.CommentNotFound, "comment delivery not found")
 		return
 	}
 	// The session the attempt names answers it, and so does the session that holds the mentioned
@@ -1589,7 +1609,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// different session that took the role, or that replaced the session, is handed what that
 	// session had not read (lookUpRoleHolderReply).
 	if (attempt.SessionID == nil || *attempt.SessionID != actor.ID) && !roleReply.allows(attempt.Target) {
-		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, replyForbiddenSession)
+		writeError(w, r, apicode.ReplyForbidden, replyForbiddenSession)
 		return
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
@@ -1598,15 +1618,15 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if attempt.ReplyID != nil {
 		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := hydrateCommentReplyBlocks(r.Context(), tx, actor, &reply); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, reply)
@@ -1614,7 +1634,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if attempt.State == "failed" && input.Error != nil {
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		WriteJSON(w, http.StatusOK, attempt)
@@ -1629,17 +1649,17 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			comment.ID, attempt.Target, input.Attempt, *input.Error,
 		))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		attempt = updated
 		event, err := s.appendEvent(r.Context(), tx, commentDeliveryReceipt(comment, actor, attempt))
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := tx.Commit(r.Context()); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		s.publish(r.Context(), event)
@@ -1648,7 +1668,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	author, err := json.Marshal(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A callback reply joins its thread exactly as `POST .../comments` would: the shared climb
@@ -1661,13 +1681,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// comments route names. Both are read above the locks (planCommentReply), and the refusal
 	// either raises is raised here, where it was raised.
 	if plan.refusal != nil {
-		s.writeHandlerError(w, plan.refusal)
+		s.writeHandlerError(w, r, plan.refusal)
 		return
 	}
 	// The index the named block's comment was found to owe is written here, before the reply's
 	// own writes, as refs.IndexItemIfOwed writes one.
 	if err := plan.parentIndex.Write(r.Context(), tx); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// A callback reply requests no turn, so it hands the turn back the way any session reply
@@ -1698,7 +1718,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		})
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The block the reply names was read above its locks, where its row did not exist yet, so
@@ -1711,38 +1731,38 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// their statements run here as one batch of their own, where the index of a reply this
 	// route wrote has always run.
 	if err := store.RunWrite(r.Context(), tx, plan.write); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
 		update comment_deliveries set reply_id = $4, state = 'sent', error = null
 		where comment_id = $1 and target = $2 and attempt = $3
 	`, comment.ID, attempt.Target, input.Attempt, reply.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, reply)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := s.commentEventPayload(
 		r.Context(), tx, &reply, artifactName, plan.thread.eventThread(waitingOn), plan.changes,
 	)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload.ThreadLogins, err = commentThreadLogins(r.Context(), tx, reply)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(reply.IssueKey, reply.ArtifactID).event(
 		"comment.answered", actor, payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The stamp of the reply's references and everything the reply states in the node and tuple
@@ -1774,11 +1794,11 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 		return queueAnsweredDelivery(b, answered, actor, event.CreatedAt, event.ID)
 	}); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -1802,9 +1822,9 @@ type answeredDelivery struct {
 // the answer, what that answer makes of the attempt it answers. An answer flips its attempt to
 // `sent` whatever the row recorded before: a failed attempt - a stale receipt, an error the
 // session itself reported, a reply callback that failed a frame the session plainly received -
-// reads as sent and answered (replyComment, replyMessage). An attempt that reads sent is one
-// the listener took, so the session it names is one the store owes a node for (R14,
-// graphcensus's recordedSessions), and this answer is the write that moves the attempt into
+// reads as sent and answered (answerCommentDelivery, answerMessageDelivery). An attempt that
+// reads sent is one the listener took, so the session it names is one the store owes a node for
+// (R14, graphcensus's recordedSessions), and this answer is the write that moves the attempt into
 // that set: without it the census holds the store to a node no writer ever wrote, for good.
 //
 // The node is written as a settle writes one (graphstore.QueueReached): `do nothing`, so a

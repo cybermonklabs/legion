@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -120,8 +121,8 @@ func TestASearchItsClientClosedIsLoggedAs499(t *testing.T) {
 	if closed, _ := handlerErrorLines(logged); len(closed) != 1 {
 		t.Errorf("logged %q, want one debug line for a request its client closed", closed)
 	}
-	if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+codeInternal+`"`) {
-		t.Errorf("answered %d %q, want the 500 %s it met", response.Code, response.Body.String(), codeInternal)
+	if internal := apicode.InternalError.V1Name(); response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+internal+`"`) {
+		t.Errorf("answered %d %q, want the 500 %s it met", response.Code, response.Body.String(), internal)
 	}
 }
 
@@ -158,7 +159,7 @@ func TestAServerCancelStillAnswers500WithItsErrorLine(t *testing.T) {
 					if test.closed {
 						closeRequest()
 					}
-					(&server{}).writeHandlerError(w, test.err)
+					(&server{}).writeHandlerError(w, r, test.err)
 				}))
 				request := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil).WithContext(ctx)
 				if encoding != "" {
@@ -174,8 +175,8 @@ func TestAServerCancelStillAnswers500WithItsErrorLine(t *testing.T) {
 				if lines := accessLines(t, logged); len(lines) != 1 || !strings.Contains(lines[0], fmt.Sprintf(" status=%d ", want)) {
 					t.Errorf("request lines %q, want one with status=%d", lines, want)
 				}
-				if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+codeInternal+`"`) {
-					t.Errorf("answered %d %q, want the 500 %s it met", response.Code, response.Body.String(), codeInternal)
+				if internal := apicode.InternalError.V1Name(); response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), `"code":"`+internal+`"`) {
+					t.Errorf("answered %d %q, want the 500 %s it met", response.Code, response.Body.String(), internal)
 				}
 				closed, failures := handlerErrorLines(logged)
 				if test.fault {

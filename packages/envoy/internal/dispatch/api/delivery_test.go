@@ -647,7 +647,9 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 
 // TestGetDeliveryRunListsEveryJob proves GET /api/v1/delivery/runs/{id} answers one deploy
 // repository run with every job it ran, by start (a job that never started last), and refuses a
-// run id that is not a positive integer or names no run.
+// run id that is not a positive integer or names no run: a run of the deploy repository Dispatch
+// holds no record of is 404 NOT_FOUND on /api/v1 and 404 DEPLOY_RUN_NOT_FOUND at
+// GET /api/v2/deploy-runs/{id}.
 func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -703,13 +705,18 @@ func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 		t.Fatalf("test job = %+v, want its failure with both timings", test)
 	}
 
-	for target, want := range map[string]int{
-		"/api/v1/delivery/runs/8":   http.StatusNotFound,
-		"/api/v1/delivery/runs/abc": http.StatusBadRequest,
-		"/api/v1/delivery/runs/0":   http.StatusBadRequest,
+	for target, want := range map[string]struct {
+		status int
+		code   string
+	}{
+		"/api/v1/delivery/runs/8":   {http.StatusNotFound, "NOT_FOUND"},
+		"/api/v2/deploy-runs/8":     {http.StatusNotFound, "DEPLOY_RUN_NOT_FOUND"},
+		"/api/v1/delivery/runs/abc": {http.StatusBadRequest, "RUN_ID_INPUT"},
+		"/api/v1/delivery/runs/0":   {http.StatusBadRequest, "RUN_ID_INPUT"},
 	} {
-		if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != want {
-			t.Errorf("GET %s: status = %d, body = %s, want %d", target, response.Code, response.Body.String(), want)
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		if code, _ := refusalOf(t, response); response.Code != want.status || code != want.code {
+			t.Errorf("GET %s: status = %d, body = %s, want %d %s", target, response.Code, response.Body.String(), want.status, want.code)
 		}
 	}
 }

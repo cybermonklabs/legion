@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test"
-import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { createChannelDelivery } from "../src/envoy-channel-server"
 import { SessionIdentity } from "../src/session-identity"
 import { FakeNotifier, useScratchState } from "./channel-session-harness"
@@ -28,7 +27,10 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue): a message whose p
     const delivery = createChannelDelivery({
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier,
-      configFile: sessionConfigFile("claude", process.env),
+      // The session's answer to a Dispatch delivery: a peer's message is answered by nobody.
+      reply: async () => {
+        throw new Error("a peer's message takes no Dispatch reply")
+      },
       stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({
@@ -63,7 +65,10 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue, list): a copy of a
     const delivery = createChannelDelivery({
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier: new FakeNotifier(),
-      configFile: sessionConfigFile("claude", process.env),
+      // The session's answer to a Dispatch delivery: a peer's message is answered by nobody.
+      reply: async () => {
+        throw new Error("a peer's message takes no Dispatch reply")
+      },
       stderr: (line) => void process.stderr.write(line),
     })
     const raw = JSON.stringify({

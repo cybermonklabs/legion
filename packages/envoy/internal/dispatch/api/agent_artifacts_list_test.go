@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -170,8 +171,8 @@ func TestAgentFileListRefusesACallerTheConversationReadRefuses(t *testing.T) {
 				request.Header.Set("Authorization", "Bearer "+token)
 				response := httptest.NewRecorder()
 				handler.ServeHTTP(response, request)
-				if response.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, response).Code != codeScopeRequired {
-					t.Fatalf("GET %s: status=%d body=%s, want 403 %s", path, response.Code, response.Body.String(), codeScopeRequired)
+				if code := apicode.OAuthScopeRequired.V1Name(); response.Code != http.StatusForbidden || decodeBody[refusalAnswer](t, response).Code != code {
+					t.Fatalf("GET %s: status=%d body=%s, want 403 %s", path, response.Code, response.Body.String(), code)
 				}
 				if strings.Contains(response.Body.String(), listedFile) {
 					t.Fatalf("GET %s refused the caller and named the file: %s", path, response.Body.String())

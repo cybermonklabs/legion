@@ -19,10 +19,21 @@ import (
 func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	return actor.Recorded(), true
+}
+
+// requestReader is the credential actingReader resolves, for a helper that holds the request
+// behind a gate that already admitted it and writes no refusal of its own: a credential that does
+// not resolve reads as the zero actor, which proves no author and so reads no author-private node.
+func (s *server) requestReader(r *http.Request) model.Actor {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		return model.Actor{}
+	}
+	return actor.Recorded()
 }
 
 // everyReader is who a read of the graph answers for when what it reads is kept or sent where
@@ -37,12 +48,13 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 //   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
 //     read again by every reader of the conversation, not by the person who wrote the message;
 //   - the record of a comment thread a document projects (ProjectMark, through
-//     projectThreadMark from reopenComment, editComment and deleteComment, and from
-//     commentAction and createCommentFor) is written into the document every reader of that
-//     document reads;
-//   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
-//     and handed to the next reader whose request names the same pair, so an answer read for
-//     one person would be served to another.
+//     projectThreadMark from reopenCommentAs, editCommentAs and deleteCommentAs, and from
+//     commentActionAs and writeComment, which both versions' comment writes run) is written
+//     into the document every reader of that document reads;
+//   - a comment list (answerCommentList, and the pages of it /api/v2 answers,
+//     listIssueCommentsV2 and listArtifactCommentsV2) is kept in listAnswers under its owner and
+//     its ETag and handed to the next reader whose request names the same pair, so an answer read
+//     for one person would be served to another;
 //   - the judgment of the form of The Spec (approvedSpecTexts) reads the approved documents under
 //     a root alike for each person whose request or approval it judges, and a reopen keeps its
 //     findings as the reason of a request that every reader of the issue reads.

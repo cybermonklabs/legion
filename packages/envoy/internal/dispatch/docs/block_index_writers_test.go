@@ -519,19 +519,19 @@ func documentRefs(t *testing.T, database *store.Store, document string) string {
 // added to the tree and not named here fails until someone says what it reads, which is the
 // question that tells a writer from a repair.
 var indexPasses = map[string]string{
-	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
-	"api/comment_actions.go#editComment":     "the edit request's own body",
-	"api/comment_actions.go#reopenComment":   "the reopen request",
-	"api/comment_create.go#createCommentFor": "the create request's own body",
-	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
+	"api/comment_actions.go#commentActionAs":        "the request naming the action and the comment it acts on",
+	"api/comment_actions.go#editCommentAs":          "the edit request's own body",
+	"api/comment_actions.go#reopenCommentAs":        "the reopen request",
+	"api/comment_create.go#writeComment":            "the create request's own body",
+	"api/comment_delivery.go#answerCommentDelivery": "the reply a delivery recorded",
 	// The comment's row and its node, and what it states under its comment.created, which the
 	// comment route and the comment an issue write leaves both queue: each reads the comment its
 	// caller writes, and its own artifacts' addresses (commentStored).
 	"api/comment_create.go#queueCommentRow":     "the comment its caller writes: the create request's own body, or the issue write's own words",
 	"api/comment_create.go#queueCommentCreated": "the facts the comment's row write stated and the comment.created event it appended",
-	// The orphaning of a comment's anchor, which the accept and the reject arms of commentAction
-	// and deleteComment queue when their document write finds the anchor's mark gone
-	// (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row
+	// The orphaning of a comment's anchor, which the accept and the reject arms of
+	// commentActionAs and deleteCommentAs queue when their document write finds the anchor's mark
+	// gone (docs.ErrAnchorOrphaned). It sets the orphaned key of the anchor the comment's own row
 	// holds and keeps every other key, the artifact_id its anchored_to tuple names among them, so
 	// it sets no column the store projects (censustest.ProjectedColumns' anchor) and reads no
 	// side of a projection to write the other.
@@ -557,7 +557,7 @@ var indexPasses = map[string]string{
 	// follow answered.
 	"asks/followers.go#queueFollow":    "the ask and the session its caller names",
 	"api/server.go#appendCausingEvent": "the event its caller appends and the facts its caller's write stated before it",
-	"api/asks.go#createAskFor":         "the ask the create request opens and the event it appended after the follow",
+	"api/asks.go#openAsk":              "the ask the create request opens and the event it appended after the follow",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
@@ -582,7 +582,7 @@ var indexPasses = map[string]string{
 	// projection and mends nothing.
 	"api/artifacts.go#storeArtifact":                "the facts the upload's index pass stated, the uploaded document and the event the upload appended",
 	"api/artifacts.go#commitArtifactVersionEvent":   "the facts the version's index pass stated and the event that recorded the version",
-	"api/issue_create.go#createIssue":               "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
+	"api/issue_create.go#createIssueFrom":           "the facts the spec's index pass stated, the issue the request creates and the issue's own event",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "the facts the seeded version's index pass stated and the seed's own plan",
 	"docs/block_index.go#indexOwedDocument":         "the facts the tick's index pass stated and the event that recorded the version",
 	// The seed's comments: their nodes, their author's person node and each comment's

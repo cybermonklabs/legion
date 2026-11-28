@@ -28,8 +28,7 @@ import { priorityText } from "./render-issue";
 export async function answersCommand(
   context: ReadingContext<SessionContext>
 ): Promise<DispatchToolResult> {
-  const { configUrl, input, newClient: dispatchClient, reading } = context;
-  const sessionId = input.sessionId?.trim();
+  const { configUrl, hostSession: sessionId, newClient: dispatchClient, reading } = context;
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
   const cut = reading.cut;
   const response = await dispatchClient()
@@ -75,8 +74,7 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
  * and then neither does it.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { input, newClient: dispatchClient } = context;
-  const sessionId = input.sessionId?.trim();
+  const { hostSession: sessionId, newClient: dispatchClient } = context;
   if (!sessionId) throw new Error("host session id is required for dispatch whoami");
   const client = dispatchClient();
   const identity = await client.whoami();

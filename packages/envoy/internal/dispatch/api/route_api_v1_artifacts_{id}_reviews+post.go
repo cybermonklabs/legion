@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -12,8 +13,9 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. The form check does not refuse a request for changes.",
 	Handler:     (*server).createArtifactReview,
+	Successor:   successorIs(http.MethodPost, "/artifacts/{id}/reviews"),
 	WriteClass:  scopeProject,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	// A review settles what a person settles, so it needs the approve scope beside person.
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 	ApproveOnly: true,

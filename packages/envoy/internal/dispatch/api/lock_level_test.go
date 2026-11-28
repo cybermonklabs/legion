@@ -4,7 +4,7 @@
 // and leaving it out of the -race run spares that job compiling the guard and running its scan
 // over every .go file of packages/envoy a second time.
 //
-// The tag is here for that saving rather than for the compiler. What this guard and the nine
+// The tag is here for that saving rather than for the compiler. What this guard and the
 // others share - moduleSource, moduleSources, stringConstants, sqlStatements, sqlStatementsIn,
 // literalText, sqlWhitespace - is declared in module_source_test.go, which carries no tag
 // because tests of this package use declarations of it untagged and so must have them under
@@ -15,7 +15,7 @@
 // left in). The work stays behind the tag: the constant fixpoint and the statement walk this
 // guard runs over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
-// once in the text-check run that names the twenty-four tests of these ten guards and
+// once in the text-check run that names the tests of these guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
 // is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather
@@ -52,15 +52,15 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 // ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
 // after its advisory lock, before the read it guards, while its fleet read answers that a process
 // of an earlier build is live (store.lockOwnerRows); and an issue create's `for share` of its
-// parent's row (createIssue). That one runs only with the parent-status rule on, in the create's
-// write phase, after the update of the project's next_number gave the transaction its id, as the
-// statement just before `insert into issues`. It orders the create against a close of that
-// parent: a close whose update ran first makes it wait and read `done`, and a create whose share
-// lock ran first makes the close's update wait, and the close's second read then sees the new
-// child. It takes no lock in the read phase and replaces no advisory lock. Every other
-// declaration and function of ownerlock.go is under the rule.
+// parent's row (createIssueFrom, the create both versions run). That one runs only with the
+// parent-status rule on, in the create's write phase, after the update of the project's
+// next_number gave the transaction its id, as the statement just before `insert into issues`. It
+// orders the create against a close of that parent: a close whose update ran first makes it wait
+// and read `done`, and a create whose share lock ran first makes the close's update wait, and the
+// close's second read then sees the new child. It takes no lock in the read phase and replaces no
+// advisory lock. Every other declaration and function of ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
-	"internal/dispatch/api/issue_create.go": {"createIssue"},
+	"internal/dispatch/api/issue_create.go": {"createIssueFrom"},
 	"internal/dispatch/events/broker.go":    {"lockEventOwner"},
 	"internal/dispatch/store/ownerlock.go":  {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }

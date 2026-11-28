@@ -1,4 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   askgateState,
   bytesDigest,
@@ -39,6 +41,7 @@ import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
+  type ExecuteDispatchToolInput,
   executeDispatchTool,
 } from "./dispatch-execute";
 import { unstorableBytes } from "./dispatch-file-text";
@@ -86,6 +89,8 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** The `User-Agent` every Dispatch request of the call sends (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string;
   /** The one bound of a CI job's `dispatch result --project` (`ResultBound`, its default in
    *  dispatch-commands/job-result.ts), which a test shortens to run it on the real clock. */
   readonly resultBound?: ResultBound;
@@ -98,6 +103,46 @@ export interface DispatchCliIo {
   /** Waits between two polls of `dispatch login --device`'s code; a timer by default, a seam for
    *  a test that answers the poll at once. */
   readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+}
+
+/** What the `dispatch` command names itself when no host plugin's bundle runs it: a checkout's
+ *  `bin/dispatch.ts`, which no release built. */
+export const DISPATCH_COMMAND_SOURCE_USER_AGENT = "dispatch/0.0.0-dev (source)";
+
+/** A `User-Agent` token's characters: printable ASCII with no space, so no manifest can make a
+ *  header value that fetch refuses and every call fails on. */
+const USER_AGENT_TOKEN = /^[\x21-\x7e]+$/;
+
+/**
+ * The `User-Agent` of the `dispatch` command whose module is at `moduleUrl` (its
+ * `import.meta.url`): `dispatch/<version> (<package>)` of the host plugin that ships it, read from
+ * the `package.json` at the plugin's root, the directory above the `dist/` both hosts' builds write
+ * the bundle into as `dist/dispatch.js` (`scripts/build-dispatch-cli.sh`, and claude-envoy's
+ * `scripts/build.ts`). Any other module, `bin/dispatch.ts` run from a checkout, or a bundle whose
+ * manifest gives no name and version, is `DISPATCH_COMMAND_SOURCE_USER_AGENT`. It never throws: no
+ * call is refused for how it names itself.
+ */
+export function dispatchCommandUserAgent(moduleUrl: string): string {
+  try {
+    const bundle = fileURLToPath(moduleUrl);
+    const dist = dirname(bundle);
+    if (basename(bundle) !== "dispatch.js" || basename(dist) !== "dist") {
+      return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+    }
+    const manifest: unknown = JSON.parse(readFileSync(join(dist, "..", "package.json"), "utf8"));
+    if (typeof manifest !== "object" || manifest === null)
+      return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+    const name: unknown = Reflect.get(manifest, "name");
+    const version: unknown = Reflect.get(manifest, "version");
+    return typeof name === "string" &&
+      typeof version === "string" &&
+      USER_AGENT_TOKEN.test(name) &&
+      USER_AGENT_TOKEN.test(version)
+      ? `dispatch/${version} (${name})`
+      : DISPATCH_COMMAND_SOURCE_USER_AGENT;
+  } catch {
+    return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+  }
 }
 
 /** Claude Code reads back at most 30,000 characters of a command's output by default
@@ -353,6 +398,7 @@ async function runProxyCommand(
     cwd: io.cwd,
     config,
     sessionId,
+    userAgent: io.userAgent,
     stderr: (text) => io.stderr(text),
   });
 }
@@ -522,7 +568,10 @@ export async function runDispatchCli(
     command?.documentPathField === undefined ? undefined : parsed.args[command.documentPathField];
   let pathBytes: Uint8Array<ArrayBuffer> | undefined;
   if (typeof uploadPath === "string") {
-    const read = await documentFileRead(uploadedFile(io.cwd, uploadPath));
+    const uploadName = parsed.args.name;
+    const read = await documentFileRead(
+      uploadedFile(io.cwd, uploadPath, typeof uploadName === "string" ? uploadName : undefined)
+    );
     if (read.kind === "refused") return refuse(messageFor(read.refusal), REFUSED, parsed.tool);
     if (read.kind === "passed") pathBytes = read.bytes;
   }
@@ -556,7 +605,9 @@ export async function runDispatchCli(
     if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
     const { url, credential } = resolved.config;
     try {
-      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch);
+      const client = new DispatchClient(url, credential, io.fetchImpl ?? fetch, {
+        userAgent: io.userAgent,
+      });
       const result = await sendApiCall(args, env, client);
       for (const warning of result.warnings ?? []) io.stderr(`${warning}\n`);
       if (result.body === undefined) print(result.text);
@@ -627,6 +678,7 @@ export async function runDispatchCli(
           return new DispatchClient(settings.url, settings.credential, io.fetchImpl ?? fetch, {
             signal: deadline,
             ...askOnceWithinDryRun(deadlineMs),
+            userAgent: io.userAgent,
           });
         },
       });
@@ -660,6 +712,25 @@ export async function runDispatchCli(
   for (const line of resolved.warnings) note(line);
   if ("problem" in resolved) return refuse(resolved.problem, USAGE, parsed.tool);
   const { config } = resolved;
+  // The fields the two executeDispatchTool calls below share, the dry run's and the record's,
+  // named once so that a field added here reaches both. A function rather than a value, so the
+  // session's title file is read as each call is built: inside that call's try, which makes a
+  // file that cannot be read the call's refusal (and the record's ledger entry), and for the
+  // record only after its AskGate check and its session prune, which can return first or remove
+  // the session's directory.
+  const callFields = (): Pick<
+    ExecuteDispatchToolInput,
+    "cwd" | "host" | "sessionId" | "sessionTitle" | "config" | "env" | "fetchImpl" | "userAgent"
+  > => ({
+    cwd: io.cwd,
+    host,
+    sessionId,
+    sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
+    config,
+    env,
+    ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+    ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
+  });
 
   // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
   // pull-request body line the record would print, which Dispatch writes and records nothing
@@ -669,15 +740,9 @@ export async function runDispatchCli(
   if (parsed.dryRun) {
     try {
       const result = await executeDispatchTool({
+        ...callFields(),
         tool: parsed.tool,
         args: parsed.args,
-        cwd: io.cwd,
-        host,
-        sessionId,
-        sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
-        config,
-        env,
-        ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
         dryRun: true,
       });
       print(`${JSON.stringify(parsed.args, null, 2)}\n\n${result.text}`);
@@ -695,7 +760,7 @@ export async function runDispatchCli(
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
   // whatever ran the CLI. A session no live process records needs none.
   let uploadBytes: Uint8Array | undefined;
-  if (gatedWrite(parsed.tool, parsed.args)) {
+  if (gatedWrite(parsed.tool, parsed.args, io.cwd)) {
     const notCalled = `dispatch ${commandName(parsed.tool)} was not called:`;
     try {
       const gate = askgateState(dir);
@@ -841,18 +906,12 @@ export async function runDispatchCli(
   let code: number;
   try {
     const result = await executeDispatchTool({
+      ...callFields(),
       tool,
       args,
-      cwd: io.cwd,
       // AskGate's bytes, where its check read the file, are the bytes it digested, so they are sent
       // in place of those read once the flags were read.
       ...defined("uploadBytes", uploadBytes ?? pathBytes),
-      host,
-      sessionId,
-      sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
-      config,
-      env,
-      ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
       subscriptions,
     });
     text = result.text;

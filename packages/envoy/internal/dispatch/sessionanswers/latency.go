@@ -6,9 +6,9 @@ import (
 )
 
 // SlowRead and SlowWithin are the keyword fill's pause threshold (textversions): the fill pauses
-// while Dispatch takes more than SlowRead, 800 ms, to answer an agent's answers read
-// (GET /api/v1/agents/{session_id}/answers), and continues once no read has taken that long, or
-// run that long, for SlowWithin.
+// while Dispatch takes more than SlowRead, 800 ms, to answer an agent's answers read (GET
+// /api/v1/agents/{session_id}/answers, or GET /api/v2/agents/{session_id}/answers), and continues
+// once no read has taken that long, or run that long, for SlowWithin.
 const (
 	SlowRead   = 800 * time.Millisecond
 	SlowWithin = 10 * time.Second
@@ -16,9 +16,9 @@ const (
 
 // Latency times the answers reads one process serves, for the keyword fill's pause: the reads
 // running, each with the time it began, and the end of the latest read that took longer than
-// SlowRead, all under one mutex. The answers route records each read from the moment it enters
-// the route's handler chain, as the access-log line times it (Begin, Read.End), and the fill asks
-// Slow before each batch. It is safe for many goroutines at once.
+// SlowRead, all under one mutex. Each answers route, of either version, records each read from the
+// moment it enters the route's handler chain, as the access-log line times it (Begin, Read.End),
+// and the fill asks Slow before each batch. It is safe for many goroutines at once.
 type Latency struct {
 	now func() time.Time
 

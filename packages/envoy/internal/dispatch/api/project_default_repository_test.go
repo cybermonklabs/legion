@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -183,8 +184,8 @@ func TestTheDefaultRepositoryIsADeploymentWrite(t *testing.T) {
 		t.Fatalf("a project-scoped token: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 	}
 	refusal := decodeBody[refusalAnswer](t, refused)
-	if refusal.Code != codeProjectScopeDeployment {
-		t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScopeDeployment)
+	if refusal.Code != apicode.ProjectScopeDeployment.V1Name() {
+		t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScopeDeployment.V1Name())
 	}
 	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "PUT /api/v1/projects/{key}/default-repository") {
 		t.Fatalf("refusal %q names neither the project the credential covers nor the route", refusal.Error)

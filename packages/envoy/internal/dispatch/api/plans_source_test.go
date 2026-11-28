@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -24,8 +25,8 @@ func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
 		withFields(defaultPlanBody(daemonSessionOf("LEG"), 1), map[string]any{"source": "no-such-source"}))
 	refusal := decodeBody[refusalAnswer](t, response)
 	_, listed, named := strings.Cut(refusal.Error, "one of ")
-	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {
-		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), codePlanInput)
+	if response.Code != http.StatusBadRequest || refusal.Code != contracts.PlanInputCode || !named {
+		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), contracts.PlanInputCode)
 	}
 	sources := strings.Split(listed, ", ")
 	for _, shape := range []reflect.Type{reflect.TypeFor[planRecordInput](), reflect.TypeFor[model.PlanRecord]()} {

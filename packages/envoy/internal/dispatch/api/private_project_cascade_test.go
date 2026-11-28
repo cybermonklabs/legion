@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -283,8 +284,8 @@ func TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne(t *testing.T) 
 	}
 
 	absent := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+missingIssue+"/status-change", map[string]any{"status": "in_progress"})
-	if code, _ := refusalOf(t, absent); absent.Code != http.StatusForbidden || code != codeProjectScope {
-		t.Fatalf("status change of %s: status=%d body=%s, want 403 %s", missingIssue, absent.Code, absent.Body.String(), codeProjectScope)
+	if code, _ := refusalOf(t, absent); absent.Code != http.StatusForbidden || code != apicode.ProjectScope.V1Name() {
+		t.Fatalf("status change of %s: status=%d body=%s, want 403 %s", missingIssue, absent.Code, absent.Body.String(), apicode.ProjectScope.V1Name())
 	}
 	if strings.Contains(absent.Body.String(), missingIssue) {
 		t.Fatalf("status change of %s names the missing key: %s", missingIssue, absent.Body.String())
@@ -306,7 +307,7 @@ func TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne(t *testing.T) 
 			t.Run(tc.name+"/"+call.name, func(t *testing.T) {
 				// absent names no key (checked above) and holds no title, so an answer equal to it
 				// names nothing of the private issue.
-				rig.refusedAsMissing(t, []string{tc.key}, http.StatusForbidden, codeProjectScope, tc.key, missingIssue,
+				rig.refusedAsMissing(t, []string{tc.key}, http.StatusForbidden, apicode.ProjectScope.V1Name(), tc.key, missingIssue,
 					func() *httptest.ResponseRecorder {
 						return sendDirect(scopedToken, tc.key, withMembers(tc.body, call.members))
 					},

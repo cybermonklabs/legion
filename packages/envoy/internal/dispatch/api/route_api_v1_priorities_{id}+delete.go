@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise.",
 	Handler:     (*server).deletePriority,
+	Successor:   successorIs(http.MethodDelete, "/priorities/{id}"),
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a priority id, a slug of its own and no uuid at all"},
 	// A delete answers no body: the state it wrote is `gone` and the row is still there, which

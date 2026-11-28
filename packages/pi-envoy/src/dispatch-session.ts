@@ -25,13 +25,15 @@ export interface DispatchSession {
  * undefined when Dispatch is not configured. A configuration that cannot be read rejects, as
  * `activeDispatchSettings` throws. `session` is the session this plugin instance is acting as, read
  * at each call, which a broker trade writes under: the token this session presents names this
- * session and no other of this process.
+ * session and no other of this process. `userAgent` is what every request names this plugin as
+ * (`PI_ENVOY_USER_AGENT`, extensions/envoy.ts).
  */
 export async function sessionDispatchClient(
   file: SessionConfigFile,
   cwd: string,
   limit: { readonly signal?: AbortSignal; readonly deadlineMs?: number },
-  session: () => string
+  session: () => string,
+  userAgent: string
 ): Promise<DispatchSession | undefined> {
   const config = activeDispatchSettings(
     (await sessionDispatchSettings(file, process.env, { cwd, session })).dispatch
@@ -39,7 +41,7 @@ export async function sessionDispatchClient(
   return config === null
     ? undefined
     : {
-        client: new DispatchClient(config.url, config.credential, fetch, limit),
+        client: new DispatchClient(config.url, config.credential, fetch, { ...limit, userAgent }),
         serverUrls: dispatchServerUrls(config),
       };
 }

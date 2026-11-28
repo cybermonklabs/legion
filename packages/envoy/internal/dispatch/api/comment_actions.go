@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -46,8 +47,9 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 }
 
 // correctionActor is the caller of a correction: an edit or a delete, of a comment
-// (editComment, deleteComment) or of an issue message (editMessage, deleteMessage,
-// message_corrections.go). The author of a post is a session or a person, so all four read
+// (editCommentAs, deleteCommentAs) or of an issue message (editMessageAs, deleteMessageAs,
+// message_corrections.go), for the /api/v1 and the /api/v2 route of each, which resolve it before
+// the shared work runs. The author of a post is a session or a person, so all four read
 // both.
 //
 // The session comes first, through requireActor: the one the credential proves, or the one the
@@ -63,7 +65,7 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 // (400 ACTOR_KIND), and a session is not the author of the comment its owner wrote in a
 // browser (403 NOT_AUTHOR). Every other credential that proves no session - the deployment's
 // shared token, a pod's service-account token - holds no person scope and keeps that refusal.
-// The ask reword reaches the person along its own path: editAsk resolves the actor with
+// The ask reword reaches the person along its own path: rewordAsk resolves the actor with
 // requireActor and resolves the person beside it, and falls back to that person only where the
 // session it resolved is not the ask's author (asks.go).
 //
@@ -74,7 +76,7 @@ func (s *server) lockedCommentAllowingClosed(ctx context.Context, tx pgx.Tx, id 
 func (s *server) correctionActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	// The session the credential proves, and a body that names a writer at all: the two
@@ -107,15 +109,15 @@ func (s *server) lockedCommentForCorrection(
 ) (model.Comment, bool) {
 	comment, err := s.lockedCommentAllowingClosed(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return model.Comment{}, false
 	}
 	if !comment.Author.SameAs(actor) {
-		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may "+verb+" it")
+		writeError(w, r, apicode.NotAuthor, "only the comment author may "+verb+" it")
 		return model.Comment{}, false
 	}
 	if comment.DeletedAt != nil {
-		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+		s.writeHandlerError(w, r, deletedPostError(refs.ItemComment))
 		return model.Comment{}, false
 	}
 	return comment, true
@@ -149,9 +151,16 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.reopenCommentAs(w, r, actor)
+}
+
+// reopenCommentAs reopens the comment thread the path's {id} names as actor, once the route has
+// resolved who acts: the work of POST /api/v1/comments/{id}/reopen and of PUT
+// /api/v2/comments/{id}/state {state: open}. It answers the comment itself, or the refusal.
+func (s *server) reopenCommentAs(w http.ResponseWriter, r *http.Request, actor model.Actor) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -159,16 +168,16 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if comment.ReplyTo != nil || comment.AskID != nil {
-		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reopen the thread root")
+		writeError(w, r, apicode.InvalidComment, "reopen the thread root")
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Everything up to Commit is the read phase (Docs.Join): this route and ProjectMark queue their
@@ -178,7 +187,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		set resolved = false, resolved_by = null, resolved_at = null
 		where id = $1
 	`, comment.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comment.Resolved = false
@@ -187,12 +196,12 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	// A reopen is refused above on a reply, so the mark this writes is the thread's own; a
 	// resolved orphaned suggestion reopens like any thread (projectThreadMark).
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, model.ReferenceChanges{})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.queueEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID).event(
@@ -201,23 +210,24 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), *event)
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
-// editCommentInput is the body of PATCH /api/v1/comments/{id}.
+// editCommentInput is the body of PATCH /api/v1/comments/{id} and of PATCH /api/v2/comments/{id}
+// (editCommentV2).
 //
 // actor is who makes the edit, for a bearer caller that names its own session: the route is the
 // author's, and an agent's comment has an author of kind session, so a session that reads its
@@ -235,43 +245,51 @@ type editCommentInput struct {
 }
 
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
-	if !requireUUIDPath(w, r, "comment") {
+	if !requireUUIDPath(w, r, "comment", apicode.CommentIDInput) {
 		return
 	}
 	var input editCommentInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	actor, ok := s.correctionActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	// An edit stores line feeds alone, as a comment's creation does (createCommentFor): the
+	s.editCommentAs(w, r, actor, input)
+}
+
+// editCommentAs rewrites the body of the comment the path's {id} names as input asks, by actor,
+// once the route has read its body and resolved who acts (correctionActor): the work of PATCH
+// /api/v1/comments/{id} and PATCH /api/v2/comments/{id}. It answers the comment itself, or the
+// refusal.
+func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor model.Actor, input editCommentInput) {
+	// An edit stores line feeds alone, as a comment's creation does (writeComment): the
 	// display read ends a line at a carriage return too, but a body that holds one draws
 	// differently in every other reader of the stored text. The carried offsets below are the
 	// dashboard editor's, and a ProseMirror document holds no carriage return, so no offset this
 	// normalisation shortens is one a caller sent.
 	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
-		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
+		writeError(w, r, apicode.InvalidComment, "comment body is required")
 		return
 	}
 	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var carried *refs.CarriedEdit
 	if input.Blocks != nil {
 		if input.BaseRevision == nil {
-			writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "blocks: requires base_revision, the comment's revision the blocks were read at")
+			writeError(w, r, apicode.InvalidComment, "blocks: requires base_revision, the comment's revision the blocks were read at")
 			return
 		}
 		carried = &refs.CarriedEdit{BaseRevision: *input.BaseRevision, Blocks: input.Blocks}
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -293,7 +311,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	documentCtx = docs.WithCommentMarks(documentCtx)
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Everything up to Commit is the read phase (Docs.Join): this route and ProjectMark queue their
@@ -302,7 +320,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// event carry it before that update runs.
 	editedAt, err := ledger.Now(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := queueExec(ledger, `
@@ -310,32 +328,32 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		set body = $2, edited_at = $3
 		where id = $1
 	`, comment.ID, input.Body, editedAt); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
 	if err := queuePostBodyHistory(ledger, refs.ItemComment, comment.ID, previousBody, actor); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
-		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
+		writeError(w, r, apicode.InvalidComment, carriedErr.Error())
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	payload, logins, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.queueLoggedEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID).event(
@@ -344,16 +362,16 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		payload,
 	), logins, "comment", comment.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), *event)
@@ -365,8 +383,8 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 // the mark its anchor names is no longer in the document (docs.ErrAnchorOrphaned). The anchor
 // keeps everything else it carries, so the comment still reads as the one made on that quote,
 // and the write is queued on the caller's own ledger, which both callers of this then end their
-// own way: the accept and the reject arms of commentAction commit the orphaning, with the event
-// that dates it (queueOrphanedAnchorEvent), and answer 409, where deleteComment carries on and
+// own way: the accept and the reject arms of commentActionAs commit the orphaning, with the event
+// that dates it (queueOrphanedAnchorEvent), and answer 409, where deleteCommentAs carries on and
 // deletes the comment, whose comment.deleted carries the orphaned anchor.
 //
 // Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
@@ -417,6 +435,15 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if !ok {
 		return
 	}
+	s.commentActionAs(w, r, actor, action)
+}
+
+// commentActionAs resolves the comment the path's {id} names, or accepts or rejects its
+// suggestion, as actor, once the route has resolved who acts: the work of POST
+// /api/v1/comments/{id}/resolve, /accept and /reject and of PUT /api/v2/comments/{id}/state
+// {state: resolved, accepted or rejected}. It answers the comment itself, an accept with
+// whether its text was lost (acceptedComment), or the refusal.
+func (s *server) commentActionAs(w http.ResponseWriter, r *http.Request, actor model.Actor, action string) {
 	// Read before the transaction opens (specWriterOf), for the check of the accept and the
 	// reject below; the resolve writes no document text and reads nothing for it.
 	var writer specWriter
@@ -425,7 +452,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
@@ -433,19 +460,19 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	defer ledger.Discard()
 	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	artifactName, err := s.commentArtifactName(r.Context(), tx, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	projectionKind := ""
 	eventType := "comment.resolved"
 	resolvedBy, err := encodeJSON(actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document operations
@@ -459,7 +486,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// to close a suggestion that can no longer be accepted or rejected.
 		kind, kindErr := s.commentProjectionKind(documentCtx, comment)
 		if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
-			s.writeHandlerError(w, kindErr)
+			s.writeHandlerError(w, r, kindErr)
 			return
 		}
 		if kindErr == nil {
@@ -467,7 +494,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		}
 		resolvedAt, err := ledger.Now(r.Context())
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := queueExec(ledger, `
@@ -475,7 +502,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			set resolved = true, resolved_by = $2, resolved_at = $3
 			where id = $1
 		`, comment.ID, resolvedBy, resolvedAt); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		comment.Resolved = true
@@ -487,24 +514,24 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		// the suggestion itself is read, since the delete took that too. A resolve of a deleted
 		// thread stands: it moves no text.
 		if comment.DeletedAt != nil {
-			s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+			s.writeHandlerError(w, r, deletedPostError(refs.ItemComment))
 			return
 		}
 		if comment.Suggestion == nil {
-			writeError(w, "INVALID_SUGGESTION", http.StatusBadRequest, "accept and reject require a suggestion")
+			writeError(w, r, apicode.InvalidSuggestion, "accept and reject require a suggestion")
 			return
 		}
 		if comment.Suggestion.Accepted != nil {
-			writeError(w, "ALREADY_ACTIONED", http.StatusConflict, "suggestion has already been actioned")
+			writeError(w, r, apicode.AlreadyActioned, "suggestion has already been actioned")
 			return
 		}
 		if action == "accept" && comment.Anchor == nil {
-			writeError(w, "INVALID_SUGGESTION", http.StatusBadRequest, "accept requires an anchored suggestion")
+			writeError(w, r, apicode.InvalidSuggestion, "accept requires an anchored suggestion")
 			return
 		}
 		kind, kindErr := s.commentProjectionKind(documentCtx, comment)
 		if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
-			s.writeHandlerError(w, kindErr)
+			s.writeHandlerError(w, r, kindErr)
 			return
 		}
 		if kindErr == nil {
@@ -515,7 +542,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			// the suggestion is anchored in, before the document call. The accept and the reject
 			// need the person scope at the route's gate, so the check passes them at once.
 			if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, comment.Anchor.ArtifactID); err != nil {
-				s.writeHandlerError(w, err)
+				s.writeHandlerError(w, r, err)
 				return
 			}
 			var markErr error
@@ -526,31 +553,31 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			}
 			if markErr != nil {
 				if !errors.Is(markErr, docs.ErrAnchorOrphaned) {
-					s.writeHandlerError(w, markErr)
+					s.writeHandlerError(w, r, markErr)
 					return
 				}
 				// An anchor already orphaned changes nothing, and appends no event, as a refresh
 				// that changes nothing appends none.
 				changed := !comment.Anchor.Orphaned
 				if err := recordOrphanedCommentAnchor(ledger, &comment); err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				var orphaned *model.Event
 				if changed {
 					if orphaned, err = s.queueOrphanedAnchorEvent(r.Context(), tx, ledger, comment, actor); err != nil {
-						s.writeHandlerError(w, err)
+						s.writeHandlerError(w, r, err)
 						return
 					}
 				}
 				if err := ledger.Commit(r.Context()); err != nil {
-					s.writeHandlerError(w, err)
+					s.writeHandlerError(w, r, err)
 					return
 				}
 				if orphaned != nil {
 					s.publish(r.Context(), *orphaned)
 				}
-				s.writeHandlerError(w, markErr)
+				s.writeHandlerError(w, r, markErr)
 				return
 			}
 		}
@@ -564,15 +591,15 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		comment.Suggestion.Accepted = &accepted
 		// The decision is merged into the column (jsonb ||), so every key the create stored and
 		// this write does not name stays: the kind, which the delete of a rejected suggestion reads
-		// to tell an insert's quote, the comment's own words, from document text (deleteComment).
+		// to tell an insert's quote, the comment's own words, from document text (deleteCommentAs).
 		suggestion, err := encodeJSON(comment.Suggestion)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		resolvedAt, err := ledger.Now(r.Context())
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The owner's lock this transaction holds keeps the suggestion as it was read above, so the
@@ -586,13 +613,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 				where id = $1 and suggestion->>'accepted' is null
 			`, comment.ID, resolvedBy, resolvedAt, suggestion).Exec(func(tag pgconn.CommandTag) error {
 				if tag.RowsAffected() == 0 {
-					return errorf(http.StatusConflict, "ALREADY_ACTIONED", "suggestion has already been actioned")
+					return errorf(apicode.AlreadyActioned, "suggestion has already been actioned")
 				}
 				return nil
 			})
 			return nil
 		}); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		comment.ResolvedBy = &actor
@@ -602,11 +629,11 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if comment.Anchor != nil {
 		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 	}
@@ -617,7 +644,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		summary := acceptedVersionName(comment.Body, comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
 		named, err := s.deps.Docs.NamedVersion(documentCtx, comment.Anchor.ArtifactID, summary, actor)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		// The version records the comment whose accept named it (artifact_versions.accepted_from),
@@ -627,24 +654,24 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if err := queueExec(ledger, `
 			update artifact_versions set accepted_from = $3 where artifact_id = $1 and number = $2
 		`, comment.Anchor.ArtifactID, named.Version.Number, comment.ID); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		diff, err := s.namedVersionDiff(r.Context(), tx, ledger, comment.Anchor.ArtifactID, named.Version)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		versionEvent, err := s.commitArtifactVersionEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, named, diff)
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		events = append(events, versionEvent)
 	}
 	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, model.ReferenceChanges{})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	event, err := s.queueEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID).event(
@@ -653,17 +680,17 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		payload,
 	))
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	events = append(events, event)
 	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), appendedEvents(events...)...)

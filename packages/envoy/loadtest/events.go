@@ -50,7 +50,7 @@ var eventKinds = []string{kindComment, kindAnchored, kindReply, kindEdit, kindUp
 // delivery join times. A write can append others (an anchored comment's document snapshot, a
 // reply's comment.reopened); those are counted, not timed.
 var primaryEventType = map[string]string{
-	// createCommentFor in internal/dispatch/api/comment_create.go appends comment.created for a
+	// writeComment in internal/dispatch/api/comment_create.go appends comment.created for a
 	// plain comment, an anchored comment and a reply alike.
 	kindComment:  evCommentCreated,
 	kindAnchored: evCommentCreated,

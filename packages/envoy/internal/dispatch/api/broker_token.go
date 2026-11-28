@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -36,9 +37,10 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // limited-token gate inside it (refuseLimitedToken), which verifies no broker-issued token
 // itself: it answers a read-only token on every route outside the read class, and one that
-// carries a cut on every read that holds no past answer, and a results token on every route the
-// results list does not name. A personal token is the gate's own to resolve, and the gate
-// carries that result, its refusal included, as this carries its decision.
+// carries a cut on every read that holds no past answer, a results token on every route the
+// results list does not name, and an approve-only token on every route the approve list does not
+// name. A personal token is the gate's own to resolve, and the gate carries that result, its
+// refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -77,7 +79,7 @@ func (s *server) callerStillResolves(r *http.Request) error {
 // such credential kind, and this is what an Authorization header that is not a bearer has always
 // been here (auth.BearerToken reads no token from it).
 func errNoBrokerConfigured() *apiError {
-	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+	return errorf(apicode.Unauthorized, "invalid bearer token")
 }
 
 // brokerPersonScopes is what a broker token that acts for its person holds, a read-only one
@@ -143,12 +145,12 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // account and writes nothing, as every read-only token does. The broker narrows no job's token.
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
 // (model.Credential.Cut), and refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route
-// outside the read class (routeDecl.Read) and on GET /ws/live, ahead of the scope gate, the
-// sign-in check, an account entry's write as its account and everything else the route does. A
-// token that carries a cut is answered as of its cut on every read of kind answers (asOfGate),
-// and GET /api/v1/whoami names the cut; every other read and GET /ws/live answer it 403
-// AS_OF_TOKEN_NOT_SERVED. On a read it serves, it is the session it names, reading as that
-// session does.
+// outside the read class (routeDecl.Read, v2ReadClasses) and on GET /ws/live, ahead of the scope
+// gate, the sign-in check, an account entry's write as its account and everything else the route
+// does. A token that carries a cut is answered as of its cut on every read of kind answers
+// (asOfGate), and GET /api/v1/whoami and GET /api/v2/me name the cut (asOfCaller); every other
+// read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. On a read it serves, it is the
+// session it names, reading as that session does.
 //
 // A results token is held to its list the same way: the scope results alone, the project scope
 // results, a person, one project and the CI run it was minted for (ciphertoken.Caller.ResultsOnly,
@@ -192,20 +194,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, ciphertoken.ErrNotActive):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenNotActive,
 			"the secrets broker does not hold this access token as live")
 	case errors.Is(err, ciphertoken.ErrKeyMismatch):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenKeyMismatch,
 			"the DPoP proof's key is not the key this access token is bound to")
 	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenProofInvalid,
 			"the DPoP proof did not verify")
 	case errors.Is(err, ciphertoken.ErrNotASession):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
+		return model.Actor{}, false, errorf(apicode.BrokerTokenNotASession,
 			"this access token is not a session's credential: the secrets broker names no session for it")
 	case errors.Is(err, ciphertoken.ErrRateLimited):
 		wait := s.deps.BrokerTokens.RetryAfter()
-		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
+		refusal := errorf(apicode.BrokerTokenRateLimited,
 			"too many access tokens checked from this address; try again in %s", wait)
 		// The one rounding every bucket of internal/ratelimit's refusals carries, the broker's
 		// own 429s included, so a caller reads one wait the same way whichever refused it.
@@ -215,7 +217,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// The class only, as serviceTokenActor logs one: this runs before any authorization, so
 		// anything the caller chose would be theirs to write into the operator's log.
 		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
+		return model.Actor{}, false, errorf(apicode.BrokerUnavailable,
 			"the secrets broker cannot be reached; try again in a minute")
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's

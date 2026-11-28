@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -268,7 +269,7 @@ func TestAPlanWriteRecordsEachTasksNeeds(t *testing.T) {
 		"actor": daemon, "generation": 1, "source": "default",
 		"tasks": []map[string]any{{"id": "a", "steps": []string{"implementer"}, "needs": []string{"x"}}},
 	})
-	expectRefusal(t, "a need of no task", refused, http.StatusBadRequest, codePlanInput, "task a", `"x"`)
+	expectRefusal(t, "a need of no task", refused, http.StatusBadRequest, apicode.PlanInput.V1Name(), "task a", `"x"`)
 	if tasks := readSteps(t, handler, issue).Tasks; len(tasks) != 0 {
 		t.Fatalf("a refused plan write left the tasks %+v, want none", tasks)
 	}

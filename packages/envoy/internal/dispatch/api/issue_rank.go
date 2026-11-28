@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 )
 
@@ -42,7 +42,7 @@ func (s *server) rankForInput(ctx context.Context, q queryer, project, issueKey 
 		}
 	}
 	if previous != "" && next != "" && previous >= next {
-		return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbors are not ordered")
+		return "", errorf(apicode.RankInput, "rank neighbors are not ordered")
 	}
 	if previous != "" {
 		next, err = nextProjectRank(ctx, q, project, issueKey, previous, next)
@@ -103,7 +103,7 @@ func lastProjectRank(ctx context.Context, q queryer, project, issueKey string) (
 // (lockPatchOwners), so it takes no lock of its own.
 func rankBoundary(ctx context.Context, q queryer, project, issueKey, key string) (string, error) {
 	if key == "" || key == issueKey {
-		return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbor must name another issue")
+		return "", errorf(apicode.RankInput, "rank neighbor must name another issue")
 	}
 	var (
 		neighborProject string
@@ -111,12 +111,12 @@ func rankBoundary(ctx context.Context, q queryer, project, issueKey, key string)
 	)
 	if err := q.QueryRow(ctx, `select project_key, rank from issues where key = $1`, key).Scan(&neighborProject, &neighborRank); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbor does not exist")
+			return "", errorf(apicode.RankInput, "rank neighbor does not exist")
 		}
 		return "", err
 	}
 	if neighborProject != project {
-		return "", errorf(http.StatusBadRequest, "RANK_INPUT", "rank neighbor must be in the same project")
+		return "", errorf(apicode.RankInput, "rank neighbor must be in the same project")
 	}
 	return neighborRank, nil
 }

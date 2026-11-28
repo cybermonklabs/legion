@@ -13,6 +13,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Resolve a pending machine login by its typed confirmation code, returning its facts.",
 	Handler:     (*server).lookupMachineCredential,
+	Successor:   successorIs(http.MethodPost, "/machine-login-lookups"),
 	WriteClass:  scopeDeployment,
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 	ApproveOnly: true,

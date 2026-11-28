@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -10,7 +12,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
 	Handler:     (*server).listArtifactComments,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/comments"),
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfCommentListAtACut},
 	Shape:       routeShape{Status: http.StatusOK, Response: []shapedComment{}, Params: asOfQuery{}},
 })

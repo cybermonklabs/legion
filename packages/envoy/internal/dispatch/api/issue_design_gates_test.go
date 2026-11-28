@@ -478,6 +478,39 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 	})
 
+	t.Run("PATCH /api/v2/issues/{key}'s design_gates stores holds as the publish does", func(t *testing.T) {
+		// The /api/v2 write of the set takes each entry the publish takes, holds among its
+		// members: an entry's holds is stored as it was given and one that gives none as null, and
+		// the rows it stores decide the advice as the publish's rows do.
+		createAdviceProject(t, handler, "GATEPATCH")
+		publishGatedSteps(t, handler, "GATEPATCH", []string{model.GatedStepSpec})
+		issue := createAdviceIssue(t, handler, "GATEPATCH", "Gated through the /api/v2 write", &spec)
+		verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne check.\n")
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v2/issues/"+issue.Key, map[string]any{
+			"design_gates": []map[string]any{
+				{"step": model.GatedStepCriteria, "artifact_id": verification.Artifact.ID, "holds": true},
+				{"step": model.GatedStepSpec, "artifact_id": issue.PrimaryArtifactID},
+			},
+		}, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("PATCH /api/v2/issues/%s with design_gates: status=%d body=%s", issue.Key, response.Code, response.Body.String())
+		}
+		stored := []issueDesignGate{
+			{Step: model.GatedStepCriteria, ArtifactID: verification.Artifact.ID, Holds: new(true)},
+			{Step: model.GatedStepSpec, ArtifactID: issue.PrimaryArtifactID},
+		}
+		if got := recordedDesignGates(t, handler, issue.Key); !reflect.DeepEqual(got, stored) {
+			t.Fatalf("%s records %s after the /api/v2 write, want %s", issue.Key, asJSON(t, got), asJSON(t, stored))
+		}
+		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
+		superseded := supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approved)
+		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepCriteria}}
+		if !slices.Equal(superseded.DesignGates, want) {
+			t.Fatalf("design_gates = %#v, want %#v: the /api/v2 write said the criteria row holds this tree",
+				superseded.DesignGates, want)
+		}
+	})
+
 	t.Run("a row the daemon says holds nothing names none though the list names its step", func(t *testing.T) {
 		// Where the daemon gave an answer, its answer is the rule, and the list is not asked: the
 		// list names this row's step, and the daemon that published the row says it holds nothing,
@@ -603,31 +636,42 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 // TestDesignGateRecordDecidesTheSupersededApprovalAdvice). So the contract a client is generated
 // from takes an entry with no holds, while each entry the route answers carries one: the entry of
 // the publish's body requires its step and its document and not holds, and the entry of the
-// answer requires all three.
+// answer requires all three. PATCH /api/v2/issues/{key} writes the same set as its design_gates
+// member, each entry the publish's own, so the /api/v2 document says the same of that member.
 func TestADesignGateEntryOfAPublishMayLeaveOutHolds(t *testing.T) {
 	t.Parallel()
-	_, document := readOpenAPI(t)
-	schema := func(name string) map[string]any {
-		t.Helper()
-		var read map[string]any
-		if err := json.Unmarshal(document.Components.Schemas[name], &read); err != nil {
-			t.Fatalf("read schema %s: %v", name, err)
+	for _, written := range []struct {
+		version        apiVersion
+		body, property string
+	}{
+		{apiV1, "IssueDesignGatesInput", "gates"},
+		{apiV2, "PatchIssueV2Input", "design_gates"},
+	} {
+		_, document := readOpenAPI(t, written.version)
+		schema := func(name string) map[string]any {
+			t.Helper()
+			var read map[string]any
+			if err := json.Unmarshal(document.Components.Schemas[name], &read); err != nil {
+				t.Fatalf("read the /api/v%d schema %s: %v", written.version, name, err)
+			}
+			return read
 		}
-		return read
-	}
-	properties, _ := schema("IssueDesignGatesInput")["properties"].(map[string]any)
-	gates, _ := properties["gates"].(map[string]any)
-	items, _ := gates["items"].(map[string]any)
-	ref, _ := items["$ref"].(string)
-	entry, found := strings.CutPrefix(ref, "#/components/schemas/")
-	if !found {
-		t.Fatalf("IssueDesignGatesInput.gates holds %v, want a list of one named schema", gates)
-	}
-	if got, want := openAPIRequiredOf(t, entry, schema(entry)), []string{"artifact_id", "step"}; !slices.Equal(got, want) {
-		t.Fatalf("an entry of the publish (%s) requires %v, want %v: the route takes an entry with no holds and stores it as null", entry, got, want)
-	}
-	if got, want := openAPIRequiredOf(t, "IssueDesignGate", schema("IssueDesignGate")), []string{"artifact_id", "holds", "step"}; !slices.Equal(got, want) {
-		t.Fatalf("an entry of the answer (IssueDesignGate) requires %v, want %v: every entry the route answers carries holds", got, want)
+		properties, _ := schema(written.body)["properties"].(map[string]any)
+		gates, _ := properties[written.property].(map[string]any)
+		items, _ := gates["items"].(map[string]any)
+		ref, _ := items["$ref"].(string)
+		entry, found := strings.CutPrefix(ref, "#/components/schemas/")
+		if !found {
+			t.Fatalf("/api/v%d %s.%s holds %v, want a list of one named schema", written.version, written.body, written.property, gates)
+		}
+		if got, want := openAPIRequiredOf(t, entry, schema(entry)), []string{"artifact_id", "step"}; !slices.Equal(got, want) {
+			t.Fatalf("an entry of the /api/v%d write (%s) requires %v, want %v: the route takes an entry with no holds and stores it as null",
+				written.version, entry, got, want)
+		}
+		if got, want := openAPIRequiredOf(t, "IssueDesignGate", schema("IssueDesignGate")), []string{"artifact_id", "holds", "step"}; !slices.Equal(got, want) {
+			t.Fatalf("an entry of the /api/v%d answer (IssueDesignGate) requires %v, want %v: every entry the route answers carries holds",
+				written.version, got, want)
+		}
 	}
 }
 

@@ -113,17 +113,19 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// codeLegionStatusScopeRequired refuses one of R26's three writes of a Legion issue to a
+// apicode.LegionStatusScopeRequired refuses one of R26's three writes of a Legion issue to a
 // credential that holds neither the person scope nor the legion-status scope. It is not
-// codeScopeRequired, which refuses a credential that lacks the one scope a route or a field
-// needs, whatever the write changes. This refusal depends on the issue: the same write of an
-// issue that is not a Legion issue is taken, and either of two scopes lets the write through.
-// Its challenge names legion-status, the scope that a writer which is not a person needs. No
-// client acts on this code, so @legion/contracts holds no copy of it.
-const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
+// apicode.OAuthScopeRequired, which refuses a credential that lacks the one scope a route or a
+// field needs, whatever the write changes. This refusal depends on the issue: the same write of an
+// issue that is not a Legion issue is taken, and either of two scopes lets the write through. Its
+// challenge names legion-status, the scope that a writer which is not a person needs. No client
+// acts on this code, so @legion/contracts holds no copy of it. Both versions answer it, /api/v2 on
+// PATCH /api/v2/issues/{key}, which declares it.
 
 // refuseLegionStatusWrite is R26's refusal (this file's comment). refuseIssueWritePlan runs it as
 // its first statement, before the plan's first write. It judges every step of the plan. on is
@@ -153,7 +155,7 @@ const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 // step: what the step writes, and the parent that the plan read under the same lock
 // (parentBefore), which changesParent and parentLeft read.
 //
-// A refused step answers 403 codeLegionStatusScopeRequired. A read that fails is an error, which
+// A refused step answers 403 LEGION_STATUS_SCOPE_REQUIRED (apicode.LegionStatusScopeRequired). A read that fails is an error, which
 // the caller answers 500: the read gates a write, so a failed read never lets the write through.
 func refuseLegionStatusWrite(ctx context.Context, q pgx.Tx, on bool, writer issueWriter, plan issueWritePlan) error {
 	if !on || writer.system || writer.credential.Holds(model.ScopePerson) || writer.credential.Holds(model.ScopeLegionStatus) {
@@ -370,6 +372,6 @@ func legionStatusScopeRefusal(key, write string) *apiError {
 			"An architect of an issue above writes done, backlog, icebox or triage once its claim is ready: "+
 			"its broker token proves its session, and the Legion daemon has published that session as the architect of that issue",
 		key, write, model.ScopePerson, model.ScopeLegionStatus))
-	refusal.code = codeLegionStatusScopeRequired
+	refusal.code = apicode.LegionStatusScopeRequired
 	return refusal
 }

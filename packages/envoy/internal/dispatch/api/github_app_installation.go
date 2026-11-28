@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// appInstallationResponse is GET /api/v1/github/app-installation/{owner}/{repo}'s answer.
+// appInstallationResponse is GET /api/v1/github/app-installation/{owner}/{repo}'s answer and GET
+// /api/v2/repositories/{owner}/{repo}/app-installation's.
 type appInstallationResponse struct {
 	Installed bool `json:"installed"`
 }
@@ -30,15 +32,15 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	}
 	owner, name, err := githubRepoPath(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	installed, err := s.deps.GitHub.Installed(r.Context(), owner, name)
 	switch {
 	case errors.Is(err, githubapp.ErrNoAppKey):
-		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, err.Error())
+		writeError(w, r, apicode.GitHubAppUnconfigured, err.Error())
 	case err != nil:
-		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s/%s: %s", owner, name, gitHubReason(err)))
+		writeError(w, r, apicode.GitHubUnreadable, fmt.Sprintf("read the GitHub App's installation on %s/%s: %s", owner, name, gitHubReason(err)))
 	default:
 		WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})
 	}
@@ -54,7 +56,7 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 func githubRepoPath(r *http.Request) (owner, name string, err error) {
 	owner, name, err = parseSourceRepo(r.PathValue("owner") + "/" + r.PathValue("repo"))
 	if err != nil {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_REPOSITORY", `the path must name a repository "owner/name" (got %q)`,
+		return "", "", errorf(apicode.InvalidRepository, `the path must name a repository "owner/name" (got %q)`,
 			r.PathValue("owner")+"/"+r.PathValue("repo"))
 	}
 	return owner, name, nil

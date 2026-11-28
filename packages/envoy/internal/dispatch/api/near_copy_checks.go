@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -22,7 +23,8 @@ import (
 // Forced): a refused create wrote nothing anywhere, and no create kept the scores the gate read,
 // so how often the live gate refuses a create that is no copy, or lets a copy in, could not be
 // counted on the creates it actually scored. A near_copy_checks row is one answer, read back
-// through GET /api/v1/near-copy-checks and GET /api/v1/near-copy-checks/{id}.
+// through GET /api/v1/near-copy-checks and GET /api/v1/near-copy-checks/{id}, and through GET
+// /api/v2/projects/{key}/near-copy-checks and GET /api/v2/near-copy-checks/{id}.
 
 // The outcomes near_copy_checks.outcome holds, one for each state runNearCopyGate settles.
 const (
@@ -64,10 +66,11 @@ const (
 // with it.
 const nearCopyRecordTimeout = time.Second
 
-// nearCopyChecksPageMax is the most rows one page of GET /api/v1/near-copy-checks holds, and how
-// many it holds when ?limit= is absent. A page row carries no spec (GET
-// /api/v1/near-copy-checks/{id} reads one), so its size is bounded by the title's cap and five
-// candidates, never by what a create sent.
+// nearCopyChecksPageMax is the most rows one page of GET /api/v1/near-copy-checks and of GET
+// /api/v2/projects/{key}/near-copy-checks holds, and how many it holds when ?limit= is absent. A
+// page row carries no spec (GET /api/v1/near-copy-checks/{id} and GET /api/v2/near-copy-checks/{id}
+// read one), so its size is bounded by the title's cap and five candidates, never by what a create
+// sent.
 const nearCopyChecksPageMax = 1000
 
 // nearCopyCheck is the gate's answer for one create as its near_copy_checks row records it,
@@ -190,10 +193,10 @@ func (s *server) writeNearCopyCheck(ctx context.Context, q queryer, row nearCopy
 }
 
 // recordNearCopyRefusal writes the row of a refusal, check, on a bounded context of its own, and
-// reports whether it is known to have landed. createIssue answers a refusal only when it has, so
-// every refusal has its row; otherwise it lets the create in as unrecorded and writes that
-// create's row in its own transaction (writeNearCopyCheck), which replaces the refused row if the
-// refusal's insert landed after all.
+// reports whether it is known to have landed. createIssueFrom, the create both versions make,
+// answers a refusal only when it has, so every refusal has its row; otherwise it lets the create in
+// as unrecorded and writes that create's row in its own transaction (writeNearCopyCheck), which
+// replaces the refused row if the refusal's insert landed after all.
 func (s *server) recordNearCopyRefusal(ctx context.Context, row nearCopyCheckRow, check *nearCopyCheck) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), nearCopyRecordTimeout)
 	defer cancel()
@@ -227,8 +230,8 @@ func (s *server) recordNearCopyCheck(ctx context.Context, row nearCopyCheckRow, 
 }
 
 // nearCopyCheckColumns are a row's columns as scanNearCopyCheck reads them, but for its spec,
-// which each query selects last: the row's own for GET /api/v1/near-copy-checks/{id}, and null for
-// a page, which carries no spec.
+// which each query selects last: the row's own for GET /api/v1/near-copy-checks/{id} and GET
+// /api/v2/near-copy-checks/{id} (readNearCopyCheck), and null for a page, which carries no spec.
 const nearCopyCheckColumns = `id::text, created_at, project_key, actor_kind, actor_id, outcome, reason,
        force, title, spec_sha256, parent_key, issue_key, candidates, refuse_score, nudge_score,
        build_commit, read_ms, read_stage`
@@ -268,23 +271,23 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 		Checks:  []model.NearCopyCheck{},
 	}
 	if !projectKeyPattern.MatchString(page.Project) {
-		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("project", page.Project))
+		writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", page.Project))
 		return
 	}
 	from, to, err := parseOptionalWindow(query)
 	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
+		writeError(w, r, apicode.InvalidQuery, err.Error())
 		return
 	}
 	page.From, page.To = from, to
 	limit, err := parseEventLimit(query.Get("limit"), nearCopyChecksPageMax)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	var afterAt *time.Time
@@ -292,7 +295,7 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(query.Get("after")); raw != "" {
 		parsed, err := uuid.Parse(raw)
 		if err != nil {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("after %q is not a near-copy check id", raw))
+			writeError(w, r, apicode.InvalidQuery, fmt.Sprintf("after %q is not a near-copy check id", raw))
 			return
 		}
 		id := parsed.String()
@@ -301,12 +304,12 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 			select created_at from near_copy_checks where id = $1::uuid and project_key = $2
 		`, id, page.Project).Scan(&at)
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+			writeError(w, r, apicode.InvalidQuery,
 				fmt.Sprintf("after %s is no near-copy check of project %s", raw, page.Project))
 			return
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		afterAt, afterID = &at, &id
@@ -314,20 +317,20 @@ func (s *server) getNearCopyChecks(w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(), nearCopyChecksPageQuery,
 		page.Project, page.From, page.To, afterAt, afterID, limit+1)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var check model.NearCopyCheck
 		if err := scanNearCopyCheck(rows, &check); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		page.Checks = append(page.Checks, check)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if len(page.Checks) > limit {
@@ -344,26 +347,33 @@ func (s *server) getNearCopyCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	if !requireUUIDPath(w, r, "near_copy_check") {
+	if !requireUUIDPath(w, r, "near_copy_check", apicode.NearCopyCheckIDInput) {
 		return
 	}
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	id := r.PathValue("id")
-	var check model.NearCopyCheck
-	err = scanNearCopyCheck(pool.QueryRow(r.Context(), `
-		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
-	`, id), &check)
+	check, err := readNearCopyCheck(r.Context(), pool, id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NEAR_COPY_CHECK_NOT_FOUND", http.StatusNotFound, "near-copy check "+id+" not found")
+		writeError(w, r, apicode.NearCopyCheckNotFound, "near-copy check "+id+" not found")
 		return
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, check)
+}
+
+// readNearCopyCheck reads the one row of the uuid id with its spec, the row both versions' read of
+// one near-copy check answers, or pgx.ErrNoRows where no row has that id.
+func readNearCopyCheck(ctx context.Context, q queryer, id string) (model.NearCopyCheck, error) {
+	var check model.NearCopyCheck
+	err := scanNearCopyCheck(q.QueryRow(ctx, `
+		select `+nearCopyCheckColumns+`, spec from near_copy_checks where id = $1::uuid
+	`, id), &check)
+	return check, err
 }

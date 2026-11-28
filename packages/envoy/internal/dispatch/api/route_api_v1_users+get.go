@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Everyone who has signed in, by lowercase email: the assignee picker's options.",
 	Handler:     (*server).listUsers,
+	Successor:   successorIs(http.MethodGet, "/users"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: listUsersResponse{}},

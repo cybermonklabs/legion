@@ -915,6 +915,7 @@ func TestAProjectScopedCallerRecordsAndRetractsOnAnotherProjectsCheck(t *testing
 	answer := liveNamedToken(caller.jkt)
 	answer.Projects = []string{"BETA"}
 	rig.broker.Says(token, answer)
+
 	resultsOn := func(issue string) int {
 		t.Helper()
 		var count int

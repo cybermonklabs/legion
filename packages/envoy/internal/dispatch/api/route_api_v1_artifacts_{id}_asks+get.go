@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 var _ = declareRoute(routeDecl{
@@ -10,7 +12,8 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List a document's asks.",
 	Handler:     (*server).listArtifactAsks,
-	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
+	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/asks"),
+	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route lists the document's asks that existed then, each at its newest state event at or before the cut."},
 	Shape:       routeShape{Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 })

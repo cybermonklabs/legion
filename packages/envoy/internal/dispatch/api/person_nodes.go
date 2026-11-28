@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -130,7 +134,8 @@ var personPageShownQuery = personNodesTied + `
 var personPageKinds = refs.VisibilityKinds()
 
 // personNodesQuery pages the nodes one person is tied to (personNodesTied). $2 is the acting
-// credential the visibility predicate is bound at (refs.VisibilityArg), $3 and $4 the page.
+// credential the visibility predicate is bound at (refs.VisibilityArg), $3 and $4 the page, and
+// $5 the projects a /api/v2 read keeps, empty for every project (GET /api/v1 binds it empty).
 //
 // The items arm resolves each tied node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
@@ -150,7 +155,8 @@ var personNodesQuery = personNodesTied + `, items as (
 		       case
 		         when i.key is not null then '/issues/' || i.key || '/comments/' || c.id::text
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
-		       end as href
+		       end as href,
+		       coalesce(i.project_key, a.project_key) as project
 		from related r
 		join comments c on r.from_kind = '` + graphstore.KindComment + `' and r.from_id = c.id::text
 		left join issues i on i.key = c.issue_key
@@ -160,11 +166,12 @@ var personNodesQuery = personNodesTied + `, items as (
 	)
 	select count(*) over () as total, kind, id, relations, text, created_at, href, edited_at, deleted_at, deleted_by
 	from items
+	where cardinality($5::text[]) = 0 or project = any($5::text[])
 	order by created_at desc, kind, id desc
 	limit $3 offset $4`
 
 // listPersonNodes answers GET /api/v1/people/{login}/nodes: what one person wrote and what
-// reached them, newest first.
+// reached them, newest first, as readPersonNodes reads it for both versions.
 //
 // It is a named read of the graph and no traversal: the route takes the person and a page, and
 // takes no kind, no filter and no edge to walk, so no caller chooses what the store is asked.
@@ -195,47 +202,60 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, offset, err := parseMyAnswersPage(r)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	login := model.CanonicalLogin(r.PathValue("login"))
+	read, shown, err := s.readPersonNodes(r.Context(), caller, r.PathValue("login"), nil, limit, offset)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if !shown {
+		writeError(w, r, apicode.NotFound, "not found")
+		return
+	}
+	WriteJSON(w, http.StatusOK, read)
+}
+
+// readPersonNodes is the page of the person rawLogin names as caller may read it, keeping the
+// rows of projects alone where it names any, as listPersonNodes describes it. shown is false for
+// a page the caller may not open, which reads no row: GET /api/v1/people/{login}/nodes answers it
+// 404 NOT_FOUND, and GET /api/v2/nodes, whose person is a filter, the empty page a filter value
+// that names nothing answers.
+func (s *server) readPersonNodes(ctx context.Context, caller model.Actor, rawLogin string, projects []string, limit, offset int) (personNodes, bool, error) {
+	login := model.CanonicalLogin(rawLogin)
+	if projects == nil {
+		projects = []string{}
+	}
 	// The acting credential is marshalled once and bound by both reads: it is one value for
 	// the request, and the two statements name the same reader.
 	seen := refs.VisibilityArg(caller)
-	tx, err := s.deps.Store.Pool.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return personNodes{}, false, err
 	}
 	// The transaction reads only, so its end is a rollback whatever happened.
-	defer tx.Rollback(r.Context())
+	defer tx.Rollback(ctx)
+	response := personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset}
 	var shown bool
-	if err := tx.QueryRow(r.Context(), personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if err := tx.QueryRow(ctx, personPageShownQuery, login, seen, personPageKinds).Scan(&shown); err != nil {
+		return personNodes{}, false, err
 	}
 	if !shown {
 		// caller.ID is the acting person's canonical login (actingPerson), the form login takes
 		// above, so a login spelled in another case is still the reader's own.
-		if login != caller.ID {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
-			return
-		}
-		WriteJSON(w, http.StatusOK, personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset})
-		return
+		return response, login == caller.ID, nil
 	}
 	// The test seam: a case commits a write here, between the decision and the list (server
 	// betweenPersonPageReads). Nothing but a test sets it.
 	if s.betweenPersonPageReads != nil {
 		s.betweenPersonPageReads()
 	}
-	rows, err := tx.Query(r.Context(), personNodesQuery, login, seen, limit, offset)
+	rows, err := tx.Query(ctx, personNodesQuery, login, seen, limit, offset, projects)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return personNodes{}, false, err
 	}
 	defer rows.Close()
-	response := personNodes{Person: login, Rows: []personNode{}, Limit: limit, Offset: offset}
 	for rows.Next() {
 		var row personNode
 		var body string
@@ -243,8 +263,7 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		var deletedBy []byte
 		if err := rows.Scan(&response.Total, &row.Kind, &row.ID, &row.Relations, &body, &row.CreatedAt, &row.Href,
 			&editedAt, &deletedAt, &deletedBy); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return personNodes{}, false, err
 		}
 		row.Title = refs.FirstLineWithin(body, s.deps.Origins, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
@@ -253,14 +272,54 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 			row.EditedAt = &edited
 		}
 		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return personNodes{}, false, err
 		}
 		response.Rows = append(response.Rows, row)
 	}
-	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
+	return response, true, rows.Err()
+}
+
+// personNodesV2Query is GET /api/v2/nodes's query: the page, the person whose nodes it lists,
+// required, and the projects whose rows it keeps, repeatable, none keeping every project's (R1.3).
+type personNodesV2Query struct {
+	pageQuery
+	// Person is the login of the person whose nodes the list holds: the nodes they wrote and
+	// the nodes delivered to a session of theirs. It is required.
+	Person *string `query:"person"`
+	// Project keeps the nodes of these projects; none is every project.
+	Project []string `query:"project"`
+}
+
+// listPersonNodesV2 answers GET /api/v2/nodes: the page GET /api/v1/people/{login}/nodes reads
+// (readPersonNodes), of the person the person filter names, in the envelope, kept to the projects
+// the query names. A person whose page the caller may not open, a login nobody holds among them,
+// names no node the caller may see, so the list is empty, as GET /api/v2/issues answers a project
+// or a ref that names nothing.
+func (s *server) listPersonNodesV2(w http.ResponseWriter, r *http.Request) {
+	caller, ok := s.actingPerson(w, r)
+	if !ok {
 		return
 	}
-	WriteJSON(w, http.StatusOK, response)
+	query := v2Query[personNodesV2Query](r)
+	if query.Person == nil || strings.TrimSpace(*query.Person) == "" {
+		writeError(w, r, apicode.InvalidQuery, "person is required: the login of the person whose nodes this lists")
+		return
+	}
+	projects := []string{}
+	for _, value := range query.Project {
+		project := strings.TrimSpace(value)
+		if !projectKeyPattern.MatchString(project) {
+			writeError(w, r, apicode.InvalidProject, projectKeyProblem("project", project))
+			return
+		}
+		if !slices.Contains(projects, project) {
+			projects = append(projects, project)
+		}
+	}
+	read, _, err := s.readPersonNodes(r.Context(), caller, *query.Person, projects, query.Limit, query.Offset)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, newPage(read.Rows, read.Total, query.pageQuery))
 }

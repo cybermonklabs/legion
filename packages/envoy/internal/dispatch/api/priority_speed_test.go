@@ -416,7 +416,7 @@ func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) fl
 	ctx := context.Background()
 	var failed error
 	allocs := testing.AllocsPerRun(speedScanRuns, func() {
-		if _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
+		if _, _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
 			failed = err
 		}
 	})
@@ -460,7 +460,7 @@ func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGro
 	t.Helper()
 	ctx := context.Background()
 	faults := func() string {
-		body, err := corpus.server.readPriorities(ctx, []string{}, false)
+		body, _, err := corpus.server.readPriorities(ctx, []string{}, false)
 		if err != nil {
 			t.Fatalf("read the priorities: %v", err)
 		}
@@ -753,9 +753,11 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 
 // speedLiterals writes a statement's arguments as the list an EXECUTE names after the statement,
 // since an EXECUTE under EXPLAIN takes no bound parameter: a string, a flag, a number, a list of
-// strings, an empty list of numbers and a null time are every value the arguments of the reads
-// counted here hold, and any other stops the test rather than be written wrong. A statement that
-// takes no argument is named with no list.
+// strings, an empty list of numbers and a time are every value the arguments of the reads counted
+// here hold, and any other stops the test rather than be written wrong. Each is written as pgx
+// sends it: a nil list of strings and a nil time as null, as GET /api/v2/issues sends the keys of
+// no ref= (issueListFiltersV2's $19) and a window it was given no bound of, and an empty list as
+// '{}'. A statement that takes no argument is named with no list.
 func speedLiterals(t *testing.T, arguments []any) string {
 	t.Helper()
 	if len(arguments) == 0 {
@@ -772,6 +774,10 @@ func speedLiterals(t *testing.T, arguments []any) string {
 		case int:
 			literals = append(literals, strconv.Itoa(value))
 		case []string:
+			if value == nil {
+				literals = append(literals, "null")
+				continue
+			}
 			if len(value) == 0 {
 				literals = append(literals, "'{}'")
 				continue
@@ -787,10 +793,11 @@ func speedLiterals(t *testing.T, arguments []any) string {
 			}
 			literals = append(literals, "'{}'")
 		case *time.Time:
-			if value != nil {
-				t.Fatalf("write %v as a literal: only the null time is written", value)
+			if value == nil {
+				literals = append(literals, "null")
+				continue
 			}
-			literals = append(literals, "null")
+			literals = append(literals, quote(value.Format(time.RFC3339Nano)))
 		default:
 			t.Fatalf("write a %T as a literal: no literal is written for it", argument)
 		}

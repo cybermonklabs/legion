@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -27,15 +28,15 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 		t.Fatalf("%d mutating row(s) the project check cannot decide:\n%s", len(undecidable), strings.Join(undecidable, "\n"))
 	}
 	for _, route := range routes {
-		if route.Method == http.MethodGet && route.WriteClass != "" {
-			t.Errorf("%s %s is a GET route and declares the write class %q", route.Method, route.Pattern, route.WriteClass)
+		if route.Method == http.MethodGet && route.Scope != "" {
+			t.Errorf("%s %s is a GET route and declares the write class %q", route.Method, route.Pattern, route.Scope)
 		}
 	}
 
 	t.Run("a mutating row with no class fails this walk", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeDecl: routeDecl{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny}},
-			{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/widgets", Auth: authAny}},
+			{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets", Auth: authAny}},
+			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets", Auth: authAny}},
 		})
 		if len(undecidable) != 1 || !strings.HasPrefix(undecidable[0], "POST /api/v1/widgets:") {
 			t.Fatalf("the walk answered %q, want the unclassed POST named and the GET left alone", undecidable)
@@ -44,7 +45,7 @@ func TestEveryMutatingRouteIsClassed(t *testing.T) {
 
 	t.Run("a project row whose address names no object fails it too", func(t *testing.T) {
 		undecidable := served.undecidableWrites([]apiRoute{
-			{routeDecl: routeDecl{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny, WriteClass: scopeProject}},
+			{routeRow: routeRow{Method: http.MethodPost, Pattern: "/api/v1/widgets/{id}/paint", Auth: authAny, Scope: scopeProject}},
 		})
 		if len(undecidable) != 1 || !strings.Contains(undecidable[0], "names no object") {
 			t.Fatalf("the walk answered %q, want the unresolvable project row named", undecidable)
@@ -240,11 +241,11 @@ func addressedWrites() []addressedWrite {
 func unexercisedProjectAddresses(routes []apiRoute, writes []addressedWrite) []string {
 	var unexercised []string
 	for _, route := range routes {
-		if route.Method == http.MethodGet || route.WriteClass != scopeProject {
+		if route.Method == http.MethodGet || route.Scope != scopeProject {
 			continue
 		}
 		if !slices.ContainsFunc(writes, func(write addressedWrite) bool {
-			return write.prefix != "" && addresses(route.Pattern, write.prefix)
+			return write.prefix != "" && projectPathOf(write.prefix) == route.ProjectOf
 		}) {
 			unexercised = append(unexercised, route.Method+" "+route.Pattern)
 		}
@@ -266,7 +267,7 @@ func TestEveryProjectAddressHasAnAddressedWrite(t *testing.T) {
 		key: "KEY", issue: "KEY-1", document: "document", ask: "ask", comment: "comment", message: "message", result: "result",
 	}
 	for _, write := range addressedWrites() {
-		if _, resolved := served.projectResolverFor(write.prefix); !resolved {
+		if _, resolved := served.resolverOf(projectPathOf(write.prefix)); !resolved {
 			t.Errorf("the %s write names the prefix %q, which the project check resolves no project through", write.kind, write.prefix)
 		}
 		literal, _, _ := strings.Cut(write.prefix, "{")
@@ -283,8 +284,8 @@ func TestEveryProjectAddressHasAnAddressedWrite(t *testing.T) {
 		without := slices.DeleteFunc(addressedWrites(), func(write addressedWrite) bool {
 			return write.prefix == "/api/v1/results/{id}"
 		})
-		if unexercised := unexercisedProjectAddresses(routes, without); !slices.Equal(unexercised, []string{"POST /api/v1/results/{id}/retract"}) {
-			t.Fatalf("the walk without the check result's row answered %q, want the retraction route named", unexercised)
+		if unexercised := unexercisedProjectAddresses(routes, without); !slices.Equal(unexercised, []string{"POST /api/v1/results/{id}/retract", "PUT /api/v2/results/{id}/state"}) {
+			t.Fatalf("the walk without the check result's row answered %q, want the two retraction routes named", unexercised)
 		}
 	})
 }
@@ -354,7 +355,7 @@ func TestAProjectScopedTokenWritesAnotherProjectsObjects(t *testing.T) {
 				for _, project := range []projectFixture{other, own} {
 					answered := rig.serve(caller.presenting(t, write.method, write.path(project, spelling.spell), token, write.body))
 					if answered.Code == http.StatusForbidden {
-						if refusal := decodeBody[refusalAnswer](t, answered); refusal.Code == codeProjectScope {
+						if refusal := decodeBody[refusalAnswer](t, answered); refusal.Code == apicode.ProjectScope.V1Name() {
 							t.Fatalf("a write to %s was refused by the project check: %+v", project.key, refusal)
 						}
 					}
@@ -410,8 +411,8 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 				t.Fatalf("status=%d body=%s, want 403 from the project check", refused.Code, refused.Body.String())
 			}
 			refusal := decodeBody[refusalAnswer](t, refused)
-			if refusal.Code != codeProjectScope {
-				t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+			if refusal.Code != apicode.ProjectScope.V1Name() {
+				t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScope.V1Name())
 			}
 			if !strings.Contains(refusal.Error, brokerTestProject) {
 				t.Fatalf("refusal %q does not name the project the credential covers (%s)", refusal.Error, brokerTestProject)
@@ -428,7 +429,7 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 					answered.Code, answered.Body.String())
 			}
 			if answered.Code == http.StatusForbidden {
-				if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == codeProjectScope {
+				if blocked := decodeBody[refusalAnswer](t, answered); blocked.Code == apicode.ProjectScope.V1Name() {
 					t.Fatalf("a caller that names no project was refused by project scope: %+v", blocked)
 				}
 			}
@@ -454,8 +455,8 @@ func TestADeploymentWriteIsRefusedToAProjectScopedToken(t *testing.T) {
 		t.Fatalf("a project create under a project-scoped token: status=%d body=%s, want 403", refused.Code, refused.Body.String())
 	}
 	refusal := decodeBody[refusalAnswer](t, refused)
-	if refusal.Code != codeProjectScopeDeployment {
-		t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScopeDeployment)
+	if refusal.Code != apicode.ProjectScopeDeployment.V1Name() {
+		t.Fatalf("refusal = %+v, want %s", refusal, apicode.ProjectScopeDeployment.V1Name())
 	}
 	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "POST /api/v1/projects") {
 		t.Fatalf("refusal %q names neither the project the credential covers nor the route", refusal.Error)

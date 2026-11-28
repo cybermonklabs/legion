@@ -1,5 +1,8 @@
 package api
 
+//ci:reads packages/contracts/src/dispatch-api*.ts declaredShapesUnchanged reads each version's module (contractsOf: dispatch-api.ts and dispatch-api-v2.ts), runtime-relative to the repository root (repositoryRoot)
+//ci:reads packages/contracts/schemas/dispatch-openapi*.json committedDocument reads each version's committed OpenAPI document (openAPIDocumentPathOf: dispatch-openapi.json and dispatch-openapi-v2.json), runtime-relative to the repository root (repositoryRoot)
+
 import (
 	"bytes"
 	"cmp"
@@ -24,6 +27,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -45,11 +50,26 @@ var traversalWords = []string{
 	"node", "nodes", "relation", "relations", "traverse", "via",
 }
 
-// contractsModule is the module the dashboard's wire shapes are declared in, relative to the
-// repository root: the module every consumer imports. It re-exports the module generated from the
-// route table's document, which every `bun install` renders and git does not hold
+// contractsModule and contractsModuleV2 are the modules the dashboard's wire shapes are declared
+// in, relative to the repository root, one per version: the module every consumer of /api/v1
+// imports, and the one a client of /api/v2 imports. Each re-exports the module generated from its
+// version's document, which every `bun install` renders and git does not hold
 // (packages/contracts/scripts/gen-api.ts), so this package reads the document instead.
-const contractsModule = "packages/contracts/src/dispatch-api.ts"
+const (
+	contractsModule   = "packages/contracts/src/dispatch-api.ts"
+	contractsModuleV2 = "packages/contracts/src/dispatch-api-v2.ts"
+)
+
+// versionContracts is the module of one version's wire shapes and the specifier of the generated
+// module it re-exports whole.
+type versionContracts struct{ module, generated string }
+
+// contractsOf is each version's contracts module: a route is held to that of the version it is
+// mounted under, as it is held to that version's document (openAPIDocumentPathOf).
+var contractsOf = map[apiVersion]versionContracts{
+	apiV1: {module: contractsModule, generated: "./dispatch-api.generated"},
+	apiV2: {module: contractsModuleV2, generated: "./dispatch-api-v2.generated"},
+}
 
 // TestTheStoreAddsNoReachAndNoReadChangesShape is this child's negative control. The node and
 // tuple store is a second way to hold what Dispatch already held, so the risk it carries is
@@ -137,8 +157,8 @@ func personReadReach(t *testing.T) {
 	if shared.Code != http.StatusForbidden {
 		t.Fatalf("the shared agent bearer: status=%d body=%s, want 403", shared.Code, shared.Body.String())
 	}
-	if refusal := decodeBody[refusalAnswer](t, shared); refusal.Code != codeScopeRequired {
-		t.Fatalf("the shared agent bearer is refused %+v, want %s", refusal, codeScopeRequired)
+	if refusal := decodeBody[refusalAnswer](t, shared); refusal.Code != apicode.OAuthScopeRequired.V1Name() {
+		t.Fatalf("the shared agent bearer is refused %+v, want %s", refusal, apicode.OAuthScopeRequired.V1Name())
 	}
 
 	answered := personPageRequest(t, handler, page, personal)
@@ -334,35 +354,44 @@ func routesBeforeThisChild(t *testing.T, testHooks bool) []apiRoute {
 }
 
 // declaredShapesUnchanged walks every route the table held before this child and reads the shape
-// it answers out of what the contracts package declares.
+// it answers out of what the contracts package declares for the version it is mounted under: an
+// /api/v1 route out of `schemas/dispatch-openapi.json`, which `dispatch-api.ts` publishes, an
+// /api/v2 route out of `schemas/dispatch-openapi-v2.json`, which `dispatch-api-v2.ts` publishes.
 //
-// The chain is three links. The emitter renders the table into `schemas/dispatch-openapi.json`,
-// so a committed document that differs from a fresh render is a table whose shapes nobody
-// published; this test holds that link, and every route below to a path and a method of the
-// document. `dispatch-api.generated.ts` is rendered from that document by every `bun install` and
+// The chain is three links for each version. The emitter renders the version's rows of the table
+// into its document, so a committed document that differs from a fresh render is a table whose
+// shapes nobody published; this test holds that link, and every route below to a path and a
+// method of its version's document. The version's generated module (`dispatch-api.generated.ts`,
+// `dispatch-api-v2.generated.ts`) is rendered from that document by every `bun install` and
 // committed nowhere, so it cannot be left stale beside a table that moved, and
 // packages/contracts/scripts/gen-api.test.ts holds the generator to declaring every path and
-// every schema of the document, field for field. And `dispatch-api.ts` re-exports that module
-// whole, which this test holds, so what a consumer imports is what the table answers.
+// every schema of each document, field for field. And the version's module re-exports its
+// generated module whole, which this test holds, so what a consumer imports is what the table
+// answers.
 func declaredShapesUnchanged(t *testing.T) {
 	root := repositoryRoot(t)
-	document := committedDocument(t, root)
-	module := readRepositoryFile(t, root, contractsModule)
-	if !strings.Contains(module, `export type * from "./dispatch-api.generated";`) {
-		t.Fatalf("%s no longer re-exports the generated module, so what it declares is not what the table answers",
-			contractsModule)
-	}
-	for _, route := range routesBeforeThisChild(t, true) {
-		operations, held := document.Paths[route.Pattern]
-		if !held {
-			t.Errorf("%s %s is in the table and in no path of the document", route.Method, route.Pattern)
-			continue
+	routes := routesBeforeThisChild(t, true)
+	eachOpenAPIVersion(t, func(t *testing.T, version apiVersion) {
+		files := contractsOf[version]
+		documentPath := openAPIDocumentPathOf(version)
+		document := committedDocument(t, root, version)
+		module := readRepositoryFile(t, root, files.module)
+		if !strings.Contains(module, `export type * from "`+files.generated+`";`) {
+			t.Fatalf("%s no longer re-exports the generated module, so what it declares is not what the table answers",
+				files.module)
 		}
-		if _, served := operations[strings.ToLower(route.Method)]; !served {
-			t.Errorf("%s %s is in the table and the document declares no %s for it",
-				route.Method, route.Pattern, strings.ToLower(route.Method))
+		for _, route := range servedAt(version, routes) {
+			operations, held := document.Paths[route.Pattern]
+			if !held {
+				t.Errorf("%s %s is in the table and in no path of %s", route.Method, route.Pattern, documentPath)
+				continue
+			}
+			if _, served := operations[strings.ToLower(route.Method)]; !served {
+				t.Errorf("%s %s is in the table and %s declares no %s for it",
+					route.Method, route.Pattern, documentPath, strings.ToLower(route.Method))
+			}
 		}
-	}
+	})
 }
 
 // committedOpenAPIShapes is the committed document as this test reads it: what each path serves,
@@ -388,28 +417,24 @@ type openAPISchema struct {
 	OneOf      []openAPISchema          `json:"oneOf"`
 }
 
-// committedDocument is the OpenAPI document the contracts package is generated from, held to a
-// fresh render of the route table first: a committed document that differs from the render is a
-// table whose shapes nobody published, and every comparison below would be against the wrong
-// thing.
-func committedDocument(t *testing.T, root string) committedOpenAPIShapes {
+// committedDocument is the committed OpenAPI document of version, which that version's contracts
+// module is generated from, held to a fresh render of the route table first: a committed document
+// that differs from the render is a table whose shapes nobody published, and every comparison
+// below would be against the wrong thing.
+func committedDocument(t *testing.T, root string, version apiVersion) committedOpenAPIShapes {
 	t.Helper()
-	var rendered bytes.Buffer
-	if err := WriteOpenAPI(&rendered); err != nil {
-		t.Fatalf("render the OpenAPI document: %v", err)
-	}
-	committedPath := filepath.Join(root, filepath.FromSlash(OpenAPIDocumentPath))
-	committed, err := os.ReadFile(committedPath)
+	documentPath := openAPIDocumentPathOf(version)
+	rendered := renderOpenAPI(t, version)
+	committed, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(documentPath)))
 	if err != nil {
-		t.Fatalf("read the committed OpenAPI document: %v", err)
+		t.Fatalf("read the committed /api/v%d OpenAPI document: %v", version, err)
 	}
-	if !bytes.Equal(committed, rendered.Bytes()) {
-		t.Fatalf("%s is not what the table renders: run `envoy-dispatch openapi --out %s`",
-			OpenAPIDocumentPath, OpenAPIDocumentPath)
+	if !bytes.Equal(committed, rendered) {
+		t.Fatalf("%s is not what the table renders: run `envoy-dispatch openapi --version %d`", documentPath, version)
 	}
 	var document committedOpenAPIShapes
 	if err := json.Unmarshal(committed, &document); err != nil {
-		t.Fatalf("decode the committed OpenAPI document: %v", err)
+		t.Fatalf("decode the committed /api/v%d OpenAPI document: %v", version, err)
 	}
 	return document
 }
@@ -442,7 +467,9 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //   - An undeclared traversal parameter: every word a caller would walk the graph with that the
 //     route does not declare, handed to it at once, at objects the route has a row of. A route
 //     that honoured one would answer something else, so the answer must be the answer it gives
-//     without them, status and rows alike, as the base build answered it.
+//     without them, status and rows alike, as the base build answered it; and a route the /api/v2
+//     decoder reads (decoded), which refuses every query key its row does not declare (R4),
+//     must answer that refusal, 400 QUERY_KEY_UNKNOWN naming one of the words.
 func threeBadRequests(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
@@ -512,10 +539,10 @@ func threeBadRequests(t *testing.T) {
 		// of a kind the route does not write (the rating write's ratingOfKind) only after the
 		// identifier has passed the check of its issue, so a STEP_INPUT is never that check's
 		// refusal.
-		if code := responseCode(t, response); code == codeStepWriter {
+		if code := responseCode(t, response); code == contracts.StepWriterCode {
 			t.Errorf("%s refuses the probe's caller %d %s before it reads the identifier, so the probe proves nothing about it",
 				route.Method+" "+target, response.Code, code)
-		} else if code == codeStepInput {
+		} else if code == contracts.StepInputCode {
 			t.Errorf("%s refuses the probe's body %d %s rather than the identifier's project, so the probe proves nothing about it: %s",
 				route.Method+" "+target, response.Code, code, firstLine(response.Body.String()))
 		} else if refused, why := authRefusal(response); refused {
@@ -543,14 +570,18 @@ func threeBadRequests(t *testing.T) {
 	// and proves nothing; so every route reads a row here, but the few listed in
 	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
 	//
-	// Each route is sent the traversal words it does not declare. No route refuses an
-	// undeclared query parameter, and the base build answered each of them as it answers the
-	// plain read, so the walked read must answer exactly that: a refusal is an answer
-	// production never gave, and fails as any other. A word a route does declare - `kind` on
-	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
-	// rule, and is no traversal the caller handed it. A read whose rows can grow between the
-	// two reads (growingReads) is walked under a parameter it declares that holds it to the
-	// rows its plain read answered, so the two answers differ only where the walk did.
+	// Each route is sent the traversal words it does not declare (declaredQueryOf). A route the
+	// /api/v2 decoder reads refuses an undeclared query key before its handler runs (R4), so its
+	// walked read must answer that refusal, naming one of the words it was sent and every key
+	// the route declares, whatever its plain read answered. No other route - one of the /api/v1
+	// table, a row of the INFRA-979 tree - refuses an undeclared query parameter, and the base
+	// build answered each of them as it answers the plain read, so the walked read must answer
+	// exactly that: a refusal is an answer production never gave, and fails as any other. A word
+	// a route does declare - `kind` on GET /api/v1/me/replies and GET /api/v2/me/threads - is
+	// that route's own parameter, which it answers by its own rule, and is no traversal the
+	// caller handed it. A read whose rows can grow between the two reads (growingReads) is
+	// walked under a parameter it declares that holds it to the rows its plain read answered, so
+	// the two answers differ only where the walk did.
 	//
 	// The event log answers only the events at or below the server's safe horizon, which an
 	// event write of the server's database holds back while it is open (events.Horizon): under
@@ -573,7 +604,7 @@ func threeBadRequests(t *testing.T) {
 			target += "?" + query
 		}
 		plain := dispatchRequest(t, handler, route.Method, target, nil, "alice")
-		walk := undeclaredTraversal(name)
+		walk := undeclaredTraversal(route)
 		if bound, grows := growingReads[name]; grows && plain.Code < 400 {
 			held, readRows := bound(plain.Body.Bytes())
 			if !readRows {
@@ -599,6 +630,18 @@ func threeBadRequests(t *testing.T) {
 		} else {
 			answered++
 		}
+		if route.decoded() {
+			code, _, _ := codePair(route.Version, apicode.QueryKeyUnknown)
+			sent, _ := url.ParseQuery(walk)
+			var refusal queryKeyUnknownBody
+			_ = json.Unmarshal(walked.Body.Bytes(), &refusal)
+			if declared := declaredQueryOf(route); walked.Code != http.StatusBadRequest || refusal.Code != code ||
+				!sent.Has(refusal.Key) || !slices.Equal(refusal.Declared, declared) {
+				t.Errorf("%s answers %d at %s with a traversal parameter, want 400 %s naming one of the words it was sent and %v: %s",
+					name, walked.Code, target, code, declared, firstLine(walked.Body.String()))
+			}
+			continue
+		}
 		if plain.Code != walked.Code {
 			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
 				name, plain.Code, target, walked.Code, firstLine(walked.Body.String()))
@@ -612,12 +655,13 @@ func threeBadRequests(t *testing.T) {
 	if answered < 60 {
 		t.Fatalf("only %d read answered a row for the traversal probe, which is too few to prove anything", answered)
 	}
-	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
+	t.Logf("%d reads answered a row for the traversal probe", answered)
 }
 
 // routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
-// with what it would need. Their traversal probe still runs, and still has to answer as the
-// plain read answers, but reads nothing.
+// with what it would need, of each version. Their traversal probe still runs, and still has to
+// answer as the plain read answers - or, on a route the /api/v2 decoder reads, the refusal of an
+// undeclared key - but reads nothing.
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
@@ -638,11 +682,28 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
 	"GET /api/v1/artifacts/{id}/changes":                                 "two stored versions of one document",
 	"GET /api/v1/projects/{key}/results":                                 "a stored result of a spec check, which only a CI run's results token writes, and the commit it is read by (?commit=)",
+
+	"GET /api/v2/repositories/{owner}/{repo}/app-installation": "a GitHub App private key",
+	"GET /api/v2/delivery/timeline":                            "delivery settings",
+	"GET /api/v2/delivery/measures":                            "delivery settings",
+	"GET /api/v2/delivery/pipeline":                            "delivery settings",
+	"GET /api/v2/deploy-runs/{id}":                             "a run of the deploy repository",
+	"GET /api/v2/issues/{key}/subscribers":                     "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/artifacts/{id}/subscribers":                   "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/agents":                                       "an Envoy listener (ENVOY_URL)",
+	"GET /api/v2/handoffs/{id}":                                "a handoff",
+	"GET /api/v2/going-requests/{id}/stream":                   "a going request's answer run",
+	"GET /api/v2/broadcasts/{id}":                              "a broadcast",
+	"GET /api/v2/credential-grants":                            "the agent-secrets broker",
+	"GET /api/v2/credential-requests":                          "the agent-secrets broker",
+	"GET /api/v2/machine-logins":                               "the agent-secrets broker",
+	"GET /api/v2/me/signins":                                   "the agent-secrets broker",
+	"GET /api/v2/artifacts/{id}/changes":                       "two stored versions of one document",
 }
 
-// routeProbeQueries are the queries the reads that require one are sent, each naming the
-// objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
-// that names nothing.
+// routeProbeQueries are the queries the reads of each version that require one are sent, each
+// naming the objects seedTwoProjects wrote, so the read answers a row rather than refusing the
+// request that names nothing.
 func routeProbeQueries(owned crossProject) map[string]string {
 	spec := "dispatch://" + owned.issue + "/spec"
 	return map[string]string{
@@ -660,6 +721,14 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
+
+		"GET /api/v2/search-results":    url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v2/references":        url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v2/reference-targets": url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v2/block-links":       url.Values{"from": {spec}, "to": {spec}}.Encode(),
+		"GET /api/v2/nodes":             url.Values{"person": {"alice"}}.Encode(),
+		"GET /api/v2/known-sessions":    url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
+		"GET /api/v2/deploys":           url.Values{"repo": {owned.deployRepo}}.Encode(),
 	}
 }
 
@@ -673,7 +742,8 @@ func routeProbeQueries(owned crossProject) map[string]string {
 // walks either lists rows that only a write request adds - the inbox's open asks, an issue's
 // comments, messages and asks, the broadcasts - and the probe sends only reads, or answers an
 // object, whose shape is its keys (answerShape), which a row added beneath it leaves as they were:
-// search, the replies, the answers, a person's nodes, the related checks.
+// search, the replies, the answers, a person's nodes, the related checks. The /api/v2 reads of
+// the event log need no bound: the decoder refuses their walked read before it reads a row.
 var growingReads = map[string]func(answered []byte) (string, bool){
 	"GET /api/v1/events/log":            eventLogBound,
 	"GET /api/v1/issues/{key}/events":   eventFeedBound,
@@ -715,10 +785,11 @@ func eventLogBound(answered []byte) (string, bool) {
 }
 
 // seededProbePath is the route's path at the objects seedTwoProjects wrote under their own
-// project: each wildcard takes the seeded object its place names, and a wildcard no seeded
-// object fills takes routeProbePath's placeholder. A route under /artifacts/{id} reads the
-// project's own document, which every such route answers for; one of an issue's documents is
-// read through the issue's routes, which is where those send a reader.
+// project, in either version: each wildcard takes the seeded object its place names, and a
+// wildcard no seeded object fills takes routeProbePath's placeholder. A route under
+// /artifacts/{id} reads the project's own document, which every such route answers for; one of an
+// issue's documents is read through the issue's routes, which is where those send a reader. The
+// /api/v2 read of one mark reads the caller's mark of the project's own issue.
 func seededProbePath(pattern string, owned crossProject) string {
 	path := pattern
 	for _, replacement := range []struct{ from, to string }{
@@ -734,6 +805,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 		{"/priorities/{id}", "/priorities/" + owned.priority},
 		{"/near-copy-checks/{id}", "/near-copy-checks/" + owned.nearCopyCheck},
 		{"{block_id}", owned.documentBlock},
+		{"/me/marks/{kind}/{id}", "/me/marks/issue/" + owned.issue},
 	} {
 		path = strings.ReplaceAll(path, replacement.from, replacement.to)
 	}
@@ -741,10 +813,10 @@ func seededProbePath(pattern string, owned crossProject) string {
 }
 
 // undeclaredTraversal is the traversal one route is sent: every traversal word the route does
-// not declare as a query parameter of its own, each with a value a traversal would take.
-func undeclaredTraversal(route string) string {
-	declaration, _ := declaredRoute(route)
-	declared := queryTagsOf(declaration.Shape.Params)
+// not declare as a query parameter of its own (declaredQueryOf), each with a value a traversal
+// would take.
+func undeclaredTraversal(route apiRoute) string {
+	declared := declaredQueryOf(route)
 	query := url.Values{}
 	for _, word := range traversalWords {
 		if !slices.Contains(declared, word) {
@@ -752,6 +824,18 @@ func undeclaredTraversal(route string) string {
 		}
 	}
 	return query.Encode()
+}
+
+// declaredQueryOf is every query key route declares: for a route the /api/v2 decoder reads
+// (decoded), the keys its refusal of an undeclared one names, session among them
+// (declaredQueryKeys); for every other - a route of the /api/v1 table, a row of the INFRA-979
+// tree - the query tags of its shape (its declaration's Shape for the /api/v1 table), as it reads
+// them.
+func declaredQueryOf(route apiRoute) []string {
+	if route.decoded() {
+		return declaredQueryKeys(route.Query)
+	}
+	return queryTagsOf(route.shape().Params)
 }
 
 // probeWithoutCredential sends a mutating route its probe body and no credential.
@@ -931,8 +1015,8 @@ func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string 
 // crossProjectPath is the route's path under another project's key, each other place of it
 // filled with this project's object of the kind that place names, or false for a route that
 // addresses no object of a project under a key at all. A route under /issues/{key} takes the
-// other project's issue as its key, and every other route the other project's key. What each
-// place takes:
+// other project's issue as its key, and every other route the other project's key. A route of
+// either version is read by its version-free pattern (unversionedRoute). What each place takes:
 //
 //   - {slug} of /issues/{key}/artifacts/{slug}: the issue's design.md, a document of the issue,
 //     where the issue's spec would be every issue's own slug and cross nothing;
@@ -971,9 +1055,10 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		return "", false
 	}
 	// The source write's {owner}/{repo} is the repository it adds as a source of the key's own
-	// project (putArchitectureSource, an upsert on the key and the repository), so under another
-	// project's key it writes a source of that project and addresses no object of this one.
-	if route.Method+" "+route.Pattern == "PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}" {
+	// project (putArchitectureSourceFrom, an upsert on the key and the repository, which both
+	// versions' PUT runs), so under another project's key it writes a source of that project and
+	// addresses no object of this one.
+	if unversionedRoute(route) == "PUT /projects/{key}/architecture-sources/{owner}/{repo}" {
 		return "", false
 	}
 	for _, place := range []struct{ named, wildcard, object string }{
@@ -1013,36 +1098,45 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 // crossProjectRequest sends one route its cross-project path (crossProjectPath) as a caller the
 // route's own checks admit, with a body that passes what the route checks before it reads the
 // object, so what refuses it is the object and not the caller or the body. Every route is sent
-// as alice, a person, with its probe body (routeProbeBody), but these:
+// as alice, a person, with its probe body (routeProbeBody), but these, read by their version-free
+// pattern (unversionedRoute):
 //
 //   - the step write, its rating, its experiment and the plan write each record only for the
 //     session of the Legion daemon of the key's project and refuse any other writer 403
 //     STEP_WRITER before they read the id (putIssueStep, the rating's, the experiment's and
-//     putIssuePlan's requireIssueDaemon), so each is sent over the deployment's shared agent
-//     credential, which proves no session, naming the session of the other project's daemon, with
-//     a body each accepts: the rating carries one, the experiment write an experiment and its
-//     variant, and the plan write the default plan of a run (defaultPlanBody);
+//     putIssuePlan's requireIssueDaemon, and their /api/v2 handlers alike), so each is sent over
+//     the deployment's shared agent credential, which proves no session, naming the session of
+//     the other project's daemon, with a body each accepts: the rating carries one, the
+//     experiment write an experiment and its variant, and the plan write the default plan of a
+//     run (defaultPlanBody);
 //   - a named version requires a summary and refuses a body without one 400 INVALID_VERSION before
 //     it reads the slug (createNamedVersion), so its body carries one.
 func crossProjectRequest(t *testing.T, handler http.Handler, route apiRoute, target string, owned crossProject) *httptest.ResponseRecorder {
 	t.Helper()
-	switch route.Method + " " + route.Pattern {
-	case "PUT /api/v1/issues/{key}/steps/{id}":
+	switch unversionedRoute(route) {
+	case "PUT /issues/{key}/steps/{id}":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{"actor": daemonSessionOf(owned.otherKey)})
-	case "PUT /api/v1/issues/{key}/steps/{id}/rating":
+	case "PUT /issues/{key}/steps/{id}/rating":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{
 			"actor": daemonSessionOf(owned.otherKey), "rating": 3, "rating_reason": "A rating under another project's key.",
 		})
-	case "PUT /api/v1/issues/{key}/steps/{id}/experiment":
+	case "PUT /issues/{key}/steps/{id}/experiment":
 		return sessionRequest(t, handler, route.Method, target, map[string]any{
 			"actor": daemonSessionOf(owned.otherKey), "experiment": "planning", "variant": "b",
 		})
-	case "PUT /api/v1/issues/{key}/plans/{id}":
+	case "PUT /issues/{key}/plans/{id}":
 		return sessionRequest(t, handler, route.Method, target, defaultPlanBody(daemonSessionOf(owned.otherKey), 1))
-	case "POST /api/v1/issues/{key}/artifacts/{slug}/versions", "POST /api/v1/projects/{key}/artifacts/{slug}/versions":
+	case "POST /issues/{key}/artifacts/{slug}/versions", "POST /projects/{key}/artifacts/{slug}/versions":
 		return dispatchRequest(t, handler, route.Method, target, map[string]any{"summary": "A version under another project's key."}, "alice")
 	}
 	return dispatchRequest(t, handler, route.Method, target, routeProbeBodyValue(route), "alice")
+}
+
+// unversionedRoute is the route's method and its pattern without the prefix of the version it is
+// mounted under, "PUT /issues/{key}/steps/{id}": the name one route reads by at /api/v1 and at
+// /api/v2 alike.
+func unversionedRoute(route apiRoute) string {
+	return route.Method + " " + strings.TrimPrefix(route.Pattern, versionPrefix(route.Version))
 }
 
 // answerShape renders an answer as what it answered rather than what it said: an object as its
@@ -1282,7 +1376,7 @@ func readsUnchanged(t *testing.T) {
 	settledCommentDeliveries(t, database, comment.ID)
 
 	root := repositoryRoot(t)
-	document := committedDocument(t, root)
+	document := committedDocument(t, root, apiV1)
 	declared := schemaFields(document)
 	for _, read := range []struct{ name, target string }{
 		{"GET /api/v1/comments/{id}", "/api/v1/comments/" + comment.ID},

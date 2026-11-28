@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 )
 
@@ -134,7 +135,8 @@ var refusedAnswerHeaders = []string{
 // refuse answers 500 INTERNAL, as writeHandlerError answers a failure it does not know, in place
 // of the answer, whose status has not gone out. The writer then drops every byte the handler
 // writes (refused). It calls the server's own writer, so that the 500 does not pass through this
-// writer's own decision.
+// writer's own decision, under /api/v1's name: only a /api/v1 route answers at a cut, since no
+// /api/v2 row answers as_of (v2ReadClasses).
 func (a *pastAnswer) refuse() {
 	a.mu.Lock()
 	a.refused = true
@@ -144,7 +146,7 @@ func (a *pastAnswer) refuse() {
 	for _, name := range refusedAnswerHeaders {
 		header.Del(name)
 	}
-	writeError(a.ResponseWriter, codeInternal, http.StatusInternalServerError, "internal server error")
+	writeVersionedError(a.ResponseWriter, apiV1, apicode.InternalError, 0, "internal server error")
 }
 
 // isRefused reports whether the answer is refused, so that the writer drops what the handler

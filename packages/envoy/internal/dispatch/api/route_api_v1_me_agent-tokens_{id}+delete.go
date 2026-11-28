@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED.",
 	Handler:     (*server).revokeAgentToken,
+	Successor:   successorIs(http.MethodDelete, "/me/agent-tokens/{id}"),
 	WriteClass:  scopeSession,
 	ID:          &idRoute{Reason: "a personal agent token id"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},

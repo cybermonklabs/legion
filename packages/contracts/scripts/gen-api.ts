@@ -3,25 +3,25 @@ import { dirname, resolve } from "node:path";
 
 import openapiTS, { astToString } from "openapi-typescript";
 
-// Renders the Dispatch API's TypeScript types from the OpenAPI document the Go route table emits
-// (schemas/dispatch-openapi.json, which `go run ./cmd/dispatch openapi --check` holds to the table).
-// The module is not committed (.gitignore). The root package.json runs this script as its
-// postinstall, so every `bun install` renders it from the document in the tree, and the
-// `typecheck` script of every package whose program compiles it runs this script first, so
-// `bun run typecheck` reads the document the tree holds now. A `tsc` run by other means, or an
+// Renders the Dispatch API's TypeScript types from the OpenAPI documents the Go route table emits
+// (MODULES: schemas/dispatch-openapi.json for /api/v1 and schemas/dispatch-openapi-v2.json for
+// /api/v2, which `go run ./cmd/dispatch openapi --check` holds to the table), one module per
+// document. Neither module is committed (.gitignore). The root package.json runs this script as
+// its postinstall, so every `bun install` renders both from the documents in the tree, and the
+// `typecheck` script of every package whose program compiles one runs this script first, so
+// `bun run typecheck` reads the documents the tree holds now. A `tsc` run by other means, or an
 // editor, reads the render of the last install or `bun run gen:api` (in packages/contracts), so
-// run one of those after a pull or a branch switch that changes the document. So two branches
+// run one of those after a pull or a branch switch that changes a document. So two branches
 // that each add a route never edit one generated file.
 //
-// Only type checks read the module: dispatch-api.ts re-exports it with `export type *` and every
-// other import of it is an `import type`, so Bun erases each of them, and no bundle and no `bun`
-// run ever loads it. A type check in a tree that never ran `bun install` fails naming the module
-// (TS2307) rather than reading types the tree does not hold. When this script fails inside the
-// postinstall, the postinstall removes the module (and fails the install if it cannot) and the
-// install goes on: the jobs that never type-check the Dispatch API do not depend on the document,
-// and every type check that does fails naming the module rather than reading the render before.
-const schemaFile = resolve(import.meta.dir, "../schemas/dispatch-openapi.json");
-const output = resolve(import.meta.dir, "../src/dispatch-api.generated.ts");
+// Only type checks read the modules: dispatch-api.ts and dispatch-api-v2.ts each re-export theirs
+// with `export type *` and every other import of one is an `import type`, so Bun erases each of
+// them, and no bundle and no `bun` run ever loads one. A type check in a tree that never ran
+// `bun install` fails naming the module (TS2307) rather than reading types the tree does not
+// hold. When this script fails inside the postinstall, the postinstall removes both modules (and
+// fails the install if it cannot) and the install goes on: the jobs that never type-check the
+// Dispatch API do not depend on the documents, and every type check that does fails naming the
+// module rather than reading the render before.
 
 // A schema name reaches the file as an exported alias, so it has to be spellable as one.
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -58,11 +58,31 @@ const OWNED_BY_THE_SPLIT: Record<string, true> = {
   Suggestion: true,
 };
 
+// The two documents `envoy-dispatch openapi` writes, one per version of the API, and the module
+// each renders into. Each is a module of its own because the two documents share schema names
+// (`Issue`, `Actor`, ...): `/api/v1`'s is re-exported by the `dispatch-api.ts` barrel with the
+// hand-written split, and `/api/v2`'s by `dispatch-api-v2.ts` alone, under the subpath export
+// `@legion/contracts/dispatch-api-v2`, so no `export type *` of one name meets another (TS2308).
+// Only `/api/v1`'s module has a split beside it, so only it leaves the split's names out and
+// renders `SplitOwnedSchemaName`.
+const MODULES = [
+  {
+    document: "schemas/dispatch-openapi.json",
+    output: "src/dispatch-api.generated.ts",
+    split: true,
+  },
+  {
+    document: "schemas/dispatch-openapi-v2.json",
+    output: "src/dispatch-api-v2.generated.ts",
+    split: false,
+  },
+] as const;
+
 type OpenAPIDocument = { components?: { schemas?: Record<string, unknown> } };
 
 // One exported alias per schema, sorted by name, so a consumer imports `Issue` rather than
 // indexing `components["schemas"]["Issue"]`.
-function renderAliases(document: OpenAPIDocument) {
+function renderAliases(document: OpenAPIDocument, split: boolean) {
   const names = Object.keys(document.components?.schemas ?? {}).sort();
   const unspellable = names.filter((name) => !IDENTIFIER.test(name));
   if (unspellable.length > 0) {
@@ -71,13 +91,13 @@ function renderAliases(document: OpenAPIDocument) {
     );
   }
   return names
-    .filter((name) => OWNED_BY_THE_SPLIT[name] !== true)
+    .filter((name) => !split || OWNED_BY_THE_SPLIT[name] !== true)
     .map((name) => `export type ${name} = components["schemas"]["${name}"];`)
     .join("\n");
 }
 
-// The same list as a union, for the assertion in `dispatch-api-owned.ts`. A name of the list the
-// document does not declare is left out here as it is left out of the aliases, so the union
+// The split's list as a union, for the assertion in `dispatch-api-owned.ts`. A name of the list
+// the document does not declare is left out here as it is left out of the aliases, so the union
 // always names shapes this module's `components` holds.
 function renderOwnedUnion(document: OpenAPIDocument) {
   const owned = Object.keys(document.components?.schemas ?? {})
@@ -87,19 +107,22 @@ function renderOwnedUnion(document: OpenAPIDocument) {
   return `/** Every schema name whose exported type the hand-written split owns, which\n * \`dispatch-api-owned.ts\` holds to the shape this module declares for it. */\nexport type SplitOwnedSchemaName = ${union};`;
 }
 
-const document = (await Bun.file(schemaFile).json()) as OpenAPIDocument;
-const source = `// Code generated by scripts/gen-api.ts from schemas/dispatch-openapi.json on every \`bun install\`. DO NOT EDIT: it is not committed.
+// A module that already holds its render is left alone, so an install that changed nothing
+// leaves the file's time where it was and a type checker watching it has nothing to redo.
+for (const module of MODULES) {
+  const document = (await Bun.file(
+    resolve(import.meta.dir, "..", module.document)
+  ).json()) as OpenAPIDocument;
+  const owned = module.split ? `\n${renderOwnedUnion(document)}\n` : "";
+  const source = `// Code generated by scripts/gen-api.ts from ${module.document} on every \`bun install\`. DO NOT EDIT: it is not committed.
 
 ${astToString(await openapiTS(document))}
-${renderAliases(document)}
-
-${renderOwnedUnion(document)}
-`;
-
-// A module that already holds this render is left alone, so an install that changed nothing
-// leaves the file's time where it was and a type checker watching it has nothing to redo.
-const outputFile = Bun.file(output);
-if (!(await outputFile.exists()) || (await outputFile.text()) !== source) {
-  mkdirSync(dirname(output), { recursive: true });
-  await Bun.write(output, source);
+${renderAliases(document, module.split)}
+${owned}`;
+  const output = resolve(import.meta.dir, "..", module.output);
+  const outputFile = Bun.file(output);
+  if (!(await outputFile.exists()) || (await outputFile.text()) !== source) {
+    mkdirSync(dirname(output), { recursive: true });
+    await Bun.write(output, source);
+  }
 }

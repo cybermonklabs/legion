@@ -13,6 +13,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "End one of the caller's own sign-ins: that machine trades no token for them again and every access token already minted under it ends, while their sign-ins on other machines keep working. A sign-in of anyone else is an unknown id.",
 	Handler:     (*server).revokeSignIn,
+	Successor:   successorIs(http.MethodDelete, "/me/signins/{id}"),
 	WriteClass:  scopeDeployment,
 	ID:          &idRoute{Reason: "a sign-in id at the secrets broker"},
 	OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -89,7 +90,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// the spec, of a role document or of anything that is no document waits for no lock a room's
 	// own writers hold.
 	if refusal := artifactRowIsUntouched(artifact); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return
 	}
 	// The document's room, taken after the owner's lock and before anything of the document is
@@ -97,13 +98,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	// would be deleted with the document, and one still in flight at the artifact's own delete
 	// would meet the foreign key of doc_updates rather than this handler's refusal.
 	if err := docs.LockDocumentRoom(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The refusals that need the lock: the versions, the edits that have not settled, what
 	// points at the document and what links to it.
 	if refusal := artifactIsUntouched(r.Context(), tx, artifact); refusal != nil {
-		s.writeHandlerError(w, refusal)
+		s.writeHandlerError(w, r, refusal)
 		return
 	}
 	// What the document's node write reads - whether the store holds the node, and the time its
@@ -117,11 +118,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	if fits {
 		var err error
 		if _, held, err = graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if removedAt, err = graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
-			s.writeHandlerError(w, err)
+			s.writeHandlerError(w, r, err)
 			return
 		}
 		if !held && !removedAt.After(artifact.CreatedAt) {
@@ -130,14 +131,14 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
+			s.writeHandlerError(w, r, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
 			return
 		}
 	}
 	// What package refs holds for the document: its own mentions, the index it is owed and the
 	// backoff its own mentions were deferred under, through that package's own statements.
 	if err := refs.ForgetDocument(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The document's node, stated gone before its row goes; its state tuple waits for the event.
@@ -146,7 +147,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		if !held {
 			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
 			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
-				s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+				s.writeHandlerError(w, r, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
 				return
 			}
 		}
@@ -157,19 +158,19 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 			graphstore.QueueNodes(b, goneNode)
 			return nil
 		}); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
+			s.writeHandlerError(w, r, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return
 		}
 	}
 	if _, err := tx.Exec(r.Context(), `delete from artifacts where id = $1`, artifact.ID); err != nil {
-		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
+		s.writeHandlerError(w, r, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
 		return
 	}
 	// Every process closes its room of the document, from this transaction's commit. Sent here,
 	// after the row is gone and before the commit, for the reason the seam gives: a removal that
 	// fails to commit announces nothing.
 	if err := docs.AnnounceDocumentRemoved(r.Context(), tx, artifact.ID); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The event and the gone statement it causes, in one batch (appendCausingEvent).
@@ -177,11 +178,11 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	), goneNode)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	s.publish(r.Context(), event)
@@ -336,7 +337,7 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 // typing a title made, and anything in it or about it is somebody's work, which a removal would
 // take with it.
 func artifactNotUntouched(artifact model.Artifact, reason string) error {
-	return errorf(http.StatusConflict, "ARTIFACT_NOT_UNTOUCHED",
+	return errorf(apicode.ArtifactNotUntouched,
 		"artifact %s (%s) is not untouched: %s; a document is removed only while it holds nothing",
 		artifact.Slug, artifact.Name, reason)
 }
@@ -345,7 +346,7 @@ func artifactNotUntouched(artifact model.Artifact, reason string) error {
 // project document's events are its own (events.artifact_id under events_one_owner), so its
 // removal event would need the row the removal deletes.
 func projectDocumentRemovalRefusal(artifact model.Artifact) error {
-	return errorf(http.StatusBadRequest, "ARTIFACT_PROJECT_DOCUMENT",
+	return errorf(apicode.ArtifactProjectDocument,
 		"artifact %s (%s) belongs to project %s; a project's document is not removed",
 		artifact.Slug, artifact.Name, artifact.Project)
 }

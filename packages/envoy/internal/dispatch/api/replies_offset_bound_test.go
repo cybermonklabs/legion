@@ -17,15 +17,19 @@ import (
 func TestAnOffsetNearTheLargestIntIsNoFaultOfTheRepliesRoute(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
-	for _, offset := range []string{strconv.Itoa(int(^uint(0) >> 1)), "9223372036854775800"} {
-		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies?limit=10&offset="+offset, nil, "alice")
-		if response.Code >= 500 {
-			t.Errorf("GET /api/v1/me/replies?limit=10&offset=%s: status=%d body=%s, want an empty page or a 4xx refusal", offset, response.Code, response.Body.String())
+	// GET /api/v2/me/threads reads the same rows by the same read (readMyReplies), so it takes the
+	// same offsets and answers each the same way.
+	for _, route := range []string{"/api/v1/me/replies", "/api/v2/me/threads"} {
+		for _, offset := range []string{strconv.Itoa(int(^uint(0) >> 1)), "9223372036854775800"} {
+			response := dispatchRequest(t, handler, http.MethodGet, route+"?limit=10&offset="+offset, nil, "alice")
+			if response.Code >= 500 {
+				t.Errorf("GET %s?limit=10&offset=%s: status=%d body=%s, want an empty page or a 4xx refusal", route, offset, response.Code, response.Body.String())
+			}
 		}
-	}
-	for _, offset := range []string{"0", "3000000000"} {
-		if response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies?limit=10&offset="+offset, nil, "alice"); response.Code != http.StatusOK {
-			t.Errorf("GET /api/v1/me/replies?limit=10&offset=%s (the control): status=%d body=%s, want 200", offset, response.Code, response.Body.String())
+		for _, offset := range []string{"0", "3000000000"} {
+			if response := dispatchRequest(t, handler, http.MethodGet, route+"?limit=10&offset="+offset, nil, "alice"); response.Code != http.StatusOK {
+				t.Errorf("GET %s?limit=10&offset=%s (the control): status=%d body=%s, want 200", route, offset, response.Code, response.Body.String())
+			}
 		}
 	}
 }

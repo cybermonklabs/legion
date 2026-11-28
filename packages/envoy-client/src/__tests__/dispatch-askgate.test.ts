@@ -56,8 +56,14 @@ const server = Bun.serve({
     const record = (sent?: unknown) =>
       posts.push({ method: request.method, path: pathname, ledger: ledgerText, sent });
     if (request.method === "POST" && pathname === ARTIFACTS) {
-      const file = (await request.formData()).get("file");
-      record(file instanceof Blob ? await file.text() : undefined);
+      // A create that stores nothing and an upload of inline text post JSON; an upload of a file
+      // (--path) posts a form.
+      if (request.headers.get("content-type")?.startsWith("application/json") === true) {
+        record(await request.json());
+      } else {
+        const file = (await request.formData()).get("file");
+        record(file instanceof Blob ? await file.text() : undefined);
+      }
       return Response.json({
         artifact: { id: "artifact-1", issue_key: "DSP-1", name: "brief.md", slug: "brief-md" },
         version: { number: 1 },
@@ -598,6 +604,9 @@ describe("AskGate at the dispatch CLI", () => {
 
   test("help, a dry run and every ungated command need no marker under a live record", async () => {
     writeFileSync(join(stateDir, "shot.png"), "image bytes");
+    // A name with an extension decides the kind whatever the path (uploadTypeFrom): cases.txt
+    // sent from cases.md is a file of its bytes, which AskGate does not review.
+    writeFileSync(join(stateDir, "cases.md"), "# Cases\n");
     writeRecord();
     expect((await run(["message", "--help"])).code).toBe(0);
     expect((await run(["--help"])).code).toBe(0);
@@ -607,6 +616,7 @@ describe("AskGate at the dispatch CLI", () => {
       ["issue-update", "--issue", "DSP-1", "--status", "in_progress"],
       ["issue", "--project", "DSP", "--title", "No spec"],
       ["artifact", "--issue", "DSP-1", "--name", "shot.png", "--path", "shot.png"],
+      ["artifact", "--issue", "DSP-1", "--name", "cases.txt", "--path", "cases.md"],
     ]) {
       posts.length = 0;
       const { stdout } = await run(argv);
@@ -615,18 +625,57 @@ describe("AskGate at the dispatch CLI", () => {
     }
   });
 
+  // An upload is a document when its name says so whatever the path (x.markdown sent from x.txt),
+  // or when its name has no extension and the path, as the command resolves it, ends in .md or
+  // .markdown: Plan v1.2's last part is the digits 0 to 9 alone, and notes.md/'s holds a `/`,
+  // neither of which is an extension (uploadExtensionOf), so each one's .md path makes it a
+  // document. The path is read as the CLI resolves it, which drops a trailing `/`, `/.` and `x/..`:
+  // at 1299d195 the gate read notes.md/ as written and let it post, and the upload went up as
+  // text/markdown, a document.
   test("an issue with a spec and a markdown upload are gated", async () => {
+    writeFileSync(join(stateDir, "notes.md"), "# Notes\n");
+    writeFileSync(join(stateDir, ".md"), "# Notes\n");
     writeRecord();
-    for (const [argv, command] of [
+    const rows = [
       [["issue", "--project", "DSP", "--title", "t", "--spec", "# Spec"], "issue"],
       [["artifact", "--issue", "DSP-1", "--name", "brief.md", "--content", "# Brief"], "artifact"],
       [["artifact", "--issue", "DSP-1", "--name", "notes", "--path", "notes.markdown"], "artifact"],
-    ] as const) {
+      [["artifact", "--issue", "DSP-1", "--name", "x.markdown", "--path", "x.txt"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan v1.2", "--path", "plan.md"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "notes.md/", "--path", "notes.md"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Notes.MD/", "--path", "notes.md"], "artifact"],
+      [
+        ["artifact", "--issue", "DSP-1", "--name", "a/b.markdown/", "--path", "notes.md"],
+        "artifact",
+      ],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan", "--path", "notes.md/"], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan", "--path", "notes.md/."], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan", "--path", "notes.md/x/.."], "artifact"],
+      [["artifact", "--issue", "DSP-1", "--name", "Plan", "--path", ".md"], "artifact"],
+    ] as const;
+    // Every row's answer, so a row the gate lets through is named whichever row it is.
+    const answers: Array<[string, number, boolean]> = [];
+    for (const [argv, command] of rows) {
       const { code, stdout } = await run(argv);
-      expect(code).toBe(1);
-      expect(stdout).toStartWith(`dispatch ${command} was not called: AskGate is on`);
+      answers.push([
+        argv.join(" "),
+        code,
+        stdout.startsWith(`dispatch ${command} was not called: AskGate is on`),
+      ]);
     }
+    expect(answers).toEqual(rows.map(([argv]) => [argv.join(" "), 1, true]));
     expect(posts).toHaveLength(0);
+  });
+
+  // A name alone makes an empty document, which writes no text, so it is no gated write: the CLI
+  // posts it with no marker, as pi's gate, which reviews no upload that carries no --path, no
+  // inline text and no --name-file or --path-file, lets it run.
+  test("a name-only upload under a live record posts with no marker", async () => {
+    writeRecord();
+    const { code, stdout } = await run(["artifact", "--issue", "DSP-1", "--name", "x.markdown"]);
+    expect(code).toBe(0);
+    expect(stdout).not.toContain("AskGate");
+    expect(postsTo(ARTIFACTS).map((p) => p.sent)).toMatchObject([{ name: "x.markdown" }]);
   });
 
   // A correction writes or takes down the text of a post the gate reviewed when it was posted,

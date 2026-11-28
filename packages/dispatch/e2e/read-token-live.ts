@@ -4,8 +4,8 @@
  *  packages/envoy/internal/dispatch/api)
  *  and answers it 403 READ_ONLY_TOKEN on every other route and on GET /ws/live. It answers one
  *  that carries a cut as of that cut on every read that answers `as_of`, and GET /api/v1/whoami
- *  names the cut; every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. Four
- *  tokens show it:
+ *  and GET /api/v2/me name the cut; every other read, each other /api/v2 read among them, and GET
+ *  /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. Four tokens show it:
  *
  *  - The read entry's (BROKER_EXCHANGE_READ_ACCOUNTS). Its pod's trade asks for no scope and gets
  *    the scope `read` alone, with no person and no project. It reads the issue and is refused a

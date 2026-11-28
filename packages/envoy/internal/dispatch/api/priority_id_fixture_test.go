@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
@@ -83,7 +84,7 @@ func hashedPriorityIDOf(title string) string {
 // it is no start of the slug. A slug that itself begins with the word priority is a cut like any
 // other, since it starts with its own id.
 func priorityIDIsHashed(priorityCase priorityIDCase) bool {
-	return !strings.HasPrefix(artifactSlug(priorityCase.Title), priorityCase.ID)
+	return !strings.HasPrefix(model.ArtifactSlug(priorityCase.Title), priorityCase.ID)
 }
 
 // priorityIDCutProblem says what is wrong with id as the cut of slug, or "" when nothing is. The
@@ -122,7 +123,7 @@ func TestPriorityIDFromTitle(t *testing.T) {
 			t.Errorf("the title %q derives the id %q, which priorityIDRefusal refuses: %s", title, id, refusal)
 		}
 		if !priorityIDIsHashed(priorityCase) {
-			if problem := priorityIDCutProblem(artifactSlug(title), id); problem != "" {
+			if problem := priorityIDCutProblem(model.ArtifactSlug(title), id); problem != "" {
 				t.Errorf("the title %q: %s", title, problem)
 			}
 			continue
@@ -161,7 +162,7 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 			t.Errorf("the title %q is written as %q, want it whole", title, made.Title)
 		}
 		if !priorityIDIsHashed(priorityCase) {
-			if problem := priorityIDCutProblem(artifactSlug(title), made.ID); problem != "" {
+			if problem := priorityIDCutProblem(model.ArtifactSlug(title), made.ID); problem != "" {
 				t.Errorf("the title %q: %s", title, problem)
 			}
 		}
@@ -172,9 +173,9 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 		map[string]any{"id": named, "title": "A named id one past the bound"}, "alice")
 	code, text := refusalOf(t, response)
-	if response.Code != http.StatusBadRequest || code != codePriorityInput {
+	if response.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 		t.Errorf("a create naming an id of %d characters: status=%d code=%s error=%.300q, want 400 %s",
-			len(named), response.Code, code, text, codePriorityInput)
+			len(named), response.Code, code, text, apicode.PriorityInput.V1Name())
 	}
 	if !strings.Contains(text, fmt.Sprint(priorityIDMax)) {
 		t.Errorf("a create naming an id of %d characters is refused with %.300q, want it to name the bound %d",
@@ -183,9 +184,9 @@ func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
 	for _, keyword := range []string{noAdvancesFilter, anyAdvancesFilter} {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
 			map[string]any{"id": keyword, "title": "A named keyword"}, "alice")
-		if code, text := refusalOf(t, response); response.Code != http.StatusBadRequest || code != codePriorityInput {
+		if code, text := refusalOf(t, response); response.Code != http.StatusBadRequest || code != apicode.PriorityInput.V1Name() {
 			t.Errorf("a create naming the id %q: status=%d code=%s error=%.300q, want 400 %s",
-				keyword, response.Code, code, text, codePriorityInput)
+				keyword, response.Code, code, text, apicode.PriorityInput.V1Name())
 		}
 	}
 

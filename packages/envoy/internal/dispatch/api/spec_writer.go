@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -68,6 +69,18 @@ const (
 	specDocumentName         = "spec.md"
 	verificationDocumentName = "verification.md"
 )
+
+// specWriterNotArchitectRefusal is the check's refusal as an /api/v2 row declares it: every
+// /api/v2 route whose write the check judges, and may refuse, names it among its refusals
+// (v2_spec_writer_test.go holds the rows to it).
+var specWriterNotArchitectRefusal = apicode.Refusal{Condition: apicode.SpecWriterNotArchitect, Code: apicode.DocumentWriterNotArchitect}
+
+// specWriterDocumentText is the sentence an /api/v2 route that writes a version of a document
+// says of the check: write is the write, as "an edit of its spec or Verification document".
+func specWriterDocumentText(write string) string {
+	return "On an issue Legion runs, " + write + " by a session that is no person and no architect of the issue " +
+		"or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT."
+}
 
 // specWriter is who writes, as the check judges it: actor is the actor the write records, and person
 // is that the check passes the write at once, because the request's credential holds the person
@@ -290,7 +303,7 @@ func (refusal *specWriterRefusal) refuse() error {
 		logged = append(logged, "moved", write.moved)
 	}
 	slog.Info(specWriterRefusalLine, logged...)
-	return errorf(http.StatusForbidden, "DOCUMENT_WRITER_NOT_ARCHITECT", "%s", refusal.message())
+	return errorf(apicode.DocumentWriterNotArchitect, "%s", refusal.message())
 }
 
 // judgeSpecWriter is the check's decision on write, with no log line: nil when it passes, and else

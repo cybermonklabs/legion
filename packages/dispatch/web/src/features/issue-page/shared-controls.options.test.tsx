@@ -227,6 +227,7 @@ beforeEach(() => {
       markdown: "The live document",
       token: "sha256:spec-text",
       version: null,
+      unsettled: true,
     }),
     getDocumentRead: spyOn(api, "getDocumentRead").mockImplementation(async (id) => ({
       artifact_id: id,
@@ -1482,6 +1483,7 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
     <IssueLabels
       chipClassName={chipClassName}
       disabled={false}
+      externalLinks={[]}
       labels={["api", "frontend"]}
       onSave={async () => undefined}
       project="CORE"
@@ -1542,6 +1544,7 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
           <IssueLabels
             chipClassName={chipClassName}
             disabled={false}
+            externalLinks={[]}
             labels={[long]}
             onSave={async () => undefined}
             project="CORE"
@@ -1593,6 +1596,7 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
         const view = draw(
           <IssueLabels
             disabled={false}
+            externalLinks={[]}
             issueKey={issueKey}
             labels={[]}
             onSave={async () => undefined}
@@ -1651,6 +1655,7 @@ test("inside NoTooltips the saving labels control is named by its visible words"
         const view = draw(
           <IssueLabels
             disabled={false}
+            externalLinks={[]}
             issueKey={issueKey}
             labels={labels}
             onSave={async () => undefined}
@@ -2391,6 +2396,7 @@ test("the default shapes keep their recorded class strings", async () => {
       <div data-case="labels">
         <IssueLabels
           disabled={false}
+          externalLinks={[]}
           labels={["api"]}
           onSave={async () => undefined}
           project="CORE"
@@ -2400,6 +2406,7 @@ test("the default shapes keep their recorded class strings", async () => {
       <div data-case="rail labels">
         <IssueLabels
           disabled={false}
+          externalLinks={[]}
           labels={["api"]}
           onSave={async () => undefined}
           project="CORE"
@@ -5544,6 +5551,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             markdown: "The live document",
             token: "sha256:spec-text",
             version: null,
+            unsettled: true,
           });
           await waitFor(() => expect(rebuild.isConnected).toBe(false));
           await settleReads();

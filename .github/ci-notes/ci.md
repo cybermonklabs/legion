@@ -412,23 +412,27 @@ each tool states. Not pmdoc/schema, the
 block schema those generated types are the shape of: this job generates that Go from
 packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
-## dispatch_api_types: The two files the Dispatch API types are rendered from
+## dispatch_api_types: The files the Dispatch API types are rendered from
 
-packages/contracts/src/dispatch-api.generated.ts, the Dispatch API's TypeScript types,
-is in no commit: every `bun install` renders it from schemas/dispatch-openapi.json
-with scripts/gen-api.ts (the root package.json's postinstall), and so does the
-`typecheck` script of each package that compiles it, so two pull requests
+packages/contracts/src/dispatch-api.generated.ts and dispatch-api-v2.generated.ts, the
+Dispatch API's TypeScript types for /api/v1 and /api/v2, are in no commit: every
+`bun install` renders each from its document, schemas/dispatch-openapi.json and
+schemas/dispatch-openapi-v2.json, with scripts/gen-api.ts (the root package.json's
+postinstall, which removes both when that render fails), and so does the
+`typecheck` script of each package that compiles one, so two pull requests
 that each add a route never edit one generated file; every CI typecheck runs after
-the job's install. Only a type check reads it:
-dispatch-api.ts re-exports it with `export type *` and every other import of it is
-an `import type`, so Bun, `bun build`, Vite and Astro erase each of them. A change
-to what a typecheck compiles there is a change to one of those two files, so the gate
-of every job whose tsc program holds the module declares both
-(`.github/scripts/ci_job_reads.py#dispatch_api_types`), and the listing of a program gives the two
-in the module's place (`.github/scripts/ci_ts_listing.py#RENDERED`), so check-ts-filters.sh holds each
-gate to them. The contracts gate takes the whole package. The Go the document is
+the job's install. Only a type check reads them:
+dispatch-api.ts and dispatch-api-v2.ts re-export them with `export type *` and every other
+import of one is an `import type`, so Bun, `bun build`, Vite and Astro erase each of them.
+A change to what a typecheck compiles there is a change to one of those files, so the gate
+of every job whose tsc program holds the /api/v1 module declares the three
+(`.github/scripts/ci_job_reads.py#dispatch_api_types`), and the listing of a program gives
+a module's document and the generator in the module's place
+(`.github/scripts/ci_ts_listing.py#RENDERED`), so check-ts-filters.sh holds each
+gate to them. Only the contracts package's own program holds the /api/v2 module, and the
+contracts gate takes the whole package. The Go the documents are
 emitted from is not named here: a change to it is judged by envoy-go-build's
-`openapi --check`, whose gate declares both that Go and the document.
+`openapi --check`, whose gate declares that Go and both documents.
 
 ## guide_layout_files: The six guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
 
@@ -795,11 +799,11 @@ workspace's module files are not on it.
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
-The text checks of the three Go modules, the Dispatch API's eleven static source
+The text checks of the three Go modules, the Dispatch API's static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' twenty-four tests
+which the three Go lanes leave out of their own runs, those checks' tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -3243,10 +3247,10 @@ job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-eleven static source checks, which read the module's own source, and the two pure pins of
+static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those twenty-four tests and those two pins out of their own runs
+packages, those tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,

@@ -348,7 +348,9 @@ test("the proxy's answer after the review may have reached Dispatch leaves the r
   const keys = new Set(
     fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"))
   );
-  expect([...keys]).toEqual([unsettled.key]);
+  // A keyed write carries its key; only a write of #send's carries none (DispatchWriteUnsettledError).
+  expect(unsettled.key).toBeString();
+  expect([...keys]).toEqual([unsettled.key ?? null]);
   expect(fetchImpl.sent.length).toBeGreaterThan(1);
   expect(unsettled.message).toContain("Cipher's proxy");
   expect(unsettled.message).not.toContain("Dispatch URL");

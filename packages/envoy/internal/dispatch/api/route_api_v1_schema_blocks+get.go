@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authPublic,
 	Description: "The typed document block schema as JSON.",
 	Handler:     (*server).getBlockSchema,
+	Successor:   successorIs(http.MethodGet, "/block-schema"),
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status:             http.StatusOK,

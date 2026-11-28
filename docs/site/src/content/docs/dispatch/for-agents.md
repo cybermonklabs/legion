@@ -12,10 +12,14 @@ flags and an example, and `--dry-run` checks a command's arguments as the call w
 them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
 nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
 1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
-`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (a path ending
-in `.md` or `.markdown`): once the flags are read, before the arguments are checked and before
-anything that needs Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call
-does. For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
+`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (one whose
+`--name` ends in `.md` or `.markdown`, whatever the path, where a trailing extension of the digits
+0 to 9 alone in the name does not count, so the name `plan.md.1` reads as `.md`; or one whose
+`--name` has no extension while the path, as the command resolves it, ends in `.md` or
+`.markdown`, which the path `plan.md.1` does not): once the flags are read, before the arguments
+are checked and before anything that needs
+Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call does.
+For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
 text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
 file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
 also refuses what an upload refuses for the text alone, such as a text that makes more elements than
@@ -453,10 +457,39 @@ text before its body, or `Re: block <id> (removed)` once an edit removed it.
 ## The HTTP API
 
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
-lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
-method, who may call it, and what it does. An agent calls the API with its token as
-`Authorization: Bearer <token>`. A session under `DISPATCH_TOKEN_BROKER=1` holds no bearer: its
-tools read the API, and post a comment, through `dispatch proxy` ([The proxy](#the-proxy)).
+lists every route of `/api/v2`, the version to call from the first `legion-envoy` release that
+carries pull request #4274, and so does `GET /api/v2` on the server, with no credential: each
+route's method, who may call it, what it serves, how a list pages, and what it does. An agent calls
+the API with its token as `Authorization: Bearer <token>`. A session under
+`DISPATCH_TOKEN_BROKER=1` holds no bearer: its tools read the API, and post a comment, through
+`dispatch proxy` ([The proxy](#the-proxy)).
+
+On `/api/v2` every list answers `{items, total, limit, offset}` and every refusal `{code, error}`,
+its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route
+(`x-refusal-codes`), but for the codes the router answers in front of every route
+(`ORIGIN_REFUSED`, `HOST_MISMATCH`, `FORWARDED_FOR_INVALID`), a write a test hook slowed
+(`SLOW_WRITE_CUT_OFF`) and a server built with no store (`DATABASE_UNAVAILABLE`). A query key the
+route does not declare is refused
+`400 QUERY_KEY_UNKNOWN`, naming the key and every key the route declares, so a misspelt filter is
+never read as no filter,
+and every write takes an `Idempotency-Key`. Nine delivery and Legion routes are the exception:
+`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`,
+`GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`,
+`GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
+`DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the document declares
+no refusal codes for them, a query key they do not declare is not refused, and their `PUT` and
+`DELETE` take no `Idempotency-Key`. The test hooks under `/api/v2/_test/`, which a server serves
+only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
+
+`/api/v1` is deprecated. Its routes keep their answers but for a few fixes of this release (the
+`unsettled` member a document's text read adds among them), each answer but dev sign-in's
+`421 HOST_MISMATCH`, the router's `400 FORWARDED_FOR_INVALID` and the redirect of a path that is
+not clean carries a `Link` header (`rel="successor-version"`) naming the `/api/v2` route that
+answers for it (or `GET /api/v2`), and a deployment ends it on a date it sets, after which every
+`/api/v1` path answers `410 API_V1_ENDED`
+([HTTP API v1](/legion/dispatch/reference/api-v1/)). The `dispatch` command still calls `/api/v1`
+at that release, and names itself and its release in its `User-Agent`
+(`dispatch/<version> (<plugin>)`), which Dispatch's access log records.
 
 Every `POST` and `PATCH` an agent makes through a named `dispatch` command is keyed: each write
 that a command other than `dispatch proxy` makes carries an `Idempotency-Key` header of its own,
@@ -480,30 +513,50 @@ a document version a delete renamed), the first answer's status and the code `AN
 When the write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed
 2xx reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
 call that writes nothing (`dispatch related`, `dispatch result --dry-run`, the check an upload runs
-first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key. If Dispatch keeps
-no answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of text that
-is not blank, given inline, in `--content-file` or on stdin, is refused, and the refusal says to
-send it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked.
-When an attempt may have
-landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
-non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key, which
-Dispatch names back on every answer to a write), or on a final refusal that echoes exactly its
-request key: `Idempotency-Replayed: ?1` (also a recovery replay), `422 KEY_REUSED` (every attempt
-of one command sends the same bytes, so a key held for another request was never claimed by this
-one), or a fresh answer that has a stored 4xx other than 401, 408 or 429, and is none of
-`KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs
-`b1c42d1d7d`. Every other answer says the write may or may not have taken effect: read it back
-before you run the command again, since a new command is a new key. Reads,
-the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE` of
+first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key. If Dispatch keeps no
+answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of text that is
+not blank, given inline, in `--content-file` or on stdin, is refused, and the refusal says to send
+it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked. When an
+attempt may have landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty,
+untyped or non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key,
+which Dispatch names back on every answer to a write), or on a final refusal that echoes exactly its
+request key: `Idempotency-Replayed: ?1` (also a recovery replay), `422 KEY_REUSED` (every attempt of
+one command sends the same bytes, so a key held for another request was never claimed by this one),
+or a fresh answer that has a stored 4xx other than 401, 408 or 429, and is none of `KEY_IN_FLIGHT`,
+`KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs `b1c42d1d7d`. Every
+other ending, a last answer that is Dispatch's own 5xx among them (which it sends when a write fails,
+and can send after the write committed), says the write may or may not have taken effect: read it
+back before you run the command again, since a new command is a new key. A refusal Dispatch
+decided that settles the write, such as a 4xx with its code where no attempt may have landed yet,
+prints that refusal and none of those words: the write did not take effect. Reads, the `PUT` and
+`DELETE` of `dispatch follow` and `dispatch project-update`, the
+`DELETE` of `dispatch claim --release`, and the `DELETE` of
 `dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
 only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
-dead, and on an old build's "no route" during a rolling release. `dispatch api`'s request, a
-write too, carries no key either: it goes once, and once more only after Dispatch calls the token
-it presented dead. A script that calls
-the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
-`_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
-each key's answer for 24 hours; the same key with a different request is refused
-`422 KEY_REUSED`.
+dead, and on an old build's "no route" during a rolling release. Such a `PUT` or `DELETE` may or
+may not have taken effect too when it failed in transport after it went out, its answer's body
+broke off after the status came, the command's deadline ended it in flight or it got Dispatch's
+own 5xx other than `503 BROKER_UNAVAILABLE`, and the command says so and to check whether it did
+before retrying it.
+`dispatch api`'s request, a write too, carries no key either: it goes once, and once more only after
+Dispatch calls the token it presented dead. Its write (any method but `GET`) may or may not have
+taken effect too when it failed in transport after it went out, its answer's body broke off after
+the status came, the command's deadline ended it in flight or it got Dispatch's own 5xx other than
+`503 BROKER_UNAVAILABLE`, and the
+command says so: read what the write would have changed before you send it again. Its `GET` never
+ends that way. The markdown round trip `dispatch artifact` asks before
+it uploads inline text, and the search `dispatch related` runs, are `POST`s that store nothing: they
+are keyed and asked again like a write, but a failure of either is told as a read's, with none of
+those words. A script that calls the API directly can send its own key on any `POST`, `PATCH`, `PUT`
+or `DELETE` of `/api/v2` but the `PUT` and `DELETE` of the exceptions above, and on any `POST` or
+`PATCH` of `/api/v1`: 1 to 128 letters, digits, `.`, `_`, `:` and `-`, the same on every retry of
+one write and new for every new write. Dispatch keeps
+each key's answer for 24 hours; the same key with a different request is refused `422 KEY_REUSED`,
+and so is one key sent to a `/api/v1` route and then to its `/api/v2` route, which are two routes
+and so two requests. On `/api/v2` a repeat of a comment's or an issue message's edit or delete, or
+of a comment's state, is answered with that post as it stands now. On `/api/v1` a repeat of an edit
+or of a comment's state is answered the same way, but a delete carries no key, so a repeated delete
+runs again and is refused `409 POST_DELETED`.
 
 ## The proxy
 

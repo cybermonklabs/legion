@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -97,7 +98,8 @@ type resolvedCheck struct {
 	checkResolution
 }
 
-// checkResultInput is the body POST /api/v1/issues/{key}/results takes.
+// checkResultInput is the body POST /api/v1/issues/{key}/results and POST
+// /api/v2/issues/{key}/results take.
 type checkResultInput struct {
 	Actor           *model.Actor `json:"actor"`
 	Check           string       `json:"check" required:"true"`
@@ -114,13 +116,15 @@ type checkResultInput struct {
 	Screenshots     []string     `json:"screenshots"`
 }
 
-// checkResultRecorded is the body POST /api/v1/issues/{key}/results answers.
+// checkResultRecorded is the body POST /api/v1/issues/{key}/results and POST
+// /api/v2/issues/{key}/results answer.
 type checkResultRecorded struct {
 	Line   string            `json:"line"`
 	Result model.CheckResult `json:"result"`
 }
 
-// checkResultDryRun is the body POST /api/v1/issues/{key}/results/dry-run answers.
+// checkResultDryRun is the body a result's dry run answers, POST
+// /api/v1/issues/{key}/results/dry-run and POST /api/v2/issues/{key}/results/dry-run alike.
 type checkResultDryRun struct {
 	Line string `json:"line"`
 }
@@ -148,7 +152,18 @@ type resultRequest struct {
 // a pull request of the check's own issue (comparisonReader). The answer carries the stored
 // row and the pull-request body line it implies, so every writer writes one grammar.
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.readResultRequest(w, r)
+	var input checkResultInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.recordCheckResultFrom(w, r, input)
+}
+
+// recordCheckResultFrom is the record both versions of POST results make of the body each has
+// read.
+func (s *server) recordCheckResultFrom(w http.ResponseWriter, r *http.Request, input checkResultInput) {
+	request, ok := s.readResultRequest(w, r, input)
 	if !ok {
 		return
 	}
@@ -166,7 +181,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	written, err := s.recordResultWithFreshWords(
 		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	// The read-through runs before the event: the Verification tab refetches on
@@ -199,7 +214,18 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 // does not serve it answers a path it does not know 404, where it would drop a flag it does not
 // know and record the result.
 func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
-	request, ok := s.readResultRequest(w, r)
+	var input checkResultInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.dryRunCheckResultFrom(w, r, input)
+}
+
+// dryRunCheckResultFrom is the dry run both versions of POST results/dry-run make of the body each
+// has read.
+func (s *server) dryRunCheckResultFrom(w http.ResponseWriter, r *http.Request, input checkResultInput) {
+	request, ok := s.readResultRequest(w, r, input)
 	if !ok {
 		return
 	}
@@ -209,17 +235,13 @@ func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
 	}, request.words)})
 }
 
-// readResultRequest decodes a result's body and judges it as far as the record goes before it
-// opens its transaction, for the record and its dry run alike. A refusal is written to w and
-// answers false.
-func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
+// readResultRequest judges a result's body, as the route's version decoded it, as far as the
+// record goes before it opens its transaction, for the record and its dry run alike. A refusal is
+// written to w and answers false.
+func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request, input checkResultInput) (resultRequest, bool) {
 	refused := func(err error) (resultRequest, bool) {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return resultRequest{}, false
-	}
-	var input checkResultInput
-	if err := decodeJSON(r, &input); err != nil {
-		return refused(err)
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
@@ -352,13 +374,11 @@ func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, ch
 	return nil
 }
 
-// checkContended is the code of a results write whose check a document version moved at every
-// attempt. Nothing is recorded, and the caller's retry resolves the check again.
-const checkContended = "CHECK_CONTENDED"
-
-// checkContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
-// caller waits for is another writer's document version landing on the check's block - a
-// transaction already committing, not a budget this caller has spent - so the wait is the
+// checkContendedRetryAfter is the Retry-After, in whole seconds, that a results write's 409
+// CHECK_CONTENDED carries, the refusal of a write whose check a document version moved at every
+// attempt (apicode.CheckContended): nothing is recorded, and the caller's retry resolves the check
+// again. What the caller waits for is another writer's document version landing on the check's
+// block - a transaction already committing, not a budget this caller has spent - so the wait is the
 // shortest whole second HTTP can ask for, which is what Dispatch already answers a caller whose
 // write another transaction is in the middle of (writeKeyInFlight's 409 KEY_IN_FLIGHT,
 // request_keys.go). Nothing longer is honest here: this is no rate limit, so there is no budget
@@ -407,7 +427,7 @@ func (s *server) recordResultWithFreshWords(
 	ctx context.Context, issueKey string, check resolvedCheck, input checkResultInput,
 	linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, error) {
-	refusal := errorf(http.StatusConflict, checkContended,
+	refusal := errorf(apicode.CheckContended,
 		"check %s was reworded at each of %d attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry",
 		check.BlockID, resolutionAttempts)
 	refusal.retryAfter = checkContendedRetryAfter
@@ -494,7 +514,7 @@ func (s *server) recordResultUnderOwnerLocks(
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
 	if (!recordingOpen || !checkOpen) && resolved.Attributes.When != checkWhenAfterMerge && resolved.Attributes.When != checkWhenDefaultBranch {
-		return recordedCheckResult{}, indexedCheck{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
+		return recordedCheckResult{}, indexedCheck{}, errorf(apicode.IssueClosed,
 			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, resolved.Attributes.When)
 	}
 	if err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
@@ -535,7 +555,8 @@ func (s *server) recordResultUnderOwnerLocks(
 	}, indexed, nil
 }
 
-// issueCheckResults is the body GET /api/v1/issues/{key}/results answers.
+// issueCheckResults is the body GET /api/v1/issues/{key}/results answers, and the read GET
+// /api/v2/issues/{key}/checks copies into its page (readIssueChecks, listIssueChecksV2).
 type issueCheckResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 	Issue                  string             `json:"issue"`
@@ -573,46 +594,63 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	}
 	at := r.URL.Query().Get("at")
 	if at != noCommitNamed && !resultCommitSHA.MatchString(at) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidQuery,
 			"at must be a commit of 40 lowercase hex characters")
 		return
 	}
 	issueKey := r.PathValue("key")
 	if err := s.requireIssueExists(r.Context(), issueKey); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
-	if !held {
-		WriteJSON(w, http.StatusOK, body)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	_, atCut := asof.CutFrom(r.Context())
+	body, _, err := s.readIssueChecks(r.Context(), issueKey, at, trees)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if _, atCut := asof.CutFrom(r.Context()); !atCut {
+		answerCompatibilityCurrency(body.Checks, at)
+	}
+	trees.resolve()
+	WriteJSON(w, http.StatusOK, body)
+}
+
+// readIssueChecks is the checks of the issue key's Verification document with their results,
+// each compared with what its `when` names, or with the one commit at names, as both versions of
+// the read answer them, and the reader that compared them, which GET /api/v2/issues/{key}/checks
+// asks which kind of nothing a check that compared with nothing met (comparisonReader.repositoryOf).
+// An issue with no Verification document answers no check and a nil reader. trees is the
+// request's own reader of the checks' trees, nil for a caller that asked for none (checkBlocksIn);
+// the caller resolves it. At a cut it reads the checks of the Verification document's version
+// then (checkBlocksAtTheCut), reads nothing from GitHub, derives nothing and compares nothing,
+// and answers a nil reader (results_as_of.go).
+func (s *server) readIssueChecks(ctx context.Context, issueKey, at string, trees *displayTreeReader) (issueCheckResults, *comparisonReader, error) {
+	artifact, held, err := s.verificationDocument(ctx, s.deps.Store.Pool, issueKey, "")
+	if err != nil {
+		return issueCheckResults{}, nil, err
+	}
+	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
+	if !held {
+		return body, nil, nil
+	}
+	_, atCut := asof.CutFrom(ctx)
 	var checks []model.CheckBlock
 	if atCut {
-		checks, err = s.checkBlocksAtTheCut(r.Context(), artifact, trees)
+		checks, err = s.checkBlocksAtTheCut(ctx, artifact, trees)
 	} else {
-		checks, err = s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+		checks, err = s.checkBlocksOf(ctx, s.deps.Store.Pool, artifact, trees)
 	}
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
+	recorded, err := loadCheckResults(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
-	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
+	retracted, err := loadCheckResultRetractions(ctx, s.deps.Store.Pool, artifact.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return issueCheckResults{}, nil, err
 	}
 	for index := range checks {
 		results := recorded[checks[index].BlockID]
@@ -631,12 +669,11 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// cut reads nothing from GitHub and derives nothing.
 	var reader *comparisonReader
 	if !atCut {
-		reader = newComparisonReader(r.Context(), s, at)
-		reader.learn(r.Context(), checks)
-		headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+		reader = newComparisonReader(ctx, s, at)
+		reader.learn(ctx, checks)
+		headCI, err := s.deriveCIResults(ctx, reader, issueKey, checks)
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+			return issueCheckResults{}, nil, err
 		}
 		reader.headCI = headCI
 	}
@@ -648,16 +685,14 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if atCut {
-		checksAtTheCut(r.Context(), checks)
+		checksAtTheCut(ctx, checks)
 	} else {
 		for index := range checks {
-			reader.answer(r.Context(), &checks[index])
+			reader.answer(ctx, &checks[index])
 		}
-		answerCompatibilityCurrency(checks, at)
 	}
 	body.Checks = checks
-	trees.resolve()
-	WriteJSON(w, http.StatusOK, body)
+	return body, reader, nil
 }
 
 // refusal is every refusal a result's own fields earn, before anything is read. The three counts
@@ -665,28 +700,28 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 // column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
+		return errorf(apicode.ResultInput, "check names the check block the result proves")
 	}
 	if !checkResultRole.MatchString(input.Role) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT",
+		return errorf(apicode.ResultInput,
 			"role is required and is at most 32 characters of a-z and -, the word the pull-request line prints")
 	}
 	if input.Verdict != "pass" && input.Verdict != "fail" {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "verdict is pass or fail")
+		return errorf(apicode.ResultInput, "verdict is pass or fail")
 	}
 	if !resultCommitSHA.MatchString(input.Commit) {
-		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
+		return errorf(apicode.ResultInput, "commit is the 40-character lowercase hex commit the check ran at")
 	}
 	for _, count := range []struct {
 		name  string
 		cases int
 	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
 		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
+			return errorf(apicode.ResultInput, "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
-		return errorf(http.StatusBadRequest, "RESULT_CONTRADICTS",
+		return errorf(apicode.ResultContradicts,
 			"a pass counts no failed, skipped or excluded case; this one counts %d failed, %d skipped and %d excluded",
 			input.Failed, input.Skipped, input.Excluded)
 	}
@@ -720,11 +755,11 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 	}
 	recording, held := open[issueKey]
 	if !held {
-		return false, false, errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+		return false, false, errorf(apicode.NotFound, "issue not found")
 	}
 	check, held := open[checkIssueKey]
 	if !held {
-		return false, false, errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+		return false, false, errorf(apicode.NotFound, "issue not found")
 	}
 	return recording, check, nil
 }
@@ -732,12 +767,12 @@ func issuesOpenForResult(ctx context.Context, tx pgx.Tx, issueKey, checkIssueKey
 // requireIssueExists is the read route's 404 for an issue nobody has.
 func (s *server) requireIssueExists(ctx context.Context, key string) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	var exists bool
 	if err := s.deps.Store.Pool.QueryRow(ctx, `select true from issues where key = $1`, key).Scan(&exists); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusNotFound, "NOT_FOUND", "issue not found")
+			return errorf(apicode.NotFound, "issue not found")
 		}
 		return fmt.Errorf("read issue %s: %w", key, err)
 	}
@@ -852,7 +887,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, 
 				references = append(references, reference)
 			}
 		}
-		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
+		return resolvedCheck{}, errorf(apicode.CheckAmbiguous,
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
@@ -864,7 +899,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, 
 }
 
 func unknownCheck(value string) error {
-	return errorf(http.StatusBadRequest, "UNKNOWN_CHECK",
+	return errorf(apicode.UnknownCheck,
 		"%s is no check of this issue's Verification document or of one above it", value)
 }
 
@@ -947,7 +982,7 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 	if err != nil || rule != "" {
 		return err
 	}
-	return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
+	return errorf(apicode.CheckProvedByCI,
 		"check %s is proved by CI run %q: dispatch results reads its result from that run, and no role records one",
 		check.BlockID, check.Attributes.CICheck)
 }
@@ -964,12 +999,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
 // index stores it: the block's slice of the document's markdown, between the byte range the
 // document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
-// cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
-// so the coverage and the results reads take the same text through the same rule, and one block
-// answers one tree in all three reads, the whole stored text of a typed block in a quote included.
-// The ranges come with the markdown from that one read, which serves both from the read cache
-// without a render where it can (typedBlockMarkdown); a block the read gives no range for answers
-// the block's own content (blockContent).
+// cuts it. GET /api/v1/reference-targets and GET /api/v2/reference-targets have only that stored
+// text to read a block's tree from, so the coverage and the results reads take the same text
+// through the same rule, and one block answers one tree in all three reads, the whole stored text
+// of a typed block in a quote included. The ranges come with the markdown from that one read,
+// which serves both from the read cache without a render where it can (typedBlockMarkdown); a
+// block the read gives no range for answers the block's own content (blockContent).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id, content string)) error {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {
@@ -1049,8 +1084,9 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 // and the references its `serves` attribute names (docs.CheckBlockOf), and its words
 // (typedBlocksIn). trees is the request's own reader, nil for a caller that asked for no tree:
 // each check registers with it, as its text_tree, the markdown typedBlocksIn reads the block's
-// tree from (the rule GET /api/v1/reference-targets reads the same block by), once the slice has
-// stopped growing, since what is registered is a pointer into the row.
+// tree from (the rule GET /api/v1/reference-targets and GET /api/v2/reference-targets read the
+// same block by), once the slice has stopped growing, since what is registered is a pointer into
+// the row.
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, "check", trees != nil)
 	if err != nil {
@@ -1139,22 +1175,21 @@ func addressChecks(checks []model.CheckBlock, artifact model.Artifact) {
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. Dispatch reads
-// the markdown as GFM does, so a bare `www.` address is link text and is dropped too, while a host
-// written with neither a scheme nor `www.`, such as `example.com/logs`, stays
+// blanks. A markdown link keeps its text and loses only its target, which is a mark's attribute
+// and no text at all, so `[the link text](https://example.com)` reads `the link text`; a word
+// holding `://` (holdsLink) - a bare URL, an autolink, a dispatch:// reference - is dropped
+// wherever it stands, so a check's text and a requirement's carry no link target and no Dispatch
+// host (dispatch://INFRA-2946/spec R9.2, R10 of dispatch://INFRA-4071/spec). Dispatch reads the
+// markdown as GFM does, so a bare `www.` address is link text and stays, as a host written with
+// neither a scheme nor `www.`, such as `example.com/logs`, does
 // (TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt). It is a check's or a requirement's
 // `text`, and the line of a check CI proves keeps a check's words by lineWords (ciVerdictLine).
-// blockContent is the same block with both kept.
+// blockContent is the same block with every link target and reference kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
 		if child.Type != "text" || child.Text == "" {
 			return true
-		}
-		for _, mark := range child.Marks {
-			if mark.Type == "link" {
-				return true
-			}
 		}
 		for _, word := range strings.Fields(child.Text) {
 			if holdsLink(word) {
@@ -1435,7 +1470,7 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 		ref, ok := text.ParseRef(screenshot, text.Origins{})
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return errorf(apicode.ResultInput,
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
 		var found bool
@@ -1443,7 +1478,7 @@ func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, issueKe
 			select true from artifacts where issue_key = $1 and slug = $2 and kind = 'image'
 		`, ref.IssueKey, ref.ID).Scan(&found)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT",
+			return errorf(apicode.ResultInput,
 				"screenshot %q names no image document of %s or %s", screenshot, issueKey, checkIssueKey)
 		}
 		if err != nil {

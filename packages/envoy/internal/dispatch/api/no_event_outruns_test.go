@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -34,7 +35,7 @@ func (h *commentCommitHold) beforeCommit(ctx context.Context, events []model.Eve
 	select {
 	case h.held <- events:
 	case <-h.done:
-		return errorf(http.StatusServiceUnavailable, "TEST_ENDED", "the test ended while this write was held")
+		return errorf(apicode.DatabaseUnavailable, "the test ended while this write was held")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -42,7 +43,7 @@ func (h *commentCommitHold) beforeCommit(ctx context.Context, events []model.Eve
 	case err := <-h.release:
 		return err
 	case <-h.done:
-		return errorf(http.StatusServiceUnavailable, "TEST_ENDED", "the test ended while this write was held")
+		return errorf(apicode.DatabaseUnavailable, "the test ended while this write was held")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -183,7 +184,7 @@ func TestNoEventOutrunsItsNode(t *testing.T) {
 			continue
 		}
 
-		hold.release <- errorf(http.StatusServiceUnavailable, "TEST_ROLLBACK", "the test ends this write in a rollback")
+		hold.release <- errorf(apicode.DatabaseUnavailable, "the test ends this write in a rollback")
 		if response := awaitResponse(t, answered); response.Code != http.StatusServiceUnavailable {
 			t.Fatalf("rollback: the comment write the hold rolled back answered %d %s, want the hold's 503", response.Code, response.Body.String())
 		}

@@ -14,11 +14,12 @@ import (
 // TestSpecWriteRefusesAWorkersFirstVerificationUploadedAsAFile: an issue that holds no
 // Verification document takes its first verification.md only from a person or an architect of
 // its tree (R1), whatever Content-Type the upload's file part carries. A multipart upload whose
-// file part is text/plain is stored as a file (artifactKind), which takes the slug verification-md
-// and no role, and documentPlays reads such a row as the issue's Verification document by that
-// slug: the issue answers it as its verification_artifact_id, and the architect's later upload of
-// verification.md is refused ARTIFACT_KIND_MISMATCH. So C's tester's file upload is refused with
-// 403 DOCUMENT_WRITER_NOT_ARCHITECT like its markdown upload, and writes nothing.
+// file part is text/plain is a file (artifactKind), and its slug verification-md is the one
+// documentPlays reads as the issue's Verification document: this branch refuses such a file 400
+// ARTIFACT_ROLE_NAME (fileUnderRoleNameRefusal), and the check judges it first
+// (refuseFileUnderRoleName). So C's tester's file upload is refused with 403
+// DOCUMENT_WRITER_NOT_ARCHITECT like its markdown upload, and writes nothing, and C's architect's
+// Markdown upload of verification.md is then taken.
 func TestSpecWriteRefusesAWorkersFirstVerificationUploadedAsAFile(t *testing.T) {
 	t.Parallel()
 	server := newSpecWriterServer(t, testServerOptions{})

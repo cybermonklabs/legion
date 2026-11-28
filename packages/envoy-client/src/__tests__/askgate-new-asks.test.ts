@@ -175,6 +175,15 @@ describe("an ask block's text is its body, read past its containers", () => {
     ]);
   });
 
+  // Dispatch reads a block's question with Go's `strings.TrimSpace` (parseAskBlock), so the text
+  // and its opening are cut as Go cuts them (goTrimSpace): a trailing U+0085, which `trim` keeps,
+  // goes.
+  test("a block's text is trimmed as Go's strings.TrimSpace trims it", () => {
+    expect(askBlocks(":::ask{#window}\nWhich deployment window?\u0085\n:::")).toEqual(
+      askBlocks(":::ask{#window}\nWhich deployment window?\n:::")
+    );
+  });
+
   test("the opening is the text's first 60 code points", () => {
     const question = `${"🚀".repeat(59)}ab`;
     expect(askBlocks(`:::ask{#window}\n${question}\n:::`)[0]?.opening).toBe(`${"🚀".repeat(59)}a`);
@@ -379,6 +388,14 @@ describe("newAsks", () => {
     expect(newAsks("dispatch_ask", { issue: "DSP-1", question: " Which window? " })).toEqual([
       { kind: "ask", text: "Which window?", opening: "Which window?" },
     ]);
+  });
+
+  // Dispatch reads a question with Go's `strings.TrimSpace` (validateAskQuestion), so the ask's
+  // text is cut as Go cuts it (goTrimSpace): a trailing U+0085, which `trim` keeps, goes.
+  test("a dispatch ask's question is trimmed as Go's strings.TrimSpace trims it", () => {
+    expect(newAsks("dispatch_ask", { issue: "DSP-1", question: "Which region?\u0085" })).toEqual(
+      newAsks("dispatch_ask", { issue: "DSP-1", question: "Which region?" })
+    );
   });
 
   test("a retype into an ask is an ask whose text the document holds", () => {

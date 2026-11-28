@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -23,14 +23,15 @@ import (
 // that judges its form. A process builds its form once (NewSpecForm), which sets the gate of its
 // document service, and the API judges with that same form (Deps.SpecForm). refuseSpecForm
 // refuses, at its two call sites: the opening or hand-back of an approval request
-// (requestArtifactApproval), and an approval in a person's name (approvalDocuments), which gives
-// the documents that approval covers and judges each of them. Every writer of an approval in a
-// person's name asks approvalDocuments: her review on either review route and her answer to an
-// approval request (queueApprovalReviews), and the carry of an approval to a new version
-// (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read findings
-// and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the
-// repair pass (prepareRestoration), which judges a request at the versions it names once the
-// reopen ends and leaves a broken approval request resolved rather than open it again
+// (requestApproval, the work both versions' route hands it: requestArtifactApproval at /api/v1,
+// requestArtifactApprovalV2 at /api/v2), and an approval in a person's name (approvalDocuments),
+// which gives the documents that approval covers and judges each of them. Every writer of an
+// approval in a person's name asks approvalDocuments: her review and her answer to an approval
+// request (queueApprovalReviews), and the carry of an approval to a new
+// version (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read
+// findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
+// and of the repair pass (prepareRestoration), which judges a request at the versions it names
+// once the reopen ends and leaves a broken approval request resolved rather than open it again
 // (docs.WriteRestoredAsks, which only it calls, writes the others open). Every route that opens
 // an approval request or answers one reaches one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census, and to
@@ -39,9 +40,6 @@ import (
 // One way past the gate stays open, and it is known: an approval given before the setting named
 // the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
 // root takes an issue's documents out of scope with one write; the read route's scope says so.
-
-// specFormCode is the code of the refusal.
-const specFormCode = "SPEC_FORM"
 
 // specFormFindingsHeld is how many findings a refusal's body holds. findings_total counts them all.
 const specFormFindingsHeld = 500
@@ -365,11 +363,12 @@ func (r *specFormRefusal) Error() string {
 	return r.words().String()
 }
 
-// body is the refusal's 409 SPEC_FORM body.
-func (r *specFormRefusal) body() specFormError {
+// body is the refusal's 409 SPEC_FORM body, its code the name the request's version answers
+// apicode.SpecForm with (refusalPair, writeHandlerError).
+func (r *specFormRefusal) body(code string) specFormError {
 	words := r.words()
 	body := specFormError{
-		Code:          specFormCode,
+		Code:          code,
 		Error:         words.String(),
 		Refusal:       words.Refusal,
 		NextStep:      words.NextStep,
@@ -661,7 +660,7 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string,
 			continue
 		}
 		if each.stored == nil {
-			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", each.name, each.version)
+			return approvedSpec{}, errorf(apicode.VersionNotFound, "%s has no version %d", each.name, each.version)
 		}
 		extracted, err := specform.ExtractDocument(each.name, each.version, each.markdown)
 		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
@@ -701,7 +700,7 @@ func specFormMarkdown(ctx context.Context, q queryer, artifact model.Artifact, v
 	var markdown string
 	err := q.QueryRow(ctx, `select coalesce(markdown, '') from artifact_versions where artifact_id = $1 and number = $2`, artifact.ID, version).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", artifact.Name, version)
+		return "", errorf(apicode.VersionNotFound, "%s has no version %d", artifact.Name, version)
 	}
 	if err != nil {
 		return "", fmt.Errorf("read version %d of %s: %w", version, artifact.Name, err)

@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // routeAuth names who may call a route. It describes the check the handler performs; the
@@ -50,12 +52,15 @@ const (
 	//   - The rows whose path names a session — the `agents/{session_id}` writes and
 	//     `PUT /api/v1/me/agents/{session_id}/state` — are held to it by withinSessionScope,
 	//     which refuses a credential that proved another session (project_scope.go). Only a
-	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages`, the
-	//     stream publish and the `me` state row need the `person` scope besides, since a person
-	//     writing to a session is writing to someone else's conversation by design, and that
-	//     scope is what lets their own credential past the session check (withinSessionScope).
+	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages` and
+	//     `POST /api/v2/agents/{session_id}/messages`, the stream publish and the `me` state row
+	//     need the `person` scope besides, since a person writing to a session is writing to
+	//     someone else's conversation by design, and that scope is what lets their own
+	//     credential past the session check (withinSessionScope).
 	//   - `POST /api/v1/messages/{id}/deliveries/{attempt}/accept` and
-	//     `POST /api/v1/messages/{id}/reply` take the session from the caller's own credential
+	//     `POST /api/v1/messages/{id}/reply`, and their /api/v2 routes
+	//     `PUT /api/v2/messages/{id}/deliveries/{attempt}/state` and
+	//     `POST /api/v2/messages/{id}/replies`, take the session from the caller's own credential
 	//     or `actor` and refuse an attempt that is not that session's, `403 ACCEPT_FORBIDDEN`
 	//     and `403 REPLY_FORBIDDEN`.
 	//   - The `me` token rows name no session at all: they are the calling person's, read and
@@ -67,12 +72,12 @@ const (
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
 	// than its path: the issue create, whose project comes from the body, and the question of an
-	// answer run. There is no object to resolve before the handler runs. So createIssue and
-	// createGoingRequest each read that project's visibility and ask access.CredentialCovers once
-	// they have read that project. Each answers a private project that the credential does not
-	// name, and a project that does not exist, with one answer at that one step: createIssue 404
-	// NOT_FOUND, and createGoingRequest 404 PROJECT_NOT_FOUND. withinProjectScope passes the row
-	// through by this class rather than by a name it compares.
+	// answer run. There is no object to resolve before the handler runs. So createIssueFrom, the
+	// create both versions make, and createGoingRequestFrom each read that project's visibility and
+	// ask access.CredentialCovers once they have read that project. Each answers a private project
+	// that the credential does not name, and a project that does not exist, with one answer at that
+	// one step: createIssueFrom 404 NOT_FOUND, and createGoingRequestFrom 404 PROJECT_NOT_FOUND.
+	// withinProjectScope passes the row through by this class rather than by a name it compares.
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
 	// its own body alone. There is no object whose project could be resolved and no session the
@@ -97,8 +102,11 @@ const (
 // wherever a whole one does, so it fails where a whole one fails. It is read from the route
 // rather than assumed, and the routes disagree — a document's read answers ARTIFACT_NOT_FOUND,
 // a comment's thread NOT_FOUND and a comment's delivery COMMENT_NOT_FOUND — so it is written
-// per route and not per kind. BlockNotFound is the same for the {block_id}. notFoundNone is the
-// route that answers no 404 at all for an id it does not hold, which then keeps that answer.
+// per route and not per kind. BlockNotFound is the same for the {block_id}. NoNotFound marks the
+// route that answers no 404 at all for an id it does not hold, which names no NotFound: a prefix
+// that names nothing is left as written there, and the route answers what it always answers. Only
+// DELETE /api/v1/me/asks/{id}/snooze is one: un-snoozing a row nobody snoozed is the state the
+// caller asked for, and it answers 204 whatever ask the id names.
 //
 // Reason is why a route looks up no prefix, written exactly where Kind is empty and Blocks is
 // false: an id of a kind refs.ResolvePrefix does not read, so nothing is looked for and the
@@ -110,16 +118,11 @@ type idRoute struct {
 	Kind          string
 	WithinIssue   bool
 	Blocks        bool
-	NotFound      string
-	BlockNotFound string
+	NotFound      apicode.Code
+	NoNotFound    bool
+	BlockNotFound apicode.Code
 	Reason        string
 }
-
-// notFoundNone is the NotFound of a route that answers no 404 for an id it does not hold, so a
-// prefix that names nothing is left as written and that route answers what it always answers.
-// Only DELETE /api/v1/me/asks/{id}/snooze is one: un-snoozing a row nobody snoozed is the state
-// the caller asked for, and it answers 204 whatever ask the id names.
-const notFoundNone = "none"
 
 // resolves reports whether the route looks a prefix up at all, which is what makes Reason
 // required. It does not decide the wrapping: register wraps every route that states an ID,
@@ -134,32 +137,45 @@ func hasIDWildcard(pattern string) bool {
 // undecidedIDRoutes names every route whose ID leaves its id undecided: a route whose pattern
 // carries an id wildcard and that states no ID, one that resolves nothing and gives no reason,
 // one that names a kind and a reason at once, one that resolves an id or a block without saying
-// what 404 that route answers for one it does not hold, one that resolves nothing and names such
-// an answer anyway, and one that states an ID for a pattern that carries no id.
+// what 404 that route answers for one it does not hold, one that says it answers no 404 for an id
+// it does not hold and names one anyway, one that resolves nothing and names such an answer
+// anyway, and one that states an ID for a pattern that carries no id. A route file states its ID
+// in its declaration (routeDecl.ID) and a routeRow in its IDs column; both reach the mounted
+// route's IDs, so a v2 route whose column is missing refuses to mount (register) where a v1
+// route's missing ID does.
 func undecidedIDRoutes(routes []apiRoute) []string {
 	var undecided []string
 	for _, route := range routes {
 		name := route.Method + " " + route.Pattern
-		entry := route.ID
+		entry := route.IDs
+		// A route file's declaration states its ID, and a routeRow states it in its IDs column.
+		source := "its ID"
+		if route.columns {
+			source = "its IDs column"
+		}
 		if !hasIDWildcard(route.Pattern) {
 			if entry != nil {
-				undecided = append(undecided, name+": its ID says what an id names there, and its pattern carries no id")
+				undecided = append(undecided, name+": "+source+" says what an id names there, and its pattern carries no id")
 			}
 			continue
 		}
 		switch {
+		case entry == nil && route.columns:
+			undecided = append(undecided, name+": its IDs column says neither what its id names nor why no prefix is resolved there")
 		case entry == nil:
-			undecided = append(undecided, name+": its declaration states no ID, which says neither what its id names nor why no prefix is resolved there")
+			undecided = append(undecided, name+": it states no ID, which says neither what its id names nor why no prefix is resolved there")
 		case entry.resolves() && entry.Reason != "":
-			undecided = append(undecided, name+": its ID names a kind to resolve and a reason not to")
+			undecided = append(undecided, name+": "+source+" names a kind to resolve and a reason not to")
 		case !entry.resolves() && strings.TrimSpace(entry.Reason) == "":
-			undecided = append(undecided, name+": its ID resolves no prefix there and gives no reason")
-		case entry.Kind != "" && entry.NotFound == "":
-			undecided = append(undecided, name+": its ID resolves an id there and does not say what 404 the route answers for one it does not hold")
-		case entry.Blocks && entry.BlockNotFound == "":
-			undecided = append(undecided, name+": its ID resolves a block id there and does not say what 404 the route answers for one the document does not hold")
-		case !entry.resolves() && (entry.NotFound != "" || entry.BlockNotFound != ""):
-			undecided = append(undecided, name+": its ID resolves nothing there and names a not-found answer anyway")
+			undecided = append(undecided, name+": "+source+" resolves no prefix there and gives no reason")
+		case entry.Kind != "" && entry.NotFound.IsZero() && !entry.NoNotFound:
+			undecided = append(undecided, name+": "+source+" resolves an id there and does not say what 404 the route answers for one it does not hold")
+		case entry.NoNotFound && !entry.NotFound.IsZero():
+			undecided = append(undecided, name+": "+source+" says the route answers no 404 for an id it does not hold and names one anyway")
+		case entry.Blocks && entry.BlockNotFound.IsZero():
+			undecided = append(undecided, name+": "+source+" resolves a block id there and does not say what 404 the route answers for one the document does not hold")
+		case !entry.resolves() && (!entry.NotFound.IsZero() || !entry.BlockNotFound.IsZero() || entry.NoNotFound):
+			undecided = append(undecided, name+": "+source+" resolves nothing there and names a not-found answer anyway")
 		}
 	}
 	sort.Strings(undecided)
@@ -171,13 +187,28 @@ func undecidedIDRoutes(routes []apiRoute) []string {
 // caller may reach.
 type routeScopeSet []string
 
+// v2PersonScope and v2SettlesScope are the OAuth scope sets /api/v2 row files share: person for
+// routes acting as the caller's person, and person plus approve for routes that settle what a
+// person settles.
+var (
+	v2PersonScope  = routeScopeSet{model.ScopePerson}
+	v2SettlesScope = routeScopeSet{model.ScopePerson, model.ScopeApprove}
+)
+
 // routeDecl is one route as the file that declares it states it. Every route of this package is a
 // file of its own, route_<path>+<method>.go (internal/dispatch/routefile says how a pattern is
 // written into the name, and TestEachRouteIsDeclaredInTheFileItsNameNames holds each file to it),
-// and that file holds one declaration, `var _ = declareRoute(routeDecl{...})`, whose fields are
-// every fact Dispatch knows of the route: two changes that add different routes touch no file in
-// common. Add a route by adding such a file, never a mux.HandleFunc line: routes() mounts what is
-// declared, GET /api/v1 lists it, and the OpenAPI document is emitted from it.
+// and that file holds one declaration, `var _ = declareRoute(routeDecl{...})` for /api/v1 or
+// `var _ = declareRow(func(s *server) routeRow { ... })` for /api/v2 (for both, in the nine row
+// files of the INFRA-979 tree, OfINFRA979), whose fields are every fact Dispatch knows of the
+// route: two changes that add different routes touch no file in common.
+// routeDecl is a /api/v1 route as /api/v2 began, or one another pull request merged into main
+// before /api/v2 merged, each naming the /api/v2 route that answers it (Successor) but a test
+// hook, whose successor is its own /api/v2/_test path (testHookRoutes), and a route a merge on
+// main added after /api/v2's freeze, which testdata/v1-awaiting-v2-routes.txt holds: it names
+// none until its /api/v2 route lands (Successor). Add a route as a routeRow in a row file
+// route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file (but a test
+// hook, which is one) and never as a mux.HandleFunc line (routes()).
 type routeDecl struct {
 	Method      string
 	Pattern     string
@@ -186,6 +217,18 @@ type routeDecl struct {
 	// Handler is the server's method that serves the route, as a method expression:
 	// (*server).getIssue. routes() binds it to the server it builds the table for.
 	Handler func(*server, http.ResponseWriter, *http.Request)
+
+	// Successor is the /api/v2 route that answers this /api/v1 route, or that a client moves to
+	// where this route is deleted when /api/v1 ends (successorIs, deletedFor): its Link header
+	// names it (linkSuccessor), and the map tests hold every /api/v1 route to one. Every route
+	// file but two kinds states one: a test hook's successor is its own /api/v2/_test path
+	// (testHookRoutes), and a route a merge on main added after /api/v2's freeze names none until
+	// its /api/v2 route lands, which testdata/v1-awaiting-v2-routes.txt holds it to, and its Link
+	// names GET /api/v2. A route added here is served at /api/v1 alone, but a test hook, which is
+	// served at its /api/v1 path and at its /api/v2/_test path (testHookRoutes): a route added for
+	// both versions is a routeRow in a row file route_api_v2_<path>+<method>.go holding one
+	// declareRow (routes()).
+	Successor successor
 
 	// TestHook is a route mounted only with Deps.TestHooksEnabled: a hook a test arms or reads,
 	// which no deployment serves. What each hook does, and whether it acts on every process
@@ -263,7 +306,7 @@ type routeDecl struct {
 	// Every GET route states a class and a kind, and no other route states either: a write is not
 	// a read whatever its handler does, and register refuses to mount a table that breaks either
 	// rule (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
-	// OpenAPI document and the reference generated from it do not carry it. Only the
+	// OpenAPI document and the reference generated from it do not carry it. The
 	// limited-token gate and the as_of gate read it (refuseLimitedToken, asOfGate), and routes()
 	// writes what it says of as_of into the route's description (asOfDescription) as it builds the
 	// table.
@@ -278,7 +321,7 @@ type routeDecl struct {
 	// the caller must hold, and no person holds results, so ResultsScope says what a credential
 	// that holds results alone may still call rather than what a route requires; for the same
 	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
-	// it do not carry it, and only the limited-token gate reads it.
+	// it do not carry it.
 	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
@@ -299,6 +342,14 @@ type routeDecl struct {
 	// scope: the route index and the OpenAPI document do not carry it, and only the
 	// limited-token gate reads it.
 	ApproveOnly bool
+	// ApproveState is, on a route that states ApproveOnly and whose /api/v2 successor takes
+	// several operations by the body's `state`, the one state of that successor that answers
+	// this route, which is the state an approve-only token may send the successor
+	// (applyApprovePolicy, gateApproveOnlyStates); empty on every other route.
+	ApproveState string
+	// ApproveApprovalAsks is, on the answer of an ask, that an approve-only token may answer an
+	// approval request alone, on both versions (gateApproveOnlyAskAnswer).
+	ApproveApprovalAsks bool
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
@@ -320,18 +371,45 @@ func declareRoute(route routeDecl) routeDecl {
 	return route
 }
 
+// rowRegistry is the constructor of every routeRow a /api/v2 row file declares, in the order the
+// files were initialized. Nothing appends to it once the package is initialized: routeRows reads
+// it.
+var rowRegistry []func(*server) routeRow
+
+// declareRow adds one /api/v2 routeRow constructor to rowRegistry and returns true. Each /api/v2
+// row file calls it once, from a package-level declaration, so the registry is whole before any
+// function of the package runs, in the order Go's package initialization decides; routeRows builds
+// each row with a server and sorts them by pattern and then method.
+func declareRow(row func(*server) routeRow) bool {
+	rowRegistry = append(rowRegistry, row)
+	return true
+}
+
+// declaredRoute is the declaration of one route, by "<method> <pattern>", test hooks included,
+// and false where no route file declares it: a routeRow that shares a core with a /api/v1 route
+// copies a fact of that route's declaration through it (declaredRead).
+func declaredRoute(name string) (routeDecl, bool) {
+	for _, route := range routeRegistry {
+		if route.Method+" "+route.Pattern == name {
+			return route, true
+		}
+	}
+	return routeDecl{}, false
+}
+
 // readClassRefusals names, sorted, every way the table's declarations fail to class their reads,
 // each line naming its route: a GET route stating no class, one whose Writes is no class at all, a
 // GET that writes (readWritesState) stating no WriteNote to name what it writes, a GET route
 // stating no as_of kind (AsOf) or one that is no kind at all, asOfCaller on a route but GET
-// /api/v1/whoami (asOfCallerRow), a route of kind answers stating no AtACut, a route of another
-// kind stating one, and a route that is not a GET stating any of it, which would open a write to a
-// credential minted only to read. register refuses to mount a table this names anything for, so a
-// GET route added later is served to no read-only credential and answers no as_of until someone
-// has read its handler and classed it.
+// /api/v1/whoami and GET /api/v2/me (asOfCallerRows), a route of kind answers stating no AtACut,
+// a route of another kind stating one, and a route that is not a GET stating any of it, which
+// would open a write to a credential minted only to read. register refuses to mount a table this
+// names anything for, so a GET route added later is served to no read-only credential and
+// answers no as_of until someone has read its handler and classed it.
 //
-// There is no "a class naming no route" case, which the map beside the table needed: a class is a
-// field of the route's own declaration, so it cannot name a route that is not there.
+// A route file's class is a field of its own declaration, so it cannot name a route that is not
+// there. A routeRow's class is an entry of v2ReadClasses, keyed by the row's /api/v2 pattern, and an
+// entry that classes no GET routeRow the table mounts is named too (v2ReadClassesUnmounted).
 func readClassRefusals(routes []apiRoute) []string {
 	var refused []string
 	for _, route := range routes {
@@ -353,8 +431,8 @@ func readClassRefusals(routes []apiRoute) []string {
 		switch entry.AsOf {
 		case asOfAnswers, asOfNoHistory:
 		case asOfCaller:
-			if name != asOfCallerRow {
-				refused = append(refused, name+": its read class's AsOf is asOfCaller, which only "+asOfCallerRow+" may hold: the route would answer a read-only token's cut with the present")
+			if !asOfCallerRows(name) {
+				refused = append(refused, name+": its read class's AsOf is asOfCaller, which only "+asOfCallerRow+" and "+asOfCallerV2Row+" may hold: the route would answer a read-only token's cut with the present")
 			}
 		case asOfUnset:
 			refused = append(refused, name+": a GET route whose read class leaves AsOf unset")
@@ -368,17 +446,9 @@ func readClassRefusals(routes []apiRoute) []string {
 			refused = append(refused, name+": its read class has an AtACut, and the route is not of kind asOfAnswers")
 		}
 	}
+	refused = append(refused, v2ReadClassesUnmounted(routes)...)
 	sort.Strings(refused)
 	return refused
-}
-
-// apiRoute is one mounted route: its declaration, read through it by promotion, with its handler
-// bound to the server that mounts it. Register mounts the table and GET /api/v1 lists it, so the
-// two can never disagree about what the server serves. Handler is the bound handler, and it
-// shadows the declaration's own, which is a method expression of no server yet.
-type apiRoute struct {
-	routeDecl
-	Handler http.HandlerFunc
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -419,6 +489,13 @@ const searchDeclaresTen = "This route declares all ten members and as_of, and an
 // where a sentence left behind on one row would stand as the other route's contract.
 const commentPartiesDescription = "A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target."
 
+// unsettledText is what every read of a document's text says of unsettled (versionOfText): the
+// three text rows of /api/v1 and the include=text of /api/v2's document reads
+// (artifactIncludeText). A description is no comment, so the sentence is written once.
+const unsettledText = "unsettled is true when the markdown answered equals no stored version's markdown: the " +
+	"document holds edits no version holds yet, or its newest version was rendered by an older build; version is " +
+	"then the newest version, not the version of this text"
+
 // goingCatalogueDescription is the description GET /api/v1/going/catalogue serves. Both counts
 // in it are read from what this build holds - the specs contracts carries, and the tools the
 // catalogue names a row of - rather than written as words: a number written as prose has no
@@ -447,34 +524,90 @@ func threadPageDescription(entries, filters string) string {
 		contracts.MaxThreadPageLimit, contracts.DefaultThreadPageLimit, entries, filters)
 }
 
-// routes is every declared route this server mounts, each handler bound to s: every declaration
-// but the test hooks', which are mounted only where Deps.TestHooksEnabled is set. They come
-// sorted by pattern and then method. No reader depends on the order - Register mounts each by its
-// own pattern, and GET /api/v1, `envoy-dispatch routes` and the OpenAPI document each sort what
-// they write - so it is fixed only so that every reader walks one table in one order, whichever
-// order the route files were initialized in.
+// routes is every route the server serves, one apiRoute per (version, route): each route file's
+// declaration at its /api/v1 pattern (v1Route), each routeRow of rowRegistry (routeRows) at /api/v2
+// and, unless it says otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test
+// hook's declaration at its two paths (testHookRoutes). Both declarations and rows are walked by
+// pattern and then method (byPatternThenMethod, byRowPatternThenMethod), so every reader walks one
+// table in one order, whichever order the route files were initialized in. Add a route as a
+// routeRow in a row file route_api_v2_<path>+<method>.go holding one declareRow, never as a
+// routeDecl file (but a test hook, which is one) and never as a mux.HandleFunc line: /api/v1 alone
+// serves a routeDecl file that is no test hook, and TestAV1OnlyRowOutsideTheFrozenListFails
+// refuses one testdata/v1-only-routes.txt does not hold. A routeRow served in both versions
+// outside the INFRA-979 tree is decoded and gated at both paths, its Query, its Body and its
+// Authorities included (apiRoute.decoded), and a row of that tree (OfINFRA979), today's only kind
+// served in both, is decoded and gated at neither; one that answers for /api/v1 routes which keep
+// their own answer at /api/v1 is served at /api/v2 alone (Versions: onlyV2). register mounts what
+// this answers and refuses a table whose facts it cannot decide (undecidableWrites,
+// shapelessRoutes, undecidedIDRoutes, undecodableRoutes, readClassRefusals). It refuses an approve
+// list that does not map onto the table itself (applyApprovePolicy), by panic as it builds the
+// table, with each fault, which names its kind and its route, so no reader of the table meets one.
 func (s *server) routes() []apiRoute {
-	routes := make([]apiRoute, 0, len(routeRegistry))
-	for _, route := range routeRegistry {
-		if route.TestHook && !s.deps.TestHooksEnabled {
-			continue
+	replays := s.keyedReplays()
+	declared := slices.SortedFunc(slices.Values(routeRegistry), byPatternThenMethod)
+	var routes []apiRoute
+	for _, declaration := range declared {
+		switch {
+		case !declaration.TestHook:
+			routes = append(routes, v1Route(s, declaration, replays))
+		case s.deps.TestHooksEnabled:
+			routes = append(routes, testHookRoutes(s, declaration)...)
 		}
-		// What the route's read class says of as_of, which is nothing on a route that is not a GET
-		// (readClassRefusals), so the route index, the OpenAPI document and each client generated
-		// from it carry it. route is this loop's copy, so the declaration keeps its own text.
-		route.Description += asOfDescription(route.Method+" "+route.Pattern, route.Read)
-		routes = append(routes, apiRoute{routeDecl: route, Handler: s.bound(route.Handler)})
 	}
-	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
+	for _, row := range s.routeRows() {
+		routes = append(routes, mountRow(row)...)
+	}
+	stampV2ReadClasses(routes)
+	// What each route's read class says of as_of (asOfDescription), on every route whose query the
+	// as_of gate reads: a route file's declaration, a test hook's two mounts and a row of the
+	// INFRA-979 tree at both its paths. A route whose query the decoder reads (apiRoute.decoded)
+	// declares no as_of and answers one 400 QUERY_KEY_UNKNOWN (asOfGate), so its description says
+	// nothing of as_of. It is written here, once each route's class is stamped, so the route
+	// index, the OpenAPI document and each client generated from it carry it, and the
+	// declarations keep their own text: each route is this table's copy.
+	for index, route := range routes {
+		if !route.decoded() {
+			routes[index].Description += asOfDescription(route.Method+" "+route.Pattern, route.Read)
+		}
+	}
+	// The approve-only token's admission is compiled here, once, and the routes carry the result
+	// every layer that reads it uses: the three checks and the refusal's wording (approve_policy.go).
+	if faults := applyApprovePolicy(routes, approveList(declared)); len(faults) > 0 {
+		panic("api: the route table's approve list is an invalid mapping: " + strings.Join(faults, "; "))
+	}
 	return routes
 }
 
-// byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
-// and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
-// do the results and approve-only refusals, whose messages promise the order routes() mounts them
-// in (resultsOnlyRefusal, approveOnlyRefusal).
+// routeRows is every routeRow of rowRegistry, each built with s, by pattern and then method
+// (byRowPatternThenMethod), whichever order the row files were initialized in. routes() mounts
+// them, and a test that reads the rows themselves reads them here.
+func (s *server) routeRows() []routeRow {
+	rows := make([]routeRow, 0, len(rowRegistry))
+	for _, build := range rowRegistry {
+		rows = append(rows, build(s))
+	}
+	slices.SortFunc(rows, byRowPatternThenMethod)
+	return rows
+}
+
+// patternThenMethod is the one order of the table, which its declarations and its rows are each
+// walked in (byPatternThenMethod, byRowPatternThenMethod): by pattern, and by method where one
+// pattern has more than one.
+func patternThenMethod(leftPattern, leftMethod, rightPattern, rightMethod string) int {
+	return cmp.Or(strings.Compare(leftPattern, rightPattern), strings.Compare(leftMethod, rightMethod))
+}
+
+// byPatternThenMethod is the one order (patternThenMethod) for the declarations. routes() sorts
+// what it mounts with it, and so does the results refusal, whose message promises the order
+// routes() mounts them in (resultsOnlyRefusal).
 func byPatternThenMethod(left, right routeDecl) int {
-	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
+	return patternThenMethod(left.Pattern, left.Method, right.Pattern, right.Method)
+}
+
+// byRowPatternThenMethod is the one order (patternThenMethod) for routeRow values, which routeRows
+// answers them in.
+func byRowPatternThenMethod(left, right routeRow) int {
+	return patternThenMethod(left.Pattern, left.Method, right.Pattern, right.Method)
 }
 
 // bound is handler, a method of the server, served by s.
@@ -482,8 +615,7 @@ func (s *server) bound(handler func(*server, http.ResponseWriter, *http.Request)
 	return func(w http.ResponseWriter, r *http.Request) { handler(s, w, r) }
 }
 
-// routeIndexEntries renders the table for GET /api/v1. routes() answers the table sorted by
-// pattern then method, which is the order the index is read in, so nothing is sorted again here.
+// routeIndexEntries renders the table for GET /api/v1, sorted by path then method.
 func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 	entries := make([]routeIndexEntry, len(routes))
 	for index, route := range routes {
@@ -495,6 +627,12 @@ func routeIndexEntries(routes []apiRoute) []routeIndexEntry {
 			Description: route.Description,
 		}
 	}
+	sort.Slice(entries, func(left, right int) bool {
+		if entries[left].Path != entries[right].Path {
+			return entries[left].Path < entries[right].Path
+		}
+		return entries[left].Method < entries[right].Method
+	})
 	return entries
 }
 
@@ -514,9 +652,17 @@ func (s *server) getRouteIndex(w http.ResponseWriter, _ *http.Request) {
 	WriteJSON(w, http.StatusOK, routeIndexBody(s.routeIndex))
 }
 
-// WriteRouteIndex writes the body GET /api/v1 answers on a server without test hooks, read
-// from the declarations alone: no database, no listener. `envoy-dispatch routes` prints it, and
-// the docs site's API reference is generated from that output.
-func WriteRouteIndex(w io.Writer) error {
-	return json.NewEncoder(w).Encode(routeIndexBody(routeIndexEntries((&server{}).routes())))
+// WriteRouteIndex writes the body the index of one version of the API answers on a server without
+// test hooks, read from the table alone: no database, no listener. version 1 is GET /api/v1's,
+// version 2 GET /api/v2's, and any other is refused. `envoy-dispatch routes` prints it, and the
+// docs site's API reference is generated from that output.
+func WriteRouteIndex(w io.Writer, version int) error {
+	routes := (&server{}).routes()
+	switch apiVersion(version) {
+	case apiV1:
+		return json.NewEncoder(w).Encode(routeIndexBody(routeIndexEntries(servedAt(apiV1, routes))))
+	case apiV2:
+		return json.NewEncoder(w).Encode(routeIndexV2Body(routeIndexV2Entries(servedAt(apiV2, routes)), pageQuery{}))
+	}
+	return fmt.Errorf("the API has no version %d: its versions are 1 and 2", version)
 }

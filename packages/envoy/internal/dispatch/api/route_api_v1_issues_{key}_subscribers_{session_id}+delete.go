@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Unsubscribe a session from an issue.",
 	Handler:     (*server).unsubscribeIssueSession,
+	Successor:   successorIs(http.MethodDelete, "/issues/{key}/subscribers/{session_id}"),
 	WriteClass:  scopeProject,
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Shape:       routeShape{Status: http.StatusNoContent},

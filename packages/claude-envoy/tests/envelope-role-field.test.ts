@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Envelope } from "@legion/contracts"
-import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import type { DispatchDelivery } from "@legion/envoy-client/delivery"
 import { createEnvoyClient } from "@legion/envoy-client/transport"
 import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json"
 import { deliveryIdentity } from "../src/channel-topics"
@@ -47,14 +47,19 @@ const withRole = { ...withoutRole, role: ROLE }
 test("createChannelDelivery (envoy-channel-server.ts enqueue: renderInbound, the inbox entry, the notification): a frame with the role field is written and listed as without it", async () => {
   const written = async (envelope: object) => {
     const notifier = new FakeNotifier()
+    // The session's answer to a delivery on Dispatch, recorded rather than posted: a frame
+    // written as a card is answered by nobody here.
+    const replies: DispatchDelivery[] = []
     const delivery = createChannelDelivery({
       identity: new SessionIdentity(SESSION, "/tmp"),
       notifier,
-      configFile: sessionConfigFile("claude", process.env),
+      reply: async (target) => {
+        replies.push(target)
+      },
       stderr: (line) => void process.stderr.write(line),
     })
     expect(await delivery.enqueue({ subject: AGENT, raw: JSON.stringify(envelope) })).toBe(true)
-    return { notifications: notifier.notifications, inbox: delivery.inbox() }
+    return { notifications: notifier.notifications, inbox: delivery.inbox(), replies }
   }
   const before = await written(withoutRole)
 
@@ -71,6 +76,7 @@ test("createChannelDelivery (envoy-channel-server.ts enqueue: renderInbound, the
       summary: "Review the plan",
     },
   ])
+  expect(before.replies).toEqual([])
 })
 
 test("deliveryIdentity (channel-topics.ts, DedupeIdentitySchema extended): a frame with the role field has the identity it has without it", () => {

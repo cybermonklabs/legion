@@ -336,6 +336,23 @@ var resolvedShapeExceptions = map[string]struct {
 		reason: "its priority is the facet label (P0 to P3) of the pull request's issue, which reads the priority the issue resolves to, so it carries priority_from alone",
 		fields: []string{"priority_from"},
 	},
+	// The ask rows of /api/v2, which read their issue's own priority by a statement of their own
+	// (askV2Rows, askV2Columns) rather than the open asks' read that resolves it.
+	"AskV2":      v2AskOwnPriority,
+	"AskWriteV2": v2AskOwnPriority,
+	"AskWriteV2WithWriteAdviceOrSuggestionsOnlyAdvice": v2AskOwnPriority,
+}
+
+// v2AskOwnPriority holds a /api/v2 ask row to its issue's own priority alone: R2 of
+// dispatch://INFRA-4071/spec carries a member main added to a /api/v1 row after /api/v2's freeze
+// to /api/v2 only where the two versions share the handler and its types, and the /api/v2 ask
+// rows share neither with GET /api/v1/inbox, whose rows carry the resolved priority.
+var v2AskOwnPriority = struct {
+	reason string
+	fields []string
+}{
+	reason: "a /api/v2 ask row reads its issue's own priority by a statement of its own (askV2Columns), which the resolved priority main added after /api/v2's freeze does not reach (R2 of dispatch://INFRA-4071/spec)",
+	fields: []string{},
 }
 
 // prioritiesGraphPath is the path of the Priorities graph's routes. A shape that only they answer
@@ -1255,6 +1272,36 @@ var resolvedP0Requests = map[string]func(t *testing.T, rig *legionStatusRig){
 			rig.requireResolvedStatesKept(t, seed.issueNames, before)
 		})
 	},
+	// The two /api/v2 issue writes run the /api/v1 routes' work (createIssueFrom, writeIssue), so
+	// the same rows reach them, under the same token, at their /api/v2 paths.
+	"POST /api/v2/issues": func(t *testing.T, rig *legionStatusRig) {
+		t.Helper()
+		seed := rig.freshSeed(t)
+		title := rig.title()
+		response := rig.credential(t, legionSharedToken).send(t, http.MethodPost, "/api/v2/issues", map[string]any{
+			"project": brokerTestProject, "title": title, "parent": seed.a, "force": true,
+			"actor": map[string]any{"kind": "session", "id": holdsNoRole},
+		})
+		requireP0Refusal(t, response)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
+	},
+	"PATCH /api/v2/issues/{key}": func(t *testing.T, rig *legionStatusRig) {
+		t.Helper()
+		shared := rig.credential(t, legionSharedToken)
+		t.Run("a move of an issue with no priority under A", func(t *testing.T) {
+			seed := rig.freshSeed(t)
+			y, yc := rig.inheritingPair(t, seed, "Y", "")
+			before := rig.readResolvedStates(t, y, yc)
+			requireP0Refusal(t, shared.send(t, http.MethodPatch, "/api/v2/issues/"+y, map[string]any{"parent": seed.a}))
+			rig.requireResolvedStatesKept(t, seed.issueNames, before)
+		})
+		t.Run("a clear of M2's own priority", func(t *testing.T) {
+			seed := rig.freshSeed(t)
+			before := rig.readResolvedStates(t, seed.m2, seed.m2c)
+			requireP0Refusal(t, shared.send(t, http.MethodPatch, "/api/v2/issues/"+seed.m2, map[string]any{"priority": nil}))
+			rig.requireResolvedStatesKept(t, seed.issueNames, before)
+		})
+	},
 }
 
 // resolvedP0Filters are the operations whose request body takes a priority or a parent that is no
@@ -1263,6 +1310,7 @@ var resolvedP0Requests = map[string]func(t *testing.T, rig *legionStatusRig){
 var resolvedP0Filters = map[string]string{
 	"POST /api/v1/me/inbox/dismiss": "its priority is a filter of the Inbox rows the dismissal reaches, and it takes no parent",
 	"POST /api/v1/me/inbox/read":    "its priority is a filter of the Inbox rows the mark-all reaches, and it takes no parent",
+	"PATCH /api/v2/me/marks":        "its priority is a filter of the Inbox threads its mark-all, dismissal or restore reaches, and it takes no parent",
 }
 
 // TestEveryOperationThatTakesAPriorityOrAParentRunsTheP0Rows is the inventory of J2's last clause

@@ -49,6 +49,10 @@ type Dispatch struct {
 	Account ciphertoken.Account
 	// HTTP is the client every call is made with; a nil client is http.DefaultClient.
 	HTTP *http.Client
+	// Commit is the commit the broker was built from (cmd/cipherd's buildRelease), which every
+	// read names in its User-Agent, `envoy-broker-judge/<commit>`, so Dispatch's access log tells
+	// the judge's reads from every other caller's; empty names `(devel)`, a build that holds none.
+	Commit string
 }
 
 // Issue is what the judge reads of one issue: enough to tell whether the reason's issue is open
@@ -232,6 +236,11 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
+	commit := d.Commit
+	if commit == "" {
+		commit = "(devel)"
+	}
+	request.Header.Set("User-Agent", "envoy-broker-judge/"+commit)
 	client := d.HTTP
 	if client == nil {
 		client = http.DefaultClient

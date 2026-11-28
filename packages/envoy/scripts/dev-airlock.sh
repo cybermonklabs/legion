@@ -43,6 +43,10 @@
 #     and Dispatch stands, and GCE_METADATA_HOST at the metadata stand, so a human-tier request
 #     whose key's judge tag gives the judge seconds of it is decided by the model rather than by
 #     a person.
+#     AIRLOCK_JUDGE_DISPATCH_URL, when set, points the judge at that Dispatch instead of the
+#     Dispatch stand (a local stack's, whose access log then shows each judge read and the
+#     User-Agent it names); the judge presents the stand's token either way, so such a
+#     Dispatch may refuse the read, and the line is logged all the same.
 #   - A profiles file (BROKER_PROFILES_FILE) in the kinds form and a memory store (the file
 #     BROKER_MEMORY_SECRETS_FILE names). The file's kinds say where a credential of each kind
 #     may go: stest, a stored secret bound to S; scoped, bound to S in authorization and x-key
@@ -571,6 +575,7 @@ IAM_TOKENS_URL="$(stand .iam_tokens_url)"
 MODEL_URL="$(stand '.stands.model.url')"
 MODEL_ANSWER_URL="$(stand .model_answer_url)"
 DISPATCH_URL="$(stand '.stands.dispatch.url')"
+JUDGE_DISPATCH_URL="${AIRLOCK_JUDGE_DISPATCH_URL:-$DISPATCH_URL}"
 # GCE_METADATA_HOST is a host and no scheme, so the metadata stand is named by its address.
 METADATA_URL="$(stand '.stands.metadata.url')"
 METADATA_ADDRESS="$(stand '.stands.metadata.address')"
@@ -826,7 +831,7 @@ start_broker() {
   BROKER_JUDGE_MODEL="$JUDGE_MODEL" \
   BROKER_JUDGE_MODEL_PROTOCOL="$JUDGE_MODEL_PROTOCOL" \
   BROKER_JUDGE_MODEL_AUDIENCE="$JUDGE_MODEL_AUDIENCE" \
-  BROKER_JUDGE_DISPATCH_URL="$DISPATCH_URL" \
+  BROKER_JUDGE_DISPATCH_URL="$JUDGE_DISPATCH_URL" \
   BROKER_JUDGE_DISPATCH_TOKEN_FILE="$JUDGE_DISPATCH_TOKEN_FILE" \
   BROKER_JUDGE_TEST_SKIP_CHECKS="$JUDGE_SKIP_CHECKS" \
   GCE_METADATA_HOST="$METADATA_ADDRESS" \

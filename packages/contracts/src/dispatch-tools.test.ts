@@ -28,6 +28,8 @@ import {
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
+  uploadExtensionOf,
+  uploadTypeFrom,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
 
@@ -604,6 +606,12 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ retract: "res-2", reason: "Stale build.", ...record })).toEqual([
       "retract takes reason alone, and this call also carries issue, check, role, verdict, commit. Retract the result, then record a new one with a call of its own.",
     ]);
+    // Dispatch reads the reason with Go's `strings.TrimSpace`, so the check does (goTrimSpace):
+    // U+0085 alone is blank to Go and refused, and U+FEFF alone is text to Go and goes through.
+    expect(refusal({ retract: "res-2", reason: "\u0085" })).toEqual([
+      "retract needs reason, the words that say why the result is wrong.",
+    ]);
+    expect(schema.safeParse({ retract: "res-2", reason: "\uFEFF" }).success).toBe(true);
     expect(refusal({ ...record, reason: "Stale build." })).toEqual([
       "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.",
     ]);
@@ -1032,7 +1040,8 @@ describe("dispatchToolSpecs", () => {
       "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
-    const notMarkdownName = `a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`;
+    const notMarkdownName =
+      "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and \"rows.jsonl\" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path, as the command resolves it, does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.";
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
     const readOwner =
       "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
@@ -1110,6 +1119,8 @@ describe("dispatchToolSpecs", () => {
       [{ issue: "DSP-1", status: "done" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", reason: "" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", reason: "  \n" }, ISSUE_UPDATE_DONE_RULE],
+      // Blank to Go's `strings.TrimSpace`, which Dispatch reads the reason with (goTrimSpace).
+      [{ issue: "DSP-1", status: "done", reason: "\u0085" }, ISSUE_UPDATE_DONE_RULE],
       [{ issue: "DSP-1", status: "done", title: "Renamed" }, ISSUE_UPDATE_DONE_RULE],
       [
         { issue: "DSP-1", status: "in_progress", reason: "Starting." },
@@ -1128,6 +1139,10 @@ describe("dispatchToolSpecs", () => {
         JSON.stringify(args)
       ).toEqual([refusal]);
     }
+    // U+FEFF is text to Go's `strings.TrimSpace`, so a reason of it alone closes the issue.
+    expect(schema.safeParse({ issue: "DSP-1", status: "done", reason: "\uFEFF" }).success).toBe(
+      true
+    );
     // The Dispatch server owns the bound on a body (INFRA-370), so the schema takes a reason the
     // old client-side cap of 32,000 characters refused.
     expect(
@@ -1519,6 +1534,68 @@ describe("dispatchToolSpecs", () => {
       expect(pathKeepsBytesOf(name)).toBe(false);
     }
   });
+
+  // INFRA-4071 R15: the name decides the type an upload goes up as. A trailing extension of the
+  // digits 0 to 9 alone is a version or a date, not a type, so the extension before it decides,
+  // and a name with none left takes the path's type.
+  test("reads an upload's type from its name, past trailing extensions of the digits 0 to 9 alone", () => {
+    const rows: Array<[string, "markdown" | "name" | "path"]> = [
+      ["Plan v1.2", "path"],
+      ["Notes 2026.11", "path"],
+      ["rows.jsonl.1", "name"],
+      ["cases.txt", "name"],
+      ["v1.2.md", "markdown"],
+      ["x.MARKDOWN", "markdown"],
+      ["Design notes", "path"],
+    ];
+    expect(rows.map(([name]) => [name, uploadTypeFrom(name)])).toEqual(rows);
+  });
+
+  // INFRA-4071 R15, review 6011588028: the name is read once, from its end, and its last part is
+  // an extension only when an extension can hold it. `notes.md/` has none, so its path decides,
+  // for the type the command sends and for AskGate alike; a tail longer than 32 is no type. The
+  // name is trimmed as Dispatch trims it, with Go's strings.TrimSpace (goTrimSpace): U+0085 is
+  // cut, so `cases.txt` then U+0085 is a .txt name, and U+FEFF is kept, so it is part of the last
+  // part, which an extension cannot hold.
+  test("reads the extension that decides an upload's type, once, from the name's end", () => {
+    const rows: Array<[string, string | undefined]> = [
+      ["notes.md/", undefined],
+      ["Notes.MD/", undefined],
+      ["a/b.markdown/", undefined],
+      ["notes.md//", undefined],
+      ["notes.txt.1", "txt"],
+      ["data.json.1", "json"],
+      ["x.md.1", "md"],
+      ["Plan v1.2", undefined],
+      ["x.MARKDOWN", "MARKDOWN"],
+      ["x.tar.gz", "gz"],
+      ["rows.jsonl_", "jsonl_"],
+      ["отчёт.данные", "данные"],
+      ["Dr. Smith's notes", undefined],
+      ["notes v2. draft", undefined],
+      ["x.", undefined],
+      ["x.t\u0000xt", undefined],
+      [`x.${"a".repeat(32)}`, "a".repeat(32)],
+      [`x.${"a".repeat(33)}`, undefined],
+      ["cases.txt\u0085", "txt"],
+      ["notes.md\uFEFF", undefined],
+    ];
+    expect(rows.map(([name]) => [name, uploadExtensionOf(name)])).toEqual(rows);
+  });
+
+  // A name is the writer's own argument, and AskGate's gate reads it on the session's own thread
+  // (uploadIsDocument), so reading it takes time in step with its length. At 30d7caaa the
+  // trailing-digit pattern was not anchored at its start (CodeQL js/polynomial-redos), and a name
+  // of 256,000 ".0" parts took 11 s, against 2 ms at e5e5e945. A long tail of digit parts is
+  // still cut whole.
+  test("reads a name of many digit parts in time in step with its length", () => {
+    const started = performance.now();
+    expect(uploadTypeFrom(`${".0".repeat(256_000)}x`)).toBe("name");
+    expect(uploadTypeFrom(`rows.jsonl${".1".repeat(256_000)}`)).toBe("name");
+    expect(uploadTypeFrom(`Plan v1${".2".repeat(256_000)}`)).toBe("path");
+    expect(uploadTypeFrom(`notes.md${".3".repeat(256_000)}`)).toBe("markdown");
+    expect(performance.now() - started).toBeLessThan(1_000);
+  }, 60_000);
 
   // --help prints the tool's description, so the description carries the stored-text rule as the
   // code composes it; which names --path keeps the bytes of is the case above.

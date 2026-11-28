@@ -90,6 +90,10 @@ import {
   workspaceRecreatedNotice,
 } from "../src/workspace-recreated";
 
+/** What every Dispatch request this plugin makes names it as: the program and the release it
+ *  ships in. */
+const PI_LEGION_USER_AGENT = `pi-legion/${pkg.version}`;
+
 // The daemon API contract this build speaks, read once as the module loads (`daemonContract`):
 // the manifest of the module this process loaded names it once a pack has written it, and a
 // checkout's own fixtures decide it for a plugin run from the checkout. A bundle installed with
@@ -1042,7 +1046,8 @@ export default function legionExtension(pi: PiApi): void {
             sessionConfigFile("omp", process.env),
             process.env,
             process.cwd(),
-            currentSessionID()
+            currentSessionID(),
+            PI_LEGION_USER_AGENT
           )(phase, role),
         branchHead: () => findPushedBranchHead({ env: process.env }),
         // The file pi-envoy's session reads: Oh My Pi's rule, in the same process.
@@ -1057,7 +1062,9 @@ export default function legionExtension(pi: PiApi): void {
           );
           return config === null
             ? undefined
-            : new DispatchClient(config.url, config.credential, fetch);
+            : new DispatchClient(config.url, config.credential, fetch, {
+                userAgent: PI_LEGION_USER_AGENT,
+              });
         },
       })
     );

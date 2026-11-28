@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // The owner half of an issue's repository is read as GitHub serves logins, not as GitHub's
@@ -24,7 +26,7 @@ func TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt(t *testing.T
 		strings.Repeat("a", 39) + "/x": strings.Repeat("a", 39) + "/x",
 	} {
 		raw, _ := json.Marshal(value)
-		repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE")
+		repo, _, err := parseIssueRepo(raw, "repo", apicode.InvalidIssue)
 		if err != nil || repo == nil || *repo != want {
 			t.Errorf("parseIssueRepo(%q) = %v, %v, want %q", value, repo, err, want)
 		}
@@ -36,7 +38,7 @@ func TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt(t *testing.T
 		strings.Repeat("a", 40) + "/x",
 	} {
 		raw, _ := json.Marshal(value)
-		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
+		if repo, _, err := parseIssueRepo(raw, "repo", apicode.InvalidIssue); err == nil {
 			t.Errorf("parseIssueRepo(%q) = %q, want it refused: GitHub serves no login of that name", value, *repo)
 		}
 	}

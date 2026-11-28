@@ -7,33 +7,34 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // An issue's route says where its messages go; whether that reaches anyone is a separate fact,
 // and an issue routed to a role nobody holds reads as owned while nobody is working it. So every
-// issue read carries route_status beside the route, judged against the listener's live-session
-// list (GET /v1/sessions, each row carrying the roles its session holds), never one lookup per
-// issue. Every process judges against one stored copy of that list, the route_roster row
-// (migration 0159), and GET /api/v1/agents (listAgents) lists the sessions of that same copy: a
-// read uses it while it is fresh by the database's clock, so a route_status or an agents list can
-// be up to routeRosterTTL (5 s) old, and inside that age every process reads a route the same way,
-// and a filtered listing paged across processes is cut from one answer. A process that finds the
-// row stale or missing asks the listener once however many of its reads are waiting, issue reads
-// and agents lists alike (rosterCache's single-flight fetch), and stores the answer for every
-// process. Like fetchHolderLiveness, the listener call runs with no transaction open and no pooled
+// issue read carries route_status beside the route (GET /api/v2/issues/{key} in reach, where
+// include=reach asks for it), judged against the listener's live-session list (GET /v1/sessions,
+// each row carrying the roles its session holds), never one lookup per issue. Every process
+// judges against one stored copy of that list, the route_roster row (migration 0159), and GET
+// /api/v1/agents and GET /api/v2/agents (agentRows) list the sessions of that same copy: a read
+// uses it while it is fresh by the database's clock, so a route_status or an agents list can be up
+// to routeRosterTTL (5 s) old, and inside that age every process reads a route the same way, and a
+// filtered listing paged across processes is cut from one answer. A process that finds the row
+// stale or missing asks the listener once however many of its reads are waiting, issue reads and
+// agents lists alike (rosterCache's single-flight fetch), and stores the answer for every process.
+// Like fetchHolderLiveness, the listener call runs with no transaction open and no pooled
 // connection held (envoy_resolve.go carries the reason). A read that waits for the fetch waits on
-// the listener too, so the rule binds every caller of readRouteRoster: listIssues and getIssue
-// call it only once their pooled reads have finished, listAgents before its two aggregates run,
-// and a new caller must do the same.
+// the listener too, so the rule binds every caller of readRouteRoster: both versions' issue lists
+// (readIssueListing) and issue reads (getIssue, getIssueV2) call it only once their pooled reads
+// have finished, agentRows before its two aggregates run, and a new caller must do the same.
 //
 // no_holder is one read and says only "nobody right now": a session that restarts or moves
 // between agent boxes keeps its id but is absent from the listener for minutes. The read does not
@@ -174,12 +175,13 @@ type rosterFetch struct {
 // wraps the request's context error); the fetch runs on for the other reads, and stores its
 // answer for every process. The fetch runs on the process's lifetime, so once a shutdown begins
 // it ends or fails at once. What an unanswered roster means is the caller's: an issue read reads
-// every route unknown, with the roster's reason, and still succeeds, while listAgents, which has
-// nothing to list without the listener, answers 503 with the roster's err, or, during a shutdown
-// drain, asks the listener on its own request. A read whose own read of the row fails answers
-// that error: the failure is the database's, and a caller that filters by a judged state or
-// lists the sessions answers it as one rather than as the listener's silence, while a caller
-// that only shows a route may read it unknown (routeRosterOrUnknown).
+// every route unknown, with the roster's reason, and still succeeds, while agentRows, the agents
+// list of both versions, which has nothing to list without the listener, answers 503 with the
+// roster's err, or, during a shutdown drain, asks the listener on its own request. A read whose
+// own read of the row fails answers that error: the failure is the database's, and a caller that
+// filters by a judged state or lists the sessions answers it as one rather than as the
+// listener's silence, while a caller that only shows a route may read it unknown
+// (routeRosterOrUnknown).
 //
 // A read that found the row stale may reach the lock only after the fetch that was in flight
 // while it read has stored its answer and gone. It then takes the answer this process built
@@ -536,7 +538,7 @@ func parseRouteStatusFilter(raw string) (string, error) {
 	case "", model.RouteLive, model.RouteHolderUnresponsive, model.RouteNoHolder, model.RouteUnknown:
 		return value, nil
 	}
-	return "", errorf(http.StatusBadRequest, "INVALID_ROUTE_STATUS",
+	return "", errorf(apicode.InvalidRouteStatus,
 		"route_status must be %s, %s, %s or %s, got %q",
 		model.RouteLive, model.RouteHolderUnresponsive, model.RouteNoHolder, model.RouteUnknown, raw)
 }

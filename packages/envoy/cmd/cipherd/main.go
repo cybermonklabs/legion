@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,6 +77,31 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
+
+// buildCommit is the legion commit this binary was built from. Only the image build stamps it
+// (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build argument through -ldflags -X,
+// and refuses anything but a full commit sha), as it stamps cmd/dispatch's.
+var buildCommit string
+
+// buildRelease is the build the broker's Dispatch reads name themselves by (judge.Dispatch,
+// projectaccess.Client's and projectrepos.Client's Commit): the stamped buildCommit, else the
+// vcs.revision Go records in a build from a checkout (scripts/dev-broker.sh builds with no
+// -ldflags), else empty, which each reader names `(devel)`. The Envoy image is released as a
+// build of one commit, and its version is decided after the image is built, so the commit is the
+// release the broker can name.
+func buildRelease() string {
+	if buildCommit != "" {
+		return buildCommit
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" {
+				return setting.Value
+			}
+		}
+	}
+	return ""
+}
 
 // machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
 // it before the Sweeper expires it. Not a BROKER_* config knob (the shared broker contract's
@@ -391,7 +417,8 @@ func main() {
 	// address and one account there (projectAccessClients). config.Load holds the two settings to
 	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
 	// one, only when this broker can ask whether its project is private
-	// (policy.Loader.ProjectChecks). projectAccess is projectClient, for the hold
+	// (policy.Loader.ProjectChecks). Each call of either names the broker's build in its User-Agent
+	// (buildRelease). projectAccess is projectClient, for the hold
 	// gate below, which reads its person answers (hold.Config.Access) from the cache the token
 	// exchange fills. The client keeps each person answer it fetches in one write: its member kind
 	// in person_member_kind, so that while Dispatch cannot be asked a person last answered a full
@@ -1646,7 +1673,8 @@ func endUnrecordedSignIns(projectAccess projectaccess.Access) bool {
 // projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
 // broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
 // over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
-// are nil when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL holds none. The
+// are nil when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL holds none. Each
+// names the broker's build in its User-Agent (buildRelease). The
 // project access client is the concrete client, which main keeps answers on (Client.Keep) and
 // builds the hold gate on; main puts it in an Access field only where it is not nil, since a nil
 // *Client in an interface is a non-nil Access. main wires the broker with these, and the test of the
@@ -1657,7 +1685,11 @@ func projectAccessClients(baseURL, tokenFile string) (*projectaccess.Client, api
 		return nil, nil
 	}
 	account := ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", tokenFile)
-	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
+	access := projectaccess.New(baseURL, account, projectAccessHTTPClient())
+	access.Commit = buildRelease()
+	repositories := projectrepos.New(baseURL, account, nil)
+	repositories.Commit = buildRelease()
+	return access, repositories
 }
 
 // The broker's group reader answers every question a decision site asks of group members.
@@ -1752,6 +1784,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 		BaseURL: cfg.JudgeDispatchURL,
 		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
+		Commit:  buildRelease(),
 	}
 }
 

@@ -8,7 +8,9 @@ import { signedIn, writeSignIn } from "@legion/cipher-client/test/sign-ins"
 import { RETRY_FIRST_WAIT_MS, TRADE_ATTEMPT_MS } from "@legion/cipher-client/token-client"
 import { COMMAND_TIMEOUT_MS } from "@legion/envoy-client/envoy-config"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { version as codexPackageVersion } from "../codex/package.json" with { type: "json" }
 import { JJ_BASE_CHAIN_TIMEOUT_MS, OPEN_ASKS_TIMEOUT_MS } from "../hooks/open-asks-bounds"
+import { version as packageVersion } from "../package.json" with { type: "json" }
 import type { Census, TimedWait } from "./hook-timed-waits"
 import { reachedModules, type WaitSite, waitSites } from "./hook-wait-sites"
 import { collected, exitBeforeTheGuard, ROW_GUARD_MS, rowStarted } from "./row-deadline"
@@ -114,6 +116,78 @@ test("summarises the session's open asks into context and records the session id
         "utf8",
       ),
     ).toBe("s-1\n")
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+// Each hook names itself by its program and the release of the package its harness runs: Claude
+// Code's session hooks as claude-envoy-hooks, Codex's session hook (`hooks/codex-hook.ts`, whose
+// session-start reads the open asks) as codex-envoy-hooks, at `@sjawhar/codex-envoy`'s release.
+// The Codex hook is started as `runHook` starts Claude Code's: its transpiler cache off and its
+// exit waited on until the row's guard (`exitBeforeTheGuard`).
+test.each([
+  [
+    "claude-envoy-hooks",
+    packageVersion,
+    (env: Record<string, string> & { readonly HOME: string }) => runHook(hookInput, env),
+  ],
+  [
+    "codex-envoy-hooks",
+    codexPackageVersion,
+    async (env: Record<string, string> & { readonly HOME: string }) => {
+      const run = Bun.spawn(
+        ["bun", resolve(import.meta.dir, "..", "hooks", "codex-hook.ts"), "session-start"],
+        {
+          env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
+          stdin: new TextEncoder().encode(JSON.stringify({ session_id: "s-1", cwd: env.HOME })),
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      const stdout = collected(run.stdout)
+      const stderr = collected(run.stderr)
+      const exitCode = await exitBeforeTheGuard(
+        run,
+        "the Codex session-start hook",
+        () =>
+          `it wrote ${JSON.stringify(stdout.text())} to stdout, ${JSON.stringify(stderr.text())} to stderr`,
+      )
+      return { exitCode, stdout: await stdout.ended, stderr: await stderr.ended }
+    },
+  ],
+] as const)("names itself to Dispatch as %s and its release", async (program, version, run) => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-agent-"))
+  const sent: { readonly path: string; readonly userAgent: string | null }[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      sent.push({
+        path: new URL(request.url).pathname,
+        userAgent: request.headers.get("user-agent"),
+      })
+      return Response.json({
+        session_id: "s-1",
+        as_of: "2026-09-14T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      })
+    },
+  })
+  try {
+    const result = await run({
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(sent).toEqual([{ path: "/api/v1/asks/open", userAgent: `${program}/${version}` }])
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })
@@ -2093,7 +2167,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: 'fetchImpl(input, { ...init, redirect: "manual" })',
     count: 1,
     bound:
-      "the fetch behind the client's #fetch, whose every request is made at :2324 or :2651 with a " +
+      "the fetch behind the client's #fetch, whose every request is made in #sendOnce or #attempt with a " +
       "signal this scan traces to AbortSignal.timeout; `init` is that request's own",
   },
   {
@@ -2112,7 +2186,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "execFileAsync(file, args, { cwd, signal })",
     count: 1,
     bound:
-      "its signal is tryExec's controller (:78), which a setTimeout(limitMs) aborts (:80): a timer " +
+      "its signal is tryExec's controller, which a setTimeout(limitMs) aborts: a timer " +
       "the census sees, REMOTE_LOOKUP_MS at its callers",
   },
   {
@@ -2155,7 +2229,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the fetch handed to the open-asks read's DispatchClient (:379), whose every request is made at dispatch-http.ts:2324 or :2651 under a signal this scan traces to AbortSignal.timeout",
+      "the fetch handed to the open-asks read's DispatchClient (openAsks), whose every request is made in dispatch-http.ts's #sendOnce or #attempt under a signal this scan traces to AbortSignal.timeout",
   },
   {
     file: "packages/envoy-client/src/dispatch-http.ts",
@@ -2163,7 +2237,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "DispatchClient's default fetchImpl (:1000), called only at :1029 for the requests of :2324 and :2651",
+      "DispatchClient's default fetchImpl (its constructor's `fetchImpl = fetch`), called by #fetch for the requests of #sendOnce and #attempt",
   },
   {
     file: "packages/envoy-client/src/session-answers.ts",
@@ -2171,7 +2245,7 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the answers mode's DispatchClient (:601), whose requests are made at dispatch-http.ts:2324 and :2651 under the client's own deadline; the open-asks mode does not reach it",
+      "the answers mode's DispatchClient (readSessionAnswers), whose requests are made in dispatch-http.ts's #sendOnce and #attempt under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-commands/context.ts",
@@ -2179,7 +2253,15 @@ const REVIEWED_WAIT_SITES: readonly {
     kind: "fetch handed on as a value",
     count: 1,
     bound:
-      "the dispatch command's fetchImpl (:316), handed to the same DispatchClient; the open-asks mode does not reach it",
+      "the dispatch command's fetchImpl (sessionContext's `input.fetchImpl ?? fetch`), handed to the same DispatchClient; the open-asks mode does not reach it",
+  },
+  {
+    file: "packages/envoy-client/src/delivery.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "the fetch postDeliveryReply hands its DispatchClient with the host's userAgent, whose requests are made in dispatch-http.ts's #sendOnce and #attempt under the client's own deadline; the open-asks mode does not reach it",
   },
   {
     file: "packages/envoy-client/src/dispatch-file-text.ts",
@@ -2196,7 +2278,7 @@ const REVIEWED_WAIT_SITES: readonly {
     text: "execFile",
     kind: "child_process handed on as a value",
     count: 1,
-    bound: "promisified into execFileAsync (:11), whose one call (:27) is reviewed beside it",
+    bound: "promisified into execFileAsync (:12), whose one call (:28) is reviewed beside it",
   },
   {
     file: "packages/cipher-client/src/token-client.ts",

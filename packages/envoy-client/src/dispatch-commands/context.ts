@@ -10,6 +10,7 @@ import type {
   Sleep,
   WhoamiResponse,
 } from "@legion/contracts";
+import { goTrimSpace } from "@legion/contracts/go-blank";
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
@@ -78,6 +79,9 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
+  /** The `User-Agent` the call's requests send (`DispatchClient`): the `dispatch` command names
+   *  itself and the host plugin that ships it (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -349,7 +353,12 @@ export interface SessionContext {
    * then every link prints as its `dispatch://` reference (`linkBaseOf`, `linkFor`).
    */
   readonly linkBase: string | undefined;
-  /** This host's own session id, trimmed; a command that needs one refuses an empty one itself. */
+  /** This host's own session id with Go's `strings.TrimSpace` cut from both ends (`goTrimSpace`):
+   *  Dispatch trims it on the routes that read it so (open-asks, follow, read --message) and
+   *  refuses an id holding whitespace on those that read it with `requestSessionID` (answers, a
+   *  picture upload), so an id blank to Go is none. Every command that sends the id reads it here,
+   *  in a path, a query or the actor every write carries (`toolActor`), and one that needs one
+   *  refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
@@ -406,15 +415,19 @@ export type ReadingContext<C extends SessionContext> = C & { readonly reading: R
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /** One `DispatchClient` of `input`'s server, credential and fetch, with its signal, its write
- *  pacing and its sleep, and `options` laid over them. */
+ *  pacing, its sleep and its `User-Agent`, and `options` laid over them. */
 export function dispatchClientFor(
-  input: Pick<ExecuteDispatchToolInput, "config" | "fetchImpl" | "signal" | "writeRetry" | "sleep">,
+  input: Pick<
+    ExecuteDispatchToolInput,
+    "config" | "fetchImpl" | "signal" | "writeRetry" | "sleep" | "userAgent"
+  >,
   options: DispatchClientOptions = {}
 ): DispatchClient {
   return new DispatchClient(input.config.url, input.config.credential, input.fetchImpl ?? fetch, {
     signal: input.signal,
     writeRetry: input.writeRetry,
     sleep: input.sleep,
+    userAgent: input.userAgent,
     ...options,
   });
 }
@@ -422,9 +435,10 @@ export function dispatchClientFor(
 /**
  * The context every spec command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
- * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
- * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
- * requests go to the URL as configured.
+ * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else; a
+ * write the failure leaves unsettled names its request and quotes that message whole. Every link
+ * is built on a clean base or printed as its reference (`linkBaseOf`). The client's requests go to
+ * the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -439,7 +453,7 @@ export function sessionContext(
     pictures: checked.pictures,
     configUrl,
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
-    hostSession: input.sessionId?.trim(),
+    hostSession: input.sessionId === undefined ? undefined : goTrimSpace(input.sessionId),
     newClient: (options = {}) => dispatchClientFor(input, options),
   };
 }

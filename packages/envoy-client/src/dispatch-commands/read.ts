@@ -80,6 +80,7 @@ export async function readCommand(
     linkBase,
     ownerArguments,
     shown,
+    hostSession: sessionId,
     documentOwner,
     resolveDocument,
     issue,
@@ -103,7 +104,6 @@ export async function readCommand(
     return pictures.images.length === 0 ? {} : { images: pictures.images };
   };
   if (message !== undefined) {
-    const sessionId = input.sessionId?.trim();
     if (!sessionId) throw new Error("host session id is required for dispatch read --message");
     const thread = await client.getMessageThread(messageIdOf(message) as string, sessionId, cut);
     const issueKey = thread.message.issue_key;

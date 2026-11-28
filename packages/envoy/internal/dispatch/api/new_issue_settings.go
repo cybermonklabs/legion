@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -50,7 +51,7 @@ func (s *server) configuredNewIssue() newIssueSettings {
 	return newIssueSettings{Label: s.deps.NewIssueLabel, Session: s.deps.NewIssueSession}
 }
 
-// getNewIssueSettings is GET /api/v1/settings/new-issue.
+// getNewIssueSettings is GET /api/v1/settings/new-issue and GET /api/v2/settings/new-issue.
 func (s *server) getNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -58,21 +59,23 @@ func (s *server) getNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, s.configuredNewIssue())
 }
 
-// newIssueSettingsInput is POST /api/v1/settings/new-issue/_test's body. It carries the same two
-// fields the read answers and is a type of its own because the two directions cannot share one
-// schema: a request body requires what its fields tag required, a response what Go always
-// writes, and the emitter refuses a Go type reflected as both (routes_shapes.go, openapi.go).
-// Both are required here, since the hook sets the pair and clearing one is sending it empty.
+// newIssueSettingsInput is the body of POST /api/v1/settings/new-issue/_test and of POST
+// /api/v2/_test/settings/new-issue. It carries the same two fields the read answers and is a type
+// of its own because the two directions cannot share one schema: a request body requires what its
+// fields tag required, a response what Go always writes, and the emitter refuses a Go type
+// reflected as both (routes_shapes.go, openapi.go). Both are required here, since the hook sets
+// the pair and clearing one is sending it empty.
 type newIssueSettingsInput struct {
 	Label   string `json:"label" required:"true"`
 	Session string `json:"session" required:"true"`
 }
 
-// setNewIssueSettings is POST /api/v1/settings/new-issue/_test, {label, session}: from now on
-// this process answers GET /api/v1/settings/new-issue with these two values in place of the ones
-// its environment set, so a browser test can read the bar with a label and a session configured
-// and then with the session cleared, which no deployment setting can change while the server
-// runs. It acts on the process the call lands on, as the slow-write hook does. Test-only:
+// setNewIssueSettings is POST /api/v1/settings/new-issue/_test and POST
+// /api/v2/_test/settings/new-issue, {label, session}: from now on this process answers GET
+// /api/v1/settings/new-issue and GET /api/v2/settings/new-issue with these two values in place of
+// the ones its environment set, so a browser test can read the bar with a label and a session
+// configured and then with the session cleared, which no deployment setting can change while the
+// server runs. It acts on the process the call lands on, as the slow-write hook does. Test-only:
 // mounted only under Deps.TestHooksEnabled.
 func (s *server) setNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -80,17 +83,17 @@ func (s *server) setNewIssueSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	var input newIssueSettingsInput
 	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
 	set, problem := newIssueSettingsFrom(input.Label, input.Session)
 	switch problem {
 	case "label":
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"label must be a label an issue may carry, or empty for none")
 		return
 	case "session":
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"session must be a session id, or empty for no conversation")
 		return
 	}

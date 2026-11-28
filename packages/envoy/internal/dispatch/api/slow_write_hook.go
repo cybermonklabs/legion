@@ -6,9 +6,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
-// slowWriteInput is the body of POST /api/v1/writes/_test/slow.
+// slowWriteInput is the body of POST /api/v1/writes/_test/slow and of POST
+// /api/v2/_test/writes/slow.
 type slowWriteInput struct {
 	Method  string `json:"method" required:"true"`
 	Path    string `json:"path" required:"true"`
@@ -30,24 +33,27 @@ type slowWriteRecord struct {
 	waited atomic.Int64 // what they waited there altogether, in nanoseconds
 }
 
-// armSlowWrite is POST /api/v1/writes/_test/slow, {method, path, delay_ms}: from now on every keyed
-// run of that method and exact request path, once its key is claimed, waits delay_ms on its
-// handler's context before the handler runs (slowedByTestHook), so a browser test can drive a
-// write Dispatch takes longer to finish than the page waits for an answer, without holding the
-// request in the browser. It replaces what an earlier call armed for that method and path;
-// delay_ms 0 disarms it. Test-only: mounted only under Deps.TestHooksEnabled.
+// armSlowWrite is POST /api/v1/writes/_test/slow and POST /api/v2/_test/writes/slow, {method,
+// path, delay_ms}: from now on every keyed run of that method and exact request path, once its key
+// is claimed, waits delay_ms on its handler's context before the handler runs (slowedByTestHook),
+// so a browser test can drive a write Dispatch takes longer to finish than the page waits for an
+// answer, without holding the request in the browser. It replaces what an earlier call armed for
+// that method and path; delay_ms 0 disarms it. Test-only: mounted only under
+// Deps.TestHooksEnabled.
 func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	var input slowWriteInput
 	if err := decodeJSONTestHook(r, &input); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if !keyedMethod(input.Method) || !strings.HasPrefix(input.Path, "/") ||
+	// A POST or a PATCH, the methods every version keys (keyedMethod): a path names its version,
+	// and the hook takes the methods that are keyed whichever version it names.
+	if (input.Method != http.MethodPost && input.Method != http.MethodPatch) || !strings.HasPrefix(input.Path, "/") ||
 		input.DelayMS < 0 || input.DelayMS > keyedHandlerLimit.Milliseconds() {
-		writeError(w, "INVALID_BODY", http.StatusBadRequest,
+		writeError(w, r, apicode.InvalidBody,
 			"want {method: POST or PATCH, path: a request path, delay_ms: 0 to disarm, at most the keyed handler's limit}")
 		return
 	}
@@ -73,7 +79,7 @@ func (s *server) slowedByTestHook(handler http.HandlerFunc) http.HandlerFunc {
 		route := r.Method + " " + r.URL.Path
 		if delay, armed := s.slowWrites.Load(route); armed {
 			if !s.waitSlowWrite(r.Context(), route, delay.(time.Duration)) {
-				writeError(w, "SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable,
+				writeError(w, r, apicode.SlowWriteCutOff,
 					"the slow-write test hook's wait was cut off before the handler ran")
 				return
 			}

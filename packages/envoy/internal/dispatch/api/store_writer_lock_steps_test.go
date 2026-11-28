@@ -573,7 +573,7 @@ func (r *storeWriterRig) documentUpload() storeWriter {
 		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
 			name := r.fresh("Lock steps upload")
 			return storeWriterRun{
-				made: r.heldBlockNode(graphstore.ArtifactRefKey(r.issue, "", "", artifactSlug(name))),
+				made: r.heldBlockNode(graphstore.ArtifactRefKey(r.issue, "", "", model.ArtifactSlug(name))),
 				write: func() error {
 					return statusOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 						"name": name, "content": "# " + name + "\n\n" + heldBlockMarkdown("What the upload indexes."),

@@ -959,10 +959,11 @@ const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
 // carries a cut (as_of) to a read that holds no past answer: GET /ws/live, and each read route
-// that does not answer as_of except GET /api/v1/whoami. A route that answers as_of answers such a
-// token as of its cut, and GET /api/v1/whoami names the cut. The route ran nothing rather than
-// answer with the present. Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so
-// the server's refusal and every client's reading of it cannot drift apart.
+// that does not answer as_of except GET /api/v1/whoami and GET /api/v2/me. A route that answers
+// as_of answers such a token as of its cut, and GET /api/v1/whoami and GET /api/v2/me name the cut.
+// No /api/v2 route answers as_of. The route ran nothing rather than answer with the present.
+// Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and
+// every client's reading of it cannot drift apart.
 const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
@@ -26,8 +27,8 @@ func (r *router) resolveClientAddress(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		address, err := auth.ResolveForwardedAddress(req, r.ctx.trustedProxies)
 		if err != nil {
-			accesslog.Refused(w, req, func(w http.ResponseWriter, _ *http.Request) {
-				writeCodeError(w, http.StatusBadRequest, forwardedForRefusal, "FORWARDED_FOR_INVALID")
+			accesslog.Refused(w, req, func(w http.ResponseWriter, req *http.Request) {
+				writeAPIRefusal(w, req, apicode.ForwardedForInvalid, forwardedForRefusal)
 			})
 			return
 		}

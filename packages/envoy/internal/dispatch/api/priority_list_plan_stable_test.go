@@ -29,13 +29,18 @@ const (
 // Two of the requests are on the seed of cmd/dispatch-seed --scale 1 (ten projects, the largest of
 // 8,000 issues) that the database DISPATCH_BENCH_DATABASE_URL names holds: the seed takes about an
 // hour to write, so the test reads one a build Job wrote rather than writing its own, as
-// TestStatementTimings does. CI leaves the variable unset, so there the test reads the third
-// request alone and says so in its first line; c-plan-stable's run refuses to start without the
+// TestStatementTimings does. CI leaves the variable unset, so there the test reads the last three
+// requests alone and says so in its first line; c-plan-stable's run refuses to start without the
 // variable. The two are the largest project's list as the project list sends it
 // (`?project=<p>&open=true`), and the same list with moves and no `open`, an API caller's shape
-// that reads the components of every issue of the project. The third is the priorities page's
-// parked list on the corpus of production's counts (seedListCorpus). The test writes nothing to
-// the seeded database but what a test server writes when it starts: its two people.
+// that reads the components of every issue of the project. The last three are on the corpus of
+// production's counts (seedListCorpus): the priorities page's parked list, as GET /api/v1/issues
+// and as GET /api/v2/issues answer it, and the largest priority's pinned issues of two projects
+// updated before a bound, which only /api/v2 can ask (a project named twice, updated_to). The
+// /api/v2 two run the two texts of GET /api/v2/issues a request with no route_status sends
+// (listIssuesV2PageQuery, listPinnedIssuesV2PageQuery), which no /api/v1 request sends. The test
+// writes nothing to the seeded database but what a test server writes when it starts: its two
+// people.
 //
 // Each request goes through a server whose pool holds one connection under the plan named
 // (newForcedPlan), warmed (forcedPlan.warm, within planStableWarmBudget), and then the statement it
@@ -72,7 +77,11 @@ func TestNoListingRequestReadsMoreOnTheGenericPlan(t *testing.T) {
 	}
 	t.Logf("%s; seed: %s", corpus.String(), seed)
 	requests = append(requests, planStableRequest{"the priorities page's parked list", corpus.database,
-		"/api/v1/issues?advances=any&status=backlog&status=icebox&moved=true&open=true"})
+		"/api/v1/issues?advances=any&status=backlog&status=icebox&moved=true&open=true"},
+		planStableRequest{"the priorities page's parked list on /api/v2", corpus.database,
+			"/api/v2/issues?advances=any&status=backlog&status=icebox&moved=true&open=true"},
+		planStableRequest{"a priority's pinned issues of two projects on /api/v2", corpus.database,
+			"/api/v2/issues?advances=" + corpus.priorities[0] + "&pinned=true&project=PRD01&project=PRD02&updated_to=2100-01-01T00:00:00Z"})
 
 	for _, request := range requests {
 		t.Run(request.name, func(t *testing.T) {

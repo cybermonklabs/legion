@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   ARTIFACT_NAME_EXISTS_RULE,
@@ -32,6 +32,8 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { z } from "zod";
 import { type KeyedLayerOptions, keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
+import { UPLOAD_MATRIX_NAMES, UPLOAD_MATRIX_PATHS } from "../../test/upload-type-matrix";
+import { gatedWrite, uploadIsDocument } from "../askgate-marker";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
@@ -595,8 +597,9 @@ describe("executeDispatchTool", () => {
   // configured; what the session reads names no part of it, in an error and in ordinary output
   // alike, since the URL parser can split such a URL otherwise than its writer meant
   // (`https://user:p@ssw0rd` names no host, and the parser reads `ssw0rd` as one): the unreachable
-  // server and a build without the answers route name the URL by its fixed phrase, and an issue's
-  // page link and an open-asks summary print each link as its dispatch:// reference.
+  // server a read names, the request a write that may have reached it names, and a build without
+  // the answers route name the URL by its fixed phrase, and an issue's page link and an open-asks
+  // summary print each link as its dispatch:// reference.
   const user = "user-7f2a";
   const pw = "pw-4c7e19";
   test.each([
@@ -672,7 +675,8 @@ describe("executeDispatchTool", () => {
       const read = (await run("dispatch_read", { issue: "DSP-42" }, issueRead as typeof fetch))
         .text;
       const answers = await refusal(run("dispatch_answers", {}, noAnswersRoute as typeof fetch));
-      const offline = await refusal(
+      const offline = await refusal(run("dispatch_read", { issue: "DSP-42" }, unreachable));
+      const offlineWrite = await refusal(
         run("dispatch_ask", { issue: "DSP-41", question: releaseQuestion }, unreachable)
       );
       const summary = formatOpenAsksSummary(
@@ -700,8 +704,18 @@ describe("executeDispatchTool", () => {
         `This Dispatch (${notPrinted}) has no answers route yet: its build is older than the answers route.`
       );
       expect(offline).toContain(`Dispatch at ${notPrinted} is unreachable: ENOTFOUND.`);
+      // The write's request may have reached Dispatch, so it is asked again under its key until its
+      // attempts are spent, and says the write may or may not have taken effect, quoting the failure.
+      expect(offlineWrite).toBe(
+        `POST ${notPrinted} failed on its last attempt (Dispatch at ${notPrinted} is unreachable: ` +
+          "ENOTFOUND. If the Dispatch URL changed, restart this agent process so it picks up the " +
+          "new configuration.) (the last of 5 attempts), and an attempt of the write may have " +
+          "reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt " +
+          "it received whatever this command does, so read the write back before you send it " +
+          "again: a new command sends it under a new key."
+      );
       expect(summary).toEndWith(" · dispatch://LEGION-1/ask/ask-1\n\nWaiting on agent (0):");
-      for (const text of [read, answers, offline, summary]) {
+      for (const text of [read, answers, offline, offlineWrite, summary]) {
         expect(text).not.toContain("user-7f2a");
         expect(text.toLowerCase()).not.toContain(secret.toLowerCase());
       }
@@ -2675,6 +2689,77 @@ describe("executeDispatchTool", () => {
         fetchImpl,
       })
     ).rejects.toThrow("host session id is required");
+  });
+
+  // Dispatch trims the session it reads with Go's `strings.TrimSpace`, so the command does too
+  // (goTrimSpace): a session id of U+0085 alone is none, and one ending in U+0085 goes without it.
+  test("dispatch_open_asks trims the host session id as Go's strings.TrimSpace does", async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      return response({
+        session_id: "session-1",
+        as_of: "2026-09-13T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      });
+    };
+    const openAsks = (sessionId: string) =>
+      executeDispatchTool({
+        tool: "dispatch_open_asks",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId,
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    await expect(openAsks("\u0085")).rejects.toThrow("host session id is required");
+    await openAsks("session-1\u0085");
+    expect(requests).toEqual(["/api/v1/asks/open?author_session=session-1"]);
+  });
+
+  // Every write carries the actor `toolActor` builds from `hostSession`, the id cut as Go's
+  // `strings.TrimSpace` cuts it (goTrimSpace): a leading space and a trailing U+0085, which
+  // `trim` keeps, go before the request, as they go from a path or a query.
+  test("a write's actor carries the host session id trimmed as Go's strings.TrimSpace does", async () => {
+    const calls: Array<{ method: string; body: unknown }> = [];
+    const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      calls.push({
+        method: init?.method ?? "GET",
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      return response({
+        key: "DSP-1",
+        status: "todo",
+        claim: { actor: { kind: "session", id: "session-one" }, at: "2026-09-24T06:00:00Z" },
+        legion_managed_status: false,
+      });
+    };
+
+    await executeDispatchTool({
+      tool: "dispatch_claim",
+      args: { issue: "DSP-1" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: " session-one\u0085",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(calls.map((call) => call.method)).toEqual(["POST"]);
+    expect(calls[0]?.body).toEqual({
+      actor: expect.objectContaining({ kind: "session", id: "session-one" }),
+    });
   });
 
   test("dispatch_open_asks propagates Dispatch errors rather than treating them as no asks", async () => {
@@ -5859,11 +5944,11 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      "INTERNAL: internal server error (the last of 5 attempts), and an attempt of the write may " +
-        "have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt " +
-        "it received whatever this command does, so read the write back before you send it again: a " +
-        `new command sends it under a new key. One of ${pullRequest} may already be linked from another ` +
-        "issue (a URL links exactly one issue)"
+      "INTERNAL: internal server error (the last of 5 attempts), and Dispatch answers a 5xx when a " +
+        "write fails, which can be after it committed, so it may or may not have taken effect. " +
+        "Dispatch finishes an attempt it received whatever this command does, so read the write " +
+        `back before you send it again: a new command sends it under a new key. One of ${pullRequest} ` +
+        "may already be linked from another issue (a URL links exactly one issue)"
     );
   });
 
@@ -6133,22 +6218,23 @@ describe("executeDispatchTool", () => {
       headers: { "Content-Type": "text/html" },
     });
 
-  // A request that got no answer, the client's timeout and a transport error, each with the
-  // message the client reports for it (given the request it names) and the attempts the write
-  // made: a timeout is the call's deadline and ends it, saying the write may or may not have taken
-  // effect, while a transport failure is asked again under the write's key until its five attempts
-  // run out. The reason's post and the close's PATCH each add their own account after it, as a
-  // sentence of its own, since both messages end one.
+  // A request that got no answer, the client's timeout and two transport errors, each with what
+  // the call prints given the request it names and the caller's account, as a clause (`clause`,
+  // "; …") and as a sentence (`sentence`, " The …"), and the attempts the write made. A timeout is
+  // the call's deadline and ends it; a transport failure is asked again under the write's key
+  // until its five attempts run out. A timeout, and a reset after the request went out, leave the
+  // write unsettled, and the reason's post and the close's PATCH each say what that means for
+  // their call in place of the client's words on it, so the message says it once; what the write
+  // got leads, a reset quoting the client's line for it, whose advice for a moved URL it keeps. A
+  // refused connection sent nothing, so the write is told Dispatch is unreachable, and the account
+  // follows as a sentence of its own.
   const unanswered = [
     [
       (): Response => {
         throw new DOMException("The operation timed out.", "TimeoutError");
       },
-      (request: string) =>
-        `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
-        "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
-        "the write back before you send it again: a new command sends it under a new key.",
+      (request: string, clause: string, _sentence: string) =>
+        `${request} had no definitive answer when its deadline ended it${clause}`,
       1,
     ],
     [
@@ -6157,9 +6243,19 @@ describe("executeDispatchTool", () => {
       (): Response => {
         throw Object.assign(new TypeError("fetch failed"), { code: "ECONNREFUSED" });
       },
-      (_request: string) =>
+      (_request: string, _clause: string, sentence: string) =>
         "Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. If the Dispatch URL " +
-        "changed, restart this agent process so it picks up the new configuration.",
+        `changed, restart this agent process so it picks up the new configuration.${sentence}`,
+      5,
+    ],
+    [
+      (): Response => {
+        throw Object.assign(new TypeError("fetch failed"), { code: "ECONNRESET" });
+      },
+      (request: string, clause: string, _sentence: string) =>
+        `${request} failed on its last attempt (Dispatch at http://dispatch.test is unreachable: ` +
+        "ECONNRESET. If the Dispatch URL changed, restart this agent process so it picks up the " +
+        `new configuration.)${clause}`,
       5,
     ],
   ] as const;
@@ -6169,11 +6265,12 @@ describe("executeDispatchTool", () => {
   // gateway's answer that never reached Dispatch: a 429 (its own rate limit, where the client's
   // advice that a retry may succeed stands) or a status that cannot clear. A 5xx, Dispatch's own
   // included (it can fail after it committed), a gateway's 408 (its timeout can run out after it
-  // forwarded the post), a timeout or a transport error leaves the reason possibly posted, and that
-  // account replaces the client's advice. After an
-  // error's own message it joins a clause, or starts a sentence where the message ended one. Every
-  // failure but a timeout and a refusal that cannot clear is asked again until the write's five
-  // attempts run out, each failing the same way, so the last attempt's account is the agent's.
+  // forwarded the post), a timeout or a transport error leaves the reason possibly posted. Where it
+  // leaves the post unsettled (write-outcome.ts), that account replaces the client's words on the
+  // write, joined to what the post got as a clause; after any other error's own message it joins a
+  // clause, or starts a sentence where the message ended one. Every failure but a timeout and a
+  // refusal that cannot clear is asked again until the write's five attempts run out, each failing
+  // the same way, so the last attempt's account is the agent's.
   test("dispatch_issue_update says whether a failed post of the reason leaves it posted", async () => {
     const page = (status: string, text: string) =>
       `POST http://dispatch.test/api/v1/issues/ACME-175/messages answered ${status} with a body ` +
@@ -6181,62 +6278,57 @@ describe("executeDispatchTool", () => {
       "rather than Dispatch's own answer";
     const answered = (status: string, text: string) =>
       `HTTP_${status.slice(0, 3)}: ${page(status, text)}`;
+    const unknown =
+      "; the reason may or may not have been posted, and the close was not sent: read the " +
+      "issue's messages before retrying, since retrying this call posts its reason again";
     const unknownSentence =
       " The reason may or may not have been posted, and the close was not sent: read the " +
       "issue's messages before retrying, since retrying this call posts its reason again";
     const notPosted = "; the reason was not posted, so the close was not sent";
     const retry = ", so the write did not reach Dispatch, and a retry may succeed";
-    // Bun's messages for a refused connection and a reset one; the second ends with no stop.
+    const post = "POST http://dispatch.test/api/v1/issues/ACME-175/messages";
+    // Bun's messages for a refused connection and a reset one, thrown as errors that are no
+    // TypeError, which the client's fetch passes on as they are.
     const refused = "Unable to connect. Is the computer able to access the url?";
     const reset =
       "The socket connection was closed unexpectedly. For more information, pass `verbose: true` " +
       "in the second argument to fetch()";
-    const landedTail =
-      "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-      "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
-      "the write back before you send it again: a new command sends it under a new key.";
     for (const [message, expected, attempts] of [
       // A 5xx or a gateway's 408 can come after Dispatch committed the reason, so with no ask left
-      // the post ends unsettled (write-outcome.ts), and the reason's account follows as a sentence
-      // of its own.
+      // the post ends unsettled (write-outcome.ts), and what it got leads the reason's account.
       [
         () => gatewayPage(408, "Request Timeout"),
-        `${page("408 Request Timeout", "408 Request Timeout")} (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        `${page("408 Request Timeout", "408 Request Timeout")}${unknown}`,
         5,
       ],
       [
         () => gatewayPage(502, "Bad Gateway"),
-        `${page("502 Bad Gateway", "502 Bad Gateway")} (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        `${page("502 Bad Gateway", "502 Bad Gateway")}${unknown}`,
         5,
       ],
       [
         () => errorAnswer(500, "INTERNAL", "internal server error"),
-        `INTERNAL: internal server error (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        `INTERNAL: internal server error${unknown}`,
         5,
       ],
       ...unanswered.map(
-        ([fail, told, tries]) =>
-          [
-            fail,
-            `${told("POST http://dispatch.test/api/v1/issues/ACME-175/messages")}${unknownSentence}`,
-            tries,
-          ] as const
+        ([fail, told, tries]) => [fail, told(post, unknown, unknownSentence), tries] as const
       ),
       // A failure with no code the client can read (these fakes throw a plain Error with Bun's
       // text) is no proof that nothing reached Dispatch, so after it an attempt may have landed
-      // and the write ends unsettled; the reason's account follows as a sentence of its own.
+      // and the write ends unsettled; what it got leads the reason's account.
       [
         (): Response => {
           throw new Error(refused);
         },
-        `POST http://dispatch.test/api/v1/issues/ACME-175/messages failed on its last attempt (${refused}) (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        `${post} failed on its last attempt (${refused})${unknown}`,
         5,
       ],
       [
         (): Response => {
           throw new Error(reset);
         },
-        `POST http://dispatch.test/api/v1/issues/ACME-175/messages failed on its last attempt (${reset}) (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        `${post} failed on its last attempt (${reset})${unknown}`,
         5,
       ],
       [
@@ -6339,13 +6431,11 @@ describe("executeDispatchTool", () => {
   // advice rather than following it, so the message never says both that a retry may succeed and
   // that retrying posts the reason again.
   test("dispatch_issue_update says the close is unknown when the PATCH times out, 5xxes or 408s after the post", async () => {
-    // A 5xx or a gateway's 408 can come after Dispatch committed the close, so with no ask left the
-    // PATCH ends unsettled (write-outcome.ts), and the close's account follows as a sentence of its
-    // own.
-    const landedTail =
-      "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-      "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
-      "the write back before you send it again: a new command sends it under a new key.";
+    const unknown =
+      "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
+      "and the close may or may not have taken effect. Read the issue's status before retrying: " +
+      "done means it closed; otherwise retry with a reason that points at message message-7, " +
+      "since retrying this call posts its reason again";
     const unknownSentence =
       " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
@@ -6356,27 +6446,25 @@ describe("executeDispatchTool", () => {
         ([fail, told, tries]) =>
           [
             fail,
-            `${told("PATCH http://dispatch.test/api/v1/issues/ACME-175")}${unknownSentence}`,
+            told("PATCH http://dispatch.test/api/v1/issues/ACME-175", unknown, unknownSentence),
             tries,
           ] as const
       ),
-      [
-        () => errorAnswer(502, "HTTP_502", "Bad Gateway"),
-        `HTTP_502: Bad Gateway (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
-        5,
-      ],
+      // A 5xx or a gateway's 408 can come after Dispatch committed the close, so with no ask left
+      // the PATCH ends unsettled (write-outcome.ts), and what it got leads the close's account.
+      [() => errorAnswer(502, "HTTP_502", "Bad Gateway"), `HTTP_502: Bad Gateway${unknown}`, 5],
       [
         () => gatewayPage(502, "Bad Gateway"),
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
           'with a body that is not Dispatch\'s error JSON ("502 Bad Gateway"), which looks like a ' +
-          `proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+          `proxy or gateway page rather than Dispatch's own answer${unknown}`,
         5,
       ],
       [
         () => gatewayPage(408, "Request Timeout"),
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 408 Request Timeout " +
           'with a body that is not Dispatch\'s error JSON ("408 Request Timeout"), which looks like ' +
-          `a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+          `a proxy or gateway page rather than Dispatch's own answer${unknown}`,
         5,
       ],
     ] as const) {
@@ -6434,17 +6522,14 @@ describe("executeDispatchTool", () => {
   // A close whose last attempt alone says it never reached Dispatch (a gateway's 429), or that
   // Dispatch still runs an earlier attempt (409 KEY_IN_FLIGHT), after an attempt that may have
   // reached it (a 502, a transport failure), may have closed the issue: the agent is told to read
-  // the status before retrying, never that the issue did not close.
+  // the status before retrying, never that the issue did not close. The close's own account says
+  // the close may or may not have taken effect, in place of the client's words on the write.
   test("dispatch_issue_update says the close is unknown when an earlier attempt may have reached Dispatch", async () => {
-    const unknownSentence =
-      " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
+    const unknown =
+      "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer.
-    const keyedTail =
-      ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
-      "back before you send it again: a new command sends it under a new key.";
     const inFlight = () =>
       errorAnswer(409, "KEY_IN_FLIGHT", "an earlier request with this key is still running");
     // A KEY_IN_FLIGHT says Dispatch may still be running the close, so it is asked every 3 s at
@@ -6455,9 +6540,7 @@ describe("executeDispatchTool", () => {
         () => gatewayPage(429, "Too Many Requests"),
         "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 429 Too Many Requests with " +
           'a body that is not Dispatch\'s error JSON ("429 Too Many Requests"), which looks like ' +
-          "a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), " +
-          "and an earlier attempt of the write may have reached Dispatch, so it may or may not " +
-          `have taken effect${keyedTail}${unknownSentence}`,
+          `a proxy or gateway page rather than Dispatch's own answer${unknown}`,
         5,
       ],
       [
@@ -6465,9 +6548,7 @@ describe("executeDispatchTool", () => {
           throw new TypeError("fetch failed");
         },
         inFlight,
-        "KEY_IN_FLIGHT (the last of 20 " +
-          "attempts), and Dispatch was still running an earlier attempt of the write, so it may " +
-          `or may not have taken effect${keyedTail}${unknownSentence}`,
+        `KEY_IN_FLIGHT${unknown}`,
         20,
       ],
     ] as const) {
@@ -8831,6 +8912,79 @@ describe("executeDispatchTool", () => {
       details: { issue: "DSP-42" },
     });
     expect(requests).toEqual(["/api/v1/issues/DSP-42", "/api/v1/artifacts/image-8/versions/1"]);
+  });
+
+  // INFRA-4071 R15: a plan stored as a file becomes a document with the next Markdown upload, and
+  // keeps its earlier versions. Version 1 is still the file it was: Dispatch serves its bytes under
+  // their own type rather than the JSON of a document version, so the read decides by the version's
+  // own entry (a file version carries sha256) and reads it as a file is read. Version 2 is a
+  // document version and is read as one.
+  test("dispatch_doc_read reads a document's file version through the file read", async () => {
+    const planText = "# Plan\n\nThe plan as a text file.\n";
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "plan-9",
+              slug: "plan-md",
+              name: "plan.md",
+              kind: "doc",
+              role: "plan",
+              primary: false,
+              versions: [
+                { number: 1, mime: "text/plain; charset=utf-8", size: 33, sha256: "a".repeat(64) },
+                { number: 2, size: 20 },
+              ],
+            },
+          ],
+          open_asks: [],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/plan-9/versions/1") {
+        return new Response(planText, {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/plan-9/versions/2") {
+        return response({ markdown: "# Plan\n\nVersion two." });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const read = (version: number) =>
+      executeDispatchTool({
+        tool: "dispatch_doc_read",
+        args: { issue: "DSP-42", artifact: "plan-md", version },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    expect(await read(1)).toEqual({
+      text: `File plan.md: text/plain; charset=utf-8, version 1 of 2, 33 bytes.\nContent: sha256:${"a".repeat(64)}\n\n${planText}`,
+      details: { issue: "DSP-42" },
+    });
+    expect(await read(2)).toEqual({
+      text: "# Plan\n\nVersion two.",
+      details: { issue: "DSP-42" },
+    });
+    expect(requests).toEqual([
+      "/api/v1/issues/DSP-42",
+      "/api/v1/artifacts/plan-9/versions/1",
+      "/api/v1/issues/DSP-42",
+      "/api/v1/artifacts/plan-9/versions/2",
+      "/api/v1/issues/DSP-42/comments",
+    ]);
   });
 
   test("dispatch_doc_read starts project document and mark reads before any response resolves", async () => {
@@ -12571,6 +12725,407 @@ describe("executeDispatchTool", () => {
     expect(await (file as Blob).text()).toBe("artifact from Dispatch cwd");
   });
 
+  // INFRA-4071 R15: Dispatch stores an upload as the kind its declared type makes (text/markdown is
+  // a document), so the command's type decides the kind, and the name says it wherever it has an
+  // extension (uploadTypeFrom). A name whose extension is .md or .markdown goes up as
+  // text/markdown whatever its path; a name with any other extension goes up as that extension's
+  // type whatever its path, so cases.txt sent from cases.md is a file of the bytes as written; only
+  // a name with no extension keeps the path's type, so a Markdown path under a plain title is still
+  // a document. A name's trailing extension of the digits 0 to 9 alone is a version or a date, not
+  // a type: rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. A path skips no such
+  // extension, so plan.md.1 under a name with no extension is a file. The stub stores each upload
+  // as the server's artifactKind does, and the answer names the kind it stored.
+  describe("the kind an upload is stored as", () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    const sha256 = (bytes: ArrayBuffer | Uint8Array) =>
+      new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+    /** Uploads `bytes` written at `file` under `name`, the bytes AskGate read passed too when
+     *  `gated` says so, and answers the type the upload declared, the sha256 of the bytes it
+     *  sent and the command's answer. */
+    async function upload(name: string, file: string, bytes: Uint8Array, gated: boolean) {
+      const cwd = makeDirectory();
+      writeFileSync(path.join(cwd, file), bytes);
+      return uploadFrom(cwd, name, file, bytes, gated);
+    }
+    /** `upload` from `cwd`, where `bytes` are already written at the file `file` resolves to. Each
+     *  request the stub receives is pushed to `requests` as it arrives, before its body is read,
+     *  as `<method> <path>`: a caller that passes its own array reads it after a rejection too. */
+    async function uploadFrom(
+      cwd: string,
+      name: string,
+      file: string,
+      bytes: Uint8Array,
+      gated: boolean,
+      requests: string[] = []
+    ) {
+      const declared: string[] = [];
+      const sent: string[] = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const { pathname } = new URL(String(url));
+        requests.push(`${init?.method ?? "GET"} ${pathname}`);
+        const preflight = uploadPreflight(url, init);
+        if (preflight !== undefined) return preflight;
+        if (pathname !== "/api/v1/issues/DSP-42/artifacts") {
+          throw new Error(`unexpected request: ${pathname}`);
+        }
+        // The type the file part declares, which is what Go's multipart reader gives the server.
+        // Bun's own formData() types a part by its filename (the name, plan.md) and drops the
+        // header, so the header is read from the body as sent.
+        const raw = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        const body = new TextDecoder().decode(raw);
+        const fileHeader = /name="file"; filename="[^"]*"\r\nContent-Type: ([^\r\n]*)\r\n/;
+        const type = fileHeader.exec(body)?.[1];
+        declared.push(String(type));
+        // The file part's bytes as sent, by their sha256, which the server stores as they are.
+        const part = (
+          await new Response(raw, { headers: init?.headers as Record<string, string> }).formData()
+        ).get("file") as Blob;
+        sent.push(sha256(await part.arrayBuffer()));
+        // What `artifactKind` (api/artifacts.go) stores the upload as: a declared text/markdown is
+        // a document, a PNG is an image whatever it declares, and anything else is a file.
+        const kind =
+          type?.split(";")[0]?.trim().toLowerCase() === "text/markdown"
+            ? "doc"
+            : bytes === png
+              ? "image"
+              : "file";
+        return response(
+          {
+            artifact: {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              name,
+              slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+              kind,
+              primary: false,
+            },
+            version: { number: 1 },
+          },
+          201
+        );
+      };
+      const result = await executeDispatchTool({
+        tool: "dispatch_artifact",
+        args: { issue: "DSP-42", name, path: file },
+        cwd,
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+        ...(gated ? { uploadBytes: bytes } : {}),
+      });
+      return { declared, sent, text: result.text };
+    }
+    const text = (body: string) => new TextEncoder().encode(body);
+
+    for (const gated of [false, true]) {
+      const read = gated ? "with the bytes AskGate read" : "read from the path";
+
+      test(`a Markdown name goes up as text/markdown from a .txt path, ${read}`, async () => {
+        const plan = text("# Plan\n\n- [ ] Task one\n");
+        expect(await upload("plan.md", "plan.txt", plan, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(plan)],
+          text:
+            "Uploaded plan.md as version 1, a document " +
+            "(kind doc; artifact slug plan-md; dispatch://DSP-42/artifact/plan-md)",
+        });
+        const draft = text("# Draft\n\n* one\n");
+        expect(await upload("x.markdown", "x.txt", draft, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(draft)],
+          text:
+            "Uploaded x.markdown as version 1, a document " +
+            "(kind doc; artifact slug x-markdown; dispatch://DSP-42/artifact/x-markdown)",
+        });
+      });
+
+      test(`a name of another extension goes up as its own type from a .md path, ${read}`, async () => {
+        // The reported case (dispatch://INFRA-2946/comment/723f3268-eb1f-487e-b51f-19748db8f585): a
+        // .txt name over a .md path was sent as text/markdown, so Dispatch stored a document and
+        // rewrote its text, and the bytes it kept were not the bytes sent.
+        const cases = text("# Cases\n\n* one\n*  two \n");
+        expect(await upload("cases.txt", "cases.md", cases, gated)).toEqual({
+          declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(cases)],
+          text:
+            "Uploaded cases.txt as version 1, a file " +
+            "(kind file; artifact slug cases-txt; dispatch://DSP-42/artifact/cases-txt)",
+        });
+        const rows = text('{"row_id": 1}\n{"row_id": 2}\n');
+        expect(await upload("rows.jsonl", "rows.md", rows, gated)).toEqual({
+          declared: ["application/octet-stream"],
+          sent: [sha256(rows)],
+          text:
+            "Uploaded rows.jsonl as version 1, a file " +
+            "(kind file; artifact slug rows-jsonl; dispatch://DSP-42/artifact/rows-jsonl)",
+        });
+      });
+
+      test(`a name with no extension keeps the path's type, as does one that names the path's own, ${read}`, async () => {
+        const rows = text("one\ntwo\n");
+        expect(await upload("rows.txt", "rows.txt", rows, gated)).toEqual({
+          declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(rows)],
+          text:
+            "Uploaded rows.txt as version 1, a file " +
+            "(kind file; artifact slug rows-txt; dispatch://DSP-42/artifact/rows-txt)",
+        });
+        const notes = text("# Notes\n");
+        expect(await upload("Design notes", "notes.md", notes, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(notes)],
+          text:
+            "Uploaded Design notes as version 1, a document " +
+            "(kind doc; artifact slug design-notes; dispatch://DSP-42/artifact/design-notes)",
+        });
+        expect(await upload("chart.png", "chart.png", png, gated)).toEqual({
+          declared: ["image/png"],
+          sent: [sha256(png)],
+          text:
+            "Uploaded chart.png as version 1, a picture " +
+            "(kind image; artifact slug chart-png; dispatch://DSP-42/artifact/chart-png)",
+        });
+      });
+
+      test(`a trailing extension of the digits 0 to 9 alone is no extension, ${read}`, async () => {
+        const rows = text('{"row_id": 1}\n{"row_id": 2}\n');
+        expect(await upload("rows.jsonl.1", "rows.md", rows, gated)).toEqual({
+          declared: ["application/octet-stream"],
+          sent: [sha256(rows)],
+          text:
+            "Uploaded rows.jsonl.1 as version 1, a file " +
+            "(kind file; artifact slug rows-jsonl-1; dispatch://DSP-42/artifact/rows-jsonl-1)",
+        });
+        const plan = text("# Plan\n\n- [ ] Task one\n");
+        expect(await upload("Plan v1.2", "plan.md", plan, gated)).toEqual({
+          declared: ["text/markdown"],
+          sent: [sha256(plan)],
+          text:
+            "Uploaded Plan v1.2 as version 1, a document " +
+            "(kind doc; artifact slug plan-v1-2; dispatch://DSP-42/artifact/plan-v1-2)",
+        });
+      });
+
+      // INFRA-4071 R15, review 6011588028: the type comes from the extension that decides
+      // (uploadExtensionOf), never from the whole name, so notes.txt.1 goes up as .txt's type.
+      test(`a name past a trailing extension of the digits 0 to 9 alone goes up as the type of the extension that decides, ${read}`, async () => {
+        const notes = text("one\ntwo\n");
+        const data = text('{"row_id": 1}\n');
+        expect([
+          await upload("notes.txt.1", "notes.txt", notes, gated),
+          await upload("data.json.1", "data.json", data, gated),
+        ]).toEqual([
+          {
+            declared: ["text/plain;charset=utf-8"],
+            sent: [sha256(notes)],
+            text:
+              "Uploaded notes.txt.1 as version 1, a file " +
+              "(kind file; artifact slug notes-txt-1; dispatch://DSP-42/artifact/notes-txt-1)",
+          },
+          {
+            declared: ["application/json;charset=utf-8"],
+            sent: [sha256(data)],
+            text:
+              "Uploaded data.json.1 as version 1, a file " +
+              "(kind file; artifact slug data-json-1; dispatch://DSP-42/artifact/data-json-1)",
+          },
+        ]);
+      });
+
+      // A name longer than a path the OS takes is still a name: its type comes from its
+      // extension, so the upload reaches Dispatch, which judges the name's length itself.
+      test(`a name of 4,096 characters reaches the upload route, ${read}`, async () => {
+        const name = `${"a".repeat(4092)}.txt`;
+        const notes = text("one\n");
+        const { declared, sent } = await upload(name, "notes.txt", notes, gated);
+        expect({ declared, sent }).toEqual({
+          declared: ["text/plain;charset=utf-8"],
+          sent: [sha256(notes)],
+        });
+      });
+    }
+
+    // INFRA-4071, review at 1299d195: an upload declares text/markdown exactly when AskGate holds
+    // it as a document (gatedWrite, the CLI's gate), which reads the name and the path as the
+    // command resolves it, dropping a trailing `/`, `/.` and `x/..`. At 1299d195 the gate read
+    // the path as written, so `--name Plan --path notes.md/` went up as text/markdown, a document
+    // neither gate held. Each pair whose two answers part is named with both.
+    test("declares text/markdown exactly when AskGate holds the upload as a document", async () => {
+      const ABSOLUTE = "<cwd>/notes.md/";
+      const pairs: Array<[name: string, sent: string]> = [
+        ["Plan", "notes.md/"],
+        ["Plan", "notes.md/."],
+        ["Plan", "notes.md//"],
+        ["Plan", "notes.md/x/.."],
+        ["Plan", "./notes.md/./"],
+        ["Plan", ABSOLUTE],
+        ["Plan", ".md"],
+        ["Plan", "notes.md"],
+        ["Plan v1.2", "notes.markdown/"],
+        ["notes.md/", "notes.md"],
+        ["notes.md/", "cases.txt"],
+        ["x.markdown", "x.txt"],
+        ["cases.txt", "cases.md"],
+        ["notes.txt\u0000", "notes.md"],
+        ["cases.txt\u0085", "cases.md"],
+      ];
+      const notes = text("# Notes\n");
+      const parted: Array<{ name: string; path: string; held: boolean; declared: string }> = [];
+      for (const [name, sent] of pairs) {
+        const cwd = makeDirectory();
+        const file = sent === ABSOLUTE ? `${path.join(cwd, "notes.md")}/` : sent;
+        writeFileSync(path.resolve(cwd, file), notes);
+        const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);
+        const [declared = ""] = (await uploadFrom(cwd, name, file, notes, false)).declared;
+        const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+        if (held !== markdown) parted.push({ name, path: sent, held, declared });
+      }
+      expect(parted).toEqual([]);
+    });
+
+    // INFRA-4071 R15, review 6073450576: the digits rule reads the name alone. A name with no
+    // extension takes its path's type, and the path counts only when it ends in .md or .markdown
+    // (MARKDOWN_PATH, askgate-marker.ts), which plan.md.1 does not: sent under `a` or `plan`, it is
+    // a file, which AskGate does not hold as a document either.
+    test("a name with no extension sent from plan.md.1 is a file: the path skips no digits", async () => {
+      const notes = text("# Notes\n");
+      for (const name of ["a", "plan"]) {
+        for (const gated of [false, true]) {
+          const cwd = makeDirectory();
+          writeFileSync(path.join(cwd, "plan.md.1"), notes);
+          expect(uploadIsDocument({ name, path: "plan.md.1" }, cwd)).toBe(false);
+          expect(
+            gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: "plan.md.1" }, cwd)
+          ).toBe(false);
+          expect(await uploadFrom(cwd, name, "plan.md.1", notes, gated)).toEqual({
+            declared: ["application/octet-stream"],
+            sent: [sha256(notes)],
+            text:
+              `Uploaded ${name} as version 1, a file ` +
+              `(kind file; artifact slug ${name}; dispatch://DSP-42/artifact/${name})`,
+          });
+        }
+      }
+    });
+
+    // The names and paths are the tester's matrix (test/upload-type-matrix.ts), which AskGate's
+    // pre-check test reads too. The test holds that the gate and the declared type agree on every
+    // pair.
+    // Every path is read in one working directory, where notes.md/, notes.md/. and notes.md/x/..
+    // resolve to notes.md, and each pair goes up both ways, read from the path and with the bytes
+    // AskGate read; each pair whose two answers part is named with both.
+    //
+    // INFRA-4071, review 6012684631 at e0d2289b, four more paths: `../notes.md/` resolves to the
+    // notes.md one directory up, `<cwd>/notes.md/.` to notes.md by its absolute path, and `a/b/..`
+    // and `notes.md/..` to the directories a and <cwd>. A directory cannot be read, so with no
+    // bytes of AskGate's the command refuses that upload as it reads the path, before anything
+    // goes up; with AskGate's bytes it sends them, and the two answers agree as on every pair.
+    // The gate and the declared type read one predicate (uploadIsDocument), so their agreement
+    // alone would hold were it to read a path as written: each path that resolves to another is
+    // also held exactly as the plain path it resolves to is, and each pair held otherwise is named.
+    test("declares text/markdown exactly when AskGate holds the upload as a document, on the tester's matrix", async () => {
+      const notes = text("# Notes\n");
+      // The working directory is one of its own inside the row's, so `../notes.md/` names a file
+      // the row wrote.
+      const root = makeDirectory();
+      const cwd = path.join(root, "work");
+      const absolute = `${cwd}/notes.md/.`;
+      const paths = [...UPLOAD_MATRIX_PATHS, absolute];
+      // The paths that name a directory, which no upload reads.
+      const directories = ["a/b/..", "notes.md/.."];
+      // Each path that resolves to another, and the plain path it resolves to.
+      const plain = new Map([
+        ["notes.md/", "notes.md"],
+        ["notes.md/.", "notes.md"],
+        ["notes.md/x/..", "notes.md"],
+        ["../notes.md/", "../notes.md"],
+        [absolute, "notes.md"],
+        ["a/b/..", "a"],
+        ["notes.md/..", cwd],
+      ]);
+      mkdirSync(path.join(cwd, "dir"), { recursive: true });
+      mkdirSync(path.join(cwd, "a", "b"), { recursive: true });
+      const files = ["x.md", "x.txt", "x.MD", "x.mkd", "dir/.md", "notes.md", ".md", "cases.txt"];
+      for (const file of files) {
+        writeFileSync(path.join(cwd, file), notes);
+      }
+      writeFileSync(path.join(root, "notes.md"), notes);
+      const parted: Array<{
+        name: string;
+        path: string;
+        gated: boolean;
+        held: boolean;
+        declared: string;
+      }> = [];
+      const moved: Array<{ name: string; path: string; held: boolean }> = [];
+      const unrefused: Array<{ name: string; path: string; answer: string; requests: string[] }> =
+        [];
+      for (const name of UPLOAD_MATRIX_NAMES) {
+        for (const file of paths) {
+          const shown = file === absolute ? "<cwd>/notes.md/." : file;
+          const held = gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: file }, cwd);
+          const resolved = plain.get(file);
+          if (
+            resolved !== undefined &&
+            gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: resolved }, cwd) !== held
+          ) {
+            moved.push({ name, path: shown, held });
+          }
+          for (const gated of [false, true]) {
+            if (!gated && directories.includes(file)) {
+              // The read's own error refuses it, EISDIR or Bun's for a directory ("Directories
+              // cannot be read like files"): the upload rejects, and nothing goes up. A name that is
+              // not Markdown has its file read only by the upload, so the read of the names the
+              // owner holds (GET) may go first; no other request leaves.
+              const requests: string[] = [];
+              const answer = await uploadFrom(cwd, name, file, notes, false, requests).then(
+                ({ declared }) => `sent as ${declared.join(", ")}`,
+                (error: unknown) =>
+                  /EISDIR|Directories cannot be read/.test(String(error))
+                    ? undefined
+                    : `rejected with ${String(error)}`
+              );
+              const sentBeyondTheHeldNames = requests.filter(
+                (request) => request !== "GET /api/v1/issues/DSP-42/artifacts"
+              );
+              if (answer !== undefined || sentBeyondTheHeldNames.length > 0) {
+                unrefused.push({ name, path: file, answer: answer ?? "rejected", requests });
+              }
+              continue;
+            }
+            const [declared = ""] = (await uploadFrom(cwd, name, file, notes, gated)).declared;
+            const markdown = declared.split(";", 1)[0]?.trim().toLowerCase() === "text/markdown";
+            if (held !== markdown) parted.push({ name, path: shown, gated, held, declared });
+          }
+        }
+      }
+      expect({ parted, moved, unrefused }).toEqual({ parted: [], moved: [], unrefused: [] });
+    });
+
+    // A name with no extension takes the type its path gives, so notes.md/ sent from cases.txt is
+    // a file of the bytes sent, which AskGate does not hold either.
+    test("notes.md/ sent from cases.txt is declared text/plain, a file", async () => {
+      const cases = text("# Cases\n");
+      expect(await upload("notes.md/", "cases.txt", cases, false)).toEqual({
+        declared: ["text/plain;charset=utf-8"],
+        sent: [sha256(cases)],
+        text:
+          "Uploaded notes.md/ as version 1, a file " +
+          "(kind file; artifact slug notes-md-; dispatch://DSP-42/artifact/notes-md-)",
+      });
+    });
+
+    // An extension holds no control character, so a name ending in U+0000 has none and its path
+    // decides. The command never builds a path of the name for Bun to open, so the upload goes up.
+    test("a name holding U+0000 goes up under the type its path gives", async () => {
+      const notes = text("# Notes\n");
+      const { declared, sent } = await upload("notes.txt\u0000", "notes.md", notes, false);
+      expect({ declared, sent }).toEqual({ declared: ["text/markdown"], sent: [sha256(notes)] });
+    });
+  });
+
   test("uploads inline artifact content as JSON", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -12720,6 +13275,7 @@ describe("executeDispatchTool", () => {
           issue_key: "DSP-42",
           name: "garrett-reply-draft.md",
           slug: "garrett-reply-draft-md",
+          kind: "doc",
         },
         version: { number: 1 },
       });
@@ -12736,8 +13292,8 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toBe(
-      "Uploaded garrett-reply-draft.md as version 1 " +
-        "(artifact slug garrett-reply-draft-md; dispatch://DSP-42/artifact/garrett-reply-draft-md)"
+      "Uploaded garrett-reply-draft.md as version 1, a document (kind doc; " +
+        "artifact slug garrett-reply-draft-md; dispatch://DSP-42/artifact/garrett-reply-draft-md)"
     );
   });
 
@@ -12827,9 +13383,10 @@ describe("executeDispatchTool", () => {
     "rows.jsonl ",
     "отчёт.данные",
     "rows.jsonl.1",
-    "tool.1",
     "row data.jsonl.1",
-    "plan v1.2",
+    // Dispatch trims a name with Go's strings.TrimSpace, which cuts U+0085 (goTrimSpace), so
+    // this is a .txt name; at 1299d195 it was read with `trim`, which keeps it, as no extension.
+    "cases.txt\u0085",
   ])("refuses inline content named %j before it sends anything, naming --path", async (name) => {
     const requests: string[] = [];
     await expect(
@@ -12847,7 +13404,7 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow(
-      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged`
+      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path, as the command resolves it, does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
     );
     expect(requests).toEqual([]);
   });
@@ -12858,6 +13415,9 @@ describe("executeDispatchTool", () => {
     "notes.markdown",
     "Design notes",
     "plan v1.2.md",
+    "plan v1.2",
+    "tool.1",
+    "Notes 2026.11",
     "notes v2. draft",
     "Dr. Smith's notes",
   ])("sends inline content named %j as a Markdown document", async (name) => {
@@ -12946,8 +13506,23 @@ describe("executeDispatchTool", () => {
     await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
       "already holds plan.md"
     );
+    // Dispatch stores a name trimmed with Go's strings.TrimSpace, which cuts U+0085 and `trim`
+    // keeps (goTrimSpace), so this upload writes plan.md's next version and is refused alike.
+    const nextLine = await upload({
+      issue: "DSP-42",
+      name: "plan.md\u0085",
+      content: "# Plan\n",
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(nextLine).toBeInstanceOf(ToolInputError);
+    if (!(nextLine instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(nextLine.problems).toEqual(failure.problems);
     // Nothing was uploaded: each call checked the text, which passed, and then the name refused it.
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
+      "POST /api/v1/markdown/round-trip",
+      "GET /api/v1/issues/DSP-42/artifacts",
       "POST /api/v1/markdown/round-trip",
       "GET /api/v1/issues/DSP-42/artifacts",
       "POST /api/v1/markdown/round-trip",
@@ -13203,7 +13778,12 @@ describe("executeDispatchTool", () => {
       'Dispatch stores this text under another spelling: line 1 reads the word "*" at character 1, where Dispatch stores the word "-".' +
         " Send the text Dispatch stores, which is between the two marker lines below." +
         " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
-        " stores a file whose path does not end in .md or .markdown as its bytes, unchanged." +
+        " stores the file as its bytes, unchanged, under a name whose extension is not .md or" +
+        " .markdown, whatever the path, and under a name with no extension when the path, as the" +
+        " command resolves it, does not end in .md or .markdown (a name whose extension is .md or" +
+        " .markdown makes the upload Markdown whatever its path; a name's trailing extensions of" +
+        " the digits 0 to 9 alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as" +
+        " no extension)." +
         "\n--- the text Dispatch stores ---\n- one\n" +
         "--- end of the text Dispatch stores ---",
     ]);
@@ -13967,6 +14547,50 @@ describe("executeDispatchTool", () => {
       expect(posts).toEqual([]);
     }
   );
+
+  // A failure whose own message ends its sentence, as the client's line for a server it cannot
+  // reach does (the failure named by its class, `errorClass`), is quoted with no second stop
+  // before the advice that follows it. The round trip writes nothing, so that line is a read's,
+  // with none of a write's words.
+  test("refuses the upload when the round trip gets no answer, ending each sentence once", async () => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") throw new TypeError("fetch failed");
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "Dispatch could not say how it would store this text, so nothing was uploaded: POST " +
+        "/api/v1/markdown/round-trip failed with Dispatch at http://dispatch.test is unreachable: " +
+        "TypeError (message withheld). If the Dispatch URL changed, restart this agent process so " +
+        "it picks up the new configuration. Send the upload again once that call is answered."
+    );
+    expect(posts).toEqual([]);
+  });
 
   // A round trip whose 2xx gives no text stored nothing, so the refusal says so in one sentence
   // with one period, and gives no advice to read back what it made.

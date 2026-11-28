@@ -756,6 +756,9 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // nil while the operator paces nothing, which is the engine's reading of the pacing off — the
 // catch-up is then due at once, as it always was.
 //
+// release is the build the daemon's Dispatch client names itself by (dispatch.Release); empty names
+// none.
+//
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
 // runtime's idle, wake and stuck passes read (workflowRuntime.now); production passes the wall
 // clock.
@@ -766,7 +769,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
 // productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, pacer *wakepace.Pacer, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID string, dispatchTransport http.RoundTripper, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, pacer *wakepace.Pacer, release string, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -818,7 +821,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: daemonDispatchClient(cfg, dispatchTransport), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: daemonDispatchClient(cfg, dispatchTransport, release), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),

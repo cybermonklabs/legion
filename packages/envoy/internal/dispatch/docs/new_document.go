@@ -25,15 +25,19 @@ import (
 // coalesce because model.Artifact carries it as "" when the document plays no role.
 const ArtifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
 
-// ScanArtifact reads ArtifactColumns. A session-owned artifact's project is "".
-func ScanArtifact(row pgx.Row) (model.Artifact, error) {
+// ScanArtifact reads ArtifactColumns; extra receives the columns a row carries after them. A
+// session-owned artifact's project is "".
+func ScanArtifact(row pgx.Row, extra ...any) (model.Artifact, error) {
 	var artifact model.Artifact
 	var project *string
 	var createdBy []byte
-	if err := row.Scan(
+	targets := make([]any, 0, 12+len(extra))
+	targets = append(targets,
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
 		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
-	); err != nil {
+	)
+	targets = append(targets, extra...)
+	if err := row.Scan(targets...); err != nil {
 		return model.Artifact{}, err
 	}
 	if project != nil {

@@ -28,8 +28,8 @@ const (
 	decisionBlockGuardPkg = "api"
 )
 
-// decisionBlockExempt names every POST or PATCH route whose request carries a person's prose that
-// this rule leaves unrefused, with the reason it is left. A route here is held to two things
+// decisionBlockExempt names every keyed write (keyedMethod) whose request carries a person's prose
+// that this rule leaves unrefused, with the reason it is left. A route here is held to two things
 // below: it is a route the server serves, so a renamed row cannot leave a reason behind pointing
 // at nothing, and it still runs no check, so an exemption that has stopped being true is deleted
 // rather than left to describe the opposite of what the handler does.
@@ -40,7 +40,10 @@ const (
 // is read by no walk, so this map is a hand-kept list there: it names the routes known to carry
 // such prose unrefused, and nothing derives that list or fails when a later route joins it.
 var decisionBlockExempt = map[string]string{
-	"POST /api/v1/issues/{key}/handoffs/{phase}": "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it",
+	"POST /api/v1/issues/{key}/handoffs/{phase}": handoffRouteExemption,
+	// Its /api/v2 route, the same write with the phase in the body
+	// (route_api_v2_issues_{key}_handoffs+post.go), for the same reason.
+	"POST /api/v2/issues/{key}/handoffs": handoffRouteExemption,
 
 	// The five ask writes. The reason is one decision, recorded as "An ask's own question, its
 	// options and its answers are left alone" (dispatch://INFRA-1201/artifact/decisions-md): the
@@ -59,35 +62,52 @@ var decisionBlockExempt = map[string]string{
 	// The review that names the version its caller read answers an open approval request as the
 	// route above does, so it is left alone for the same reason.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": reviewRouteExemption,
+
+	// The /api/v2 routes of the same writes, each left alone for its /api/v1 route's reason: the
+	// two ask creates, the ask's edit, its answer and its resolve (the states of one PUT), and
+	// the review, which names the version its caller read in its body.
+	"POST /api/v2/issues/{key}/asks":   "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v2/artifacts/{id}/asks": "an ask's question and options are held by validateAskWording, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"PATCH /api/v2/asks/{id}":          "an edit's question and options are held by validateAskWording against the ask as it will be stored, and a decision block in an ask is left alone (dispatch://INFRA-1201/artifact/decisions-md)",
+	"PUT /api/v2/asks/{id}/state": "an answer's text and a resolution's reason are left alone, as POST /api/v1/asks/{id}/answer and " +
+		"/resolve leave them (dispatch://INFRA-1201/artifact/decisions-md)",
+	"POST /api/v2/artifacts/{id}/reviews": reviewRouteExemption,
 }
 
 // reviewRouteExemption is why decisionBlockExempt leaves both review routes unrefused.
 const reviewRouteExemption = "while an approval request is open this route answers it, closing the ask with answerTransition, and the decisions document leaves an answer's text alone (dispatch://INFRA-1201/artifact/decisions-md); the same reason text reaches artifact_reviews unchecked through POST /api/v1/asks/{id}/answer (ask_transitions.go), so refusing one side would be inconsistent rather than protective. A decision block written there still draws a card nobody can answer on the approval chip, which this issue does not close"
 
-// decisionBlockGuardSees are the three writes the issue exists for, named so the guard cannot
-// pass by seeing nothing: a comment, a message and a broadcast. They are a control over the walk,
-// never the rule — the rule is read from the table and the shapes, and holds every route they
-// name as well as these.
+// handoffRouteExemption is why decisionBlockExempt leaves both handoff writes unrefused.
+const handoffRouteExemption = "the body is one JSON object, held to contracts.DispatchHandoffBodyMax and stored exactly as sent (handoffs.go); every reader is given its fields as JSON and none of it as Markdown, so no decision card is ever drawn from it"
+
+// decisionBlockGuardSees are the three writes the issue exists for, at each version, named so the
+// guard cannot pass by seeing nothing: a comment, a message and a broadcast. They are a control
+// over the walk, never the rule — the rule is read from the table and the shapes, and holds every
+// route they name as well as these.
 var decisionBlockGuardSees = []string{
 	"POST /api/v1/issues/{key}/comments",
 	"POST /api/v1/issues/{key}/messages",
 	"POST /api/v1/broadcasts",
+	"POST /api/v2/issues/{key}/comments",
+	"POST /api/v2/issues/{key}/messages",
+	"POST /api/v2/broadcasts",
 }
 
 // TestEveryRouteThatTakesABodyRefusesADecisionBlock holds R2 of INFRA-1201 — the rule is written
 // once, and a writer added later gets it — to the server's own route inventory rather than to a
 // list of the paths that have it today.
 //
-// The inventory is the route declarations, test hooks included, read from the source so that each
-// route's handler is read with it (keyedRouteHandlers), joined to the Go type each route takes
-// (its declaration's Shape). A route is in scope when its method is one register keys
-// (keyedMethod: a POST or a PATCH) and its request type carries a `body` string, the field every
-// stored comment, message, broadcast and handoff body is written into. A route in scope either
-// runs the shared check — somewhere in what its handler runs inside package api, a call of
-// blockBoundError over a call of itemblocks.Check, which is the one place DECISION_BLOCK_IN_BODY
-// is worded — or stands in decisionBlockExempt with the reason it does not. A route whose
-// declaration states no shape is named too: without a request type the guard cannot tell whether
-// it takes a body, and a guard that cannot tell must not pass.
+// The inventory is the table (routes_table.go, the route files) with its test hooks in, read from
+// the source so that each row's handler is read with it, joined to the Go types each
+// route takes (mountedRequests): its shape's request, or each arm of a state or kind union, whose
+// shape leaves the request out. Every route has a shape, since register refuses a table holding
+// one with none (shapelessRoutes). A route is in scope when register keys it (keyedMethod: a POST
+// or a PATCH, and a PUT or a DELETE too on a /api/v2 route the rules of /api/v2 bind, which no row
+// of the INFRA-979 tree and no test hook is) and a type it takes carries a `body` string,
+// the field every stored comment, message, broadcast and handoff body is written into. A row in
+// scope either runs the shared check — somewhere in what its handler runs inside package api, a
+// call of blockBoundError over a call of itemblocks.Check, which is the one place
+// DECISION_BLOCK_IN_BODY is worded — or stands in decisionBlockExempt with the reason it does not.
 //
 // The walk stops at the edge of package api, because blockBoundError is unexported and every path
 // to it is inside this package; a function literal a handler hands to another package is still
@@ -103,23 +123,20 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 			t.Fatalf("%s, the check this guard reads a body route by, is gone: point the guard at its replacement", function)
 		}
 	}
-	routes := keyedRouteHandlers(t, graph)
+	routes := decisionBlockRouteHandlers(t, graph)
+	requests := mountedRequests()
 
-	var unchecked, unshaped, stale []string
+	var unchecked, stale []string
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		checks := decisionBlockChecked(graph, routes[name])
 		reason, exempt := decisionBlockExempt[name]
-		route, _ := declaredRoute(name)
-		shape, shaped := route.Shape, route.Shape.stated()
 		switch {
 		case exempt:
 			t.Logf("%s: exempt — %s", name, reason)
 			if checks {
-				stale = append(stale, fmt.Sprintf("%s: runs the check now, so its exemption (%s) is no longer true", name, reason))
+				stale = append(stale, fmt.Sprintf("%s: runs the check, so its exemption (%s) is false", name, reason))
 			}
-		case !shaped:
-			unshaped = append(unshaped, name+": no shape (its declaration's Shape), so whether it takes a body cannot be read")
-		case !requestCarriesBody(shape.Request):
+		case !slices.ContainsFunc(requests[name], requestCarriesBody):
 			t.Logf("%s: takes no body string", name)
 		case checks:
 			t.Logf("%s: checked", name)
@@ -132,15 +149,12 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 			"Call blockBoundError(itemblocks.Check(\"body\", <the body>)) in the handler, as the comment, message and broadcast writes do, or name the route in decisionBlockExempt with the reason it is left alone.",
 			strings.Join(unchecked, "\n\t"))
 	}
-	if len(unshaped) > 0 {
-		t.Errorf("a POST or PATCH route has no request type to read:\n\t%s\nGive it one in its declaration's Shape, which the OpenAPI document is reflected out of.", strings.Join(unshaped, "\n\t"))
-	}
 	if len(stale) > 0 {
 		t.Errorf("an exemption describes the opposite of what its route does:\n\t%s\nDelete the route's line from decisionBlockExempt.", strings.Join(stale, "\n\t"))
 	}
 	var undeclared []string
 	for _, name := range slices.Sorted(maps.Keys(decisionBlockExempt)) {
-		if _, declared := declaredRoute(name); !declared {
+		if _, keyed := routes[name]; !keyed {
 			undeclared = append(undeclared, name)
 		}
 	}
@@ -150,21 +164,21 @@ func TestEveryRouteThatTakesABodyRefusesADecisionBlock(t *testing.T) {
 }
 
 // TestTheDecisionBlockGuardSeesWhatItGuards holds the guard to what it must see, so that a walk
-// that found nothing — declarations it could not read, a handler it could not follow — could not
-// pass as a server that checks everything: the three writes the issue exists for are in its
-// inventory, each taking a body and each reaching the check.
+// that found nothing — a table it could not read, a handler it could not follow — could not pass
+// as a server that checks everything: the three writes the issue exists for, at each version, are
+// in its inventory, each taking a body and each reaching the check.
 func TestTheDecisionBlockGuardSeesWhatItGuards(t *testing.T) {
 	t.Parallel()
 	graph := copyLockGraph(t)
-	routes := keyedRouteHandlers(t, graph)
+	routes := decisionBlockRouteHandlers(t, graph)
+	requests := mountedRequests()
 	for _, name := range decisionBlockGuardSees {
 		handlers, mounted := routes[name]
 		if !mounted {
 			t.Errorf("the guard reads no %s off the route declarations", name)
 			continue
 		}
-		route, _ := declaredRoute(name)
-		if !route.Shape.stated() || !requestCarriesBody(route.Shape.Request) {
+		if !slices.ContainsFunc(requests[name], requestCarriesBody) {
 			t.Errorf("the guard reads no body string on %s, the route that stores one", name)
 		}
 		if !decisionBlockChecked(graph, handlers) {
@@ -212,80 +226,56 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 	}
 }
 
-// keyedRouteHandlers is every route declaration whose method register keys (a POST or a PATCH),
-// test hooks included, by "<method> <pattern>", with the handler bodies it names
-// (routeDeclHandlers), held to the routes the package registers: a declaration the source read
-// misses, or a handler it cannot follow, fails the test rather than leaving its route out.
-func keyedRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
+// decisionBlockRouteHandlers is every keyed write route of the table (keyedRouteNames), by
+// "<method> <pattern>", with the handler bodies its row mounts (routeTableHandlers).
+func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
 	t.Helper()
-	routes, declarations := routeDeclHandlers(t, graph, keyedMethod)
-	if declarations != len(routeRegistry) {
-		t.Fatalf("the guard read %d route declarations off the source, and the package registers %d", declarations, len(routeRegistry))
-	}
-	for _, name := range slices.Sorted(maps.Keys(routes)) {
-		if len(routes[name]) == 0 {
-			t.Errorf("the guard cannot follow the handler of %s", name)
-		}
-	}
+	keyed := keyedRouteNames()
+	routes := routeTableHandlers(t, graph, func(name string) bool { return keyed[name] })
 	if len(routes) == 0 {
-		t.Fatal("the guard reads no POST or PATCH route off the route declarations")
+		t.Fatal("the guard reads no keyed write row off the routes table")
 	}
 	return routes
 }
 
-// routeDeclHandlers is every route declaration of graph's package api whose method keep keeps, by
-// "<method> <pattern>", with the handler bodies it names: none for a handler the graph does not
-// resolve, which its caller judges. It also answers how many declarations it read, of any method,
-// so a caller can hold that to the routes the package registers. It is read from the source
-// rather than from a server's own table so that each route's handler comes with it: a handler
-// read at run time is a function value, and what a guard asks is what that function's source
-// runs. A declaration is a routeDecl literal in a file of package api whose Method, Pattern and
-// Handler fields name an http.Method constant, a pattern and a method expression of the server;
-// one whose method or pattern this cannot read fails the test rather than leaving its route out.
-func routeDeclHandlers(t *testing.T, graph *lockGraph, keep func(verb string) bool) (map[string][]*lockFunction, int) {
+// routeTableHandlers is every route of the table, its test hooks in, whose "<method> <pattern>"
+// keep keeps, by that name, with the handler bodies its row mounts: none for a handler the graph
+// does not resolve, which its caller judges. Every /api/v1 and /api/v2 mount of a row is a route
+// of its own here. It is read from the source of the functions that declare the rows
+// (tableRowsInSource) rather than from a server's own table so that each row's handler comes with
+// it: a handler read at run time is a function value, and what a guard asks is what that
+// function's source runs.
+func routeTableHandlers(t *testing.T, graph *lockGraph, keep func(name string) bool) map[string][]*lockFunction {
 	t.Helper()
 	routes := map[string][]*lockFunction{}
-	declarations := 0
-	for _, source := range graph.sources {
-		if source.file.Name.Name != "api" {
-			continue
+	for _, row := range tableRowsInSource(t, graph) {
+		for _, name := range row.names {
+			if keep(name) {
+				routes[name] = graph.functionValue(row.handler)
+			}
 		}
-		ast.Inspect(source.file, func(node ast.Node) bool {
-			literal, ok := node.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			if typeName, ok := literal.Type.(*ast.Ident); !ok || typeName.Name != "routeDecl" || len(literal.Elts) == 0 {
-				return true
-			}
-			declarations++
-			fields := map[string]ast.Expr{}
-			for _, element := range literal.Elts {
-				if pair, ok := element.(*ast.KeyValueExpr); ok {
-					if key, ok := pair.Key.(*ast.Ident); ok {
-						fields[key.Name] = pair.Value
-					}
-				}
-			}
-			method, ok := ast.Unparen(fields["Method"]).(*ast.SelectorExpr)
-			if !ok {
-				t.Errorf("%s: the guard cannot read the method of a route declaration", source.path)
-				return false
-			}
-			verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-			if !keep(verb) {
-				return false
-			}
-			pattern, ok := literalText(fields["Pattern"], "api", graph.constants)
-			if !ok {
-				t.Errorf("%s: the guard cannot read the pattern of a %s route declaration", source.path, verb)
-				return false
-			}
-			routes[verb+" "+pattern] = graph.functionValue(fields["Handler"])
-			return false
-		})
 	}
-	return routes, declarations
+	return routes
+}
+
+// mountedRequests is, for every route the table mounts with its test hooks in, by "<method>
+// <pattern>", the zero value of each Go type its request may be: what the guard reads a route's
+// body off. That is its shape's request (apiRoute.shape), or for a state or kind union, whose shape
+// leaves the request out, each of its arms.
+func mountedRequests() map[string][]any {
+	requests := map[string][]any{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name := route.Method + " " + route.Pattern
+		switch route.Body.Kind {
+		case bodyStateUnion, bodyKindUnion:
+			for _, arm := range slices.Sorted(maps.Keys(route.Body.Arms)) {
+				requests[name] = append(requests[name], route.Body.Arms[arm])
+			}
+		default:
+			requests[name] = []any{route.shape().Request}
+		}
+	}
+	return requests
 }
 
 // decisionBlockChecked reports whether running one of handlers runs the shared check: a call of

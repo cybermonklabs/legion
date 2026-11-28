@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: searchDescription(searchDeclaresFour),
 	Handler:     (*server).search,
+	Successor:   deletedFor(http.MethodGet, "/search-results"),
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfSearchAtACut},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchRouteQuery{}},
 })

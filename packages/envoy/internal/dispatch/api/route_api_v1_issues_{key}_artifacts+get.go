@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List an issue's documents and files.",
 	Handler:     (*server).listArtifacts,
+	Successor:   successorIs(http.MethodGet, "/issues/{key}/artifacts"),
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route lists the documents and files that the issue held then, each with its name, its versions and its approval at the cut. " + asOfRemovedDocumentNotListed},
 	Shape:       routeShape{Status: http.StatusOK, Response: []artifactRead{}, Params: asOfQuery{}},
 })

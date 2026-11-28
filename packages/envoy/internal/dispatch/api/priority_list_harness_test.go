@@ -23,8 +23,13 @@ import (
 // TestAPriorityListAnswersWithinItsBoundOnEveryPlan, TestAPriorityListAnswersAsTheMergeBaseAnswers
 // and TestNoListingRequestReadsMoreOnTheGenericPlan.
 
-// listingStatements are the four statement texts listIssues sends (issueSummaryQuery).
-var listingStatements = []string{listIssuesQuery, listPinnedIssuesQuery, listIssuesPageQuery, listPinnedIssuesPageQuery}
+// listingStatements are the eight statement texts the issue listings send: the four listIssues
+// sends (issueSummaryQuery), and the four GET /api/v2/issues sends over the filters of /api/v2
+// (listIssuesV2Query and the three beside it), which issueListingQuery writes as it writes the four.
+var listingStatements = []string{
+	listIssuesQuery, listPinnedIssuesQuery, listIssuesPageQuery, listPinnedIssuesPageQuery,
+	listIssuesV2Query, listPinnedIssuesV2Query, listIssuesV2PageQuery, listPinnedIssuesV2PageQuery,
+}
 
 // listingRequest makes one GET of target as alice on a context trace counts, holds it to 200 OK,
 // and answers the response and the one listing statement the server sent for it, with the

@@ -21,6 +21,7 @@
 
 import type { LegionPhase } from "../../packages/contracts/src/legion-api";
 import type { LegionRole } from "../../packages/contracts/src/legion-roles";
+import { DISPATCH_CLIENT_USER_AGENT } from "../../packages/envoy-client/src/dispatch-http";
 import { sessionConfigFile } from "../../packages/envoy-client/src/session-settings";
 import { paneHandoffReport } from "../../packages/pi-shared/src/handoff-record";
 
@@ -43,12 +44,14 @@ if (process.env.LEGION_ISSUE === undefined || process.env.LEGION_ISSUE === "") {
 
 // The pane's own call: the envoy.json this session reads, and the Dispatch behind it. The run
 // writes no such file, so `DISPATCH_URL` and `DISPATCH_TOKEN` are the whole of this pane's
-// Dispatch settings, as they are for its `dispatch` command.
+// Dispatch settings, as they are for its `dispatch` command. It names itself as a script does
+// (`DISPATCH_CLIENT_USER_AGENT`), not as the pi-legion that makes the same call in a pane.
 const report = paneHandoffReport(
   sessionConfigFile("omp", process.env),
   process.env,
   process.cwd(),
-  session
+  session,
+  DISPATCH_CLIENT_USER_AGENT
 );
 
 try {

@@ -329,7 +329,7 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 			t.Errorf("the newest event over %s answers\n%v\nwant main's\n%v", scope.name, got, want)
 		}
 
-		body, err := corpus.served.readPriorities(context.Background(), scope.projects, false)
+		body, _, err := corpus.served.readPriorities(context.Background(), scope.projects, false)
 		if err != nil {
 			t.Fatalf("read the priorities over %s: %v", scope.name, err)
 		}

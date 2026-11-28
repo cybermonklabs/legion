@@ -4702,6 +4702,7 @@ test("the answer keys act on the selected decision block, not the first one in t
     markdown: "",
     token: "",
     version: null,
+    unsettled: true,
   });
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(
@@ -4799,7 +4800,12 @@ function mockDocumentColumnReads(rows: readonly InboxRow[]) {
     mockAskReads(rows),
     mockIssueReads(),
     getArtifact,
-    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "",
+      version: null,
+      unsettled: true,
+    }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listIssueAsks").mockResolvedValue(
       rows.map((row) => ({ ...row, last_reply: null }))
@@ -4971,6 +4977,7 @@ test("a refused hand-on from the column's decision block keeps the row, with the
     markdown: "",
     token: "",
     version: null,
+    unsettled: true,
   });
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue(

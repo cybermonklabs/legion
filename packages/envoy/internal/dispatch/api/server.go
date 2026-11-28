@@ -11,10 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -98,9 +99,9 @@ type Deps struct {
 	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
-	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
-	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
-	// NewIssueSession empty is an issue made with no conversation started on it.
+	// (GET /api/v1/settings/new-issue and GET /api/v2/settings/new-issue; cmd/dispatch:
+	// DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that
+	// carries no label; NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
 	// SpecForm is the form of The Spec the API judges with (spec_form.go): the roots that
@@ -224,10 +225,10 @@ type Deps struct {
 	// server's clock through its heartbeats ends no read with it.
 	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
-	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
-	// than reading the stored answer every process shares (the route_roster row), so a test that
-	// changes the listener's sessions sees the change at its next read. A deployment leaves it
-	// false.
+	// session list (route_status on an issue read, GET /api/v1/agents and GET /api/v2/agents) asks
+	// the listener rather than reading the stored answer every process shares (the route_roster
+	// row), so a test that changes the listener's sessions sees the change at its next read. A
+	// deployment leaves it false.
 	ListenerRosterUncached bool
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
@@ -240,13 +241,15 @@ type Deps struct {
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
 	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
-	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
-	// serves from the moment it enters the route's handler chain, as the access-log line times
-	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
-	// none.
+	// AnswersLatency times each answers read this process serves, GET
+	// /api/v1/agents/{session_id}/answers and GET /api/v2/agents/{session_id}/answers alike
+	// (sessionAnswersRoute, sessionAnswersV2Route), from the moment it enters the route's handler
+	// chain, as the access-log line times it (routeHandler), for the keyword fill's pause, which
+	// shares it (textversions); nil times none.
 	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
-	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
+	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving, and GET
+	// /api/v2/dashboard-builds marks the build whose entry it is as serving.
 	DashboardEntry string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
 	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
@@ -511,6 +514,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 
 type server struct {
 	deps Deps
+	// approveRefusal is the message of every 403 APPROVE_ONLY_TOKEN the approve-only route check
+	// answers (approveOnlyRefusalFor), built by register from the rows' approve stamps before any
+	// route's handler is.
+	approveRefusal string
 	// lifetime bounds every live socket and the loops that serve them: it is the process's own
 	// context, cancelled when the server is shutting down, so a deploy closes each live socket
 	// with 1012, ending every subscription it carries, and http.Server.Shutdown is not held for
@@ -520,8 +527,11 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
-	routeIndex []routeIndexEntry
+	lifetime context.Context
+	// routeIndex and routeIndexV2 are the routes GET /api/v1 and GET /api/v2 list: each version's
+	// own, rendered once at mount (register).
+	routeIndex   []routeIndexEntry
+	routeIndexV2 []routeIndexV2Entry
 	// searchLogKey is the key a search's request line hashes its request under
 	// (searchRequestKey): 32 bytes from crypto/rand that register makes once, kept here and never
 	// logged or written, so no setting names it and no deploy can pin it, and a reader of the log
@@ -531,9 +541,11 @@ type server struct {
 	// specReads keeps the check runs, the spec files and the jobs of the workflow files the
 	// results route reads of GitHub for the life of the process (spec_results.go).
 	specReads specResultReads
-	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
-	// write, held to the table this server mounts (going_catalogue.go).
-	going GoingCatalogue
+	// going is the action catalogue GET /api/v1/going/catalogue serves, and goingV2 the one GET
+	// /api/v2/going-actions serves: the dispatch tools that write, each held to the rows of its
+	// own version of the table this server mounts (going_catalogue.go).
+	going   GoingCatalogue
+	goingV2 GoingCatalogue
 	// unguardedReplacements counts the document replacements stored naming no token
 	// (noteUnguardedReplacement), and unguardedFileReplacements the file and picture ones
 	// (noteUnguardedFileReplacement); nil, which counts nothing, where Deps.Metrics is nil.
@@ -557,11 +569,12 @@ type server struct {
 	// appended, to read whether any of them reaches a subscriber before the commit, and how it
 	// ends one in a rollback.
 	beforeCommentCommit func(ctx context.Context, events []model.Event) error
-	// betweenPersonPageReads runs on a person page's request once the route has decided it
-	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
-	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
-	// test sets it: it is how a case commits a write between the decision and the list, to read
-	// that the list answers the snapshot the decision read.
+	// betweenPersonPageReads runs on a person page's read once it has decided the page is shown
+	// and before it lists the rows (readPersonNodes, which GET /api/v1/people/{login}/nodes and
+	// GET /api/v2/nodes both run), inside the transaction both reads share; nil, which every
+	// server the deployment builds leaves it, runs nothing. Only a test sets it: it is how a case
+	// commits a write between the decision and the list, to read that the list answers the
+	// snapshot the decision read.
 	betweenPersonPageReads func()
 	// afterIssueLoad runs in writeIssue once the write has read the issue it writes (loadIssue),
 	// holding that issue's owner lock and every lock it took before it, with the issue's key; nil,
@@ -685,10 +698,11 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
-	// resultsClock replaces the clock GET /api/v1/issues/{key}/results reads each moment from
-	// (resultsNow); nil, which every server the deployment builds leaves it, means time.Now. Only a
-	// test sets it, so a read past the span an answer is believed for is the test's choice rather
-	// than a wait of that span on the wall clock.
+	// resultsClock replaces the clock a results read (GET /api/v1/issues/{key}/results, GET
+	// /api/v2/issues/{key}/checks) reads each moment from (resultsNow); nil, which every server
+	// the deployment builds leaves it, means time.Now. Only a test sets it, so a read past the span
+	// an answer is believed for is the test's choice rather than a wait of that span on the wall
+	// clock.
 	resultsClock func() time.Time
 	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
 	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
@@ -713,14 +727,14 @@ type server struct {
 	afterMentionCopyRule func()
 	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
 	// rejects leave the document's next version to the settlement the reject arms, as the delete
-	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// did before it wrote that version itself (deleteCommentAs, docs.SettleVersion); false, which
 	// every server the deployment builds leaves it, settles in the delete. Only a benchmark sets
 	// it, to time the delete without its settle beside the delete with it
 	// (BenchmarkDeleteOfAPendingInsertSettle).
 	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
-	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
-	// TestHooksEnabled, which mounts no hook.
+	// for (POST /api/v1/writes/_test/slow and POST /api/v2/_test/writes/slow), by "METHOD path"; it
+	// holds nothing on a server without TestHooksEnabled, which mounts no hook.
 	slowWrites sync.Map
 	// slowWriteRuns is the slowWriteRecord of each route the slow-write test hook has delayed a
 	// run of, by the same "METHOD path" slowWrites uses. A disarm takes the route out of
@@ -728,9 +742,10 @@ type server struct {
 	// hook did before and since.
 	slowWriteRuns sync.Map
 	// newIssueOverride is what the new-issue test hook last set
-	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
-	// place of the two settings Deps carries; nil until a hook call sets one, which is every
-	// server without TestHooksEnabled, since that mounts no hook.
+	// (POST /api/v1/settings/new-issue/_test and POST /api/v2/_test/settings/new-issue), which GET
+	// /api/v1/settings/new-issue and GET /api/v2/settings/new-issue answer in place of the two
+	// settings Deps carries; nil until a hook call sets one, which is every server without
+	// TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
@@ -795,8 +810,10 @@ type RouteMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// Register mounts every native-workspace route on mux. Each route is declared in a file of its
-// own (routeDecl, routes_table.go); the same table answers GET /api/v1.
+// Register mounts every native-workspace route on mux, at /api/v1 and at /api/v2. Each route is
+// declared in a file of its own, route_<path>+<method>.go (routeDecl in routes_table.go for
+// /api/v1, and routeRow via declareRow for /api/v2, routes_versions.go); the same table answers
+// GET /api/v1 and GET /api/v2, each with the routes of its own version.
 //
 // Every route is marked so the shared pool can refuse a second connection to a handler that
 // already holds one of its transactions (store.ErrNestedAcquire): one caller, one connection is
@@ -806,17 +823,24 @@ type RouteMux interface {
 // Every route refuses a path or query parameter holding U+0000 or a byte that is not UTF-8 before
 // its handler runs (refuseUnstorableParameters), as decodeJSON refuses a U+0000 in a body.
 //
-// Every POST and PATCH route takes an Idempotency-Key, and a repeat under one is answered from the
-// key rather than run again (keyedWrites, request_keys.go). Every write route - a POST, PATCH, PUT
-// or DELETE - that names its presser in Dispatch-Login runs only as that person
-// (refuseChangedLogin).
+// Every POST and PATCH route, and every PUT and DELETE route the rules of /api/v2 bind
+// (apiRoute.v2Bound: neither a test hook nor a row of the INFRA-979 tree), takes an
+// Idempotency-Key, and a repeat under one is answered from the key rather than run again
+// (keyedWrites, keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE -
+// that names its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
+//
+// Every route apiRoute.decoded names - a routeRow's mount outside the INFRA-979 tree, at /api/v2
+// and, for a row served in both versions, at /api/v1 too - reads its query and its body through
+// one decoder, from the types its row declares, and holds each value its row gives an authority to
+// that authority before its handler runs (decode_v2.go, authorities_v2.go).
 //
 // Every route outside the read class (routeDecl.Read), GET /ws/live among them, answers a read-only
 // token 403 READ_ONLY_TOKEN before anything else it does. A read-only token that carries a cut is
-// answered as of its cut on every row of kind answers, and GET /api/v1/whoami names its cut;
-// every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED (asOfGate). Every route
-// whose declaration does not state ResultsScope (routeDecl.ResultsScope) answers a results token
-// 403 RESULTS_ONLY_TOKEN the same way (refuseLimitedToken).
+// answered as of its cut on every row of kind answers, and GET /api/v1/whoami and GET /api/v2/me
+// name its cut; every other read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED (asOfGate).
+// Every route whose declaration does not state ResultsScope (routeDecl.ResultsScope), every
+// /api/v2 route among them, answers a results token 403 RESULTS_ONLY_TOKEN the same way
+// (refuseLimitedToken).
 //
 // The server holds the delivery hub (LEGION-690), which starts its goroutines on the first
 // subscription and runs them until lifetime ends, and mounts GET /ws/live beside the document
@@ -988,31 +1012,54 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
 	}
 	if refused := readClassRefusals(routes); len(refused) > 0 {
-		// A GET route stating no class is one nobody has read for what it writes, a GET route
-		// stating no as_of kind is one nobody has decided an as_of for, and a route that is not a
-		// GET stating one would open a write to a token minted only to read, so the table is
-		// refused rather than mounted with a read-only token or an as_of served or refused by
-		// nothing anyone decided (routeDecl.Read).
+		// A GET route with no class is one nobody has read for what it writes, a GET route stating
+		// no as_of kind is one nobody has decided an as_of for, a route that is not a GET stating
+		// one would open a write to a token minted only to read, and an entry of v2ReadClasses that
+		// names no GET routeRow reads as though it classed a route that is not there, so the table
+		// is refused rather than mounted with a read-only token or an as_of served or refused by
+		// nothing anyone decided (routeDecl.Read, v2ReadClasses).
 		panic("api.Register: the route table's read class does not class every GET route exactly once with its as_of kind: " + strings.Join(refused, "; "))
 	}
-	going, err := buildGoingCatalogue(routes)
-	if err != nil {
-		// A catalogue entry naming a row this table does not hold or does not class as a write,
-		// a placeholder no argument of the tool fills, or a relation named in neither edge
-		// family, is refused rather than mounted (going_catalogue.go).
-		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	// The approve list was compiled into the rows as routes built them (applyApprovePolicy), which
+	// refused a table it does not map onto; the refusal's wording is read from those rows.
+	s.approveRefusal = approveOnlyRefusalFor(routes)
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		going, err := buildGoingCatalogue(routes, version)
+		if err != nil {
+			// A catalogue entry naming a row this table does not hold at its version or does not
+			// class as a write, a placeholder no argument of the tool fills, or a relation named in
+			// neither edge family, is refused rather than mounted (going_catalogue.go).
+			panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+		}
+		if version == apiV2 {
+			s.goingV2 = going
+		} else {
+			s.going = going
+		}
 	}
-	s.going = going
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than
 		// mounted (routes_shapes.go).
 		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
 	}
-	s.routeIndex = routeIndexEntries(routes)
-	keyed := s.keyedReplays()
+	if undecided := undecidedIDRoutes(routes); len(undecided) > 0 {
+		// A route whose id wildcard says neither what it names nor why no prefix is resolved there
+		// would answer a short id as no id at all - a route file stating no ID, a routeRow
+		// with no IDs column - so the table is refused rather than mounted (routeDecl.ID, a routeRow's IDs).
+		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
+	}
+	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
+		// A route whose query or body the decoder cannot read, an authority rule that could
+		// never hold, or authorities declared on a route the decoder does not read, which no gate
+		// holds a request to, would refuse, admit or drop requests by a declaration nothing reads
+		// as written, so the table is refused rather than mounted (decode_v2.go).
+		panic("api.Register: the route table holds a route whose request declarations the decoder cannot read: " + strings.Join(undecodable, "; "))
+	}
+	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))
+	s.routeIndexV2 = routeIndexV2Entries(servedAt(apiV2, routes))
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, keyed[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -1027,18 +1074,61 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	return s
 }
 
-// routeHandler is the chain register mounts one row of the table behind: the row's own handler
-// inside every layer the row runs, in the one order every row runs them. It is the one place that
-// order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. keyed is the row's entry of keyedReplays, the
-// zero value for a row that has none.
-func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
-	handler := route.Handler
-	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
+// routeHandler is the chain register mounts one route of the table behind: the route's own
+// handler inside every layer the route runs, in the one order every route runs them. It is the one
+// place that order is written, so register, a test that mounts a made-up row to meet the chain a
+// real one meets, and a test that walks the table with each row's handler replaced
+// (read_only_token_test.go) build the same chain.
+func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
+	// Every fact a layer below reads is the route's own (routes_versions.go): its version, which
+	// reaches the error writers on the request (withMountedRoute) and the drain from here, its
+	// replay and its body bound, its owner's closed state, its write class and the object its
+	// path names, the session its path names, its id facts, its scopes and whether a read-only
+	// token may call it, and on a route the decoder reads its query and body types and its
+	// authorities. The route itself rides the request too, for the code behind the layers
+	// that reads a fact of it: whose documents a slug names (loadArtifactForRequest) and the
+	// route a write's advice logs (routeName).
+	//
+	// The decoder and the authority gate hold every route apiRoute.decoded names, a row served
+	// in both versions at its /api/v1 path as at its /api/v2 path, so that path reads, gates and
+	// answers the row's one declaration as /api/v2 does (R2). The keyed layer does not follow
+	// them: keyedMethod keys a PUT and a DELETE on a route the rules of /api/v2 bind alone
+	// (apiRoute.v2Bound), since on /api/v1 neither takes an Idempotency-Key
+	// (packages/envoy/cmd/dispatch/README.md, "Keyed writes").
+	var decoder *v2Decoder
+	if route.decoded() {
+		decoder = mustV2Decoder(route)
 	}
-	if route.Method+" "+route.Pattern == issueUploadRoute {
+	handler := route.Handler
+	if decoder != nil {
+		// Just around the handler, inside the keyed layer that spools an upload's body as it
+		// spools every upload's: the handler reads the upload's declared fields and its file
+		// through the decoder (v2Body, v2Upload), and never r.FormValue.
+		handler = s.readV2Upload(decoder, handler)
+	}
+	if keyedMethod(route) {
+		handler = s.keyedWrites(route, handler)
+		// Just outside the keyed layer, so an approve-only token's keyed answer of an ask that is no
+		// approval request is refused before the layer looks its key up, claims it or replays what
+		// it holds (approve_policy.go). Every check outside this one has run before it.
+		handler = s.gateApproveOnlyAskAnswer(route, handler)
+	}
+	if route.RefusesClosedOwner {
 		handler = s.refuseUploadToAClosedIssue(handler)
+	}
+	if decoder != nil {
+		// After the decoder has read the body and outside the keyed layer, so a value the
+		// credential lacks the scope for is refused before the handler runs and claims no
+		// idempotency key (authorities_v2.go).
+		handler = s.gateV2Authorities(route, handler)
+		// Just outside the authority gate, so an approve-only token's state is judged first, on the
+		// body the decoder read within its bound, as the authority gate always judged it
+		// (approve_policy.go).
+		handler = s.gateApproveOnlyStates(route, handler)
+		// After the project, session and login checks and before the state check, the authority
+		// gate and the keyed layer: a JSON body is read once, bounded by the route's BodyLimit,
+		// decoded, and put back as the bytes the keyed layer fingerprints (decode_v2.go).
+		handler = s.readV2Body(decoder, handler)
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
@@ -1065,6 +1155,12 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 	handler = s.resolveIDPrefixes(route, handler)
 	handler = s.refuseUnstorableParameters(route.Pattern, handler)
+	if decoder != nil {
+		// Just inside the route's scope gate, so a query key the route does not declare is
+		// refused 400 QUERY_KEY_UNKNOWN before any lookup or write (R4), and every layer behind
+		// reads the session the decoded query names (requestSession).
+		handler = s.readV2Query(decoder, handler)
+	}
 	if len(route.OAuthScopes) > 0 {
 		// Ahead of the keyed layer and the project and session checks, so the row's own
 		// scopes are the first thing a request is held to once the limited-token gate outside it
@@ -1081,7 +1177,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// project and session checks and the Idempotency-Key, none of which it reaches, so it claims
 	// no key. It is inside the limited-token gate, which resolves the caller first, so the cut a
 	// read-only token carries is known before as_of is read (asOfGate).
-	handler = s.asOfGate(route.Method+" "+route.Pattern, route.Read, handler)
+	handler = s.asOfGate(route, handler)
 	// Outside the scope gate and every layer inside it, so a read-only token on a row outside
 	// the read class, or one that carries a cut on a read that answers no cut, a results token on
 	// a row the results list does not name, or an approve-only token on a row the approve list
@@ -1092,7 +1188,7 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	// an id prefix's lookup, the project and session checks and the Idempotency-Key, none of which
 	// it reaches, so it claims no key. It is inside the drain, as the scope gate is, so a client
 	// that asked to be told to continue is handled as for every other early answer.
-	handler = s.refuseLimitedToken(route.routeDecl, handler)
+	handler = s.refuseLimitedToken(route, handler)
 	// One place for the whole table: every answer says its body depends on Dispatch-Trees
 	// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
 	// trees an answer written for a reader without them. It is outside the scope gate and the
@@ -1113,36 +1209,40 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// unread is the drain's guard (drainingWriter.askedContinue) and the keyed layer's
 		// (answerDrainedRepeat), which TestAnEarlyAnswerToAClientWaitingToContinueAsksForNoBody
 		// pins: without either, the client is told to continue and the answer waits on its body.
-		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
+		handler = s.drainBeforeAnswer(route, handler)
 	}
 	// The row's request context is made once, with its transaction tracking and its calls to
 	// GitHub tagged as the API's (routeContext).
 	handler = s.decideBrokerToken(routeContext(handler))
 	if route.Method+" "+route.Pattern == statusChangeRoute {
-		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
-		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
-		// gzip. The route's declared refusals carry changed: the handler and the keyed layer
-		// write it, and every layer outside the keyed layer refuses before any step runs with
-		// the {code, error} it answers every route, to which this adds changed []
-		// (addChangedToRefusals).
 		handler = addChangedToRefusals(handler)
 	}
-	// The access-log line is outermost, so it records what every layer answered - a keyed
-	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, with nothing between them but the answers
-	// read's timing below, so every one of those answers is compressed for a caller that takes
-	// gzip and the line counts the bytes that went on the wire. The two websockets register
-	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
-	// frames after it are the socket's (compressAnswers).
+	// The access-log line is outermost but for the mount and, on /api/v1, the Link writer
+	// (linkSuccessor), which answers nothing itself, so it records what every layer
+	// answered - a keyed replay, a refused login, an early answer the drain held - and the
+	// caller the first of them resolved. Compression sits just inside it, with nothing between
+	// them but the answers read's timing below, so every one of those answers is compressed for a
+	// caller that takes gzip and the line counts the bytes that went on the wire. The two
+	// websockets register mounts beside the table carry no compressed answer: the upgrade is not
+	// a body, and the frames after it are the socket's (compressAnswers). The route and its
+	// version are put on the request before any of them, so every layer that refuses answers for
+	// the version, and the code behind reads the route rather than the path (withMountedRoute).
 	served := compressAnswers(handler)
-	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+	if name := route.Method + " " + route.Pattern; (name == sessionAnswersRoute || name == sessionAnswersV2Route) && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included. The
 		// line is timed on the server's clock, which a test hands the Latency too, so the two read
 		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
+	served = accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
+	if route.Version == apiV1 {
+		// Outermost of the writers, so the Link it sets when the status is written follows every
+		// layer's answer - a refusal before the handler, a keyed replay, the handler's own - and
+		// reads whatever value the handler resolved for it (v1_successor.go).
+		served = linkSuccessor(route, served)
+	}
+	return withMountedRoute(route, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1154,7 +1254,7 @@ const liveSocketPattern = "/ws/live"
 //
 // The limited-token gate sits just inside decideBrokerToken, whose decision it reads, and ahead
 // of the upgrade. The socket is no row of the table and no read, since a socket delivers whatever
-// its views carry, so it passes the gate the zero declaration, which the gate names GET /ws/live
+// its views carry, so it passes the gate the zero route, which the gate names GET /ws/live
 // (liveSocketRoute): it classes nothing as a read and states neither ResultsScope nor ApproveOnly.
 // A read-only token of every kind is answered 403 before a socket is ever opened for it:
 // AS_OF_TOKEN_NOT_SERVED for a token that carries a cut, since the socket holds no past answer,
@@ -1164,7 +1264,7 @@ const liveSocketPattern = "/ws/live"
 // its heartbeat resolves that same credential again (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
 	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseLimitedToken(routeDecl{},
+		s.refuseLimitedToken(apiRoute{},
 			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
@@ -1291,16 +1391,19 @@ func (credentialExpired) CloseCode() (int, string) {
 // never through this socket.
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
-		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return errorf(apicode.IdentityError, "identity service unavailable")
 	}
 	_, err := s.deps.Identity.Login(r)
 	return err
 }
 
+// apiError is a refusal a handler returns rather than writes: its code, which carries the name
+// and the status each version answers it with, and its message. writeHandlerError writes it for
+// the version of the request it answers.
 type apiError struct {
-	status  int
-	code    string
-	message string
+	code           apicode.Code
+	message        string
+	statusOverride int // ANSWER_NOT_KEPT uses the original answer's status.
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
 	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
@@ -1317,8 +1420,14 @@ type apiError struct {
 
 func (e *apiError) Error() string { return e.message }
 
-func errorf(status int, code, format string, args ...any) *apiError {
-	return &apiError{status: status, code: code, message: fmt.Sprintf(format, args...)}
+// statusFor is the status e answers r with, in the version r's route serves.
+func (e *apiError) statusFor(r *http.Request) int {
+	_, status, _ := codePair(requestAPIVersion(r), e.code)
+	return status
+}
+
+func errorf(code apicode.Code, format string, args ...any) *apiError {
+	return &apiError{code: code, message: fmt.Sprintf(format, args...)}
 }
 
 // parseQueryInt reads one query parameter as an integer within [min, max]. present is false
@@ -1401,7 +1510,7 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 			handler(w, r)
 			return
 		}
-		writeError(w, contracts.DispatchLoginChanged, http.StatusConflict, fmt.Sprintf(
+		writeError(w, r, apicode.LoginChanged, fmt.Sprintf(
 			"this write was pressed by %q and its request is not signed in as them: nothing ran; it goes only as the person who pressed it",
 			login))
 	}
@@ -1427,7 +1536,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	case credentialBrokerToken:
 		return s.brokerTokenActor(r)
 	case credentialNoBearer:
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+		return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 	case credentialSharedToken:
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		// A credential that holds no scope, not the absence of one: the deployment's one
@@ -1441,14 +1550,14 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 			return model.Actor{}, false, err
 		}
 		if actor.Owner == nil {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+			return model.Actor{}, false, errorf(apicode.Unauthorized, "invalid bearer token")
 		}
 		accesslog.Note(r.Context(), accesslog.KindToken, *actor.Owner)
 		return actor, false, nil
 	}
 	// What is left is credentialSignIn: no Authorization header, or a blank one.
 	if s.deps.Identity == nil {
-		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
+		return model.Actor{}, false, errorf(apicode.IdentityError, "identity service unavailable")
 	}
 	login, err := s.deps.Identity.Login(r)
 	if err != nil {
@@ -1528,7 +1637,7 @@ var (
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "OIDC_ISSUER_UNAVAILABLE",
+		return model.Actor{}, false, errorf(apicode.OIDCIssuerUnavailable,
 			"the service-account token issuer cannot be reached; try again in a minute")
 	}
 	if err != nil {
@@ -1538,7 +1647,7 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		// before any authorization, so logging them lets anyone write what they
 		// like into the operator's log on every request.
 		slog.Warn("dispatch: service-account token rejected", "reason", reason)
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
+		return model.Actor{}, false, errorf(apicode.OIDCTokenInvalid,
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
@@ -1620,7 +1729,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// anything else than that same session is the mismatch.
 		named := actorNamesWriter(supplied)
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
-			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
+			return model.Actor{}, errorf(apicode.ActorSessionMismatch,
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
@@ -1656,7 +1765,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		return actor, nil
 	}
 	if supplied == nil || supplied.Kind != "session" || strings.TrimSpace(supplied.ID) == "" {
-		return model.Actor{}, errorf(http.StatusBadRequest, "ACTOR_KIND", "bearer callers require actor.kind session")
+		return model.Actor{}, errorf(apicode.ActorKind, "bearer callers require actor.kind session")
 	}
 	accesslog.Note(r.Context(), accesslog.KindSession, supplied.ID)
 	return model.Actor{
@@ -1674,20 +1783,22 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 
 // writeAuthenticationError answers a caller that did not resolve: 401 NO_IDENTITY, or 503
 // SIGNIN_UNAVAILABLE for a person whose lapsed confirmation the sign-in issuer could not renew,
-// as identity.WriteError renders both; anything else as writeHandlerError does. Only identity's
-// own sentinels reach identity.WriteError, so a service-account token's issuer outage
-// (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never reads as the sign-in issuer's.
-func (s *server) writeAuthenticationError(w http.ResponseWriter, err error) {
+// with the code and message identity.Refusal gives each, as identity.WriteError renders them;
+// anything else as writeHandlerError does. Only identity's own sentinels reach identity.Refusal,
+// so a service-account token's issuer outage (serviceTokenActor's OIDC_ISSUER_UNAVAILABLE) never
+// reads as the sign-in issuer's.
+func (s *server) writeAuthenticationError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, identity.ErrNoIdentity) || errors.Is(err, identity.ErrSignInUnavailable) {
-		identity.WriteError(w, err)
+		code, message := identity.Refusal(err)
+		writeError(w, r, code, message)
 		return
 	}
-	s.writeHandlerError(w, err)
+	s.writeHandlerError(w, r, err)
 }
 
 func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bool {
 	if _, _, err := s.optionalActor(r); err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	return true
@@ -1696,7 +1807,7 @@ func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 func (s *server) requireActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
 	actor, err := s.actorFrom(r, supplied)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	return actor, true
@@ -1710,15 +1821,11 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 		return true
 	}
 	if err := decodeJSON(r, dst); err != nil {
-		s.writeHandlerError(w, err)
+		s.writeHandlerError(w, r, err)
 		return false
 	}
 	return true
 }
-
-// codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs. What each credential holds is said once, on routeDecl.OAuthScopes.
-const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
 // for a scope the credential does not hold. Both ways of writing that refusal go through it, so
@@ -1731,17 +1838,17 @@ func insufficientScopeChallenge(scope string) string {
 // does not hold, under the challenge RFC 6750 section 3.1 gives that refusal. writeError sets no
 // header, so the header goes on here and the body through it, which keeps the refusal the same
 // shape as every other.
-func refuseMissingScope(w http.ResponseWriter, scope, message string) {
+func refuseMissingScope(w http.ResponseWriter, r *http.Request, scope, message string) {
 	w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(scope))
-	writeError(w, codeScopeRequired, http.StatusForbidden, message)
+	writeError(w, r, apicode.OAuthScopeRequired, message)
 }
 
 // missingScopeError is refuseMissingScope as an error, for a check that cannot run at the gate
-// because what it reads is known only once a row is loaded (answerAsk's approval asks).
+// because what it reads is known only once a row is loaded (recordAnswer's approval asks).
 // writeHandlerError writes the challenge header from the error's scope, so such a refusal is the
 // gate's own answer in every part a caller can see.
 func missingScopeError(scope, message string) *apiError {
-	return &apiError{status: http.StatusForbidden, code: codeScopeRequired, message: message, scope: scope}
+	return &apiError{code: apicode.OAuthScopeRequired, message: message, scope: scope}
 }
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
@@ -1758,12 +1865,12 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 	return func(w http.ResponseWriter, r *http.Request) {
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			s.writeAuthenticationError(w, err)
+			s.writeAuthenticationError(w, r, err)
 			return
 		}
 		for _, scope := range scopes {
 			if !actor.Credential.Holds(scope) {
-				refuseMissingScope(w, scope, fmt.Sprintf(
+				refuseMissingScope(w, r, scope, fmt.Sprintf(
 					"this request's credential does not hold the %s scope, which this route requires", scope))
 				return
 			}
@@ -1776,11 +1883,14 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // refuseLimitedToken is the one place a limited credential is held to what it may call: a
 // read-only credential (model.Credential.ReadOnly) to the read class, a results-only one
 // (model.Credential.ResultsOnly) to the routes that state ResultsScope, and an approve-only one
-// (model.Credential.ApproveOnly) to the routes that state ApproveOnly. register wraps every route
-// of the table in it, with the route's own declaration, which states all three (routeDecl.Read,
-// routeDecl.ResultsScope, routeDecl.ApproveOnly), and GET /ws/live with the zero declaration,
-// which the gate names GET /ws/live (liveSocketRoute) and which classes nothing as a read and
-// states neither. It reads every credential that can be limited:
+// (model.Credential.ApproveOnly) to the routes the approve list names. register wraps every route
+// of the table in it, both versions' alike, with the mounted route, which carries all three: its
+// read class (apiRoute.Read: a route file's routeDecl.Read, a row's v2ReadClasses entry), whether
+// a results token may call it (apiRoute.ResultsScope: a route file's routeDecl.ResultsScope,
+// which no /api/v2 row states) and whether an approve-only token may (apiRoute.ApproveOnly, which
+// applyApprovePolicy stamps); and GET /ws/live with the zero route, which the gate names GET
+// /ws/live (liveSocketRoute) and which classes nothing as a read and states neither. It reads
+// every credential that can be limited:
 //
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
@@ -1797,46 +1907,47 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //     Authorization header it does not carry, and the gate writes no people row.
 //
 // A caller whose credential is results-only, which only a broker-issued token's is, is answered
-// 403 RESULTS_ONLY_TOKEN on every route that does not state ResultsScope (routeDecl.ResultsScope),
+// 403 RESULTS_ONLY_TOKEN on every route that does not state ResultsScope (apiRoute.ResultsScope),
 // and one whose credential is approve-only, likewise a broker-issued token's alone, 403
-// APPROVE_ONLY_TOKEN on every route that does not state ApproveOnly (routeDecl.ApproveOnly), GET
+// APPROVE_ONLY_TOKEN on every route the approve list does not name (apiRoute.ApproveOnly), GET
 // /ws/live among them for both, and next does not run. Then a caller whose credential is
 // read-only (readOnlyCredential, which a results read reads the caller by too) and carries a cut
 // (model.Credential.Cut) is answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut and the row, on
-// GET /ws/live and on every read but GET /api/v1/whoami and the rows of kind answers
-// (asOfAnswers), and next does not run: such a row holds no answer at a past time, and it must
-// not answer the token with the present. The socket is refused for its cut first, since a socket
-// delivers the present as it changes. Every other caller whose credential is read-only is
-// answered 403 READ_ONLY_TOKEN on every row that is not a read (readWritesNothing), every write
-// among them, and on GET /ws/live, and next does not run. Every other request runs next as it
-// always did: whoami names the token's cut, and a row of kind answers answers as of it
-// (asOfGate). The broker's verifier marks a credential one of the three ways or none, never two
-// (ciphertoken.shapeOf), so a credential is held to one of the three rules.
+// GET /ws/live and on every read of kind asOfNoHistory: every read but GET /api/v1/whoami and GET
+// /api/v2/me (asOfCaller) and the rows of kind answers (asOfAnswers), and next does not run: such
+// a row holds no answer at a past time, and it must not answer the token with the present. The
+// socket is refused for its cut first, since a socket delivers the present as it changes. Every
+// other caller whose credential is read-only is answered 403 READ_ONLY_TOKEN on every row that is
+// not a read (readWritesNothing), every write among them, and on GET /ws/live, and next does not
+// run. Every other request runs next as it always did: whoami and GET /api/v2/me name the token's
+// cut, and a row of kind answers answers as of it (asOfGate). The broker's verifier marks a
+// credential one of the three ways or none, never two (ciphertoken.shapeOf), so a credential is
+// held to one of the three rules.
 //
 // No refusal carries a WWW-Authenticate challenge, unlike a missing scope's
 // (refuseMissingScope): RFC 6750 Section 3.1 has the challenge name the scope a request needs,
 // and no scope makes such a route the token's to call. Their codes are the contract a client
-// reads, and the results and approve refusals' messages are the routes that state each in words
-// (resultsOnlyRefusal, approveOnlyRefusal).
-func (s *server) refuseLimitedToken(route routeDecl, next http.HandlerFunc) http.HandlerFunc {
+// reads, and the results and approve refusals' messages are the routes each list names, in words
+// (resultsOnlyRefusal, and server.approveRefusal, which names both versions' routes).
+func (s *server) refuseLimitedToken(route apiRoute, next http.HandlerFunc) http.HandlerFunc {
 	read := route.Read.Writes == readWritesNothing
-	// The socket passes the zero declaration (liveSocketHandler); every row states a pattern.
+	// The socket passes the zero route (liveSocketHandler); every row states a pattern.
 	name := liveSocketRoute
 	if route.Pattern != "" {
 		name = route.Method + " " + route.Pattern
 	}
 	// A cut holds no answer on the socket, nor on a read that holds no history (asOfNoHistory).
-	// whoami (asOfCaller) names the cut, and a row of kind answers answers at it.
+	// whoami and GET /api/v2/me (asOfCaller) name the cut, and a row of kind answers answers at it.
 	refusesACut := name == liveSocketRoute || (read && route.Read.AsOf == asOfNoHistory)
 	noPastAnswer := "; " + name + " holds no past answer"
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.resolvePersonalToken(r)
 		if !route.ResultsScope && resultsOnlyRequest(r) {
-			writeError(w, codeResultsOnlyToken, http.StatusForbidden, resultsOnlyRefusal())
+			writeError(w, r, apicode.ResultsOnlyToken, resultsOnlyRefusal())
 			return
 		}
 		if !route.ApproveOnly && approveOnlyRequest(r) {
-			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, approveOnlyRefusal())
+			writeError(w, r, apicode.ApproveOnlyToken, s.approveRefusal)
 			return
 		}
 		credential := readOnlyCredential(r.Context())
@@ -1845,26 +1956,15 @@ func (s *server) refuseLimitedToken(route routeDecl, next http.HandlerFunc) http
 			return
 		}
 		if refusesACut && !credential.Cut.IsZero() {
-			writeError(w, contracts.DispatchAsOfTokenNotServed, http.StatusForbidden,
-				"this token reads Dispatch as of "+cutText(credential.Cut)+noPastAnswer)
+			writeError(w, r, apicode.AsOfTokenNotServed, "this token reads Dispatch as of "+cutText(credential.Cut)+noPastAnswer)
 			return
 		}
 		if !read {
-			writeError(w, contracts.DispatchReadOnlyToken, http.StatusForbidden, readOnlyRefusal)
+			writeError(w, r, apicode.ReadOnlyToken, readOnlyRefusal)
 			return
 		}
 		next(w, r)
 	}
-}
-
-// approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only
-// credential (model.Credential.ApproveOnly), read as readOnlyCredential reads a read-only one
-// (resolvedCredential). The person actor a handler acts as (actingPerson) carries no credential,
-// so a handler that holds such a token to less than its route reads it here: answerAsk, which
-// answers an approval request alone for it.
-func approveOnlyRequest(r *http.Request) bool {
-	credential := resolvedCredential(r.Context())
-	return credential != nil && credential.ApproveOnly
 }
 
 // resultsOnlyRequest reports whether decideBrokerToken resolved r's caller to a results
@@ -1877,22 +1977,16 @@ func resultsOnlyRequest(r *http.Request) bool {
 	return credential != nil && credential.ResultsOnly
 }
 
-// resultsOnlyRefusal and approveOnlyRefusal are the messages of every 403 RESULTS_ONLY_TOKEN and
-// 403 APPROVE_ONLY_TOKEN refuseLimitedToken answers: the routes that state ResultsScope and the
-// routes that state ApproveOnly, in words, in the order routes() mounts them (by pattern and then
-// method). Each is built once, at its first refusal, from the declarations themselves, which are
-// all in routeRegistry before any request: so it names every such route a running Dispatch
-// declares, and no other.
-var (
-	resultsOnlyRefusal = sync.OnceValue(func() string {
-		return "this request's credential is a results token, which may call only the routes Dispatch's results list names (" +
-			strings.Join(declaredRouteNames(func(route routeDecl) bool { return route.ResultsScope }), ", ") + "): nothing ran"
-	})
-	approveOnlyRefusal = sync.OnceValue(func() string {
-		return "this request's credential is an approve-only token, which may call only the routes Dispatch's approve list names (" +
-			strings.Join(declaredRouteNames(func(route routeDecl) bool { return route.ApproveOnly }), ", ") + "): nothing ran"
-	})
-)
+// resultsOnlyRefusal is the message of every 403 RESULTS_ONLY_TOKEN refuseLimitedToken answers:
+// the routes that state ResultsScope, in words, in the order routes() mounts them (by pattern and
+// then method). It is built once, at its first refusal, from the declarations themselves, which
+// are all in routeRegistry before any request: so it names every such route a running Dispatch
+// declares, and no other. Only a route file states ResultsScope, so every route it names is a
+// /api/v1 route, and no /api/v2 route serves a results token.
+var resultsOnlyRefusal = sync.OnceValue(func() string {
+	return "this request's credential is a results token, which may call only the routes Dispatch's results list names (" +
+		strings.Join(declaredRouteNames(func(route routeDecl) bool { return route.ResultsScope }), ", ") + "): nothing ran"
+})
 
 // declaredRouteNames is "<method> <pattern>" of every declared route that states, by pattern and
 // then method (byPatternThenMethod).
@@ -1919,8 +2013,9 @@ const readOnlyRefusal = "this request's credential is a read-only token, which m
 // liveSocketRoute is GET /ws/live as the limited-token gate names it.
 const liveSocketRoute = http.MethodGet + " " + liveSocketPattern
 
-// cutText is a cut (model.Credential.Cut) as Dispatch writes it, in whoami's answer and in the
-// refusal of a token that carries a cut: RFC 3339 in UTC, with every fractional digit it has.
+// cutText is a cut (model.Credential.Cut) as Dispatch writes it, in the answers of GET
+// /api/v1/whoami and GET /api/v2/me and in the refusal of a token that carries a cut: RFC 3339 in
+// UTC, with every fractional digit it has.
 func cutText(cut time.Time) string {
 	return cut.UTC().Format(time.RFC3339Nano)
 }
@@ -1935,9 +2030,10 @@ func cutText(cut time.Time) string {
 //
 // It resolves no other credential, though optionalActor would resolve any: none other can be
 // read-only and undecided here, and resolving one would change the rows that take no credential
-// (GET /api/v1, GET /api/v1/schema/blocks), which never resolve their caller. A sign-in is read
-// from the store, and some sign-ins record their person (Deps.Identity); the shared token and a
-// service-account token name their caller on the access-log line, and the second is verified.
+// (GET /api/v1, GET /api/v1/schema/blocks, GET /api/v2, GET /api/v2/block-schema), which never
+// resolve their caller. A sign-in is read from the store, and some sign-ins record their person
+// (Deps.Identity); the shared token and a service-account token name their caller on the
+// access-log line, and the second is verified.
 func (s *server) resolvePersonalToken(r *http.Request) *http.Request {
 	if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil {
 		return r
@@ -1957,20 +2053,25 @@ func (s *server) withResolvedCaller(r *http.Request) *http.Request {
 }
 
 // asOfGate is the one place a request's as_of query parameter is read: register wraps every row
-// of the table in it, name being the row's "<method> <pattern>" and entry its read class
-// (apiRoute.Read), whose AsOf is the row's as_of kind and the zero kind on every row that is not
-// a GET row. It runs just inside the limited-token gate (refuseLimitedToken), which has resolved
-// the caller (resolvedCallerKey) and refused a read-only token on every row outside the read
-// class, and outside the row's scopes, the prefix layer, the stored-text check and the keyed
-// layer.
+// of the table in it, with the mounted route, whose "<method> <pattern>" names it and whose read
+// class (apiRoute.Read) holds its as_of kind, the zero kind on every row that is not a GET row.
+// It runs just inside the limited-token gate (refuseLimitedToken), which has resolved the caller
+// (resolvedCallerKey) and refused a read-only token on every row outside the read class, and
+// outside the row's scopes, the prefix layer, the stored-text check and the keyed layer.
 //
 // A caller whose credential carries a cut (model.Credential.Cut) reads at that cut, whatever
 // as_of it sends, so the layer reads no as_of for it: on a row that answers as_of it runs next
 // under the token's cut (serveAtCut), as it runs next under an as_of below, and on every other
 // row it runs next as it is. The limited-token gate has already refused such a caller every row
-// but whoami and the rows that answer as_of. The caller is already resolved: only a
-// broker-issued token carries a cut, and decideBrokerToken resolves it before the limited-token
-// gate. For every other caller:
+// but whoami, GET /api/v2/me and the rows that answer as_of. The caller is already resolved: only
+// a broker-issued token carries a cut, and decideBrokerToken resolves it before the limited-token
+// gate.
+//
+// A row whose query the decoder reads (apiRoute.decoded: a /api/v2 row outside the INFRA-979
+// tree) declares its query keys, and as_of is none of them: /api/v2 stands at main's freeze,
+// which answered no read at a past time (dispatch://INFRA-4071/spec R2). So the layer reads no
+// as_of of such a row's query, and the decoder refuses one 400 QUERY_KEY_UNKNOWN as it refuses
+// every key the row does not declare (R4). For every other caller on every other row:
 //
 //   - A request sends as_of when a pair of its query names as_of: the pair's key, as sent or
 //     decoded, is as_of. That holds for a pair that url.ParseQuery cannot decode, which it and
@@ -1999,8 +2100,10 @@ func (s *server) withResolvedCaller(r *http.Request) *http.Request {
 //     which is no write of the read. It carries the result on the context, its refusal included
 //     (resolvedCallerKey), as resolvePersonalToken does, and every layer behind it and the
 //     handler read that result (optionalActor).
-func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
-	answers := entry.AsOf == asOfAnswers
+func (s *server) asOfGate(route apiRoute, next http.HandlerFunc) http.HandlerFunc {
+	name := route.Method + " " + route.Pattern
+	answers := route.Read.AsOf == asOfAnswers
+	queryDecoded := route.decoded()
 	notServed := asOfParameter + ": " + name + " holds no history; it answers the present only"
 	return func(w http.ResponseWriter, r *http.Request) {
 		if credential := readOnlyCredential(r.Context()); credential != nil && !credential.Cut.IsZero() {
@@ -2008,6 +2111,10 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 				serveAtCut(w, r, name, asof.CutAt(credential.Cut), next)
 				return
 			}
+			next(w, r)
+			return
+		}
+		if queryDecoded {
 			next(w, r)
 			return
 		}
@@ -2027,33 +2134,33 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 			return
 		}
 		if !answers {
-			writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest, notServed)
+			writeError(w, r, apicode.AsOfNotServed, notServed)
 			return
 		}
 		if undecodable != nil {
-			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidAsOf, fmt.Sprintf(
 				"as_of: the query names as_of and does not decode (%v): send a query in which each pair decodes", undecodable))
 			return
 		}
 		if len(values) > 1 {
-			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidAsOf, fmt.Sprintf(
 				"as_of is in the request %d times: send one as_of", len(values)))
 			return
 		}
 		cut, err := asof.ParseCut(values[0])
 		if err != nil {
-			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, err.Error())
+			writeError(w, r, apicode.InvalidAsOf, err.Error())
 			return
 		}
 		// The database's present time, read once a request. The context carries no cut yet, so
 		// the store sends the statement as it is written.
 		var now time.Time
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select now()`).Scan(&now); err != nil {
-			s.writeHandlerError(w, fmt.Errorf("read the database's present time to check as_of: %w", err))
+			s.writeHandlerError(w, r, fmt.Errorf("read the database's present time to check as_of: %w", err))
 			return
 		}
 		if cut.Time().After(now) {
-			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
+			writeError(w, r, apicode.InvalidAsOf, fmt.Sprintf(
 				"as_of %s is later than the database's present time, %s: a read at a past time answers only a time that is past",
 				cut, cutText(now)))
 			return
@@ -2111,15 +2218,17 @@ func queryNamesAsOf(raw string) bool {
 // acted, and carries none. A credential that proved no session takes the one the `session` query
 // parameter names where the caller gives it, the convention messages.go already reads; one that
 // proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
-// what bearerSessionActor answers the same disagreement in a body.
+// what bearerSessionActor answers the same disagreement in a body. On a /api/v2 route the
+// parameter is the one the decoder read (requestSession, R4); on every other route it is read off
+// the raw query, as it always was.
 func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return model.Actor{}, false
 	}
 	if !actor.Credential.Holds(model.ScopePerson) {
-		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+		refuseMissingScope(w, r, model.ScopePerson, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
 		return model.Actor{}, false
 	}
@@ -2133,9 +2242,10 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 	var act *model.ActorAct
 	if credential.TokenID != "" || credential.Session != "" {
 		session := credential.Session
-		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
+		named := requestSession(r)
+		if named != "" {
 			if session != "" && named != session {
-				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+				writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 					"this request's credential acts for session %s; its session parameter names another session", session))
 				return model.Actor{}, false
 			}
@@ -2157,16 +2267,16 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
-// credential that proved no session of its own - a personal token - names its agent nowhere
-// else on a route whose body is already read, so the body's actor is taken for it, exactly as
-// `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
-// broker-issued token - decides it, and a body naming another session is the disagreement
-// bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for. The act keeps SessionProven only
-// when the body names the session the credential proved; a session the body alone names is not
-// proven.
+// person-scope handlers that decode a body actor: an ask's answer and decline (recordAnswer,
+// recordDecline), its reword (rewordAsk), the issue state (putUserState) and an issue mark's
+// write (planMarkWrite), and the follower routes (askFollowerActor). A credential that proved no
+// session of its own - a personal token - names its agent nowhere else on a route whose body is
+// already read, so the body's actor is taken for it, exactly as `?session=` is taken on every
+// other route (actingPerson). A credential that did prove one - a broker-issued token - decides
+// it, and a body naming another session is the disagreement bearerSessionActor and actingPerson
+// both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a write recorded as a session the caller
+// merely asked for. The act keeps SessionProven only when the body names the session the
+// credential proved; a session the body alone names is not proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
 // declare (it logs the member at debug and decodes the rest), so a body actor on any other route
@@ -2174,7 +2284,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
 // (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
 // always was.
-func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
+func actSessionFromBody(w http.ResponseWriter, r *http.Request, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
 		named = strings.TrimSpace(supplied.ID)
@@ -2183,7 +2293,7 @@ func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *mode
 		return actor, true
 	}
 	if actor.Act.Session != "" && actor.Act.Session != named {
-		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+		writeError(w, r, apicode.ActorSessionMismatch, fmt.Sprintf(
 			"this request acts for session %s; its actor names another session", actor.Act.Session))
 		return model.Actor{}, false
 	}
@@ -2219,11 +2329,11 @@ func (s *server) callerHoldsScope(r *http.Request, scope string) bool {
 func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scope string) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
-		s.writeAuthenticationError(w, err)
+		s.writeAuthenticationError(w, r, err)
 		return false
 	}
 	if !actor.Credential.Holds(scope) {
-		refuseMissingScope(w, scope, fmt.Sprintf(
+		refuseMissingScope(w, r, scope, fmt.Sprintf(
 			"this request's credential does not hold the %s scope, which this field requires", scope))
 		return false
 	}
@@ -2234,13 +2344,14 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 // "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
 // (itemblocks.Units16).
 func capExceededError(field string, length, limit int) *apiError {
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
+	return errorf(apicode.CapExceeded,
 		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
 }
 
-// countExceededError is capExceededError for item counts (options, labels).
-func countExceededError(code, field string, count, limit int) *apiError {
-	return errorf(http.StatusBadRequest, code,
+// countExceededError is capExceededError for item counts (options, labels), under the code of the
+// field it counts.
+func countExceededError(code apicode.Code, field string, count, limit int) *apiError {
+	return errorf(code,
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
@@ -2257,19 +2368,20 @@ func blockBoundError(err error) *apiError {
 	}
 	var decision *itemblocks.DecisionBlock
 	if errors.As(err, &decision) {
-		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
+		return errorf(apicode.DecisionBlockInBody, "%s", err)
 	}
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
+	return errorf(apicode.CapExceeded, "%s", err)
 }
 
-func capExceeded(w http.ResponseWriter, field string, length, limit int) {
+func capExceeded(w http.ResponseWriter, r *http.Request, field string, length, limit int) {
 	err := capExceededError(field, length, limit)
-	writeError(w, err.code, err.status, err.message)
+	writeError(w, r, err.code, err.message)
 }
 
-// requireUUIDPath rejects a `{id}` path value that is no id with 400 <KIND>_ID_INPUT before it
-// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or
-// "message".
+// requireUUIDPath rejects a `{id}` path value that is no id with 400 code, the kind's
+// <KIND>_ID_INPUT, before it reaches a uuid column (where pgx would surface it as a 500). kind
+// names the id in the message: "ask", "comment", "message", and the kinds idPathProblem words as
+// whole uuids.
 //
 // The value it reads is the one the prefix layer left (resolveIDPrefixes): an id written as a
 // unique prefix is already the whole id by the time this runs, and what reaches here is an id
@@ -2280,9 +2392,9 @@ func capExceeded(w http.ResponseWriter, field string, length, limit int) {
 // A value uuid.Parse reads in one of its other spellings reaches here already rewritten to the
 // canonical one: the prefix layer canonicalizes the {id} of every route that takes one
 // (canonicalizeUUIDPath), so this parse only decides whether the value is an id at all.
-func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
+func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string, code apicode.Code) bool {
 	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
-		writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, idPathProblem(kind))
+		writeError(w, r, code, idPathProblem(kind))
 		return false
 	}
 	return true
@@ -2366,7 +2478,7 @@ func decodeJSONTestHook(r *http.Request, value any) error {
 // that value's type does not declare, and nil when it declares them all.
 func refuseUndeclaredMembers(value any, body []byte) error {
 	if undeclared := undeclaredMembers(value, body); len(undeclared) > 0 {
-		return errorf(http.StatusBadRequest, "INVALID_JSON", "the hook does not take: %s", strings.Join(undeclared, ", "))
+		return errorf(apicode.InvalidJSON, "the hook does not take: %s", strings.Join(undeclared, ", "))
 	}
 	return nil
 }
@@ -2386,15 +2498,16 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 	return body, nil
 }
 
-// readJSONBodyAllowingNUL is readJSONBody without its refusal of U+0000, for the two routes that
+// readJSONBodyAllowingNUL is readJSONBody without its refusal of U+0000, for the routes that
 // check what their body carries as another route checks it, under that route's name for it: the
-// markdown round trips (decodeRoundTrip), the inline one refusing its text's U+0000 as the upload
-// refuses its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload refuses
-// its file part's (documentTextRefusal).
+// markdown round trips of both versions (decodeRoundTrip at /api/v1, and at /api/v2 the decoder,
+// since both rows' bodies say TextChecked), the inline one refusing its text's U+0000 as the
+// upload refuses its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload
+// refuses its file part's (documentTextRefusal). Each of the four ignores a U+0000 in a member its
+// body does not declare.
 func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
-	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
-		return nil, errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
+	if refusal := jsonContentTypeRefusal(r); refusal != nil {
+		return nil, refusal
 	}
 	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer
@@ -2404,10 +2517,10 @@ func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *
 		if errors.As(err, &maxBytes) {
 			return nil, tooLarge
 		}
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
+		return nil, errorf(apicode.InvalidJSON, "invalid JSON body: %v", err)
 	}
 	if decoder.More() {
-		return nil, errorf(http.StatusBadRequest, "INVALID_JSON", "request body must contain one JSON value")
+		return nil, errorf(apicode.InvalidJSON, "request body must contain one JSON value")
 	}
 	return read.Bytes(), nil
 }
@@ -2427,8 +2540,85 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, errorBody{Code: code, Error: message})
+// writeError is the one error writer of both API versions: it answers code as the version the
+// mount put on the request names it (requestAPIVersion), with its v1 name and status on a
+// /api/v1 route and its v2 ones on a /api/v2 route. A code the version does not answer - the
+// zero Code, a code of the other version alone, or AnswerNotKept, whose status is the call's
+// (writeErrorAt) - is the server's own mistake, answered 500 INTERNAL with the site that wrote
+// it logged (renderCode). So a v2-only code written on a /api/v1 route answers 500: a handler or
+// helper both versions share must never return or write a v2-only code (one /api/v1 alone answers
+// likewise on /api/v2); a refusal only /api/v2 gives is decided on a path only /api/v2 takes.
+func writeError(w http.ResponseWriter, r *http.Request, code apicode.Code, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, 0, message)
+}
+
+// writeErrorAt is writeError for the one code whose status is the call's (apicode.AnswerNotKept,
+// the status of the first answer a keyed write could not keep): it answers that code at status,
+// and any other code as writeError answers a code the version does not answer.
+func writeErrorAt(w http.ResponseWriter, r *http.Request, code apicode.Code, status int, message string) {
+	writeVersionedError(w, requestAPIVersion(r), code, status, message)
+}
+
+// writeVersionedError is writeError and writeErrorAt for a version given rather than read from a
+// request, which the one writer that refuses from inside a ResponseWriter needs: the drain holds
+// no request, and the mount builds it with the route's version (drainingWriter.begin). status is
+// the call's status for a code that takes one, and 0 for every other.
+func writeVersionedError(w http.ResponseWriter, version apiVersion, code apicode.Code, status int, message string) {
+	name, answered := renderCode(version, code, status)
+	WriteJSON(w, answered, errorBody{Code: name, Error: message})
+}
+
+// refusalPair is the name and status the request's version answers code with, for a refusal
+// whose body carries more than errorBody does (editPreconditionError, issueClaimedError and the
+// like): the handler writes that body with this name and status, as writeError would write its
+// own.
+func refusalPair(r *http.Request, code apicode.Code) (string, int) {
+	return renderCode(requestAPIVersion(r), code, 0)
+}
+
+// codePair is the name and status code answers with under version, and whether that version
+// answers it at all. A code whose status is the call's answers with status 0 here.
+func codePair(version apiVersion, code apicode.Code) (string, int, bool) {
+	if version == apiV2 {
+		return code.Name(), code.Status(), code.InV2()
+	}
+	return code.V1Name(), code.V1Status(), code.InV1()
+}
+
+// renderCode is the name and status code answers with under version. callStatus is the status
+// of a code that takes its status from the call, and 0 for any other. A code the version does
+// not answer, or one given a status it does not take (or not given the one it does), renders as
+// INTERNAL 500, and the site that wrote it - the first caller outside the writers - is logged,
+// since only the server's own code can be at fault.
+func renderCode(version apiVersion, code apicode.Code, callStatus int) (string, int) {
+	name, status, answers := codePair(version, code)
+	if code.StatusFromCall() {
+		status = callStatus
+	}
+	if !answers || code.StatusFromCall() != (callStatus != 0) {
+		slog.Error("dispatch: a refusal was written with a code its API version does not answer",
+			"code", code.String(), "version", int(version), "call_status", callStatus, "site", refusalSite())
+		name, status, _ = codePair(version, apicode.InternalError)
+	}
+	return name, status
+}
+
+// refusalSite is the file and line of the first caller outside the error writers, for
+// renderCode's log line.
+func refusalSite() string {
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		switch frame.Function[strings.LastIndex(frame.Function, ".")+1:] {
+		case "renderCode", "writeVersionedError", "writeError", "writeErrorAt", "refusalPair", "writeHandlerError":
+		default:
+			return frame.File + ":" + strconv.Itoa(frame.Line)
+		}
+		if !more {
+			return "unknown"
+		}
+	}
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -2483,7 +2673,7 @@ func (s *server) clock() clock.Clock {
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -2496,7 +2686,7 @@ func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 // refusal begin would make when there is no database.
 func (s *server) readyPool() (*store.Pool, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+		return nil, errorf(apicode.DatabaseUnavailable, "database unavailable")
 	}
 	return s.deps.Store.Pool, nil
 }
@@ -2546,7 +2736,7 @@ const (
 )
 
 // errIssueClosed is the refusal of a write that a closed issue does not take.
-var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+var errIssueClosed error = errorf(apicode.IssueClosed, "issue is closed")
 
 // refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
 // a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and
@@ -2565,7 +2755,10 @@ func refuseClosed(open bool, write closedWrite) error {
 // namedVersionDiff is the diff a named version's event carries: from the version before it to it.
 // Either may be the version this transaction has just queued (ledger), which the table holds only
 // once Commit has run its insert, so each is taken from the ledger when it is that version, and
-// read from the table otherwise (transactionVersionMarkdown).
+// read from the table otherwise (transactionVersionMarkdown). A previous version that stores no
+// markdown - the file a document was before an upload made it one (storeArtifact), whose
+// converting upload names its version when it carries a summary - is read as the empty text, so
+// the diff is the whole of the named version.
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
@@ -2590,17 +2783,18 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's, the empty text for a stored file
+// version, which holds no markdown. False when neither holds it.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
 	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
 		return markdown, true, nil
 	}
-	var markdown string
+	var markdown *string
 	err := tx.QueryRow(ctx, `
 		select markdown from artifact_versions where artifact_id = $1 and number = $2
 	`, artifactID, number).Scan(&markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
-	return markdown, err == nil, err
+	return deref(markdown), err == nil, err
 }

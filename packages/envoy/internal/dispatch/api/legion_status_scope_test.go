@@ -34,6 +34,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -277,7 +278,7 @@ const legionArchitectReason = "An architect of an issue above writes done, backl
 // the challenge RFC 6750 gives a credential that lacks that scope.
 func requireLegionStatusRefusal(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
-	requireRefused(t, response, http.StatusForbidden, codeLegionStatusScopeRequired)
+	requireRefused(t, response, http.StatusForbidden, apicode.LegionStatusScopeRequired.V1Name())
 	var refusal refusalAnswer
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if !strings.Contains(refusal.Error, "legion-status") {
@@ -995,11 +996,11 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 		status int
 		code   string
 	}{
-		{signIn.name, signIn.send, http.StatusBadRequest, codeTokenScopesInput},
+		{signIn.name, signIn.send, http.StatusBadRequest, apicode.TokenScopesInput.V1Name()},
 		{"a personal token holding person and approve", func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 			return rig.serve(brokerRequest(t, method, path, body, "Bearer "+personal, ""))
-		}, http.StatusBadRequest, codeTokenScopesInput},
-		{personScoped.name, personScoped.send, http.StatusForbidden, codeScopeRequired},
+		}, http.StatusBadRequest, apicode.TokenScopesInput.V1Name()},
+		{personScoped.name, personScoped.send, http.StatusForbidden, apicode.OAuthScopeRequired.V1Name()},
 	}
 	tokens := func(t *testing.T) int64 {
 		t.Helper()

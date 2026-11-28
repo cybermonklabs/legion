@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -35,10 +36,10 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	for _, id := range []string{retro, uuid.NewString()} {
 		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
 		person := dispatchRequest(t, handler, http.MethodPut, path, withFields(retroIdentity(nil, 1), rating), "alice")
-		expectRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 			refused := putRating(t, handler, issue, id, withFields(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
-			expectRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+			expectRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 		}
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != retro || steps[0].Rating != nil || steps[0].RatingReason != nil {
@@ -77,11 +78,11 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	variant := withFields(stepIdentity(nil), map[string]any{"experiment": "planning", "variant": "b"})
 
 	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
-	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, contracts.StepWriterCode, writer, issue)
 	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
-	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, contracts.StepWriterCode, writer, issue)
 	drawn := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+run+"/experiment", variant, writer)
-	expectRefusal(t, "a variant of a person named "+writer, drawn, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a variant of a person named "+writer, drawn, http.StatusForbidden, contracts.StepWriterCode, writer, issue)
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
 	}
@@ -120,9 +121,9 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	path := "/api/v1/issues/" + issue + "/plans/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), defaultPlanBody(nil, 1), "alice")
-	expectRefusal(t, "a person's plan", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "a person's plan", person, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG", issue)
 	other := putPlanRecord(t, handler, issue, uuid.NewString(), defaultPlanBody(map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + "OTHER"}, 1))
-	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG")
+	expectRefusal(t, "another daemon's plan", other, http.StatusForbidden, contracts.StepWriterCode, "legion-daemon:LEG")
 	missing := putPlanRecord(t, handler, "LEG-999", uuid.NewString(), defaultPlanBody(daemonSessionOf("LEG"), 1))
 	expectRefusal(t, "a plan of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 

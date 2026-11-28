@@ -39,8 +39,35 @@ func TestAVersionNumberInABodyAboveTheColumnsRangeIsRefusedNotAFault(t *testing.
 		}
 	})
 
+	t.Run("the read mark under /api/v2", func(t *testing.T) {
+		// The document mark's read_version is the same column's (writeDocumentRead), refused with
+		// the code its row declares for a value its field refuses, 400 INVALID_STATE.
+		path := "/api/v2/me/marks/document/" + plan.Artifact.ID
+		over := dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"read_version": pastTheColumn}, "alice")
+		if code, _ := refusalOf(t, over); over.Code != http.StatusBadRequest || code != "INVALID_STATE" {
+			t.Errorf("PATCH %s read_version %d: status=%d body=%s, want 400 INVALID_STATE", path, pastTheColumn, over.Code, over.Body.String())
+		}
+		largest := dispatchRequest(t, handler, http.MethodPatch, path, map[string]any{"read_version": math.MaxInt32}, "alice")
+		if largest.Code != http.StatusOK {
+			t.Fatalf("PATCH %s read_version %d: status=%d body=%s, want 200", path, math.MaxInt32, largest.Code, largest.Body.String())
+		}
+		if read := decodeBody[markV2](t, largest); read.ReadVersion == nil || *read.ReadVersion != math.MaxInt32 {
+			t.Errorf("PATCH %s read_version %d stored %v, want %d", path, math.MaxInt32, read.ReadVersion, math.MaxInt32)
+		}
+	})
+
 	t.Run("the plan review", func(t *testing.T) {
 		path := "/api/v1/artifacts/" + plan.Artifact.ID + "/plan-reviews"
+		for _, version := range []int64{pastTheColumn, math.MaxInt32} {
+			refused := sessionRequest(t, handler, http.MethodPost, path, map[string]any{"actor": sessionActor(), "version": version})
+			if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
+				t.Errorf("POST %s version %d: status=%d body=%s, want 400 INVALID_REVIEW", path, version, refused.Code, refused.Body.String())
+			}
+		}
+	})
+
+	t.Run("the plan review under /api/v2", func(t *testing.T) {
+		path := "/api/v2/artifacts/" + plan.Artifact.ID + "/plan-reviews"
 		for _, version := range []int64{pastTheColumn, math.MaxInt32} {
 			refused := sessionRequest(t, handler, http.MethodPost, path, map[string]any{"actor": sessionActor(), "version": version})
 			if code, _ := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {

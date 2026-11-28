@@ -10,6 +10,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "A project's component tree with the work attached: its sources' sync bookkeeping, each component with its source repository, per-component counts and issue rows, plus unassigned, not-architectural, and retired-link issues; 404 SOURCE_NOT_FOUND without a source.",
 	Handler:     (*server).getArchitectureTree,
+	Successor:   successorIs(http.MethodGet, "/projects/{key}/architecture"),
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
 	// tree and whose Not architectural rows carry their reasons', so the row names that read: the

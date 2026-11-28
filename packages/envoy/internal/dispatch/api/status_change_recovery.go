@@ -223,9 +223,9 @@ func queueStatusChangeStep(
 // a later write of an issue the call changed, its close's ask sweep among them, changes no answer
 // of a call that finished. A point with no answer's issue is a fault of the server's own, since
 // every finished point this build writes holds one, and is answered 500.
-func (s *server) replayStatusChange(w http.ResponseWriter, _ *http.Request, point statusChangeRecovery, _ []byte) {
+func (s *server) replayStatusChange(w http.ResponseWriter, r *http.Request, point statusChangeRecovery, _ []byte) {
 	if point.Issue == nil {
-		s.writeStatusChangeRefusal(w, errors.New("the recovery point of a finished status change holds no answer's issue"), point.Changed)
+		s.writeStatusChangeRefusal(w, r, errors.New("the recovery point of a finished status change holds no answer's issue"), point.Changed)
 		return
 	}
 	WriteJSON(w, http.StatusOK, statusChangeAnswer{Issue: *point.Issue, Changed: point.Changed})

@@ -42,7 +42,7 @@ type setting struct {
 // listener, projects, the issues the search bar files and the rule between a parent's status and
 // its children's, the GitHub App, cookies, service-account tokens, the secrets broker and the
 // Legion status scope it grants, meaning search's model service, the model the server generates
-// text with, the dashboard, and local and test runs.
+// text with, the dashboard, the end of /api/v1, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written."},
@@ -198,6 +198,8 @@ var settings = []setting{
 		Description: "The model each request names."},
 	{Name: "DISPATCH_WEB_DIST", Default: "the `packages/dispatch/web/dist` directory found from the binary's location", Required: "no",
 		Description: "Directory of the built dashboard the server serves."},
+	{Name: "DISPATCH_API_V1_END", Default: "`/api/v1` has no end", Required: "no",
+		Description: "The instant `/api/v1` ends, an RFC 3339 time with its offset such as `2027-01-01T00:00:00Z`, which the `gcp:Dispatch` component's `apiV1End` input sets: while it is ahead every `/api/v1` answer carries a `Sunset` header naming it, and once it has passed every path under `/api/v1` answers `410 API_V1_ENDED`, pointing to `GET /api/v2`. The clock is read on each request, so the end needs no restart. A value that is not an RFC 3339 time refuses startup; empty is unset."},
 	{Name: "DISPATCH_DEV_SIGNIN", Required: "no",
 		Description: "Set to `1` on a loopback-only local server to sign anyone in by email at `/auth/_dev/signin` without the sign-in issuer; refused alongside any `DISPATCH_SIGNIN_*` setting, `DISPATCH_SIGNIN_DOMAIN` included."},
 	{Name: "DISPATCH_DEV_SIGNIN_SHARED_KEY", Default: "a key generated for each process", Required: "no",

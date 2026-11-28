@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -303,7 +304,7 @@ func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issu
 		return nil, err
 	}
 	if plan.options.includeChildren && !writer.human && plan.writesStatus("done") {
-		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
+		return nil, errorf(apicode.BrowserSignInRequired,
 			"Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.")
 	}
 	if plan.unjudged {
@@ -578,9 +579,9 @@ func (conflict *parentStatusConflict) Error() string {
 }
 
 // body is the conflict as writeHandlerError answers it.
-func (conflict *parentStatusConflict) body() parentStatusConflictBody {
+func (conflict *parentStatusConflict) body(code string) parentStatusConflictBody {
 	return parentStatusConflictBody{
-		Code:   "PARENT_STATUS_CONFLICT",
+		Code:   code,
 		Error:  conflict.Error(),
 		Issues: conflict.issues,
 	}

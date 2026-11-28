@@ -24,28 +24,33 @@ const (
 	priorityListQuantile = 0.9
 )
 
-// priorityListRequest is one of the two requests R1 holds: the list with no `limit`, as the
-// priorities page and a priority's own page send it, which runs the unpaged statement, and its
-// first page of 50, which runs the paged one.
+// priorityListRequest is one of the three requests R1 holds: the list with no `limit`, as the
+// priorities page and a priority's own page send it, which runs the unpaged statement, its first
+// page of 50, which runs the paged one, and that first page as GET /api/v2/issues answers it
+// (v2), which runs the paged statement of /api/v2 (listIssuesV2PageQuery), a text no /api/v1
+// request sends, and answers its page in the /api/v2 envelope.
 type priorityListRequest struct {
 	name  string
 	query string
 	paged bool
+	v2    bool
 }
 
 var priorityListRequests = []priorityListRequest{
 	{name: "the list"},
 	{name: "a page of 50", query: fmt.Sprintf("&limit=%d", priorityListPage), paged: true},
+	{name: "a page of 50 on /api/v2", query: fmt.Sprintf("&limit=%d", priorityListPage), paged: true, v2: true},
 }
 
 // TestAPriorityListAnswersWithinItsBoundOnEveryPlan holds GET /api/v1/issues?advances=<the
 // largest priority>, as the priorities page and a priority's own page send it with no `limit`,
-// and the same request's first page of 50, to 200 ms at the 90th percentile under each of the two
-// plans a connection runs a statement with (speedCustomPlans): the generic plan every run after
-// the fifth may take, and the plan made for its arguments. Each plan is forced on the connection
-// (newForcedPlan), so the plan measured is the one named whatever Postgres would choose, and the
-// connection runs with JIT off, as production's Cloud SQL does. The corpus is production's counts
-// (seedListCorpus), whose largest priority has 598 open issues.
+// the same request's first page of 50, and that page as GET /api/v2/issues answers it, to 200 ms
+// at the 90th percentile under each of the two plans a connection runs a statement with
+// (speedCustomPlans): the generic plan every run after the fifth may take, and the plan made for
+// its arguments. Each plan is forced on the connection (newForcedPlan), so the plan measured is
+// the one named whatever Postgres would choose, and the connection runs with JIT off, as
+// production's Cloud SQL does. The corpus is production's counts (seedListCorpus), whose largest
+// priority has 598 open issues.
 //
 // The reads are timed as the server answers them, sign-in and encoding included, on a server
 // whose pool holds one connection, and the connection is held to having run every read under the
@@ -81,17 +86,28 @@ func TestAPriorityListAnswersWithinItsBoundOnEveryPlan(t *testing.T) {
 func measurePriorityList(t *testing.T, corpus listCorpus, forced forcedPlan, request priorityListRequest, name string) {
 	t.Helper()
 	target := "/api/v1/issues?advances=" + corpus.priorities[0] + request.query
+	if request.v2 {
+		target = "/api/v2/issues?advances=" + corpus.priorities[0] + request.query
+	}
 	described := request.name + " under " + name
 
 	// What the read answers, before any read is timed: a timing of a wrong answer is worth nothing.
 	answer, statement := listingRequest(t, forced.handler, forced.trace, target)
-	if request.paged {
+	switch {
+	case request.v2:
+		listed := decodeBody[page[model.IssueSummary]](t, answer)
+		if len(listed.Items) != priorityListPage || listed.Total != listCorpusLargest {
+			t.Fatalf("%s answers %d issues of %d, want %d of %d", target, len(listed.Items), listed.Total, priorityListPage, listCorpusLargest)
+		}
+	case request.paged:
 		page := decodeBody[model.IssueSummaryPage](t, answer)
 		if len(page.Issues) != priorityListPage || page.Total != listCorpusLargest {
 			t.Fatalf("%s answers %d issues of %d, want %d of %d", target, len(page.Issues), page.Total, priorityListPage, listCorpusLargest)
 		}
-	} else if issues := decodeBody[[]model.IssueSummary](t, answer); len(issues) != listCorpusLargest {
-		t.Fatalf("%s answers %d issues, want %d", target, len(issues), listCorpusLargest)
+	default:
+		if issues := decodeBody[[]model.IssueSummary](t, answer); len(issues) != listCorpusLargest {
+			t.Fatalf("%s answers %d issues, want %d", target, len(issues), listCorpusLargest)
+		}
 	}
 	warmed := forced.warm(t, target, time.Now(), time.Hour)
 

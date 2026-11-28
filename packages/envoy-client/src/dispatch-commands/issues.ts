@@ -46,6 +46,7 @@ import {
   closeAccount,
   dispatchAnswered,
   refusalWithCode,
+  unsettledWithAccount,
   withAccount,
   writeMayHaveLanded,
 } from "./failures";
@@ -342,11 +343,13 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
         );
       }
       // The close's PATCH below follows the same rule: only an answer sent before the reason
-      // could be stored proves it was not posted.
+      // could be stored proves it was not posted. An unsettled post is told in these words alone,
+      // which say what it was.
       const told = writeMayHaveLanded(error)
         ? "the reason may or may not have been posted, and the close was not sent: read the issue's messages before retrying, since retrying this call posts its reason again"
         : "the reason was not posted, so the close was not sent";
       if (error instanceof DispatchServiceError) throw refusalWithCode(error, told);
+      if (error instanceof DispatchWriteUnsettledError) throw unsettledWithAccount(error, told);
       throw withAccount(error, told);
     }
   }
@@ -421,6 +424,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     const landed = closeAccount(error, closingNote);
     if (error instanceof DispatchServiceError) {
       throw refusalWithCode(error, taken, revisionClause, landed);
+    }
+    if (error instanceof DispatchWriteUnsettledError) {
+      throw unsettledWithAccount(error, taken, landed);
     }
     throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }

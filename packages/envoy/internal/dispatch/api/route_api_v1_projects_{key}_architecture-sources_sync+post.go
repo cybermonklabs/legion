@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Import every architecture source of a project now, each whatever another's import did; 200 carries every updated row in the order the sources were added, each with its own last_error (an access failure included).",
 	Handler:     (*server).syncArchitectureSources,
+	Successor:   successorIs(http.MethodPost, "/projects/{key}/architecture-syncs"),
 	WriteClass:  scopeProject,
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 })

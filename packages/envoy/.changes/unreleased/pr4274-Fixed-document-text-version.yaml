@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr4274
+body: |-
+  A read of a document's text (`GET /api/v1/artifacts/{id}/text`, the two slug text reads, and
+  `GET /api/v2/artifacts/{id}?include=text`) names the newest version whose stored markdown is the
+  markdown it answers, so a version written while the read ran can no longer label one version's
+  text with another's number, and a review naming that version approves the text the reader got.
+  When no stored version holds that markdown, as with edits a live document holds that no version
+  holds yet, or a newest version an older build rendered, the read names the newest version and
+  says so in the new boolean `unsettled`.

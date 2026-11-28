@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List the caller's personal agent tokens, newest first, each with the scopes it holds: a read-only token's scopes hold read.",
 	Handler:     (*server).listAgentTokens,
+	Successor:   successorIs(http.MethodGet, "/me/agent-tokens"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
 	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.AgentToken{}},

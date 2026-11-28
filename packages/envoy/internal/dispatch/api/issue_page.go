@@ -2,10 +2,10 @@ package api
 
 import (
 	"math"
-	"net/http"
 	"net/url"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -22,7 +22,7 @@ type issuePage struct {
 // caller rows it cannot tell from the ones it asked for.
 func parseIssuePage(query url.Values) (*issuePage, error) {
 	if query.Has("cursor") {
-		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+		return nil, errorf(apicode.InvalidQuery,
 			"cursor is not a query parameter of GET /api/v1/issues, which pages with limit and offset")
 	}
 	if !query.Has("limit") && !query.Has("offset") {
@@ -31,14 +31,14 @@ func parseIssuePage(query url.Values) (*issuePage, error) {
 	page := &issuePage{limit: contracts.DefaultIssuePageLimit}
 	if limit, present, valid := parseQueryInt(query, "limit", 1, contracts.MaxIssuePageLimit); present {
 		if !valid {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY",
+			return nil, errorf(apicode.InvalidQuery,
 				"limit must be one integer from 1 to %d", contracts.MaxIssuePageLimit)
 		}
 		page.limit = limit
 	}
 	if offset, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
 		if !valid {
-			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "offset must be one non-negative integer")
+			return nil, errorf(apicode.InvalidQuery, "offset must be one non-negative integer")
 		}
 		page.offset = offset
 	}
