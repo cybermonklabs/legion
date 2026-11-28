@@ -3850,8 +3850,9 @@ function labelMeasureDetails(): unknown[] {
 
 const WIDE_FIRST_LABELS = ["w".repeat(75), "needs-design-review", "api"];
 
+// The older code used by the controls did not tag its measures. Those were all readings.
 function fullLabelReadings(): number {
-  return labelMeasureDetails().filter((detail) => detail === "reading").length;
+  return labelMeasureDetails().filter((detail) => detail !== "check").length;
 }
 
 interface LabelGridLine extends DrawnLabels {
@@ -3877,7 +3878,10 @@ function labelGridLine(room: number, box: HTMLElement, narrowWhenDrawn: number):
   };
 }
 
+type LabelGridDrive = "stub" | "depth";
+
 async function driveLabelGrid(
+  drive: LabelGridDrive,
   labels: readonly string[],
   before: number,
   after: number,
@@ -3885,7 +3889,7 @@ async function driveLabelGrid(
   narrowWhenDrawn = 0
 ) {
   performance.clearMeasures(LABELS_MEASURE);
-  const sizes = installLabelResizeObserver(true);
+  const sizes = installLabelResizeObserver(drive === "depth");
   const room = { width: before, narrowWhenDrawn: before === after ? narrowWhenDrawn : 0 };
   const layout = layOutLabels(room);
   const nextIssue = { ...issue, labels: [...labels] };
@@ -3899,6 +3903,8 @@ async function driveLabelGrid(
     const frame = async () => {
       await act(nextFrame);
       sizes.resize(box);
+      // In the stub drive, also notify the box after the fit's draw in this frame.
+      if (drive === "stub") sizes.resize(box);
     };
     sizes.resize(box);
     const read = line();
@@ -3946,7 +3952,11 @@ function labelGridBrief(line: LabelGridLine): string {
   return `${line.shown.length} shown${cut}, count ${line.count ?? "none"} ${line.place}, box row ${line.boxRow}${visibility}`;
 }
 
-async function labelGrid(sets: Record<string, readonly string[]>, narrowWhenDrawn = 0) {
+async function labelGrid(
+  drive: LabelGridDrive,
+  sets: Record<string, readonly string[]>,
+  narrowWhenDrawn = 0
+) {
   const rooms = [30, 45, 60, 75, 90, 115, 150, 200, 260, 330, 430, 480, 600];
   const countWords = (left: number) =>
     left === 0 ? null : `+${left} label${left === 1 ? "" : "s"}`;
@@ -3955,27 +3965,29 @@ async function labelGrid(sets: Record<string, readonly string[]>, narrowWhenDraw
     JSON.stringify([shown, count, place, boxRow]);
   const failures: string[] = [];
   const kinds = new Map<string, number>();
+  // The depth drive already notifies the box after the fit's draw.
+  const ownMoves = drive === "stub" ? [true, false] : [true];
   let states = 0;
   for (const [name, labels] of Object.entries(sets)) {
     const freshFits = new Map<number, LabelGridLine>();
     for (const room of rooms) {
       freshFits.set(
         room,
-        (await driveLabelGrid(labels, room, room, true, narrowWhenDrawn)).settled
+        (await driveLabelGrid(drive, labels, room, room, true, narrowWhenDrawn)).settled
       );
     }
     for (const before of rooms) {
       for (const [after, fresh] of freshFits) {
         if (before === after) continue;
-        for (const ownMove of [true, false]) {
+        for (const ownMove of ownMoves) {
           states += 1;
           const { read, changed, between, settled, breaksRule, afterReading, settledAt, final } =
-            await driveLabelGrid(labels, before, after, ownMove, narrowWhenDrawn);
+            await driveLabelGrid(drive, labels, before, after, ownMove, narrowWhenDrawn);
           const fail = (kind: string) => {
             kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
             const variant = ownMove ? "" : " (no own-move notification)";
             failures.push(
-              `${kind} | ${name} ${before}->${after}${variant}, ${narrowWhenDrawn} px drawn-only narrowing | read ${labelGridBrief(read)}; changed ${labelGridBrief(changed)}; between ${labelGridBrief(between)}; settled ${labelGridBrief(settled)}; fresh ${labelGridBrief(fresh)}; readings ${afterReading}/${settledAt}/${final}`
+              `${drive} | ${kind} | ${name} ${before}->${after}${variant}, ${narrowWhenDrawn} px drawn-only narrowing | read ${labelGridBrief(read)}; changed ${labelGridBrief(changed)}; between ${labelGridBrief(between)}; settled ${labelGridBrief(settled)}; fresh ${labelGridBrief(fresh)}; readings ${afterReading}/${settledAt}/${final}`
             );
           };
           for (const [line, phase] of [
@@ -4015,18 +4027,29 @@ async function labelGrid(sets: Record<string, readonly string[]>, narrowWhenDraw
 
 async function expectLabelGrid() {
   const sets = { one: ["api"], three: ["api", "web", "docs"], twenty: TWENTY_LABELS };
-  const base = await labelGrid(sets);
-  console.log(
-    `GRID ${base.states} states, ${base.failures.length} failures: ${JSON.stringify(Object.fromEntries(base.kinds))}`
-  );
-  expect(base.failures.length, base.failures.slice(0, 20).join("\n")).toBe(0);
-
-  const wide = await labelGrid({ wide: WIDE_FIRST_LABELS });
-  const narrowed = await labelGrid({ ...sets, wide: WIDE_FIRST_LABELS }, 40);
-  const failures = [...base.failures, ...wide.failures, ...narrowed.failures];
-  console.log(
-    `GRID ${base.states + wide.states + narrowed.states} states, ${failures.length} failures`
-  );
+  const wide = { wide: WIDE_FIRST_LABELS };
+  const failures: string[] = [];
+  for (const drive of ["stub", "depth"] as const) {
+    const grids = [
+      await labelGrid(drive, sets),
+      await labelGrid(drive, wide),
+      await labelGrid(drive, { ...sets, ...wide }, 40),
+    ];
+    let states = 0;
+    let failureCount = 0;
+    const kinds = new Map<string, number>();
+    for (const grid of grids) {
+      states += grid.states;
+      failureCount += grid.failures.length;
+      failures.push(...grid.failures);
+      for (const [kind, count] of grid.kinds) {
+        kinds.set(kind, (kinds.get(kind) ?? 0) + count);
+      }
+    }
+    console.log(
+      `GRID ${drive}: ${states} states, ${failureCount} failures: ${JSON.stringify(Object.fromEntries(kinds))}`
+    );
+  }
   expect(
     failures.length,
     `${failures.length} grid failures\n${failures.slice(0, 20).join("\n")}`
@@ -4036,6 +4059,7 @@ async function expectLabelGrid() {
 async function expectWideMovedBox() {
   for (const width of [30, 45, 60]) {
     const { read, settled, afterReading, final } = await driveLabelGrid(
+      "depth",
       WIDE_FIRST_LABELS,
       width,
       width,
@@ -4060,8 +4084,6 @@ async function expectWideMovedBox() {
 }
 
 async function expectLabelsFitAfterInFrameChange() {
-  // The older code used by the controls did not tag its measures. Those were all readings.
-  const measureCount = () => labelMeasureDetails().filter((detail) => detail !== "check").length;
   performance.clearMeasures(LABELS_MEASURE);
   const sizes = installLabelResizeObserver();
   const room = { width: 150, narrowWhenDrawn: 0 };
@@ -4096,7 +4118,7 @@ async function expectLabelsFitAfterInFrameChange() {
     const expectAfterTwoFrames = async (readings: number, fit: DrawnLabels) => {
       await nextReadingFrame();
       await nextReadingFrame();
-      expect(measureCount(), `another reading followed at ${room.width} px`).toBe(readings);
+      expect(fullLabelReadings(), `another reading followed at ${room.width} px`).toBe(readings);
       expect(labelsDrawn(room.width), `the fit changed at ${room.width} px`).toEqual(fit);
     };
 
@@ -4105,14 +4127,14 @@ async function expectLabelsFitAfterInFrameChange() {
     expect(labelsDrawn(room.width), "all three chips fit without a count at 150 px").toEqual(
       allThree
     );
-    expect(measureCount(), "the first fit takes one reading").toBe(1);
+    expect(fullLabelReadings(), "the first fit takes one reading").toBe(1);
 
     // At 30 px, the first row cannot hold a chip or the count. The box moves to the next row.
     setRoom(30);
     const hiddenAt30 = labelsHidden();
     await nextReadingFrame();
     expect(
-      { ...labelsDrawn(room.width), readings: measureCount() },
+      { ...labelsDrawn(room.width), readings: fullLabelReadings() },
       "narrowing to 30 px should take one more reading and move the chips to the count's line"
     ).toEqual({ ...allThree, readings: 2 });
     expect(hiddenAt30, "the box and count should be hidden before the reading at 30 px").toBe(true);
@@ -4134,7 +4156,7 @@ async function expectLabelsFitAfterInFrameChange() {
       expect(labelsDrawn(room.width), "all three chips fit again without a count").toEqual(
         allThree
       );
-      expect(measureCount(), "widening outside the reading's frame takes one reading").toBe(
+      expect(fullLabelReadings(), "widening outside the reading's frame takes one reading").toBe(
         readings
       );
     };
@@ -4154,7 +4176,7 @@ async function expectLabelsFitAfterInFrameChange() {
       screen.getByTestId("issue-labels-left").style.minWidth,
       "the count keeps the width it had for three labels"
     ).toBe("63px");
-    expect(measureCount(), "narrowing to 115 px did not take one more reading").toBe(4);
+    expect(fullLabelReadings(), "narrowing to 115 px did not take one more reading").toBe(4);
     await expectAfterTwoFrames(4, oneChip);
 
     await readAllThreeAgain(5);
@@ -4172,7 +4194,7 @@ async function expectLabelsFitAfterInFrameChange() {
       screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
       "the count should be on the row below the box"
     ).toBeGreaterThan(box.getBoundingClientRect().bottom);
-    expect(measureCount(), "narrowing to 70 px did not take one more reading").toBe(6);
+    expect(fullLabelReadings(), "narrowing to 70 px did not take one more reading").toBe(6);
     await expectAfterTwoFrames(6, oneChip);
 
     // At 100 px, the count is beside the box but leaves no room for a chip. At 70 px the
@@ -4188,7 +4210,7 @@ async function expectLabelsFitAfterInFrameChange() {
       screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
       "the count starts beside the box"
     ).toBeLessThan(box.getBoundingClientRect().bottom);
-    expect(measureCount(), "the fit at 100 px takes one reading").toBe(7);
+    expect(fullLabelReadings(), "the fit at 100 px takes one reading").toBe(7);
 
     setRoom(70);
     expect(
@@ -4203,7 +4225,9 @@ async function expectLabelsFitAfterInFrameChange() {
       screen.getByTestId("issue-labels-left").getBoundingClientRect().top,
       "the count should stay below the box after the reading"
     ).toBeGreaterThan(box.getBoundingClientRect().bottom);
-    expect(measureCount(), "moving the count without removing a chip takes one reading").toBe(8);
+    expect(fullLabelReadings(), "moving the count without removing a chip takes one reading").toBe(
+      8
+    );
     await expectAfterTwoFrames(8, oneChip);
 
     room.width = 480;
@@ -4221,7 +4245,7 @@ async function expectLabelsFitAfterInFrameChange() {
       hidden: [],
       shown: TWENTY_LABELS.slice(0, 5),
     });
-    expect(measureCount(), "changing the labels takes one reading").toBe(9);
+    expect(fullLabelReadings(), "changing the labels takes one reading").toBe(9);
 
     setRoom(430);
     expect(labelsHidden(), "the box and count should be hidden before the reading at 430 px").toBe(
@@ -4232,21 +4256,22 @@ async function expectLabelsFitAfterInFrameChange() {
     expect(labelsDrawn(room.width), "four whole chips fit beside the count at 430 px").toEqual(
       fourChips
     );
-    expect(measureCount(), "narrowing to 430 px did not take one more reading").toBe(10);
+    expect(fullLabelReadings(), "narrowing to 430 px did not take one more reading").toBe(10);
     await expectAfterTwoFrames(10, fourChips);
 
     setRoom(400);
     await nextReadingFrame();
     expect(labelsDrawn(room.width), "four whole chips still fit at 400 px").toEqual(fourChips);
-    expect(measureCount(), "narrowing outside a reading's frame takes one reading").toBe(11);
+    expect(fullLabelReadings(), "narrowing outside a reading's frame takes one reading").toBe(11);
 
     // Five chips would fit at 480 px, but a widening in the reading's frame keeps the four.
     setRoom(480);
     await nextReadingFrame();
     await nextReadingFrame();
-    expect(measureCount(), "widening in the reading's frame should not take another reading").toBe(
-      11
-    );
+    expect(
+      fullLabelReadings(),
+      "widening in the reading's frame should not take another reading"
+    ).toBe(11);
     expect(labelsDrawn(room.width), "widening in the reading's frame should keep the fit").toEqual(
       fourChips
     );

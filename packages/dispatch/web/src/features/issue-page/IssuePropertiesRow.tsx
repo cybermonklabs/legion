@@ -361,8 +361,9 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * before the notification finds, a chip the line does not hold or a count of the wrong number.
  * The line draws the chips the box's first line holds beside the count, so it holds no word it
  * hides; where every chip would fit on the line with no count drawn, it draws them all and no
- * count. The count keeps the width it had in that reading, so the line breaks around it as it
- * did then and the count names every chip left out.
+ * count. If a reading drew the count, it keeps that width so the line breaks around it as it
+ * did then. If a trim brings back a count the reading did not draw, the count takes its own
+ * width and the trim reads the box's width again after each draw.
  *
  * A reading is taken whenever the labels change, in the frame after a width change outside a
  * reading's frame, and whenever the document's fonts finish loading: the typeface can arrive after
@@ -560,8 +561,9 @@ function HeaderLabels({
 }
 
 /** What the labels' line draws, as a reading decides it (`fitOf`): how many chips; the width the
- *  count keeps, the one it had in that reading; and, where the box goes on to the count's line
- *  with it, the least width that takes it there. */
+ *  count keeps if the reading drew it; and, where the box goes on to the count's line with it, the
+ *  least width that takes it there. If a trim brings back a count the reading did not draw, the
+ *  count takes its own width and the trim reads the box's width again after each draw. */
 interface LabelsFit {
   readonly boxMinWidth?: string;
   readonly countWidth?: number;
@@ -570,7 +572,8 @@ interface LabelsFit {
 
 type KeyedLabelsFit = LabelsFit & { readonly key: string };
 
-/** The measure name for full label readings and checks that read the count's place. */
+/** The measure name for full label readings and checks of the line's rule that read the box's
+ *  width or the count's place. */
 export const LABELS_MEASURE = "issue-header-labels";
 
 /** How far past the room a chip may end and still be read as fitting in it. A box is read as a

@@ -173,18 +173,19 @@ function headerSize(page: Page): Promise<HeaderSize | null> {
   }, SELECTORS);
 }
 
-/** The measure each reading of the header's labels is in the shipped code (`HeaderLabels`'s
- *  `measured`, `web/src/features/issue-page/IssuePropertiesRow.tsx`). */
+/** Each full reading and each check of the line's rule that reads layout has one measure with
+ *  this name (`HeaderLabels`'s `measured`, `web/src/features/issue-page/IssuePropertiesRow.tsx`). */
 const HEADER_LABELS_MEASURE = "issue-header-labels";
 
 // c-header-labels (R21, decision 500 (3), the plan's g24): on production's build the header's
 // reading of which label chips its line holds (`HeaderLabels`, `IssuePropertiesRow.tsx`) took
 // about 1.1 s of a load of INFRA-1196 with 20 labels, several forced layouts a reading on a page
-// that large. Each reading is one `issue-header-labels` measure, and the row sums them over one
-// cold load of Conversation's address, `/issues/<key>/conversation`, the outline, where
-// production's reading of about 1.1 s was measured; the bare address opens Dashboard, a smaller
-// page, on which the merge-base's reading took 17.3 ms (builds Job e2e-rows-p6qk7) against
-// 125.6 ms at Conversation (e2e-rows-5ldfv). The load is of the copy of INFRA-3149, the largest
+// that large. Each full reading and each check of the line's rule that reads layout is one
+// `issue-header-labels` measure. The row sums them all over one cold load of Conversation's
+// address, `/issues/<key>/conversation`, the outline, where production's reading of about 1.1 s
+// was measured; the bare address opens Dashboard, a smaller page, on which the merge-base's
+// reading took 17.3 ms (builds Job e2e-rows-p6qk7) against 125.6 ms at Conversation
+// (e2e-rows-5ldfv). The load is of the copy of INFRA-3149, the largest
 // copy `e2e/scale-seed.ts` writes, written alone (`seedLargestScaleCopy`) with 20 labels, signed
 // in as its reader, who never read it: at 1440 px under chromium and at 390 px under iphone, each
 // project seeding a copy of its own. The sum is read at network idle (`expectLoadSettled`) and one
@@ -218,7 +219,7 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
     await page.setViewportSize(viewport);
     const cpu = await context.newCDPSession(page);
     await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    let readings: number[];
+    let measures: { duration: number; detail: unknown }[];
     try {
       const traffic = watchApiRequests(page);
       await gotoIssue(page, `/issues/${copy.key}/conversation`);
@@ -228,26 +229,32 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
       // set off, by a width they changed or a typeface that finished loading, is taken and
       // measured in the frames of that second.
       await page.waitForTimeout(1_000);
-      readings = await page.evaluate(
-        (name) => performance.getEntriesByName(name, "measure").map((entry) => entry.duration),
+      measures = await page.evaluate(
+        (name) =>
+          performance.getEntriesByName(name, "measure").map((entry) => ({
+            duration: entry.duration,
+            detail: (entry as PerformanceMeasure).detail,
+          })),
         HEADER_LABELS_MEASURE
       );
     } finally {
       await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
       await cpu.detach();
     }
-    const sum = readings.reduce((total, duration) => total + duration, 0);
-    const each = readings.map((duration) => duration.toFixed(1)).join(", ");
-    const said = `SCALE header labels ${copy.census} ${viewport.width} px, CPU slowed 4×: ${readings.length} readings, ${sum.toFixed(1)} ms (${each})`;
+    const readings = measures.filter(({ detail }) => detail !== "check").length;
+    const sum = measures.reduce((total, { duration }) => total + duration, 0);
+    const each = measures.map(({ duration }) => duration.toFixed(1)).join(", ");
+    const counts = `${measures.length} measures (${readings} readings)`;
+    const said = `SCALE header labels ${copy.census} ${viewport.width} px, CPU slowed 4×: ${counts}, ${sum.toFixed(1)} ms (${each})`;
     console.log(said);
     test.info().annotations.push({ description: said, type: "header-labels" });
     expect(
-      readings.length,
+      measures.length,
       `${where} took no ${HEADER_LABELS_MEASURE} measure, so the header read none of its labels`
     ).toBeGreaterThan(0);
     expect(
       sum,
-      `the header's label reading took ${sum.toFixed(1)} ms of ${where}, more than 50 ms, in ${readings.length} readings: ${each} ms`
+      `the header's label reading took ${sum.toFixed(1)} ms of ${where}, more than 50 ms, in ${counts}: ${each} ms`
     ).toBeLessThanOrEqual(50);
 
     // The line once it is at rest: the chips it holds, those of them drawn whole and those cut,
@@ -343,12 +350,13 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
     await page.setViewportSize(viewportAt(1000));
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
+    // The older code used by the controls did not tag its measures; they were all readings.
     const countReadings = () =>
       page.evaluate(
         (name) =>
           performance
             .getEntriesByName(name, "measure")
-            .filter((entry) => (entry as PerformanceMeasure).detail === "reading").length,
+            .filter((entry) => (entry as PerformanceMeasure).detail !== "check").length,
         HEADER_LABELS_MEASURE
       );
     // The first second after the load, in which the reading and its one re-reading are taken; a
