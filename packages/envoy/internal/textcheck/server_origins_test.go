@@ -27,6 +27,7 @@ const serverOriginsConstructor = "ServerOrigins"
 // or internal/dispatch, anywhere but in the constructor, fails here, naming its file and
 // declaration.
 func TestOnlyOneConstructorBuildsTheServersOrigins(t *testing.T) {
+	t.Parallel()
 	builds, read, err := originsBuilds(
 		filepath.Join("..", "..", "cmd", "dispatch"),
 		filepath.Join("..", "..", "cmd", "dispatch-seed"),

@@ -81,6 +81,7 @@ func signInAt(t *testing.T, rig *signInRig, host string) (string, *http.Cookie) 
 // callback, where its session cookie is the canonical one's, host-only. It names nothing the base
 // lacks, so it runs against the base commit's router unchanged.
 func TestAServerWithNoListsAnswersAsTheBaseDoes(t *testing.T) {
+	t.Parallel()
 	rig := newSignInRigFor(t, tableCanonical, identity.DomainRule{Domain: rigDomain}, rigDomain)
 	for _, write := range []struct {
 		host, origin string
