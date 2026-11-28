@@ -444,6 +444,8 @@ type scratchDispatch struct {
 	command *exec.Cmd
 	exited  chan error
 	output  *syncBuffer
+	// starts is every start's output, oldest first, which a failed test prints (logOnFailure).
+	starts []*syncBuffer
 }
 
 // startScratchDispatchOn gives the server a scratch database of its own on the test DSN's
@@ -469,6 +471,8 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
 	}
+	// Registered before the stop, so it runs after it and prints the stop's lines too.
+	t.Cleanup(d.logOnFailure)
 	t.Cleanup(d.stop)
 	d.start()
 	return d
@@ -550,6 +554,7 @@ func (d *scratchDispatch) start() {
 	exited := make(chan error, 1)
 	go func() { exited <- command.Wait() }()
 	d.command, d.exited, d.output = command, exited, output
+	d.starts = append(d.starts, output)
 	if !testwait.Holds(time.Until(deadline), 50*time.Millisecond, func() bool {
 		select {
 		case err := <-exited:

@@ -996,10 +996,16 @@ func (r *personHandoverRig) digestsTaken(key string) {
 func (c basisCases) refused(name string, call map[string]any, status int, code string, says ...string) {
 	t := c.r.t
 	t.Helper()
-	// The daemon's own writes to Dispatch for the root run first, and Dispatch's digest of every
-	// version of the root's documents is filled and taken, so neither a write nor a late digest moves
-	// the root's record or its gate's verdict between the two snapshots.
+	// Dispatch's digest of every version of the root's documents is filled; the daemon applies the
+	// newest event and digest of each ancestor document a step of the root stands on
+	// (basisDigestsTaken); then the daemon's own writes to Dispatch for the root run and the root's
+	// digests are taken. So neither a write nor a late digest, the root's or the ancestor's, moves
+	// the root's record or its gate between the two snapshots. The waits on the ancestor come before
+	// those on the root's rows: a daemon that reads Dispatch's verdict closes a step open on an
+	// ancestor's approval at the ancestor's digest that says it no longer stands, and that close
+	// queues the root's writes.
 	c.r.digestsFilled(c.root.Key)
+	c.r.basisDigestsTaken(c.root.Key)
 	c.r.dispatchRowsDone(c.root.Key)
 	c.r.quiet(c.root.Key)
 	c.r.digestsTaken(c.root.Key)
