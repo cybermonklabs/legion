@@ -1,4 +1,4 @@
-import { LEGION_ROLES } from "@legion/contracts";
+import { isLegionRole, LEGION_ROLES } from "@legion/contracts";
 import type { LegionCapabilityReportBody } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
@@ -60,12 +60,12 @@ export interface CapabilitySchedule {
  * the host's managed interval.
  *
  * `claim` is the registered claim, read for its `role` (which spreads the six roles of an issue
- * pod one tick apart), and for its `issue` and `claimToken` (the log lines). `isIdle` is the live
- * idle answer, read afresh at every reading: `undefined` is a host that answers nothing about its
- * idleness, and counts as idle. `measure` is one whole measurement of the six rows, `send` is one
- * `claims/ready` carrying a report, which resolves when the daemon took it and rejects on a
- * refusal or a transport failure, `sendTimeoutMs` is how long that send may take, and `log`
- * writes one line with its fields.
+ * pod one tick apart, and puts a role of the deployment after them), and for its `issue` and
+ * `claimToken` (the log lines). `isIdle` is the live idle answer, read afresh at every reading:
+ * `undefined` is a host that answers nothing about its idleness, and counts as idle. `measure` is
+ * one whole measurement of the six rows, `send` is one `claims/ready` carrying a report, which
+ * resolves when the daemon took it and rejects on a refusal or a transport failure,
+ * `sendTimeoutMs` is how long that send may take, and `log` writes one line with its fields.
  */
 export function createCapabilitySchedule(deps: {
   readonly claim: ClaimCapability;
@@ -82,11 +82,15 @@ export function createCapabilitySchedule(deps: {
   /** The ticks since the interval was registered; `1` at the first tick. */
   let count = 0;
   /** The tick the next attempt is due at: the architect at the sixth (30 s), the merger at the
-   * eleventh (55 s), so one pod's roles start their attempts on different ticks. Each role counts
-   * from its own interval, which starts at its own boot, and a role busy at its due tick measures
-   * at its first idle tick instead, so the offset spreads the attempts rather than keeping two
-   * measurements from ever overlapping. */
-  let dueTick = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.indexOf(deps.claim.role);
+   * eleventh (55 s), and a role of the deployment after the six, at the twelfth (60 s), so one
+   * pod's roles start their attempts on different ticks. Each role counts from its own interval,
+   * which starts at its own boot, and a role busy at its due tick measures at its first idle tick
+   * instead, so the offset spreads the attempts rather than keeping two measurements from ever
+   * overlapping. */
+  const role = deps.claim.role;
+  let dueTick =
+    CAPABILITY_FIRST_DUE_TICK +
+    (isLegionRole(role) ? LEGION_ROLES.indexOf(role) : LEGION_ROLES.length);
   /** The measurements spent, bounded by `CAPABILITY_ATTEMPTS` for the life of the process. */
   let attempts = 0;
   /** True while a measurement or a send is in flight. */

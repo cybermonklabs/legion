@@ -223,14 +223,15 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, its phase's role (RoleFor) is this claim's,
-// its tree does not linger, and its phase's own terminating fact has not arrived (PhaseFinished) —
-// a merged root stands in merging for as long as the rest of its tree runs, and its merger must
-// not be handed merging again at every launch. A claim of another project's issue finds no record
-// here, as a claim of an issue nobody records finds none: the daemon's store reads no record of
-// another project (internal/daemon's projectRecords). A claim that holds a task is left alone: it
-// has work, and a second task would be a second prompt for work under way. So is a role a queued
-// row already covers (queuedRowCovers).
+// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf,
+// the role of its running step at step) is this claim's, its tree does not linger, and its phase's
+// own terminating fact has not arrived (PhaseFinished) — a merged root stands in merging for as
+// long as the rest of its tree runs, and its merger must not be handed merging again at every
+// launch. A claim of another project's issue finds no record here, as a claim of an issue nobody
+// records finds none: the daemon's store reads no record of another project (internal/daemon's
+// projectRecords). A claim that holds a task is left alone: it has work, and a second task would
+// be a second prompt for work under way. So is a role a queued row already covers
+// (queuedRowCovers).
 //
 // The ready is the first moment a phase worker relaunched by an update round's replacement of its
 // pod is given its task back: the turn in which it answered the round retired the task it held
@@ -286,8 +287,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 	if record.OutOfWorkflow(issue.Status) {
 		return nil
 	}
-	role := RoleFor(issue.Phase)
-	if role == "" || role == claim.RoleArchitect || role != fact.Role {
+	role := OpenRoleOf(issue)
+	if role == "" || role != fact.Role {
 		return nil
 	}
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
@@ -429,6 +430,9 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 			continue
 		}
 		listed := record.CatchUpIssue{Key: member.Key, Title: member.Title, Phase: member.Phase, Status: member.Status}
+		if member.Phase == phase.Step {
+			listed.StepRole = member.StepRole
+		}
 		if member.Parent != nil {
 			listed.Parent = *member.Parent
 		}

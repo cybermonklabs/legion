@@ -41,8 +41,8 @@ const waitingOnChildren = "WAITING_ON_CHILDREN"
 // — so the one move writes the same record, the same notice and the same message whichever door
 // it came through.
 type childrenHold struct {
-	// Start is the phase whose start the move holds, one of planning through accepting
-	// (record.OpenChildHolds).
+	// Start is the phase whose start the move holds, one of planning through accepting or step,
+	// where a role the deployment defines works (record.OpenChildHolds).
 	Start phase.Phase
 	// Task is the task that start gives its worker, which the return carries
 	// (record.ChildrenWait.Task): the task a transition built, a retry's, or the task the role's
@@ -70,10 +70,6 @@ type childrenHold struct {
 	// (record.PhaseEnded): the worker the admission pass stops in the middle of its phase, and ""
 	// for a move the transition's guard holds.
 	Ended claim.Role
-	// Back is the phase the return starts for Start where the pull request has not merged
-	// (record.ReturnStep on the walk of the issue's run), which the notice names; the move fills
-	// it (awaitChildren), and "" reads as Start.
-	Back phase.Phase
 }
 
 // awaitChildren moves issue into awaiting_children in place of the start hold names, and is the
@@ -137,10 +133,9 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return nil
 	}
 	if !record.OpenChildHolds(hold.Start) || hold.Task == "" || hold.Cause == "" || len(hold.Open) == 0 {
-		return fmt.Errorf("a move of %s into awaiting_children holds a start of planning through accepting with its task and its cause, for an open child; this one holds %q with a task of %d bytes, cause %q and %d open children",
+		return fmt.Errorf("a move of %s into awaiting_children holds a start of planning through accepting or of step with its task and its cause, for an open child; this one holds %q with a task of %d bytes, cause %q and %d open children",
 			issue.Key, hold.Start, len(hold.Task), hold.Cause, len(hold.Open))
 	}
-	hold.Back = record.ReturnStep(w.steps(), hold.Start)
 	from, now := issue.Phase, e.now()
 	reason := childrenWaitReason(issue.Key, hold)
 	status := PhaseStatus(phase.AwaitingChildren)
@@ -189,7 +184,7 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	e.logOnCommit(ctx, "workflow: a parent waits on its open children", "issue", issue.Key, "tree", issue.Tree,
 		"from", from, "holds", hold.Start, "children", openChildNames(hold.Open))
-	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold, w.childrenReturn(hold.Start))); err != nil {
 		return err
 	}
 	if dropped != nil && hold.Ended != dropped.Role {
@@ -284,7 +279,7 @@ func (e *Engine) childrenHoldingSamePhaseStart(ctx context.Context, tx pgx.Tx, i
 // children would hold because the role of that phase stands on an entry a move out of retro or
 // merging raised (acceptedEntry), and answers that role's phases row.
 func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.PhaseRow, bool, error) {
-	entry, err := e.phaseRow(ctx, tx, issue.Key, RoleFor(issue.Phase))
+	entry, err := e.phaseRow(ctx, tx, issue.Key, issue.RoleAt(issue.Phase))
 	if err != nil {
 		return record.PhaseRow{}, false, err
 	}
@@ -308,14 +303,14 @@ func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Is
 // ended: each move it holds is the completion or the move back of the role it leaves, or the
 // daemon's own move on a review it read, which leaves the reviewer that has just made that review.
 func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string, open []record.OpenChild,
+	place record.TaskPlace, handoff record.PhaseRow, pr *record.PullRequest, reason string, open []record.OpenChild, ended claim.Role,
 ) error {
-	if err := e.nameMoveEnd(ctx, w, issue, trigger, to, handoff); err != nil {
+	if err := e.nameMoveEnd(ctx, w, issue, trigger, placeNamed(place, to), handoff); err != nil {
 		return err
 	}
-	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, reason)
+	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, reason, ended)
 	moved := issue
-	if err := e.moveTask(ctx, tx, &moved, &w, to, record.TaskRunning); err != nil {
+	if err := e.moveTask(ctx, tx, &moved, &w, to, place, record.TaskRunning); err != nil {
 		return err
 	}
 	at, err := e.standingPart(ctx, tx, moved, w)
@@ -323,7 +318,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	return e.awaitChildren(ctx, tx, issue, w, childrenHold{Start: to, Task: task(moved, at, handoff, pr, reason),
-		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
+		Cause: heldCause(trigger, issue.Phase, ended, replaced, reason), Open: open,
 		Summary: replaced.Summary, Verdict: replaced.Verdict})
 }
 
@@ -331,7 +326,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 // the notice the move replaces carried — a worker's own move back, with the phase it asked for, the
 // role and its words (noticeFor) — and otherwise the completion or the review that raised the
 // start, with the review's own words where it asked for changes.
-func heldCause(trigger TriggerKind, from phase.Phase, replaced record.Notice, reason string) string {
+func heldCause(trigger TriggerKind, from phase.Phase, ended claim.Role, replaced record.Notice, reason string) string {
 	switch {
 	case replaced.Reason != "":
 		return replaced.Reason
@@ -342,7 +337,7 @@ func heldCause(trigger TriggerKind, from phase.Phase, replaced record.Notice, re
 	case trigger == TriggerReviewRejected:
 		return "a review asked for changes"
 	}
-	return fmt.Sprintf("the %s completed %s", RoleFor(from), from)
+	return fmt.Sprintf("the %s completed %s", ended, from)
 }
 
 // childrenWaitReason is the reason the held start keeps (record.ChildrenWait.Reason) and the
@@ -365,18 +360,18 @@ func openChildNames(open []record.OpenChild) string {
 // into awaiting_children (awaitChildren): the parent, the start it holds and what that start was
 // for, each open child with its Dispatch status, each child whose own blocked_by link names an
 // issue above it on its parent chain (ChildCycleReason), since that wait never ends by itself,
-// what ends the wait, and the step the return goes to where that is not the held start
-// (childrenHold.Back). It carries the summary and the verdict the phase-finished notice it
-// replaces carried, and the phase the parent left. The architect's levers are the children: the
-// notice names no move of a child under another started issue, which would make that issue wait
-// too (dispatch://INFRA-3320 R11).
-func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) record.Notice {
+// what ends the wait, and the step the return goes to where that is another place than the held
+// start's (returnClause over returns), each start named by its place (waitStart.named). returns is
+// the held start at its place on the walk of the issue's run and the start the return takes it to
+// where the pull request has not merged (Walk.childrenReturn of hold.Start: the first step after
+// the implementer's, record.ReturnStep), each with the role of its step. It carries the summary and
+// the verdict the phase-finished notice it replaces carried, and the phase the parent left. The
+// architect's levers are the children: the notice names no move of a child under another started
+// issue, which would make that issue wait too (dispatch://INFRA-3320 R11).
+func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold, returns childrenReturn) record.Notice {
 	reason := fmt.Sprintf("%s is in awaiting_children, holding the start of %s: %s. No phase of %s starts while Dispatch shows an open child under it: %s.",
-		parent, hold.Start, hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
-	back := ""
-	if hold.Back != "" && hold.Back != hold.Start {
-		back = fmt.Sprintf(", as %s unless its pull request merged meanwhile", hold.Back)
-	}
+		parent, returns.Held.named(), hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
+	back := returnClause(returns)
 	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %[1]s to an issue outside its tree or to no parent."+
 		" Then %[1]s goes back to the start it held by itself%[4]s, on a task that names each child that merged during the wait; the return asks for no forward merge, and each testing round of %[1]s runs on its head merged with the tip of the pull request's base branch."+
 		" It holds no admission slot while it waits, and request_backward_move, sign_off and stop_task on it are refused (%[2]s)."+
@@ -455,7 +450,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || exempt {
 		return false, err
 	}
-	role := RoleFor(issue.Phase)
+	role := issue.RoleAt(issue.Phase)
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return false, err
@@ -533,7 +528,7 @@ func (e *Engine) holdPromotedStart(ctx context.Context, tx pgx.Tx, issue record.
 // (entryWork), as for a phase stopped in its middle, and never the start row's own.
 func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 	for _, start := range owed {
-		if start.Phase == issue.Phase && start.Generation == issue.Generation && start.Role == RoleFor(issue.Phase) {
+		if start.Phase == issue.Phase && start.Generation == issue.Generation && start.Role == issue.RoleAt(issue.Phase) {
 			return true
 		}
 	}
@@ -623,17 +618,28 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	back := issue
 	back.Phase, back.Hold, back.ChildrenWait = held.Start, nil, nil
 	merged := pr != nil && pr.State == record.PullRequestMerged
-	rebuilt := !merged && record.ReturnsPastImplementing(held.Start)
+	// The held start's place is where the task stood through the wait (awaitChildren). The return
+	// reads the first step after the implementer's by place (Walk.childrenReturn), since several
+	// steps of a task can run as step.
+	returns := w.childrenReturn(held.Start)
+	rebuilt := !merged && returns.Past
+	place := returns.Held.Place
 	if rebuilt {
-		back.Phase = record.ReturnStep(w.steps(), held.Start)
+		back.Phase, place = returns.Back.At, returns.Back.Place
 	}
 	// The run's task goes where the return goes, as a move into that phase moves it: an issue with
 	// plan rows stood at the place of the held start through the wait (awaitChildren), and a return
 	// to an earlier step moves it to the place of that step.
-	if err := e.moveTask(ctx, tx, &back, &w, back.Phase, record.TaskRunning); err != nil {
+	if err := e.moveTask(ctx, tx, &back, &w, back.Phase, place, record.TaskRunning); err != nil {
 		return err
 	}
+	// The role the return starts is the role of the step at its place, so the return to a step of
+	// a role the deployment defines starts that role (Walk.RoleAt), and on an issue with no plan
+	// rows the role of the phase.
 	role := RoleFor(back.Phase)
+	if w.Stored {
+		role = w.RoleAt(place)
+	}
 	starts := role != "" && role != claim.RoleArchitect
 	work := ""
 	if starts {
@@ -641,7 +647,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		if err != nil {
 			return err
 		}
-		if work, err = e.returnTask(ctx, tx, held, back, at, pr, rebuilt); err != nil {
+		if work, err = e.returnTask(ctx, tx, held, back, at, pr, returns, rebuilt); err != nil {
 			return err
 		}
 	}
@@ -683,17 +689,18 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 
 // returnTask is the task the return out of awaiting_children hands the role it starts, back being
 // the issue in the phase the return takes it to (ReturnFromChildren), as it is composed: the start
-// decorates it once (start). rebuilt is a held testing, reviewing or accepting that comes back on
-// an open pull request as the first step of the walk after the implementer's (record.ReturnStep):
-// its task is built as a transition builds one (task) over the implementer's phases row, so it
-// carries the Handoff line of the implementer's last handoff, which the tester or the reviewer
-// reads, with a reason that names the step it starts, the held start and its reason. Every other
-// start goes back on the task it held, which carries the reason its transition wrote. Either task
-// names the children of held that merged during the wait (mergedChildren).
+// decorates it once (start). rebuilt is a held testing, reviewing, step or accepting that comes
+// back on an open pull request as the first step of the walk after the implementer's
+// (record.ReturnStep), returns.Back: its task is built as a transition builds one (task) over the
+// implementer's phases row, so it carries the Handoff line of the implementer's last handoff,
+// which the tester or the reviewer reads, with a reason that names the step it starts, the held
+// start (returns.Held) and its reason, each by its place (returnStarts). Every other start goes
+// back on the task it held, which carries the reason its transition wrote. Either task names the
+// children of held that merged during the wait (mergedChildren).
 // at is the standing of the work in the phase back stands in (standingPart), which a task built
 // here carries as every start's task does.
 func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.ChildrenWait, back record.Issue, at Standing, pr *record.PullRequest,
-	rebuilt bool,
+	returns childrenReturn, rebuilt bool,
 ) (string, error) {
 	merged, err := e.mergedChildren(ctx, tx, back.Key, held.Children)
 	if err != nil {
@@ -710,16 +717,12 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 	if err != nil {
 		return "", err
 	}
-	instead := fmt.Sprintf("%s, the start it held", back.Phase)
-	if held.Start != back.Phase {
-		instead = fmt.Sprintf("%s in place of the start of %s it held", back.Phase, held.Start)
-	}
 	ran := "tested its head"
 	if back.Phase != phase.Testing {
 		ran = "ran"
 	}
 	reason := fmt.Sprintf("%s goes back from awaiting_children now that no Dispatch child of it is open, and starts %s, since no round before the wait %s on a base that carries its children's merges. The held start of %s was for this: %s",
-		back.Key, instead, ran, held.Start, held.Reason)
+		back.Key, returnStarts(returns), ran, returns.Held.named(), held.Reason)
 	if merged != "" {
 		reason += ". " + merged
 	}
@@ -811,10 +814,11 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if issue.ChildrenWait != nil {
 		held = issue.ChildrenWait.Start
 	}
-	back := goesBack(held, record.ReturnStep(w.steps(), held))
+	returns := w.childrenReturn(held)
+	back := goesBack(returns)
 	if len(open) == 0 {
 		return refused(waitingOnChildren, fmt.Sprintf("%s waits in awaiting_children, holding the start of %s, and no Dispatch child of it is open now: at the next admission pass it %s. It stands in no phase that %s acts on, so this %s changed nothing",
-			issue.Key, held, back, act, act)), nil
+			issue.Key, returns.Held.named(), back, act, act)), nil
 	}
 	var ending string
 	if requester == claim.RoleArchitect {
@@ -827,16 +831,116 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 		issue.Key, openChildNames(open), act, back, ending)), nil
 }
 
-// goesBack is where the return takes a parent holding the start of held, as the refusals of an
-// act on it say (waitingRefusal), back being the step the walk of its run returns that start to
-// (record.ReturnStep): a held testing, reviewing or accepting to the first step of the walk after
-// the implementer's, where that step stands at or before the held start, testing on today's line,
-// unless its pull request merged during the wait (ReturnFromChildren); and to the held start
-// itself where the walk holds no such step, where the start is a held planning or implementing,
-// or where the pull request merged during the wait.
-func goesBack(held, back phase.Phase) string {
-	if back != held {
-		return fmt.Sprintf("goes back to %s by itself, or to %s, the start it holds, if its pull request merged during the wait", back, held)
+// returnPlace is where the return out of awaiting_children takes a start held at start
+// (ReturnFromChildren), on w, the walk of the issue's run, whose task stood at the held start's
+// place through the wait (awaitChildren): the place it starts, the phase that place runs as, and
+// whether the held start comes back past the implementer's step (record.ReturnsPastImplementing).
+// A held testing, reviewing, step or accepting whose place stands after the implementer's step
+// comes back as the first step after it, so a step of a role the deployment defines is read by its
+// place and not by its phase, which several steps share. Every other held start comes back at its
+// own place. A walk that holds no place of start answers the zero place and start itself.
+func (w Walk) returnPlace(start phase.Phase) (record.TaskPlace, phase.Phase, bool) {
+	held, ok := w.placeIn(start)
+	if !ok || !record.ReturnsPastImplementing(start) || held.Kind != record.PlaceStep {
+		return held, start, false
 	}
-	return fmt.Sprintf("goes back to %s, the start it holds, by itself", held)
+	steps := w.steps()
+	implementing := slices.Index(steps, phase.Implementing)
+	if implementing < 0 || held.Position-1 <= implementing {
+		return held, start, false
+	}
+	return placeAt(w.Line, implementing+1), steps[implementing+1], true
+}
+
+// waitStart is one start a wait on children names: the place of the issue's task it runs at on
+// the walk of the issue's run, the phase that place runs as, and at step the role of the step there
+// (startAt).
+type waitStart struct {
+	Place record.TaskPlace
+	At    phase.Phase
+	Role  claim.Role
+}
+
+// named is how the texts of a wait on children name s: by the phase it runs as, and at step, where
+// every role the deployment defines runs as the one phase, by the role of its step ("the
+// checker's step"), which the phase alone does not name.
+func (s waitStart) named() string {
+	if s.At == phase.Step && s.Role != "" {
+		return fmt.Sprintf("the %s's step", s.Role)
+	}
+	return string(s.At)
+}
+
+// childrenReturn is the start a wait on children holds (Held) and the start the return out of
+// awaiting_children takes it to where the pull request has not merged (Back), with Past, whether
+// the held start comes back past the implementer's step (returnPlace): Walk.childrenReturn. The
+// move's notice (awaitingChildrenNotice), the refusals over the wait (goesBack) and the return's
+// task (returnTask) each say where the return goes by it.
+type childrenReturn struct {
+	Held, Back waitStart
+	Past       bool
+}
+
+// moves is whether the return takes the held start to another place than its own. It compares the
+// two places and not the phases they run as, since several steps of a task can run as step: the
+// linter's step 3 of `implementer checker linter` comes back as the checker's step 2.
+func (r childrenReturn) moves() bool {
+	return r.Held.Place != r.Back.Place
+}
+
+// childrenReturn is the start held at start on w, where the issue's task stands through the wait
+// (placeIn), and where the return takes it (returnPlace), each with the role of its step where that
+// step runs as step (startAt). A walk with no plan rows names no role, since none of its places
+// runs as step.
+func (w Walk) childrenReturn(start phase.Phase) childrenReturn {
+	held, _ := w.placeIn(start)
+	back, returned, past := w.returnPlace(start)
+	return childrenReturn{Held: w.startAt(held, start), Back: w.startAt(back, returned), Past: past}
+}
+
+// startAt is the start at place on w, which runs as at (childrenReturn). At step its role is the
+// role of w's step at place, a role the deployment defines, by which the texts of the wait name it
+// (waitStart.named); every other start names none, since the texts name it by its phase. It reads
+// the step's own role and no phase's worker (RoleAt), so it answers no role for a phase the
+// architect works.
+func (w Walk) startAt(place record.TaskPlace, at phase.Phase) waitStart {
+	start := waitStart{Place: place, At: at}
+	if step, ok := w.planStepAt(place); ok && at == phase.Step {
+		start.Role = claim.Role(step.Role)
+	}
+	return start
+}
+
+// returnClause is what the move's notice says of where the return takes the held start of r: the
+// start it goes back as where that is another place than the held start's, and "" where it goes
+// back to the held start itself (awaitingChildrenNotice).
+func returnClause(r childrenReturn) string {
+	if !r.moves() {
+		return ""
+	}
+	return fmt.Sprintf(", as %s unless its pull request merged meanwhile", r.Back.named())
+}
+
+// returnStarts is what a rebuilt return task says it starts (returnTask): the start r goes back
+// as, and the held start it takes the place of where the two are at different places.
+func returnStarts(r childrenReturn) string {
+	if r.moves() {
+		return fmt.Sprintf("%s in place of the start of %s it held", r.Back.named(), r.Held.named())
+	}
+	return fmt.Sprintf("%s, the start it held", r.Back.named())
+}
+
+// goesBack is where the return takes a parent holding the start r.Held, as the refusals of an act
+// on it say (waitingRefusal), r.Back being the step the walk of its run returns that start to
+// (record.ReturnStep): a held testing, reviewing, step or accepting to the first step of the walk
+// after the implementer's, where that step stands before the held start, testing on today's line,
+// unless its pull request merged during the wait (ReturnFromChildren); and to the held start
+// itself where the walk holds no such step, where the start is a held planning or implementing, or
+// where the pull request merged during the wait. Each start is named by its place
+// (waitStart.named).
+func goesBack(r childrenReturn) string {
+	if r.moves() {
+		return fmt.Sprintf("goes back to %s by itself, or to %s, the start it holds, if its pull request merged during the wait", r.Back.named(), r.Held.named())
+	}
+	return fmt.Sprintf("goes back to %s, the start it holds, by itself", r.Held.named())
 }

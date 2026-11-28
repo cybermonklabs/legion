@@ -87,7 +87,7 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	rig.operatorAPI = api.NewServer("127.0.0.1", 8437, api.Options{
 		Supervisor: sup, BootTokens: api.NewBootTokens(trees), Project: "legion", DispatchProject: "LEGION",
 		OperatorToken: freshSessionOperatorToken, Controller: trees, Trees: trees, Releaser: rt, Pool: pool, Record: records,
-		Handlers: []intake.Handler{engine}, RoleFor: workflow.RoleFor, Log: quietLogger(),
+		Handlers: []intake.Handler{engine}, Log: quietLogger(),
 	}).Handler
 	rig.implementer = mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	machine, _, err := sup.Create(ctx, supervise.Claim{Token: rig.implementer, Project: "legion", Tree: issue.Tree, Issue: issue.Key,

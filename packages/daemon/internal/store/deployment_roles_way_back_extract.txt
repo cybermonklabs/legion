@@ -1,0 +1,49 @@
+# A copy of the outbox's way back of the release whose deployment defines roles, as
+# docs/kubernetes.md carries it under "Rolling back the release whose deployment defines roles":
+# the content of the fenced block that holds `update outbox set payload = payload - 'worker'`, in
+# the guide's own bytes and none of the prose around it, `<PROJECT>` standing for the key of the
+# project that rolls back.
+#
+# The guide answers for the block in two halves. This package's
+# TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads runs this copy over queued rows of
+# two projects and reads them with its model of the release before's decode (refusedBeforeTheRoles);
+# packages/daemon/internal/textcheck's TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock holds
+# this copy to the guide's fenced block.
+# The split keeps the guide out of this package's CI filter, as the phase entry's way back does
+# (internal/daemon/upgrade_way_back_extract.txt): an edit to the guide alone starts the text-check
+# run rather than every Go lane.
+
+-- The controller's notices one project still has queued of a pod a role of the deployment waits for.
+delete from outbox
+where kind = 'controller_notice' and payload->>'kind' = 'pod-wait-held'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The role of the running step on each issue of the catch-ups one project still has queued.
+update outbox set payload = jsonb_set(payload, '{catch_up,issues}', (
+    select jsonb_agg(listed.entry - 'stepRole' order by listed.place)
+    from jsonb_array_elements(payload->'catch_up'->'issues') with ordinality as listed(entry, place)))
+where kind = 'notice' and jsonb_path_exists(payload, '$.catch_up.issues[*].stepRole')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The worker each merge-forward review one project still has queued tells beside the architect.
+update outbox set payload = payload - 'worker'
+where kind = 'merge_forward' and payload ? 'worker'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The work one project still has queued for a role of the deployment.
+delete from outbox
+where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
+    or (kind = 'supervise' and (payload->>'op' <> 'start' or coalesce(payload->>'phase', '') = ''))
+    or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
+  and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The hook prompts one project still has queued of a move that leaves or reaches step.
+delete from outbox
+where kind = 'hook_prompt' and (payload->>'from' = 'step' or payload->>'to' = 'step')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The state events one project still has queued that name the role of a running step or a claim
+-- of a role of the deployment.
+delete from outbox
+where kind = 'state_change' and exists (
+    select 1 from jsonb_array_elements(payload->'changes') as moved(change)
+    where moved.change->>'field' = 'stepRole'
+      or (moved.change->>'field' = 'claim'
+        and moved.change->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')))
+  and split_part(issue, '-', 1) = '<PROJECT>';

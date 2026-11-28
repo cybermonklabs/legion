@@ -41,7 +41,7 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		{"no boot token", func(s *SpawnSpec) { s.BootToken = "" }, "spawn legion-omp-legion-43-tester: no boot token"},
 		{"an issue that is a path", func(s *SpawnSpec) { s.Issue = "../../etc" }, `spawn legion-omp-legion-43-tester: issue "../../etc" is not an issue key`},
 		{"a tree that is not an issue key", func(s *SpawnSpec) { s.Tree = "legion-42" }, `spawn legion-omp-legion-43-tester: tree "legion-42" is not an issue key`},
-		{"a role no claim is on", func(s *SpawnSpec) { s.Role = "operator" }, `spawn legion-omp-legion-43-tester: "operator" is not a role`},
+		{"a role outside the role grammar", func(s *SpawnSpec) { s.Role = "Operator" }, `spawn legion-omp-legion-43-tester: "Operator" is not a role`},
 		{"the controller's role on an issue", func(s *SpawnSpec) { s.Role = claim.RoleController },
 			`spawn legion-omp-legion-43-tester: the controller's claim is on no issue and no tree (issue "LEGION-43", tree "LEGION-42")`},
 		// The token is derived from the project, issue and role, and every runtime names the
@@ -67,7 +67,7 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		{"an unknown backend", func(s *SpawnSpec) { s.Backend = "codex" }, `spawn legion-omp-legion-43-tester: backend "codex" is not one of claude, omp`},
 		{"an architect on Claude Code", func(s *SpawnSpec) {
 			s.Role, s.Claim, s.Backend = claim.RoleArchitect, "legion-omp-legion-43-architect", BackendClaude
-		}, "spawn legion-omp-legion-43-architect: the architect does not run on claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: " +
+		}, "spawn legion-omp-legion-43-architect: the architect does not run on claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger and each role of the deployment: " +
 			"the architect's loop and the controller's are proven only on Oh My Pi, and Claude Code runs the phase workers, whose loops Legion's live proofs cover"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +85,10 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		"resuming a session":          func(s *SpawnSpec) { s.ResumeSessionFile = "/sessions/tester.jsonl" },
 		"on Oh My Pi by name":         func(s *SpawnSpec) { s.Backend = BackendOmp },
 		"on Claude Code":              func(s *SpawnSpec) { s.Backend = BackendClaude },
+		// A role of the deployment runs on Claude Code with the model its settings give it.
+		"a deployment role on Claude Code with its model": func(s *SpawnSpec) {
+			s.Role, s.Claim, s.Backend, s.Model = "checker", "legion-omp-legion-43-checker", BackendClaude, "checker-model"
+		},
 	} {
 		spec := spawnSpec()
 		mutate(&spec)
@@ -145,7 +149,7 @@ func TestValidateSpawnSpecHoldsTheControllersLaunchToItsOwnShape(t *testing.T) {
 		{"a credential as a value", func(s *SpawnSpec) { s.Env["ANTHROPIC_API_KEY"] = "sk-x" },
 			"spawn legion-omp-controller: Env carries ANTHROPIC_API_KEY, a credential-shaped name; a secret travels in Secrets, as a file"},
 		{"on Claude Code", func(s *SpawnSpec) { s.Backend = BackendClaude },
-			"spawn legion-omp-controller: the controller does not run on claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: " +
+			"spawn legion-omp-controller: the controller does not run on claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger and each role of the deployment: " +
 				"the architect's loop and the controller's are proven only on Oh My Pi, and Claude Code runs the phase workers, whose loops Legion's live proofs cover"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

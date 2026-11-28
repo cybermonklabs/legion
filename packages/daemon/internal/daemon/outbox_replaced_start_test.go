@@ -31,7 +31,7 @@ import (
 // left behind, so the state showed a working tree with a quiet worker; the claim was never given
 // the phase's new entry, so every completion its worker reported was refused
 // HANDOFF_STALE_ENTRY, as a completion of an entry behind the one the phase is on
-// (api/handoff.go's staleEntry); and no restart cured it, because the record a restart rebuilds
+// (intake.StaleEntry); and no restart cured it, because the record a restart rebuilds
 // the claim from carries that same row. Only a start under a row of its own did — an operator's
 // retry of the phase's worker.
 //

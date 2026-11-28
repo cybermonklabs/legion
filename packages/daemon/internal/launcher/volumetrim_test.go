@@ -879,7 +879,7 @@ func trimSettings() *shimwire.LauncherVolumeTrim {
 // across a connection this design expects to carry version skew both ways, and the cost of
 // believing one is paid in the process that is PID 1 of the roles container: time.NewTicker
 // panics on a non-positive period, a fault on each start of the interval loop, and three in a row
-// would switch off the pod's one guard of the volume six live roles share (run).
+// would switch off the pod's one guard of the volume its live roles share (run).
 func TestTheTrimmerRefusesSettingsOutsideItsRangesAndStaysOff(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1461,8 +1461,8 @@ func TestARefusedAnswerSwitchesARunningTrimmerOff(t *testing.T) {
 // the tester at 37dc8da0f4830719bd0a6a150b3f31c4557610a9, a copy whose statfs error is written
 // on every interval left this whole package green over two runs of its own. The trimmer reads
 // the volume once an interval for the life of the pod, so an unreadable volume without this
-// memory is one line a minute for as long as the fault lasts, in the roles container's log six
-// agents and an operator read — which is the cost review round 2 named for the refusal.
+// memory is one line a minute for as long as the fault lasts, in the roles container's log the
+// pod's agents and an operator read — which is the cost review round 2 named for the refusal.
 //
 // The intervals are driven one at a time rather than through the running loop, because an
 // interval that writes no line is exactly what this case asserts and the fixture's tick waits
@@ -1520,7 +1520,7 @@ func TestAVolumeTheTrimmerCannotReadIsSaidOnce(t *testing.T) {
 
 // A reading below the high mark sweeps nothing: no entry is deleted, and no file and no
 // modification time anywhere on the volume is changed. The trimmer is a process with root's
-// reach over six roles' caches, so the case that must hold hardest is the one where it does
+// reach over every role's caches, so the case that must hold hardest is the one where it does
 // nothing at all.
 func TestAReadingBelowTheHighMarkSweepsNothing(t *testing.T) {
 	t.Parallel()
@@ -3851,7 +3851,7 @@ func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing
 // recovers its loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers
 // its loop (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code
 // runs in PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles
-// container, so its crash costs six live roles their round over a cache sweep.
+// container, so its crash costs the pod's live roles their round over a cache sweep.
 func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	t.Parallel()
 	f := newTrimFixture(t, 1)

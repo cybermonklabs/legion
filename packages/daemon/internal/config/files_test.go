@@ -193,7 +193,7 @@ func TestReadGroupSecretPointer(t *testing.T) {
 
 // The copy every pane's prompt `$(cat)`s: a heading naming the legion as the operator wrote it,
 // a blank line, and the operator's file verbatim (deployment-instructions.ts:37-46).
-func TestMaterializeDeploymentInstructionsWritesTheHeadedCopy(t *testing.T) {
+func TestMaterializeInstructionsWritesTheHeadedCopy(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "instructions.md")
 	content := "Run `make check` before every push.\n\n- never force-push\n"
 	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
@@ -201,9 +201,9 @@ func TestMaterializeDeploymentInstructionsWritesTheHeadedCopy(t *testing.T) {
 	}
 	stateDir := filepath.Join(t.TempDir(), "state")
 
-	written, err := MaterializeDeploymentInstructions(source, stateDir, "sjawhar/legion")
+	written, err := ControllerConfig{InstructionsPath: source, Project: "sjawhar/legion"}.MaterializeInstructions(stateDir)
 	if err != nil {
-		t.Fatalf("MaterializeDeploymentInstructions: %v", err)
+		t.Fatalf("MaterializeInstructions: %v", err)
 	}
 	if want := filepath.Join(stateDir, "deployment-instructions.md"); written != want {
 		t.Errorf("path = %q, want %q", written, want)
@@ -218,8 +218,10 @@ func TestMaterializeDeploymentInstructionsWritesTheHeadedCopy(t *testing.T) {
 }
 
 // A configured key with nothing to append is a misconfiguration, never an empty fragment
-// (deployment-instructions.ts:6-27): the refusal names the operator's path, and nothing is written.
-func TestMaterializeDeploymentInstructionsRefusesAnUnusableFile(t *testing.T) {
+// (deployment-instructions.ts:6-27): the refusal names the operator's path where the file writes
+// `instructions` in a path's shape, and the key and why alone where it does not, and nothing is
+// written.
+func TestMaterializeInstructionsRefusesAnUnusableFile(t *testing.T) {
 	dir := t.TempDir()
 	blank := filepath.Join(dir, "blank.md")
 	if err := os.WriteFile(blank, []byte("\n  \n"), 0o644); err != nil {
@@ -228,17 +230,25 @@ func TestMaterializeDeploymentInstructionsRefusesAnUnusableFile(t *testing.T) {
 	absent := filepath.Join(dir, "absent.md")
 
 	for _, tc := range []struct {
-		name, path, want string
+		name, path string
+		unshaped   bool
+		want       string
 	}{
 		{name: "blank", path: blank, want: "instructions file " + blank + " is empty"},
 		{name: "absent", path: absent, want: "instructions file " + absent + " could not be read: "},
 		{name: "a directory", path: dir, want: "instructions file " + dir + " could not be read: "},
+		{name: "blank, written in no path's shape", path: blank, unshaped: true, want: "instructions names a file that is empty"},
+		{name: "absent, written in no path's shape", path: absent, unshaped: true, want: "instructions names a file that could not be read: it does not exist"},
+		{name: "a directory, written in no path's shape", path: dir, unshaped: true, want: "instructions names a file that could not be read: it is a directory"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "state")
-			_, err := MaterializeDeploymentInstructions(tc.path, stateDir, "demo")
+			_, err := ControllerConfig{InstructionsPath: tc.path, Project: "demo", instructionsUnshaped: tc.unshaped}.MaterializeInstructions(stateDir)
 			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want it to start %q", err, tc.want)
+			}
+			if tc.unshaped && strings.Contains(err.Error(), dir) {
+				t.Fatalf("err = %v names the path, want the key alone", err)
 			}
 			if _, statErr := os.Stat(filepath.Join(stateDir, "deployment-instructions.md")); !os.IsNotExist(statErr) {
 				t.Errorf("a refused file still wrote the copy (stat: %v)", statErr)

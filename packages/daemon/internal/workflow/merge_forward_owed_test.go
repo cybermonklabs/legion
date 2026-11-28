@@ -69,7 +69,7 @@ func TestAnAskOfImplementingThatNoPhaseAsksAgainIsWithdrawn(t *testing.T) {
 		t.Errorf("the merge-forward messages are %+v, want %+v: the implementer is told once, and the planner is not held", got, want)
 	}
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleImplementer, record.MergeForwardAsk, conflictHead); why == "" {
+	if why := leftMergeForwardAt(issue, false, &pr, readsAfter(0).cfg.Deployment, claim.RoleImplementer, record.MergeForwardAsk, conflictHead); why == "" {
 		t.Errorf("the implementer's ask of %s is still delivered in planning, want it ended", conflictHead)
 	}
 	if worker, held := heldWorker(issue, pr); held {
@@ -412,7 +412,7 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 	if mf := pr.MergeForward; mf == nil || mf.Asked() != claim.RoleMerger || mf.Head != conflictHead || mf.Landed != "" {
 		t.Errorf("the record's merge forward = %+v, want the merger's open ask of %s", mf, conflictHead)
 	}
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
+	if why := leftMergeForwardAt(issue, false, &pr, readsAfter(0).cfg.Deployment, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
 		t.Errorf("the merger's ask is undelivered (%s), want it delivered", why)
 	}
 

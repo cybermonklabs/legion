@@ -935,7 +935,8 @@ type phaseWorker struct {
 }
 
 // phaseWorkerOf is issue as a candidate of a repair over phase workers, and whether it is one:
-// an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
+// an issue of this project whose phase has a worker role (workflow.OpenRoleOf, which reads the
+// role with the issue, so at step it is the role of the running step) and whose work
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
 // roots are read from and which the slot repair walks its slots and its issues in accepting,
@@ -953,7 +954,7 @@ type phaseWorker struct {
 //
 // A candidate with no work where it stands is passed over, because both repairs are about a
 // worker that is owed a turn, and that candidate has none to start. The gate is unreachable on
-// this release: the role skip above it passes over every phase phase.RoleFor names no worker
+// this release: the role skip above it passes over every phase Issue.RoleAt names no worker
 // role for — the architect's admitted and accepting, and the empty role of held,
 // awaiting_person, awaiting_children and done — and merging, the one holder record.AtWork used
 // to answer false for, is a worker's phase now, since its merger makes the merge itself. It is
@@ -967,7 +968,7 @@ type phaseWorker struct {
 func (a *Admission) phaseWorkerOf(project string, issue record.Issue, byKey map[string]record.Issue,
 	facts record.LineFacts,
 ) (phaseWorker, bool) {
-	role := workflow.OpenPhaseRole(issue.Phase)
+	role := workflow.OpenRoleOf(issue)
 	if role == "" {
 		return phaseWorker{}, false
 	}
@@ -3621,7 +3622,8 @@ func promotedByEarlierRelease(root record.Issue, holds bool) bool {
 // phase never runs again.
 //
 // The roles are enumerated as every other sweep of them does, over claim.Roles (the engine's
-// everyClaim).
+// everyClaim), and then the role of the deployment that runs the member's step where one does
+// (promotedRoles).
 //
 // A member at admitted is passed over: its first phase is the waiting line's to start. R9
 // (dispatch://INFRA-3320) holds a mid-phase member's start at the root's promotion or at the pass
@@ -3702,8 +3704,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// Accepting's role is an architect, which no phase start brings back here: the root's is
 		// promotion's own start, and a child's own comes back below with the member's other roles
-		// that have run.
-		owner := phase.RoleFor(member.Phase)
+		// that have run. At step the role is the running step's, read with the member
+		// (record.Issue.RoleAt), since no phase of Legion's names it.
+		owner := member.RoleAt(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
@@ -3722,7 +3725,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		standing := midPhaseMember{issue: member, owner: owner, carriedSlot: carried}
-		for _, role := range claim.Roles {
+		for _, role := range promotedRoles(member) {
 			// The tree's architect is promotion's own start, with the task that hands it its
 			// tree; a member's own architect, which the daemon started with that member's first
 			// phase, is no phase worker and comes back with the rest.
@@ -3819,6 +3822,20 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 	}
 	return nil
+}
+
+// promotedRoles is the roles of member a promotion brings back (startMidPhaseMembers): Legion's
+// six (claim.Roles) and, after them, the role of the deployment that runs the step member stands
+// at, read with the member (record.Issue.RoleAt over record.StandsAt), so the checker of a member
+// at step is started with its phase's work, and the checker of a member held from step comes back
+// with no task, as a role of Legion's that has run on a held member does. A role that no step of
+// the member's runs at the moment is not among them.
+func promotedRoles(member record.Issue) []claim.Role {
+	running := member.RoleAt(record.StandsAt(member))
+	if running == "" || claim.IsBuiltin(running) {
+		return claim.Roles
+	}
+	return append(slices.Clone(claim.Roles), running)
 }
 
 // owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
@@ -3942,16 +3959,16 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
 // in accepting, retro or merging, of which a healthy project has a handful.
 //
-// Only the role of each candidate's current phase is read (workflow.OpenPhaseRole, in the
-// selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
-// (rootArchitectOf), so a role the issue's phase has left is no part of the answer: its phases
-// row keeps the entry it was last handed work on, and nothing here would ever send that work
-// again. The phase's own worker is held where a worker of that issue has work where it stands
-// (readSlotHolders, record.AtWork).
+// Only the role of each candidate's current phase is read (workflow.OpenRoleOf, which at step is
+// the role of the running step, in the selection both repairs over phase workers make,
+// phaseWorkerOf), and a root's own architect (rootArchitectOf), so a role the issue's phase has
+// left is no part of the answer: its phases row keeps the entry it was last handed work on, and
+// nothing here would ever send that work again. The phase's own worker is held where a worker of
+// that issue has work where it stands (readSlotHolders, record.AtWork).
 //
 // The per-issue tests of the shared selection (phaseWorkerOf) bound the phase workers it names,
 // and they are what keeps it from starting a worker the cap has not admitted:
-// workflow.OpenPhaseRole answers no worker role for accepting, which is the own phase of the
+// workflow.OpenRoleOf answers no worker role for accepting, which is the own phase of the
 // architect that owns the issue, so the selection passes over it, and record.AtWork is false for
 // accepting. So the widening reaches the worker of a retro and of a merging, where the merger's
 // own work ends the phase, and no other phase worker. An issue at work that holds no row because
@@ -4426,13 +4443,14 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox
 // would have run it under: its issue has left the workflow, its tree lingers or has left, or the
-// issue has moved past the phase or the generation the row names. The outbox applies those
-// fences when it runs a row, but a row waiting for a slot may never be run at all, and one that
-// could never act would keep its issue in the waiting line for ever and take a slot from work
-// that could use it. Finishing the row deletes it, exactly as the outbox's own fence would. The
-// daemon's store reads the same phase and generation fence where a waiting start silences a
-// backstop (store.PodRecords.WaitsForItsSlot), since a row this repair will finish brings no
-// worker back: a change to this fence changes that one too.
+// issue has moved past the generation the row names, or past its phase or, at the phase step, its
+// step (record.Issue.HoldsQueued, the outbox's own rule). The outbox applies those fences when it
+// runs a row, but a row waiting for a slot may never be run at all, and one that could never act
+// would keep its issue in the waiting line for ever and take a slot from work that could use it.
+// Finishing the row deletes it, exactly as the outbox's own fence would. The workflow asks the same
+// question of the same rows where a waiting start silences a backstop (workflow's podBackstopDue,
+// over the starts store.PodRecords.SlotWaitingStarts reads), since a row this repair will finish
+// brings no worker back; HoldsQueued is the one statement of it both read.
 //
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
@@ -4476,7 +4494,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
 		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
-			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
+			owed.Generation == issue.Generation && issue.HoldsQueued(owed.Role, owed.Phase) {
 			// The fences keep this row, so it stands for the stop rule below. A row whose issue
 			// and role yield no claim token has no run to read, as the slot repair's holders have
 			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than

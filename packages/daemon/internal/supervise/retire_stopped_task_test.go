@@ -25,7 +25,7 @@ func TestRetiringAStoppedPhasesTaskLeavesNothingOfItToSend(t *testing.T) {
 	}
 	// The issue stands in implementing again, as it does after the return: the fence that drops a
 	// task of a phase the issue has left holds this one.
-	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return true, nil }
+	h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return true, nil }
 	// No agent is connected yet, so nothing is sent while the claim is built.
 	h.start(restored)
 

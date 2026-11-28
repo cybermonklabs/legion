@@ -26,25 +26,29 @@ const (
 	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
 	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
 	// work. When no open child is left it comes back as the step its return takes (record's
-	// ReturnStep): the start it held, or for a held testing, reviewing or accepting the first step
-	// of its walk after the implementer's. It stands outside Order, so no move into or out of it is
-	// a move back, and outside RoleFor, since no role works it.
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting, or a held step
+	// after the implementer's, the first step of its walk after the implementer's. It stands outside
+	// Order, so no move into or out of it is a move back, and outside RoleFor, since no role works it.
 	AwaitingChildren Phase = "awaiting_children"
 	Planning         Phase = "planning"
 	Implementing     Phase = "implementing"
 	Testing          Phase = "testing"
 	Reviewing        Phase = "reviewing"
-	Accepting        Phase = "accepting"
-	Retro            Phase = "retro"
-	Merging          Phase = "merging"
-	Done             Phase = "done"
-	Held             Phase = "held"
+	// Step is a step of a role the deployment defines: none of Legion's own roles works it, and
+	// the role that does is the one the issue's plan names for the step it stands at, so RoleFor
+	// names none.
+	Step      Phase = "step"
+	Accepting Phase = "accepting"
+	Retro     Phase = "retro"
+	Merging   Phase = "merging"
+	Done      Phase = "done"
+	Held      Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
-	Done, Held,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Step, Accepting,
+	Retro, Merging, Done, Held,
 }
 
 // Order is the line an issue of the default steps walks forward, and the phases a move back is
@@ -56,9 +60,9 @@ var All = []Phase{
 // MovesBack answers false for it.
 //
 // Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
-// pair of two different workflow phases (MovePairs, all 42 ordered pairs of the seven) that some
-// task's line makes as a move back (plan.CanMoveBack, 28 of them), since it reads the file with
-// no plan, and refuses the other 14, which would never fire. The engine counts the pair of each
+// pair of MovePairs (all 42 ordered pairs of the seven, and the 15 pairs of step) that some task's
+// line makes as a move back (plan.CanMoveBack, 41 of them), since it reads the file with no plan,
+// and refuses the other 16, which would never fire. The engine counts the pair of each
 // move back the task's own line reads (Walk.MovesBack), and a pass. It
 // lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
 // Measured with
@@ -70,13 +74,16 @@ var All = []Phase{
 // names one package of this repository, internal/claim.
 var Order = []Phase{Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging}
 
-// MovesBack says whether to is a workflow phase before from on Order (MovesBackOn).
+// MovesBack says whether to is a phase of today's line, Order, before from (MovesBackOn). A phase
+// outside Order, step among them, is no part of the forward line, so this answers no move into or
+// out of it. A task in another order moves back by its own (workflow's Walk.MovesBack).
 func MovesBack(from, to Phase) bool {
 	return MovesBackOn(Order, from, to)
 }
 
 // MovesBackOn says whether to stands before from on line. Both must stand on it: a phase the line
-// does not hold is no part of it, so nothing moves back into or out of it.
+// does not hold is no part of it, so nothing moves back into or out of it. A phase the line holds
+// at two places, as step where a task names two roles the deployment defines, is read at its first.
 func MovesBackOn(line []Phase, from, to Phase) bool {
 	toIndex := slices.Index(line, to)
 	return toIndex >= 0 && toIndex < slices.Index(line, from)
@@ -91,26 +98,29 @@ func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }
 
-// MovePairs is every move the daemon counts, each written "<from>-<to>": each pair of two
-// different phases of Order, BackwardPairs first, in their order, then the 21 forward pairs, each
-// phase of Order paired with every phase after it. A task in another order than today's moves
-// back by its own order (workflow's Walk.MovesBack), so the move back of one task, testing to
-// reviewing, is a forward pair of Order. It is the whole vocabulary the readers named on Order
-// share: the engine counts a move back under its pair, the config loader refuses a hook naming a
-// pair outside it, and the outbox refuses a hook prompt of a move outside it (record.HookPrompt).
-// The answer is a fresh slice.
+// MovePairs is every move the daemon counts, each written "<from>-<to>": BackwardPairs first, in
+// their order, then the 21 forward pairs, each phase of Order paired with every phase after it,
+// then the pairs of step: step to each phase of Order, each phase of Order to step, and step-step.
+// A task in another order than today's moves back by its own order (workflow's Walk.MovesBack),
+// so the move back of one task, testing to reviewing, is a forward pair of Order. A step of a role
+// the deployment defines runs as step wherever it stands in its task, so a move back may leave or
+// reach step, and one from such a step to an earlier one is step-step, the one pair of a phase
+// with itself. It is the whole vocabulary the readers of a move share: the engine counts a move
+// back under its pair, the config loader refuses a hook naming a pair outside it, and the outbox
+// refuses a hook prompt of a move outside it (record.HookPrompt). The answer is a fresh slice.
 func MovePairs() []string {
 	return slices.Clone(movePairs)
 }
 
-// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order.
+// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order and
+// step, or step-step.
 func IsMovePair(from, to Phase) bool {
 	return movePairSet[Pair(from, to)]
 }
 
 // ParsePair reads one "<from>-<to>" pair and answers ok only for a pair MovePairs holds: two
-// different phases of Order. Phase words hold "_" and never "-", so the one "-" of a pair in the
-// set splits it.
+// different phases of Order and step, or step-step. Phase words hold "_" and never "-", so the
+// one "-" of a pair in the set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
 	if !movePairSet[text] {
 		return "", "", false
@@ -135,7 +145,7 @@ func Pair(from, to Phase) string {
 var backwardPairs = buildBackwardPairs()
 
 // movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
-// it, 42 pairs.
+// it, then step to each phase of Order, each phase of Order to step, and step-step, 57 pairs.
 var movePairs = buildMovePairs()
 
 // movePairSet is movePairs keyed for the lookups ParsePair and IsMovePair make.
@@ -152,14 +162,20 @@ func buildBackwardPairs() []string {
 }
 
 func buildMovePairs() []string {
-	pairs := make([]string, 0, len(Order)*(len(Order)-1))
+	pairs := make([]string, 0, len(Order)*(len(Order)-1)+2*len(Order)+1)
 	pairs = append(pairs, backwardPairs...)
 	for fromIndex, from := range Order {
 		for _, to := range Order[fromIndex+1:] {
 			pairs = append(pairs, Pair(from, to))
 		}
 	}
-	return pairs
+	for _, to := range Order {
+		pairs = append(pairs, Pair(Step, to))
+	}
+	for _, from := range Order {
+		pairs = append(pairs, Pair(from, Step))
+	}
+	return append(pairs, Pair(Step, Step))
 }
 
 func buildMovePairSet() map[string]bool {
@@ -177,7 +193,7 @@ func buildMovePairSet() map[string]bool {
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
 // role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
 // write none, and report the commit they stand on; accepting is the architect's sign-off, no
-// handoff at all.
+// handoff at all; and step, whose role the deployment defines, writes none either.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -196,7 +212,8 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, awaiting_children, done, held — has none. Admitted and accepting are the
+// awaiting_person, awaiting_children, done, held — has none, and neither has step, whose role is
+// the one the issue's plan names rather than one of the phase's. Admitted and accepting are the
 // architect's, and neither phase starts a worker. On a root both are its own architect's. On a
 // child both are the architect that owns it: its own while that claim holds its role, else the one
 // above. At admitted that is the one above, since the child's own architect has not started yet or
@@ -234,9 +251,10 @@ func RoleFor(p Phase) claim.Role {
 // LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
-// it stands past it. A completion that arrives after the issue moved on without its role is of
-// this phase (Of). The architect works admitted and accepting, signs accepting off and completes
-// nothing, so it leaves no phase here.
+// it stands past it. A role the deployment defines works step alone, so step is the phase it has
+// left wherever the issue stands. A completion that arrives after the issue moved on without its
+// role is of this phase (Of). The architect works admitted and accepting, signs accepting off and
+// completes nothing, so it leaves no phase here, and neither does a name that is no role.
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -252,6 +270,9 @@ func LeftBy(role claim.Role, at Phase) Phase {
 			return Retro
 		}
 		return Implementing
+	}
+	if claim.IsDeploymentRole(role) {
+		return Step
 	}
 	return ""
 }

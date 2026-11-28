@@ -14,17 +14,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// RoleConfigRoles are the roles `role_config_files` may name, in claim.Roles' order (the default
-// steps' order): every issue role, then the controller, which only `controller: daemon` launches.
+// RoleConfigRoles are Legion's roles `role_config_files` may name, in claim.Roles' order (the
+// default steps' order): every issue role, then the controller, which only `controller: daemon`
+// launches. The key may also name each role of `roles` (Config.roleConfigRoles).
 var RoleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
 
-// readRoleConfigFiles is `role_config_files`: a mapping of a Legion role (RoleConfigRoles) to the
-// absolute paths of the Oh My Pi settings overlays that role alone names in PI_CONFIG_FILES, after
-// every role's own (runtime.tmux.pi_config_files, or PI_CONFIG_FILES in runtime.kubernetes.pod.env).
-// A role named twice or not a Legion role, a list that is empty or not a list of strings, and an
-// entry that is relative, unclean, holds PI_CONFIG_FILES' separator `:` or repeats another of the
-// role's are each refused naming the entry: a relative path would resolve against wherever the
-// role's Oh My Pi starts, which is no file of the operator's.
+// isRoleConfigName is whether `role_config_files` and `worker_stall_backstop_hours` take role when
+// the key is read: one of RoleConfigRoles, or a name of the role grammar (claim.IsRole) that holds
+// no token's run (tokenShaped), which checkDeploymentRoleKeys holds to a role of `roles` once every
+// key is read. A token-shaped name fails keyShape too, so its refusal names it by its line alone.
+func isRoleConfigName(role claim.Role) bool {
+	return role == claim.RoleController || roleName(role)
+}
+
+// readRoleConfigFiles is `role_config_files`: a mapping of a role (RoleConfigRoles, or a role of
+// `roles`) to the absolute paths of the Oh My Pi settings overlays that role alone names in
+// PI_CONFIG_FILES, after every role's own (runtime.tmux.pi_config_files, or PI_CONFIG_FILES in
+// runtime.kubernetes.pod.env). A role named twice or no role's name (isRoleConfigName), a list
+// that is empty or not a list of strings, and an entry that is relative, unclean, holds
+// PI_CONFIG_FILES' separator `:` or repeats another of the role's are each refused naming the
+// entry: a relative path would resolve against wherever the role's Oh My Pi starts, which is no
+// file of the operator's.
 func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -36,7 +46,7 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, listNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
-		if !slices.Contains(RoleConfigRoles, role) {
+		if !isRoleConfigName(role) {
 			if !keyShape(roleNode.Value) {
 				return nil, fmt.Errorf("%s: it must be a Legion role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(RoleConfigRoles))
 			}
@@ -59,9 +69,10 @@ func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string,
 // gives a role and a `memory` block gives a project: at least one clean absolute path, each named
 // once, none holding PI_CONFIG_FILES' separator `:`. An empty list is refused rather than taken as
 // no overlay, since a key that wants none is left out; a relative or unclean path would resolve
-// against wherever the Oh My Pi that loads it starts, which is no file of the operator's. reader
-// names that Oh My Pi and owner whom the key belongs to, the two words the two keys' refusals
-// differ in.
+// against wherever the Oh My Pi that loads it starts, which is no file of the operator's. An entry
+// that is no clean absolute path, or holds `:`, is named by its number alone, never as written: it
+// fits no grammar of the key, and need not be a path at all. reader names that Oh My Pi and owner
+// whom the key belongs to, the two words the two keys' refusals differ in.
 func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, error) {
 	files, err := readStrings(value, key)
 	if err != nil {
@@ -73,9 +84,9 @@ func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, er
 	for index, file := range files {
 		switch {
 		case !filepath.IsAbs(file) || filepath.Clean(file) != file:
-			return nil, fmt.Errorf("%s entry %q must be a clean absolute path: %s reads it from wherever it starts", key, file, reader)
+			return nil, fmt.Errorf("%s entry %d must be a clean absolute path: %s reads it from wherever it starts", key, index+1, reader)
 		case strings.Contains(file, ":"):
-			return nil, fmt.Errorf("%s entry %q holds `:`, which separates the overlays PI_CONFIG_FILES names", key, file)
+			return nil, fmt.Errorf("%s entry %d holds `:`, which separates the overlays PI_CONFIG_FILES names", key, index+1)
 		case slices.Contains(files[:index], file):
 			return nil, fmt.Errorf("%s names %s twice", key, file)
 		}
@@ -94,7 +105,7 @@ func readOverlayFiles(value *yaml.Node, key, reader, owner string) ([]string, er
 // the image probe reads every role's overlays in the mounts a role sees.
 func checkRoleConfigFiles(cfg Config) error {
 	everyRole := operatorOverlays(cfg)
-	for _, role := range RoleConfigRoles {
+	for _, role := range cfg.roleConfigRoles() {
 		files := cfg.RoleConfigFiles[role]
 		if len(files) == 0 {
 			continue
@@ -169,7 +180,7 @@ func checkDeclaredOverlays(cfg Config, field, owner string, files []string, role
 	if roles != nil {
 		fix = "put every role its roles names on " + string(runtime.BackendOmp)
 	}
-	for _, role := range claim.Roles {
+	for _, role := range cfg.issueRoles() {
 		if roles != nil && !slices.Contains(roles, role) {
 			continue
 		}

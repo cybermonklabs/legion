@@ -738,6 +738,13 @@ func podEndFor(state ClaimState, live podHoldEnd) podHoldEnd {
 // up its hold, which leaves the gate as a failed launch at the end of this decision (endPodPark),
 // and the pause's gate holds it in the park's place and stops the claim for the pause in its next
 // decision, a launch owed (pauseGate, pauseStopDue).
+//
+// A grant whose start's work the issue left during the park starts nothing either, by the rule
+// every park's end keeps (startLeftWhileParked): the claim is suspended for the daemon, and the
+// hold, which the wake gave up but the machine still records, leaves the gate at the end of this
+// decision as a suspension's (endPodPark), so the pod goes to the next start that waits. The
+// exception is that rule's own: a claim that holds a task of work its issue still holds, queued
+// during the park, goes on with the granted launch, for that task.
 func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.park == nil {
@@ -751,7 +758,11 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 		waiting.park = nil
 		return m.pauseGate(ctx, waiting, pause)
 	}
-	m.wake, m.podPark = nil, nil
+	m.wake = nil
+	if left, err := m.startLeftWhileParked(ctx, waiting.kind, waiting.start, waiting.again); left {
+		return err
+	}
+	m.podPark = nil
 	return waiting.run(ctx)
 }
 

@@ -229,8 +229,9 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion config check, which prints the renames, the open capability
-# rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
+# wake keys add no line to legion config check, which prints a line for each role the deployment
+# defines after the project lines (none here), then the renames, the open capability rows, the
+# pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
 # under tmux the pause line names runtime: tmux whatever the pacing is (pause.Unavailable reads
 # the runtime first). config-check-passes below compares everything after the OK line with a fixed
 # string.

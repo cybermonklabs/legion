@@ -40,6 +40,13 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   The newest counting result chooses the commit whose verdicts decide the check.
   A pass and a fail at that commit leave the check not known until one is retracted.
 
+## Where a check runs
+
+Every role writes the one workspace, so a file can change under your check.
+Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
+A run whose output you did not capture can be neither confirmed nor cleared.
+
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.

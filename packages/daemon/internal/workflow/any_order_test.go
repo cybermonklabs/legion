@@ -57,13 +57,13 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
 		// A review of an earlier run stands on the reviewer's row, which this run's reviewer has
 		// not reported over: the sign-off must not hand it on.
 		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleReviewer, Claim: "review-claim",
 			HandoffRecord: "review-" + root.Key, HandoffVersion: 1, HandoffCommit: "old"})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 
 		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
@@ -85,8 +85,8 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
 		if result := signsOff(t, pool, engine, root.Key); refusalCode(result) != "SIGNOFF_CHILD_IN_WORKFLOW" {
 			t.Fatalf("the sign-off of a parent whose child runs = %+v, want SIGNOFF_CHILD_IN_WORKFLOW", result.Refusal)
@@ -99,11 +99,11 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		reportsHandoff(t, pool, engine, root.Key, claim.RoleReviewer, 2)
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 
 		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
@@ -142,7 +142,7 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 			return record.NewStore().MoveTask(t.Context(), tx, root.Key, root.Generation, "a",
 				record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 		})
-		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 		if start := lastStartOf(t, pool, root.Key, claim.RoleImplementer); start.Phase != phase.Retro {
 			t.Fatalf("the implementer's start after the planner = %+v, want its retro", start)

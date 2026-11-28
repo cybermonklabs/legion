@@ -225,6 +225,13 @@ type wake struct {
 	// refresh credit until the grant's decision, or the one that drops the wake, ends with nothing
 	// of that launch owed (laneLaunchOwed).
 	park *podHold
+	// start is the work of the workflow start this launch brings its claim back for (StartWork),
+	// the zero StartWork for every other launch. The wait a park holds a launch for can be tens of
+	// minutes over a wave, and the issue can leave that work meanwhile, so the end of every park
+	// judges it again before the launch goes on, and, where the issue has left it, the task the
+	// claim holds, which the launch goes on for while its work holds (startLeftWhileParked): the
+	// pacing's turn (runWake) and the pod gate's grant (podStartDue) alike.
+	start StartWork
 }
 
 // reserveWake is the wake gate: it takes this wake a place in the pacing's queue its claim's class
@@ -290,11 +297,14 @@ type wake struct {
 // pacer lets its place out (wakeLetOut, decision 14) — here, for a place let out at once, and at
 // the wake's turn for one that waits (wakeNow) — and of the wait as the decision that began it
 // ends (tellWakeQueue), never of a moment at the join.
-func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepace.Place, run, again func(context.Context) error) error {
+//
+// start is the work of the workflow start the launch is for (launchAfter), which the wake carries
+// to the end of its park, where it is judged again (wake.start, startLeftWhileParked).
+func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepace.Place, start StartWork, run, again func(context.Context) error) error {
 	kind := m.pluginRelaunch.waitsUnder()
 	if pause, holds := m.pauseHolds(); holds {
 		return m.pauseGate(ctx, &wake{joined: m.deps.Clock.Now(), kind: kind, state: m.claim.State, run: run, again: again,
-			pluginMark: m.takePluginRelaunch()}, pause)
+			pluginMark: m.takePluginRelaunch(), start: start}, pause)
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
 	if exempt || !gatePaces(&m.deps, controller) {
@@ -319,7 +329,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, carried *wakepac
 	// (markPluginRelaunch, runWake, wake.pluginMark). A launch that runs above leaves it on the
 	// machine, where the launch itself commits it (launchNow, commitPluginRelaunch).
 	return m.waitOnMachine(ctx, &wake{place: place, joined: now, kind: kind, state: m.claim.State, paid: true, run: run, again: again,
-		pluginMark: m.takePluginRelaunch()})
+		pluginMark: m.takePluginRelaunch(), start: start})
 }
 
 // gatePaces is the gate's rule for a launch no request exempts and no project pause holds
@@ -555,6 +565,14 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 				return err
 			}
 		}
+	}
+	// The park held a launch written launching with no process for as long as its wait, which
+	// over a wave is tens of minutes, and the start it was raised for may be of work its issue has
+	// left since: such a start starts no process unless the claim holds a task of work its issue
+	// still holds, queued during the wait, which the launch goes on for (startLeftWhileParked),
+	// whichever park held it — the pacing's, the pause's, or the pod gate's let out after a pause.
+	if left, err := m.startLeftWhileParked(ctx, waiting.kind, waiting.start, m.retryHolding(waiting.pluginMark, waiting.again)); left {
+		return err
 	}
 	// Past both steps the launch runs, so the intent this wake carried goes back to the machine
 	// for that launch to commit as it starts (holdPluginRelaunch, launchNow). The credit the gate

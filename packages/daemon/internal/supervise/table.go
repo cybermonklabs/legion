@@ -509,6 +509,9 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Start is the work a workflow start spawns the claim for, which the spawn judges again under
+	// the machine's lock before it launches (StartWork); the zero value is judged by nothing.
+	Start StartWork
 	// Place is a place the caller has already taken for this launch in the wake pacing, and nil
 	// for every caller but one: the boot's relaunch of the launches the previous daemon left
 	// waiting (internal/daemon's launchUnfinished), which places every launch in its queue in the
@@ -627,6 +630,8 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
+	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // MessageMarked is the daemon's word that a wake for a waiting Envoy message reached this claim:
@@ -714,6 +719,8 @@ type RequestRetry struct {
 	FreshSession   bool
 	Decided        bool
 	OneAttemptLeft bool
+	// Start is the work a workflow start retries the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // RequestAskedRetry is a caller relaunching an agent through the API: the retry RequestRetry
@@ -3033,7 +3040,11 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 // spawn launches a queued claim, in the place its caller took for it when it carries one
 // (RequestSpawn.Place), and otherwise in the place the gate joins for it.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), ev.(RequestSpawn).Place, nil)
+	spawn := ev.(RequestSpawn)
+	if err := m.startHolds(ctx, spawn.Start); err != nil {
+		return err
+	}
+	return m.revive(ctx, exemptWake(ev), spawn.Place, spawn.Start, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -3192,7 +3203,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil, nil)
+	return m.revive(ctx, exemptWake(ev), nil, StartWork{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -3237,17 +3248,21 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // by rule. A claim recording a session it does not hold is not resumed by rule either
 // (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
-	rule := ev.(RequestRuleResume).Reason
+	resume := ev.(RequestRuleResume)
+	rule := resume.Reason
 	if !m.claim.RuleMayResume() {
 		m.log.Info("supervise: not resumed by rule: its suspension holds until a resume lifts it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 		return nil
+	}
+	if err := m.startHolds(ctx, resume.Start); err != nil {
+		return err
 	}
 	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil, nil)
+	return m.revive(ctx, exemptWake(ev), nil, resume.Start, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -3293,8 +3308,17 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // (Claim.CyberPolicyRefusal), since launching the agent again would send the session's content to
 // OpenAI again.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if r, own := ev.(RequestRetry); own && m.claim.RetryHeld(r) {
-		return m.claim.CyberPolicyRefusal()
+	// The workflow's retry names the work it brings the claim back for, judged before anything of
+	// the claim changes; the operator's names none.
+	var start StartWork
+	if r, ok := ev.(RequestRetry); ok {
+		if m.claim.RetryHeld(r) {
+			return m.claim.CyberPolicyRefusal()
+		}
+		start = r.Start
+	}
+	if err := m.startHolds(ctx, start); err != nil {
+		return err
 	}
 	fresh, why := freshSession(m.claim, ev)
 	if fresh {
@@ -3313,7 +3337,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	if r, ok := ev.(RequestRetry); ok {
 		oneAttemptLeft = r.OneAttemptLeft
 	}
-	return m.revive(ctx, exemptWake(ev), nil, func() {
+	return m.revive(ctx, exemptWake(ev), nil, start, func() {
 		if fresh {
 			// lastRefusal is the provider's words for the newest refused turn, which the claim
 			// stores for the reason LastRefusal gives.
@@ -3405,7 +3429,7 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
 // disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
 // claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
+// every other claim of the issue takes this close and no IssueSuspend is queued (workflow/linger.go). A release
 // that fails changes nothing, so the close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
@@ -3624,7 +3648,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil, nil)
+	return m.revive(ctx, d.ID == "", nil, StartWork{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is

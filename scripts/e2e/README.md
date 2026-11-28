@@ -83,7 +83,7 @@ Each item below names a script, then what it proves.
   the daemon requires a store that keeps sessions in a database):
   the Agent Sandbox install check accepts and refuses by name;
   the image probe Sandbox passes; a root provisions its workspace, registers, runs under gVisor and adopts its working copy's author;
-  every container of its pod reserves the issue pod's one cpu and memory reservation with request equal to limit (the rig's overrides and the daemon's defaults both), the pod is `Guaranteed` with no affinity, and the checkpoint reads that one reservation, which all six roles share, back inside the pod:
+  every container of its pod reserves the issue pod's one cpu and memory reservation with request equal to limit (the rig's overrides and the daemon's defaults both), the pod is `Guaranteed` with no affinity, and the checkpoint reads that one reservation, which all its roles share, back inside the pod:
   `nproc` and `MemTotal` on AWS, the pod's cgroup cpu quota and `MemTotal` on GKE, where a sandboxed pod on the container-optimized compute platform reads `nproc` 2 whatever it reserves;
   a second role joins the root's issue pod;
   suspend, resume, a same-agent refusal of a session the table lacks, a pod killed in place, and a relaunch before registration each hold;
@@ -607,6 +607,15 @@ Each item below names a script, then what it proves.
   the plugin of the release before, which the run builds from main itself, reads this daemon's state and its `TASK_STOPPED` within the turn its pane was in at the upgrade, and its own registration is refused `409`.
   No GitHub, no cluster
 
+- `roles.sh`
+
+  a role the settings define runs a step of an issue's plan, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with three issues of one project:
+  the settings file defines `checker`, of the type `testing` with a prompt file and the model `checker-model`, and the driver's own load of it with `config.Load` answers that role;
+  the owner gives `implementer checker` with `register_plan` before the gate opens, the issue walks implementing, the checker's step on `checker-model` with its prompt file's text, the retro and the merge to done with no planner and no tester launched, and `dispatch steps --issue <KEY>` prints step 2 `checker`, type `testing`, with the model `checker-model`;
+  the architect's launch spec, composed, holds `checker (testing)`, and the retro's rating and reason reach the record and `dispatch plans`;
+  controls: a role with no model prints `stand-in/model`, and with `checker` taken out of the settings `register_plan` of the same plan is refused `409 PLAN_REFUSED` naming `checker`.
+  No GitHub, no cluster
+
 - `review-range.sh`
 
   a later review round is told the commit the review before it read, driven against the real Dispatch server this checkout builds and the whole daemon booted with `dispatch_url` at it, as `handoff-records.sh` drives them, with the review App's review, the implementer's push and GitHub's synchronize as GitHub envelopes:
@@ -709,7 +718,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh`, `dispatch-broker.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable, and that output names the path of what each keeps: a work directory of its own, or each test's tables under `TMPDIR` for `dispatch-broker.sh`.
 
@@ -2290,7 +2299,7 @@ Each item below names a check, then what it does and what it requires.
 
   the whole of the change on an issue of its own:
   its role runs, its session is in the table, and `SuspendIssue` closes it as the daemon's durable close effect does
-  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the six role Secrets it owned.
+  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the role Secrets it owned.
   Nothing of the issue is left: `get sandbox` is `NotFound` and `get pvc <pod>-issue` answers none.
   The resume that follows is a launch from nothing:
   a new Sandbox, a new pod, and that pod's own disk under the same name with a new uid and the new pod as its owner, the agent carrying on from the table with `LEGION_WORKSPACE_RECREATED=true` and a marker holding its resumed incarnation alone
@@ -2335,7 +2344,7 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
   GKE Autopilot's Warden admission webhook refuses to schedule a pod whose summed ephemeral-storage request passes 10Gi (naming `autogke-pod-limit-constraints`, "higher than the Autopilot maximum of 10Gi";
   seen live when the six role containers of the earlier layout each asked for their own limit, about 110Gi in all).
   With every role in one `roles` container, that cap is the issue pod's one reservation itself:
-  `runtime.kubernetes.resources.issue.ephemeral_storage` and its request, at most 10Gi on GKE Autopilot, shared by all six roles.
+  `runtime.kubernetes.resources.issue.ephemeral_storage` and its request, at most 10Gi on GKE Autopilot, shared by all its roles.
 
 - **GKE Autopilot adds its own NodeAffinity to every issue pod.**
   Any pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (every issue pod's annotation;
@@ -2478,7 +2487,7 @@ Its verdict is one line, just before the evidence line:
 `stage 4b e2e: PASS`; `stage 4b e2e: FAIL (check <check>)`, after [notes](#libmodel-gateway-unservedsh) on whether the controller could have failed that check for want of a model key;
 or `stage 4b e2e: BLOCKED (check <check>)` when the checkpoint could not run and the teardown checks (`transcripts`, `namespace-clean`, `production-audit`) passed, which makes the run no verdict on the change while the checkpoints before it stand, and gets no notes.
 Capacity is such a stop.
-No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its six roles (docs/kubernetes.md "Issue sizing:
+No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its roles (docs/kubernetes.md "Issue sizing:
 one reservation per pod"), so `preflight` counts the room for the run's four pods at once in pods of that reservation under the run's resources (`lib/stage4b-room.jq`):
 tree 1's root and its two children beside tree 2's root.
 It counts on the nodes the run's pods may use: each Ready, schedulable node, neither tainted `karpenter.sh/disrupted` nor being deleted, that carries every label of the run's `runtime.kubernetes.scheduling.node_selector` (every node, as the run sets none) and of RuntimeClass `gvisor`'s `scheduling.nodeSelector`, and whose `NoSchedule` and `NoExecute` taints the run's tolerations or the RuntimeClass's tolerate, with what it has free beside every non-terminal pod placed on it, of any namespace: admission adds the RuntimeClass's scheduling to every pod that runs under it, and refuses the pod where the RuntimeClass's node selector names a label the run's names at another value, so then no node admits the run's pods and the read names each such label with both values.
@@ -2786,7 +2795,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   while tree 1 keeps running: the proof human sets child 1 `done`, and its Sandbox and pod are gone (`kubectl get sandboxes,pods -l legion.dev/issue=<child 1>` lists nothing) and so is the disk that pod owned, the daemon logged `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` for it exactly once and no lost volume, every claim of child 1, its own architect's among them, is `retired` with its session kept for a reopen, and the root's Sandbox stays Running, its pod's own disk Bound and its pod the same uid.
   The proof human then sets child 2 `backlog`, and within 600 s it has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<child 2>` lists nothing, and `<pod>-issue` answers none):
-  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
+  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
   Each of these waits reads the disk inside it, since a pod's own claim is reaped a moment after the pod object goes.
   The two slots those children held are freed with them, and tree 3, waiting since `issue-independence`, takes one: a child's slot going to a root is the cap counting issues
 
@@ -2817,7 +2826,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The read tool returned both skills at `skill://fixture-omp-skill` and `skill://fixture-claude-skill`, each carrying the run's nonce.
   The lsp tool's status lists `gopls`, `typescript-language-server` and `pyright` for the checkout, and its hovers return each root's own signature (`func Greet`, `function greet`, `def greet`).
   A role shim of tree 2's pod logged the CodeGraph warm-up's success line (`built the index: codegraph init took <duration>, done <duration> after launch`;
-  one of the pod's six shims wins the warm-up lease and builds, the others skip), read from the log of the pod's one `roles` container with `kubectl logs -c roles --timestamps`, each line behind its role's `<role>: ` prefix, and kept, with every role's warm-up line, as `codegraph-warm-up.txt`;
+  one of the pod's role shims wins the warm-up lease and builds, the others skip), read from the log of the pod's one `roles` container with `kubectl logs -c roles --timestamps`, each line behind its role's `<role>: ` prefix, and kept, with every role's warm-up line, as `codegraph-warm-up.txt`;
   the role whose shim built and the seconds from the pod's creation to the line are recorded (`warm_up_built_elapsed`, tested by `bun test scripts/e2e/lib`);
   `codegraph status --json` then reads `initialized: true` and `index.state: "complete"`;
   the codegraph tool's affected names `greet_test.go` for `fixture/greet.go`, its impact of `Greet` names the caller (`GreetWorld` or `caller.go`), and its control, the impact of `NoSuchSymbol`, errs or names none of them.
@@ -2989,7 +2998,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   in the same pod the reviewer's `gh` is the review App's bot from a different `hosts.yml`, and each role's bundle root holds owners' directories, the bundle's `renames.txt` and the kubelet's entries alone, its own owner's directory holding `config.yml` and `hosts.yml` alone and no directory for a repository (INFRA-2543 R2).
   Isolation in the pod's one `roles` container, each read in the role's own namespaces (entered as its agent sees the pod:
   `nsenter -t <its role-init> -U -m -p -i`, then its shim's `-U`):
-  the container holds all six roles' directories under `/var/run/legion/roles` (the control that a cover, not an absent mount, hides each sibling's), while in the implementer's and in the reviewer's namespaces that directory is empty, `/proc` lists one worker-shim, its own, and the `hosts.yml` at its `GH_CONFIG_DIR` hashes to its own `/var/run/legion/roles/<role>/gh` copy in the container and differs from the other's;
+  the container holds every role's directory under `/var/run/legion/roles` (the control that a cover, not an absent mount, hides each sibling's), while in the implementer's and in the reviewer's namespaces that directory is empty, `/proc` lists one worker-shim, its own, and the `hosts.yml` at its `GH_CONFIG_DIR` hashes to its own `/var/run/legion/roles/<role>/gh` copy in the container and differs from the other's;
   the pod shares no process namespace; the daemon logged `github credential written` for every role of the pod and names no token route;
   GitHub's record of the pull request's head attributes it to the implement App's bot, the head carries no CI-skipping line and has check runs, and the daemon recorded it as the implementer's completion (acceptance 4a);
   no commit of the pull request changes only `.legion/` (`pull_request_legion_only_commits`), and the planner's handoff is a Dispatch record of tree 1's `plan` handoff written by the planner's claim session (`assert_handoff_record`, which every later round's implementer, tester and reviewer handoff passes too);
@@ -3146,9 +3155,12 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   before the merger merges, since that merge can follow its assignment by seconds: the smoke main's lock is taken (`hold_smoke_main`).
   Then the merger's own merge of the head it read — the proof only reads the pull request until it merges (`await_merger_merge`) and never merges it by hand; the note names the merge commit.
-  **The merge closes tree 1 at once**, since children 3 and 4 left the workflow at `children-first-acceptance` and nothing of its tree is left in the workflow:
-  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`), with no `workflow: a merged issue's close waits for the issues beneath it` line for tree 1 and no `pr-merged` notice on its architect;
-  Dispatch reads `done` within 120 s, the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
+  **The merge closes tree 1 at once**, since nothing of its tree is in the workflow.
+  Children 3 and 4 were parked at `children-first-acceptance`, before the sign-off the daemon held for them.
+  No issue has entered the tree since, because the daemon refuses one beneath an accepted root.
+  So no `workflow: a merged issue's close waits for the issues beneath it` line names tree 1, and its architect gets no `pr-merged` notice, which is that wait's own:
+  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`;
+  Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it last reached `accepting`, its children's at their moves to the backlog, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
@@ -3219,7 +3231,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
   gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
-  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, provisioning in `workspace-init` alone, and the run's reservations:
+  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), a role-private Secret for each role, provisioning in `workspace-init` alone, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
   the `boot` row's `issue: { cpu: 2950m, memory: 16Gi }` override, the ephemeral-storage limit and request the daemon's defaults;
   each pod is `Guaranteed`, and none carries an affinity (`lib/stage4b-pods.jq` `reservation_problems`).
@@ -6460,6 +6472,53 @@ the Apps' tokens are placeholders; Envoy's listener is unreachable, as the rig l
 and no agent runs: each claim is launched by the package's fake runtime, and nothing plays it.
 `EXPERIMENT_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## roles.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/roles.sh     # → "roles e2e: PASS in <n>s", exit 0
+```
+
+The live proof that a role the settings define runs a step of an issue's plan, its launch and its step record naming the model the settings give it, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`handoff-records.sh`](#handoff-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestRolesLive` (`internal/daemon/roles_live_test.go`, `-tags e2e`) |
+| `proof` | the steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+
+The daemon's path of a step is the real one, and the agent is played by the driver, as the stand-ins below say.
+The driver writes a `legion.yaml` whose `roles` defines `checker` (`type: testing`, `prompt_file: checker.md`, `model: checker-model`) and `prober` (`type: testing`, `prompt_file: prober.md`, no model), each prompt file beside it, and reads it in its own process with `config.Load`, the loader the daemon's boot reads its file with; the daemon boots on the roles that load answers.
+It starts Dispatch as `handoff-records.sh`'s driver does (`startHandoffDispatch`), creates a project of the run's own (`DR<6 hex>`), maps `acme/widgets` to it, and creates three issues, each with a spec, in progress with the `legion` label.
+It seeds each issue in the daemon's store at `admitted` with no design gate and an open pull request at a clean head, and boots the whole daemon through `run`, the function `legion start` calls, with `dispatch_url` at that server.
+The issues walk as the package's whole-daemon tests of a deployment's roles walk them (`deploymentRolesRig`, `internal/daemon/deployment_roles_test.go`):
+the owner writes `plan.md` and gives it with `register_plan` before a person approves the spec and the architect registers the gate; each role over the daemon's worker stream and its own routes, each answer a `message_end` frame naming the model its launch's spec named, and `stand-in/model` for a launch that named none; a person's review and GitHub's merge as envelopes on the broker.
+The reader is the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`), run as a person's own shell runs it by hand with the personal token Dispatch minted for the person who set the project up, as [`step-records.sh`](#step-recordssh)'s reader runs.
+
+| step | driven by | read back as |
+| :--- | :--- | :--- |
+| `checker-defined` | the settings file written and loaded with `config.Load` in the driver's process | `RoleOf(checker)` answers the type `testing`, the prompt file beside the file, the model `checker-model` and the review App, and the step prints that role; the step is the settings' load in the driver's process, not `legion start --check-config`, which the driver cannot run |
+| `plan-registered` | `plan.md` with one block `:::plan_task{#a steps="implementer checker"}` uploaded on the first issue; `POST /legion/v1/plans/register` of its version 1 under the architect's grant, before the gate opens | `200` with the plan at version 1, one task `a` naming `implementer` and `checker` |
+| `walk-implementer-checker` | the gate opened; the implementer's completion; the checker's pass with a commit and no handoff record; the retro rating the plan 4; GitHub's merge | the issue at `implementing`, then `step`, then `retro`, `merging` and `done`; the checker's spawn spec names `checker-model` and its prompt, composed, holds its prompt file's text; its task names the issue, the task's text and ` Step 1 (implementer) reported:`; no planner and no tester launched |
+| `checker-model` | `dispatch steps --issue <KEY>` as the person | step 2 of task `a` as `checker`, type `testing`, an agent, the model `checker-model`, ended `passed`, then the retro and the merge, each ended `passed` |
+| `owner-lists-checker` | the architect's launch spec, as the fake runtime recorded it (`CallsOf("Spawn")`), composed with `runtime.ComposePrompt` as a live launch composes it | the text holds `checker (testing)`; the step is the architect's launch spec, not the prompt as an agent read it, since no agent runs |
+| `retro-rated` | `GET /api/v1/issues/{key}/steps`, the read `dispatch steps` makes; `dispatch plans --project <PROJECT>` as the person | the retro's record names rating 4 and the reason `The plan fit the work.`; the issue's line prints `plan owner (1 tasks: implementer checker)` and `ratings 4/5 "The plan fit the work."` |
+| `control-no-model` | the second issue given `implementer prober` and walked to done | the prober's spawn spec names no model, and `dispatch steps` prints its step 2 with the model `stand-in/model` |
+| `control-no-role` | the daemon restarted on the settings loaded again with `checker` taken out; `register_plan` of `implementer checker` on the third issue | `409 PLAN_REFUSED` naming `checker` |
+
+What the proof stands in for lies outside the steps:
+the broker is a native `nats-server`; GitHub's REST API is the driver's stand-in (`internal/githubtest`) for the issues' pull requests;
+the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
+and no agent runs: each claim is launched by the package's fake runtime, which provisions its own workspace, and played by the driver over its pane's connection.
+`ROLES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
+
 ## plan-pointer-drive.sh
 
 ```sh
@@ -8624,7 +8683,7 @@ A run that ended before its last check with status 0 says so on the line before,
 | `LABEL` | the run's name in its last line: `busy relaunch delivery`, or `busy relaunch delivery at <sha12>` for its negative control's base run, `child adoption`, `conflict no takeover`, `behind entry fence`, `phase entry converge`, `handoff records`, `left session claims`, or `left session claims at <sha12>` for its negative control's base run, `register gate basis`, `parent waits`, `review range`, `merge wait readable`, `step records`, `plan ratings`, `owner steps`, `owner steps client`, `experiment`, `approved version news part one`, `approved version news part two`, `provider error retry`, `claim compaction`, `role prompt rule`, `late completion`, `sub architect` |
 | `SLUG` | the name of the run's own files under `TMPDIR` (or `/tmp` when it is unset): the work directory `legion-e2e-SLUG.<pid>.*`, which holds the broker's store and, where the `driver` check builds one, the driver binary `SLUG.test`, and the evidence directory `legion-e2e-SLUG-evidence.*` when `EVIDENCE` is empty |
 | `TEST` | the one test the driver runs (`-test.run '^TEST$'`); `proof` fails unless the driver reports `--- PASS: TEST`, so a driver that skipped, or a pattern that matched nothing, is no pass |
-| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
+| `EVIDENCE` | the evidence directory the script's own variable names (`BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LEFT_SESSION_CLAIMS_EVIDENCE_DIR`, `REGISTER_GATE_BASIS_EVIDENCE_DIR`, `PARENT_WAITS_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `ROLES_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`, `LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR`, and a `part-one.*` or `part-two.*` directory inside `APPROVED_VERSION_NEWS_EVIDENCE_DIR`), or empty for a fresh one; kept and printed, it holds `transcript.log`, the broker's `nats.log`, the daemon's own `daemon.log`, which the driver writes through `LEGION_E2E_DAEMON_LOG`, and the driver's `proof.log` |
 | `TIMEOUT` | the driver's own deadline (`-test.timeout`), `20m` when it is not given or is empty; `approved-version-news.sh` gives part two 9 minutes for each run its pick makes and 20 more, since the driver bounds each run at eight minutes, and counts no base run of `a4` or `answers` in a run that picks no arm |
 | `DRIVER` | a driver the caller built with `build_daemon_driver` before the run, which the `driver` check notes and does not build again, and which the run does not remove; not given, or empty, the check builds one into the work directory; `approved-version-news.sh` hands both its parts the driver its `plan` check built, in a run of both parts, and every other entry script gives none |
 | `STAMP` | the merge order the check builds the driver with (`build_daemon_driver OUT STAMP`); not given, or empty, the driver numbers its entries by id; [`owner-steps-client.sh`](#owner-steps-clientsh) alone gives one, and a handed `DRIVER` is built with the order its caller chose |
@@ -8646,7 +8705,7 @@ The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `co
 ## lib/secret-leaks.ts
 
 Stage 4b's check that no pod carried a value of its Sandbox's Secret in a container's command, args or environment.
-A pod's `-boot` Secret holds the next generation's token after each relaunch, and the pod watch records no Secret value, so a check made from a later read would judge the wrong values or none.
+The pod's provisioning Secret, `<sandbox>-boot`, and each role's Secret, `<sandbox>-<role>-boot`, can change between generations, and the pod watch records no Secret value, so a check made from a later read would judge the wrong values or none.
 The helper watches the run's Secrets from `pod-watch` on and keeps every value each one held in memory only.
 It never prints or writes a value.
 

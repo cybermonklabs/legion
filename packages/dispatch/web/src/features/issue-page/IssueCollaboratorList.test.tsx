@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
-import type { LegionRole } from "@legion/contracts";
+import type { LegionStepRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -26,7 +26,7 @@ afterEach(() => setSystemTime());
 
 function legionAgent(
   sessionId: string,
-  role: "implementer" | "planner" | "reviewer" | "tester",
+  role: LegionStepRole,
   startedAt: string,
   replacedBy: string | null = null
 ): IssueCollaboratorAgent {
@@ -148,6 +148,7 @@ test("the collaborators split Legion agents into role sections and keep the serv
         legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
         legionAgent("new-reviewer", "reviewer", "2026-10-26T05:00:00Z"),
         legionAgent("old-reviewer", "reviewer", "2026-10-26T01:00:00Z", "new-reviewer"),
+        legionAgent("checker", "checker", "2026-10-26T04:00:00Z"),
         otherAgent("newer", "2026-10-26T02:00:00Z"),
         otherAgent("older", "2026-10-26T01:00:00Z"),
         otherAgent("quiet", null),
@@ -168,8 +169,14 @@ test("the collaborators split Legion agents into role sections and keep the serv
       within(legion)
         .getAllByRole("heading", { level: 3 })
         .map((heading) => heading.textContent)
-    ).toEqual(["planner", "tester", "reviewer"]);
-    expect(sessionsIn(legion)).toEqual(["planner", "tester", "new-reviewer", "old-reviewer"]);
+    ).toEqual(["planner", "tester", "reviewer", "checker"]);
+    expect(sessionsIn(legion)).toEqual([
+      "planner",
+      "tester",
+      "new-reviewer",
+      "old-reviewer",
+      "checker",
+    ]);
     const replaced = legion.querySelector('[data-replaced-by="new-reviewer"]');
     expect(replaced?.textContent).toBe("replaced by Legion reviewer · new-reviewer");
     expect(replaced?.querySelector("a")?.getAttribute("href")).toBe("/agents/new-reviewer/live");
@@ -578,16 +585,17 @@ test("collaboratorSections groups the server's list into the three sections the 
   expect(sections.people.map((person) => person.login)).toEqual(["alice"]);
 });
 
-// What the page does with a registry this build does not understand: a role it has no section
-// for, and a start time no reader here parses. Both come from the Legion daemon through the
-// listener, so neither is this app's to guarantee, and neither may lose a row.
+// What the page does with a registry this build does not understand: a role outside the grammar
+// of an issue's role, and a start time no reader here parses. Both come from the Legion daemon
+// through the listener, so neither is this app's to guarantee, and neither may lose a row. A role
+// the deployment defines is of the grammar, so it has a section of its own after Legion's six.
 test("collaboratorSections keeps an agent whose role or timestamps it cannot read", () => {
   const skewed = {
     ...legionAgent("future-role", "tester", "2026-10-26T00:00:00Z"),
     legion: {
       replaced_at: null,
       replaced_by: null,
-      role: "archivist" as LegionRole,
+      role: "Archivist",
       role_token: "legion-archivist",
       started_at: "2026-10-26T00:00:00Z",
     },
@@ -597,16 +605,20 @@ test("collaboratorSections keeps an agent whose role or timestamps it cannot rea
       skewed,
       legionAgent("early", "tester", "2026-10-26T01:00:00Z"),
       { ...legionAgent("unreadable", "tester", "yesterday"), last_at: null },
+      legionAgent("archivist", "archivist", "2026-10-26T02:00:00Z"),
     ],
     issue_key: "CORE-1",
     legion_registry: "ok",
     people: [],
   });
 
-  // The unknown role is listed rather than dropped, and the session whose start this build
-  // cannot read keeps the place the server gave it.
+  // The role outside the grammar is listed rather than dropped, and the session whose start this
+  // build cannot read keeps the place the server gave it.
   expect(sections.others.map((agent) => agent.session_id)).toEqual(["future-role"]);
   expect(
     sections.legion.map(({ agents, role }) => [role, agents.map((a) => a.session_id)])
-  ).toEqual([["tester", ["early", "unreadable"]]]);
+  ).toEqual([
+    ["tester", ["early", "unreadable"]],
+    ["archivist", ["archivist"]],
+  ]);
 });

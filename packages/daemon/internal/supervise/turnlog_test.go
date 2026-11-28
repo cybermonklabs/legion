@@ -119,7 +119,7 @@ func TestTheTurnLogLinesAreWrittenOnEveryPathIntoATurn(t *testing.T) {
 		}
 		h.conns.Register(testToken, h.conn)
 		h.conn.SetStreaming(true)
-		h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return false, nil }
+		h.deps.PhaseHolds = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
 		h.start(restored)
 
 		h.must(RequestReady{Claim: testToken, Generation: restored.Generation, Session: session})

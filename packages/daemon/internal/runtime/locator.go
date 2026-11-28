@@ -43,7 +43,7 @@ type TmuxLocator struct {
 	Pane   string `json:"pane"`
 }
 
-// SandboxLocator identifies one role process in an Agent Sandbox: an issue's, whose six roles share
+// SandboxLocator identifies one role process in an Agent Sandbox: an issue's, whose roles share
 // one Sandbox, pod and container (IssuePodContainer), or the project controller's, whose pod runs
 // the controller's launcher alone in its container ControllerPodContainer. The pod UID, container
 // and generation are required because a pod's launcher starts a role's generations one after

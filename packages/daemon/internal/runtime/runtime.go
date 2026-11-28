@@ -441,6 +441,20 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// ErrAwaitsPodUpdate is a launch of a role into its issue's live pod that was built before the
+// deployment defined that role: the pod has no launcher, Secret or volume of the role, and a
+// launch that replaced it would end every role in it and delete the issue's disk with everything
+// a role did not push. The launch writes nothing and answers this; the pod's update round, which
+// asks each role in it to push first, or its release replaces it, and the role starts in the new
+// pod (IssuePodRoles).
+var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before this role, and only its update round or its release replaces it")
+
+// IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
+// without role, and that pod's uid. A runtime with no pods (tmux) does not implement it.
+type IssuePodRoles interface {
+	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
+}
+
 // IssuePodReplacer ends the pod of an update round that has no role process in it, asked by the
 // issue alone, and returns when the runtime no longer has that pod. It is ReplacePod for a round
 // with no claim left to name the pod through: every role of the pod is suspended or between
@@ -789,7 +803,9 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). Model is the model the harness runs, the `model` the settings
+// give a role of the deployment (`roles.<name>.model`); "" is the profile's own: Oh My Pi's
+// `@default` role, and no model named to Claude Code.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -811,6 +827,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	Model             string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
@@ -1132,7 +1149,8 @@ func RoleIdentities(identities map[claim.Role]GitIdentity) string {
 
 // ReadRoleIdentities reads the table, value, as RoleIdentities writes it. It answers the table and
 // "", or why value cannot be used: empty, not one JSON object of identities (trailing data after
-// the object included), a role outside claim.Roles, or a name or an email that is empty or holds a
+// the object included), a key that is no role (claim.IsRole: a role the deployment defines is
+// one, since a launch writes it beside Legion's six), or a name or an email that is empty or holds a
 // line break. An identity may hold fields it does not know, which it passes over: a role's image
 // may run a `legion` of another release than the daemon's, and a field a later daemon adds must not
 // turn its step off. The reason names no value, so the line it goes into stays one line.

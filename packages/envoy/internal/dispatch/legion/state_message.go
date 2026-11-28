@@ -203,6 +203,7 @@ const (
 	changeSlot      = "slot"
 	changeWaitingOn = "waitingOn"
 	changeClaim     = "claim"
+	changeStepRole  = "stepRole"
 )
 
 // decodeStateMessage decodes one message's envelope, unless keying decoded it already, and its
@@ -344,6 +345,16 @@ func changeObservation(issue string, change stateChange) (observation Observatio
 			claim = *state
 		}
 		observation.Field, observation.Value = ClaimFieldPrefix+change.Role, claimValue(claim)
+	case changeStepRole:
+		var role *string
+		if err := decodeNew(change.New, &role); err != nil {
+			return Observation{}, false, err
+		}
+		stepRole := ""
+		if role != nil {
+			stepRole = *role
+		}
+		observation.Field, observation.Value = FieldStepRole, stepRoleValue(stepRole)
 	default:
 		return Observation{}, false, nil
 	}

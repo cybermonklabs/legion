@@ -184,7 +184,7 @@ type slotRepairRow struct {
 	// root and key are the tree's root and the member holding the slot.
 	root, key string
 	// stands is the phase the member is in, which names the role that works it
-	// (phase.RoleFor).
+	// (phase.RoleFor). At step it is the role of the running step (record.Issue.RoleAt).
 	stands phase.Phase
 	// generation is the member's, which the start names and the claim's task is read against.
 	generation uint64

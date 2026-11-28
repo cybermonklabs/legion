@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DISPATCH_KEY_PATTERN, type LegionRole } from "@legion/contracts";
+import { DISPATCH_KEY_PATTERN, type LegionRole, type LegionStepRole } from "@legion/contracts";
 import type { LegionPhase } from "@legion/contracts/legion-api";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -34,6 +34,8 @@ import { staleGitLockNote } from "./git-lock";
  * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
  * `HANDOFF_HEAD_MERGED_FORWARD` when it is of planning, testing or reviewing once a merge forward of the
  * issue's pull request has landed, since a completion naming no commit says nothing about a head.
+ * A role of the deployment writes no record and always reports `@-` (`completedPhase`), which the
+ * daemon refuses `HANDOFF_HEAD_MERGED_FORWARD` when it is a head a merge forward replaced.
  *
  * While the issue stands in implementing, the phase the implementer works, its round is the
  * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:
@@ -105,8 +107,8 @@ export interface HandoffReport {
 export interface HandoffReportInput {
   /** The issue's phase, from its record (`read_record`'s `phase`). */
   readonly phase: LegionPhase;
-  /** The session's claim role. */
-  readonly role: LegionRole;
+  /** The session's claim role: one of Legion's six or a role of the deployment. */
+  readonly role: LegionStepRole;
   /** The pane's environment: `LEGION_WORKSPACE` and `LEGION_ISSUE`. */
   readonly env: NodeJS.ProcessEnv;
   /** The pane's Dispatch (`paneLatestHandoff`). */
@@ -181,7 +183,7 @@ export function paneHandoffReport(
   env: NodeJS.ProcessEnv,
   cwd: string,
   session: string
-): (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport> {
+): (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport> {
   return (phase, role) =>
     findHandoffReport({
       phase,
@@ -271,9 +273,11 @@ export async function findPushedBranchHead(input: {
  * merger each work one phase, which is the answer wherever the issue stands; the implementer
  * works implementing and retro, and has left retro once the issue stands past it in the
  * workflow's order (`phase.MovesBack(at, retro)`, which merging alone answers) and implementing
- * anywhere else; the architect leaves no phase, so its answer is the issue's.
+ * anywhere else; the architect leaves no phase, so its answer is the issue's; and a role of the
+ * deployment works `step` (`phase.LeftBy`), which ends with no handoff record, so its completion
+ * reports the commit the workspace stands on.
  */
-function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
+function completedPhase(role: LegionStepRole, at: LegionPhase): LegionPhase {
   switch (role) {
     case "planner":
       return "planning";
@@ -288,6 +292,8 @@ function completedPhase(role: LegionRole, at: LegionPhase): LegionPhase {
       return at === "merging" ? "retro" : "implementing";
     case "architect":
       return at;
+    default:
+      return "step";
   }
 }
 

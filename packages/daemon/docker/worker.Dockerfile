@@ -1440,8 +1440,8 @@ WORKDIR /home/legion
 #    the check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
 #    (ubuntu-24.04, AVX2), 125 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
-#    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
-#    six copies in an issue pod. The probes in the final step never wait on it.
+#    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: one
+#    copy for each role of an issue pod. The probes in the final step never wait on it.
 # Any failure fails the build: a broken image never publishes. The pinned omp must list
 # --session-id in its help, which the fork's 18.18.6 builds do from 18.18.6-sami.20261117-074351
 # on: a pin older than that, such as 18.18.6-sami.20261117-013345, fails here. Nothing of Legion's

@@ -1,4 +1,4 @@
-import type { LegionRole } from "@legion/contracts";
+import { isLegionRole, type LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode, RefObject } from "react";
 
@@ -156,44 +156,54 @@ export function IssueCollaboratorList({
         >
           <SectionHeading>{CONTROL_LABELS.collaborators_legion}</SectionHeading>
           {groupsDrawn(sections.legion, ({ agents }) => agents, legionPages.drawn).map(
-            ({ entries, group: { role } }) => (
-              <section aria-label={ROLE_WORDS[role]} className="space-y-2" key={role}>
-                <h3 className={`text-xs font-semibold uppercase ${pageQuietText}`} {...pageChrome}>
-                  {ROLE_WORDS[role]}
-                </h3>
-                <ul className="space-y-2">
-                  {entries.map((agent) => (
-                    <Row
-                      detail={
-                        <>
-                          <span>
-                            <span {...pageChrome}>{CONTROL_LABELS.collaborator_started}</span>{" "}
-                            <Timestamp at={agent.legion.started_at} />
-                          </span>
-                          {agent.legion.replaced_by === null ? null : (
-                            <span data-replaced-by={agent.legion.replaced_by}>
-                              <span {...pageChrome}>{CONTROL_LABELS.collaborator_replaced_by}</span>{" "}
-                              <AgentName
-                                inline
-                                sessionId={agent.legion.replaced_by}
-                                storedTitle={titles.get(agent.legion.replaced_by)}
-                              />
+            ({ entries, group: { role } }) => {
+              // A role the deployment defines has no word of the page's, so its list is titled
+              // with its own name, as the collaborators tab titles it.
+              const word = isLegionRole(role) ? ROLE_WORDS[role] : role;
+              return (
+                <section aria-label={word} className="space-y-2" key={role}>
+                  <h3
+                    className={`text-xs font-semibold uppercase ${pageQuietText}`}
+                    {...pageChrome}
+                  >
+                    {word}
+                  </h3>
+                  <ul className="space-y-2">
+                    {entries.map((agent) => (
+                      <Row
+                        detail={
+                          <>
+                            <span>
+                              <span {...pageChrome}>{CONTROL_LABELS.collaborator_started}</span>{" "}
+                              <Timestamp at={agent.legion.started_at} />
                             </span>
-                          )}
-                        </>
-                      }
-                      key={agent.session_id}
-                      name={
-                        <AgentName
-                          sessionId={agent.session_id}
-                          storedTitle={agent.title ?? undefined}
-                        />
-                      }
-                    />
-                  ))}
-                </ul>
-              </section>
-            )
+                            {agent.legion.replaced_by === null ? null : (
+                              <span data-replaced-by={agent.legion.replaced_by}>
+                                <span {...pageChrome}>
+                                  {CONTROL_LABELS.collaborator_replaced_by}
+                                </span>{" "}
+                                <AgentName
+                                  inline
+                                  sessionId={agent.legion.replaced_by}
+                                  storedTitle={titles.get(agent.legion.replaced_by)}
+                                />
+                              </span>
+                            )}
+                          </>
+                        }
+                        key={agent.session_id}
+                        name={
+                          <AgentName
+                            sessionId={agent.session_id}
+                            storedTitle={agent.title ?? undefined}
+                          />
+                        }
+                      />
+                    ))}
+                  </ul>
+                </section>
+              );
+            }
           )}
           {legionPages.more(
             sections.legion.reduce((count, { agents }) => count + agents.length, 0),

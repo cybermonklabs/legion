@@ -1,0 +1,42 @@
+kind: Added
+body: |-
+  A deployment defines roles of its own under `roles` in `legion.yaml`. Each holds its `type` and
+  `prompt_file`, and may hold its `model` and `github_app`. A role's name holds no run of 8 hex
+  digits and no run of 10 letters and digits that holds a digit, so a name such as `checker2025` or
+  `codereviewer2` is refused. `role_types` adds types to Legion's five.
+  `worker_backends`, `role_config_files`, `worker_stall_backstop_hours`, each hook's `roles`
+  and `projects.<KEY>.default_steps` take such a role, and `legion config check` prints one line
+  for each. An owner's plan names such a role as a step. The step runs in the phase `step`, on the
+  role's prompt, model, backend and App. Its completion reports pass or fail and the commit its
+  workspace stands on. A fail may name `return_to`, the place of an earlier step of the task. A
+  move back counts no review round. A review's request for changes counts one, and so does the fail
+  of a review step whose agent is not the owner. A hook's `moves` may name each of the 41 moves
+  back that some task's order makes, the moves of a step among them. The loader refuses the other
+  16 pairs. A task whose role the deployment no longer defines stops, and a todo does not start it
+  again while the role is gone. The daemon API contract gains an entry for this change. State names
+  the role of a running step (`stepRole`) and the roles that wait for the issue's pod
+  (`startWaitsForPod`). A caller whose contract lacks the entry reads `step` as `implementing`. A
+  plugin whose contract lacks the entry is refused, with a `409`, the registration of a claim of
+  such a role. A state event names the step role as its field `stepRole` whenever a write moves it,
+  a move from one step of the deployment to another included.
+
+  Roll this release's worker image out before the first `roles` entry. Each workflow role's launch
+  carries `LEGION_ROLE_IDENTITIES`, the table of each role's git identity, and once the deployment
+  defines a role the table holds that role beside Legion's six. The `legion` of an earlier release
+  refuses the whole table when it holds a key outside Legion's six roles: its `legion jj` prints
+  `LEGION_ROLE_IDENTITIES is a table with "<role>", which is no role; the push runs with no author
+  step`, and its push step re-authors no commit, for any role. An issue pod keeps the worker image
+  it was built on until its update round replaces it. So pin this release's worker image first,
+  and add the first `roles` entry once the daemon's log names no issue pod that runs another image
+  than the configured one (`runs image <image>, the configured image is <image>`).
+
+  The migration `20261124192838_deployment_roles` widens the role and phase checks, and an
+  earlier release cannot read a row at `step` or of such a role. Before a rollback past this
+  release, finish or stop each issue whose plan names such a role. `docs/kubernetes.md`, "Rolling
+  back the release whose deployment defines roles", gives the way back, with the SQL that clears
+  the project's queued outbox rows an earlier release cannot decode. The migration
+  `20261127224354_observed_step_role` adds `issues.observed_step_role`, the step role an issue's
+  last write served, and its header gives its way back.
+time: 2026-11-23T20:05:28Z
+custom:
+    Issue: pr5164

@@ -41,9 +41,8 @@ func plannedConflictIssue(t *testing.T, at phase.Phase, pr record.PullRequest, s
 		place = record.TaskPlace{Kind: record.PlaceMerge}
 	case phase.Retro:
 	default:
-		roles := plan.BuiltinRoles()
 		for i, word := range steps {
-			if role, _, _ := strings.Cut(word, ":"); roles[role].Phase == at {
+			if role, _, _ := strings.Cut(word, ":"); plan.RunsAs(role) == at {
 				place = record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}
 			}
 		}

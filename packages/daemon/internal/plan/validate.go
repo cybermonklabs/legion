@@ -22,9 +22,9 @@ import (
 // out yet, then Validate's, what no release can. Each check bounds its own kinds (reasons), and the
 // two share none, so joining their reasons bounds each kind of the refusal. Every caller that takes
 // or refuses a plan reads it here: register_plan, the configuration loader's check of a project's
-// default steps, and MovesBackPairs.
+// default steps, and CanMoveBack.
 func Refusals(p Plan, d Deployment) []Refusal {
-	return append(Supported(p), Validate(p, d)...)
+	return append(Supported(p, d), Validate(p, d)...)
 }
 
 // MostReasons is the most causes of one kind that one refusal of a plan names; one more reason
@@ -94,6 +94,7 @@ const (
 	roleTwice
 	noImplementer
 	readsBeforeImplementer
+	implementationAfter
 	noTaskBlock
 	missingParent
 	elementNames
@@ -118,6 +119,7 @@ var causeWords = [causes]string{
 	roleTwice:              "roles a task names at two steps",
 	noImplementer:          "tasks with no step implementer",
 	readsBeforeImplementer: "steps that read a pull request with no implementer step before them",
+	implementationAfter:    "steps of the type implementation after the step implementer",
 	noTaskBlock:            "plans with no task block",
 	missingParent:          "task blocks whose parent no typed block of the version holds",
 	elementNames:           "elements that name steps, owner or merges",
@@ -241,7 +243,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 		}
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
-			if _, ok := d.Roles[step.Role]; ok || defined[step.Role] || refused[step.Role] {
+			if d.Defines(step.Role) || defined[step.Role] || refused[step.Role] {
 				continue
 			}
 			refused[step.Role] = true
@@ -450,13 +452,14 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int) {
 // merge by itself where this release merges an issue's work as one change, a role block, and,
 // for each task, `needs`, `owner`, a task that is a part of another (Places) and `merges`, each
 // key but the owner's on acceptance, acceptance with no key, a role named at two steps, no
-// implementer, and each step of a role that reads the implementer's pull request with no
-// implementer step before it. Its steps stand in any other order: the planner at any place, and
-// the tester, the reviewer and the acceptance in any order after the implementer. A task that
-// names no steps runs the project's default steps, which the configuration loader holds to these
-// same checks, so none of its step causes apply. Its reasons are bounded as reasons bounds each
-// kind.
-func Supported(p Plan) []Refusal {
+// implementer, each step of a role that reads the implementer's pull request with no implementer
+// step before it, and each step after the implementer's whose role d gives the type
+// implementation, since Legion's retro is done by the implementer. Its steps stand in any other
+// order: the planner at any place, the tester, the reviewer and the acceptance in any order after
+// the implementer, and a role of the deployment at any place. A task that names no steps runs the
+// project's default steps, which the configuration loader holds to these same checks, so none of
+// its step causes apply. Its reasons are bounded as reasons bounds each kind.
+func Supported(p Plan, d Deployment) []Refusal {
 	var found reasons
 	if len(p.Tasks) > 1 {
 		found.yet(manyTasks, "", func() string {
@@ -476,14 +479,14 @@ func Supported(p Plan) []Refusal {
 		found.yet(roleBlock, "", func() string { return "the plan defines the role " + quoted(role) + "." })
 	}
 	for _, task := range p.Tasks {
-		taskReasons(task, &found)
+		taskReasons(task, d, &found)
 	}
 	return found.refusals()
 }
 
 // taskReasons adds Supported's causes in one task to found: its attributes first, then its steps
 // (stepReasons).
-func taskReasons(t Task, found *reasons) {
+func taskReasons(t Task, d Deployment, found *reasons) {
 	if len(t.Needs) > 0 {
 		found.yet(taskNeeds, t.ID, func() string { return fmt.Sprintf("task %s needs %s.", t.ID, listed(t.Needs)) })
 	}
@@ -497,7 +500,7 @@ func taskReasons(t Task, found *reasons) {
 		found.yet(taskMerges, t.ID, func() string { return fmt.Sprintf("task %s names merges.", t.ID) })
 	}
 	if t.NamesSteps() {
-		stepReasons(t, found)
+		stepReasons(t, d, found)
 	}
 }
 
@@ -505,19 +508,21 @@ func taskReasons(t Task, found *reasons) {
 // the tester and the reviewer judge its head, and the owner's acceptance reads the evidence of it.
 // The implementer's move on waits for that pull request (the workflow's guard hasOpenOrMergedPR),
 // so such a step with no implementer step before it has no pull request to read, and this release
-// refuses it; a later release that gives such a step another pull request to read takes it. The
-// role decides, never the step's type.
+// refuses it; a later release that gives such a step another pull request to read takes it. A
+// role of the deployment reports pass or fail and reads no pull request, so it stands anywhere.
+// The role decides, never the step's type.
 var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "acceptance": true}
 
 // stepReasons adds Supported's causes in the steps of t to found, in this order: each step's key,
-// in step order; each role named at two steps, at its first two; no implementer; and each step of
-// a role that reads a pull request with no implementer step before it, in step order, named by
-// its word as the plan writes it.
-func stepReasons(t Task, found *reasons) {
+// in step order; each role named at two steps, at its first two; no implementer; each step of a
+// role that reads a pull request with no implementer step before it, in step order, named by its
+// word as the plan writes it; and each step after the implementer's whose role d gives the type
+// implementation, in step order.
+func stepReasons(t Task, d Deployment, found *reasons) {
 	firstAt := map[string]int{}
 	var roles []string // each role once, in the order of its first step
 	secondAt := map[string]int{}
-	hasImplementer := false
+	implementerAt := 0 // the place of the first step of the implementer, 0 before it
 	for i, step := range t.Steps {
 		at := i + 1
 		switch {
@@ -534,7 +539,9 @@ func stepReasons(t Task, found *reasons) {
 		} else if _, seen := secondAt[step.Role]; !seen {
 			secondAt[step.Role] = at
 		}
-		hasImplementer = hasImplementer || step.Role == "implementer"
+		if implementerAt == 0 && step.Role == "implementer" {
+			implementerAt = at
+		}
 	}
 	for _, role := range roles {
 		if second, ok := secondAt[role]; ok {
@@ -543,7 +550,7 @@ func stepReasons(t Task, found *reasons) {
 			})
 		}
 	}
-	if !hasImplementer {
+	if implementerAt == 0 {
 		found.yet(noImplementer, t.ID, func() string { return fmt.Sprintf("task %s has no step implementer.", t.ID) })
 	}
 	for i, step := range t.Steps {
@@ -553,8 +560,20 @@ func stepReasons(t Task, found *reasons) {
 		if readsPullRequest[step.Role] {
 			found.yet(readsBeforeImplementer, t.ID, func() string {
 				word := quoted(step.String())
-				return fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads.",
+				return fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads; a role of this deployment that reports pass or fail needs none.",
 					i+1, t.ID, word, word)
+			})
+		}
+	}
+	if implementerAt == 0 {
+		return
+	}
+	for i, step := range t.Steps[implementerAt:] {
+		at := implementerAt + i + 1
+		if step.Role != "implementer" && d.Roles[step.Role].Type == TypeImplementation {
+			found.yet(implementationAfter, t.ID, func() string {
+				return fmt.Sprintf("task %s names %s at step %d, a step of the type implementation after the step implementer at step %d, and Legion's retro is done by the implementer in this release.",
+					t.ID, quoted(step.Role), at, implementerAt)
 			})
 		}
 	}

@@ -151,7 +151,7 @@ func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
 
 // testerFirstReason is the one reason register_plan gives the plan `tester implementer`: its
 // first step reads the pull request of an implementer no step before it names.
-const testerFirstReason = "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."
+const testerFirstReason = "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."
 
 // testerFirstRefused is the architect of the walk's issue giving the plan `tester implementer`
 // (register_plan): it answers 409 PLAN_REFUSED with the one reason testerFirstReason for task a,

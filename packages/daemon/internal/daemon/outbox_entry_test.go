@@ -529,7 +529,7 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // What the claim standing below its row then gives the worker is the rest of this case. The
 // tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,
 // saying the task of entry 2, the entry the phase is on, is owed to this claim and arrives by
-// itself (api/handoff.go's staleEntry). The admission pass passes over the claim while that task
+// itself (intake.StaleEntry). The admission pass passes over the claim while that task
 // is still worked, and on the first pass after the turn ends and the delivery is retired it sends
 // entry 2's own task (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The worker takes
 // that task, and the completion it reports in its turn is the one the daemon takes: the issue

@@ -357,11 +357,11 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 // promotion that opens the root's tree passes it over (admit's startMidPhaseMembers) and the merge
 // ended the work, and the root stands in it until the rest of its tree has left the workflow,
 // when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the role
-// that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
-// daemon — by that promotion where the carry put the root there, by the transition that moved it
-// where it moved on — accepting is the architect's own phase, and a phase no role works, which is
-// held or a wait on a person, starts no worker until the architect retries it or the person
-// answers.
+// that works the phase (record.Issue.RoleAt: at step the role of the root's running step): the
+// worker of a phase a worker works is started by the daemon — by that promotion where the carry
+// put the root there, by the transition that moved it where it moved on — accepting is the
+// architect's own phase, and a phase no role works, which is held or a wait on a person, starts
+// no worker until the architect retries it or the person answers.
 func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
 	gate := ", and that hand-over brought no design gate"
 	if start.GateCarried {
@@ -376,7 +376,7 @@ func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
 			"there until the rest of its tree has left the workflow, when the daemon closes it.")
 		return
 	}
-	switch phase.RoleFor(start.Root.Phase) {
+	switch start.Root.RoleAt(start.Root.Phase) {
 	case "":
 		task.WriteString(" No worker works that phase, so the daemon starts none for it.")
 	case claim.RoleArchitect:

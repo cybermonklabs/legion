@@ -3,9 +3,11 @@ package supervise
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -19,13 +21,54 @@ import (
 // whose process a retirement already stopped (relaunchRefused); the start that met it retries once
 // the cleanup confirmed and a fresh admission opened the next epoch.
 
+// StartWork is the work a workflow start brings its claim back for: the phase and the run its
+// outbox row was queued for (record.SuperviseRequest's Phase and Generation), which the spawn, the
+// rule's resume and the retry it asks for carry (RequestSpawn, RequestRuleResume, RequestRetry).
+// The start's runner judges it on its own read of the issue, which the workflow's move of the
+// issue does not wait on: a move that commits after that read and before the claim is brought back
+// would leave a process started for work the issue has left, which nothing then stops, since no
+// move stops a worker. So the machine judges it again under its own lock, with the one answer a
+// queued task is judged by (Deps.PhaseHolds), where it brings the claim back (startHolds) and, for
+// a launch the wake pacing parks, at that launch's turn (launchAfter). The zero StartWork — an
+// operator's request, the boot's, a start of no phase — is judged by nothing. A start that brings a
+// role back and hands it nothing (BringsBack, record.SuperviseRequest.BringsBack) is judged by its
+// phase and run alone, never by the role of the step, since at the phase step the role it brings
+// back ran another step of the task (record.BroughtBackHolds).
+type StartWork struct {
+	Phase      phase.Phase
+	Generation uint64
+	BringsBack bool
+}
+
+// ErrStartLeft is a start the machine judged no longer the work of its claim's issue
+// (startHolds): the issue has left the phase, the step or the run the start was queued for. The
+// claim is left exactly as it was, with no process started, and the start's runner finishes its
+// row without acting, as its own read would have had it come later (internal/daemon's outbox).
+var ErrStartLeft = errors.New("the issue has left the phase or the step this start was queued for")
+
+// startHolds is ErrStartLeft where start's work is not the work of the claim's issue now, nil where
+// it is or names none, and the read's error where the record could not be read. It runs under the
+// machine's lock, before anything of the claim changes.
+func (m *Machine) startHolds(ctx context.Context, start StartWork) error {
+	holds, err := m.phaseHolds(ctx, Delivery{Phase: start.Phase, Generation: start.Generation, BringsBack: start.BringsBack})
+	if err != nil {
+		return err
+	}
+	if !holds {
+		return fmt.Errorf("start of %s for phase %s of run %d: %w", m.claim.Token, start.Phase, start.Generation, ErrStartLeft)
+	}
+	return nil
+}
+
 // revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
 // launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
 // cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
 // asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
 // its own event, so a request that carries no such field is paced. place is the place the
 // request's caller already took for this launch in the pacing (RequestSpawn.Place), nil for every
-// request that took none (launchAfter).
+// request that took none (launchAfter). start is the work a workflow start brings the claim back
+// for, which its caller has judged already (startHolds) and the launch judges again where a park
+// it waits in ends (startLeftWhileParked).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -36,7 +79,7 @@ import (
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
-func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
+func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, start StartWork, admitted func()) error {
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
 	if err := m.writeCarried(ctx); err != nil {
@@ -50,7 +93,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	if admitted != nil {
 		admitted()
 	}
-	return m.launchAfter(ctx, false, exempt, true, place, noEnd)
+	return m.launchAfter(ctx, false, exempt, true, place, noEnd, start)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -231,7 +274,11 @@ type waitingRelaunch struct {
 //   - relaunchRefused records the kind its own callers hand it: launchAfter and
 //     relaunchAfterFailure read it off the machine's intent, which the retry relaunchRefused arms
 //     restores, and runWake passes its wake's kind, read where that wake was made off the intent
-//     the wake's retry restores (reserveWake, heldTryWake, retryHolding).
+//     the wake's retry restores (reserveWake, heldTryWake, retryHolding). startLeftWhileParked,
+//     whose read of the start or of the task the claim holds failed, passes on the kind its own
+//     caller hands it: launchAfter's, read off the machine's intent (pluginIntent.waitsUnder), and
+//     runWake's and podStartDue's, their wake's kind, read where that wake was made as above
+//     (podStartDue's wake is always heldTryWake's, whose retry, launchFromTop, restores the intent).
 //   - relaunchAtProbe reads it off the intent of the try's launch, the one its retry restores
 //     (launchFromTop).
 //   - startWaitsForStore and startWaitsForPodRound pass WakeLaunch whatever launch they retry,

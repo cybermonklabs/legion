@@ -113,7 +113,7 @@ func ValidateSpawnSpec(spec SpawnSpec, runtimeOwned map[string]bool) error {
 		return refuse("%v", err)
 	}
 	if !backend.Runs(spec.Role) {
-		return refuse("the %s does not run on %s (%s), which runs only %s: %s", spec.Role, Of(spec.Backend), backend.Name, JoinRoles(backend.Roles), backend.Why)
+		return refuse("the %s does not run on %s (%s), which runs only %s: %s", spec.Role, Of(spec.Backend), backend.Name, backend.RunsWhat(), backend.Why)
 	}
 	for _, name := range slices.Sorted(maps.Keys(spec.Env)) {
 		switch {

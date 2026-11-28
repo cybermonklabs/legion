@@ -230,8 +230,8 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodForAPastDueReminder(t *testing.T) 
 func (r *pauseRig) idleDecisionWithPastDueReminder(c supervise.Claim) (workflow.IdleDecision, pods.IdleClaim) {
 	r.t.Helper()
 	const contract = 47
-	r.st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
-		return record.FillIdleClaims(ctx, r.pauses.records, tx, issue, at, claims)
+	r.st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, stepRole claim.Role, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, r.pauses.records, tx, issue, at, stepRole, claims)
 	})
 	if _, err := r.pool.Exec(r.ctx, `update claims set plugin_contract = $2, activity_at = now() - interval '20 minutes',
 		activity_next_reminder_at = now() - interval '1 minute', updated_at = now() - interval '30 minutes'

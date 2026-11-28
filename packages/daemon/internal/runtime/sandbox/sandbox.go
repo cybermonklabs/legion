@@ -1,6 +1,7 @@
 // Package sandbox runs each issue in one Agent Sandbox (agents.x-k8s.io/v1beta1 Sandbox,
 // kubernetes-sigs/agent-sandbox v1.0.3). Its pod's one container, `roles`, runs one launcher that
-// serves all six workflow roles, each role's generation in namespaces of its own (`legion launcher
+// serves every role of the issue (Legion's six workflow roles, then each role the deployment
+// defines), each role's generation in namespaces of its own (`legion launcher
 // role-init`), and the roles share the issue's workspace and network. The project controller
 // (`controller: daemon`) runs in a Sandbox of its own whose pod has the controller's launcher
 // alone. The two are the runtime's two kinds of pod (podKind): one supervision path runs both, and
@@ -92,7 +93,14 @@ type Runtime struct {
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
-	roleConfigFiles                map[claim.Role][]string
+	// issueRoles are the runtime's issue roles: Legion's six (claim.Roles), then each role the
+	// deployment defines, sorted by name (issueRolesOf over Options.DeploymentApps).
+	// deploymentApps is that map, the App each role of the deployment acts as. Both are set once
+	// in configureProber and only read after, and no package variable holds either: two runtimes
+	// of one process keep their own.
+	issueRoles      []claim.Role
+	deploymentApps  appauth.DeploymentApps
+	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -458,7 +466,8 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+	issueRoles := issueRolesOf(opts.DeploymentApps)
+	if err := CheckPod(opts.Pod, append(slices.Clone(issueRoles), claim.RoleController), opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
 		exchangeOf(opts.AgentSecrets, opts.Dispatch.Broker)); err != nil {
 		return refuse("%v", err)
 	}
@@ -468,8 +477,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	for role, files := range opts.RoleConfigFiles {
-		if !slices.Contains(roleConfigRoles, role) {
-			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
+		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
+			return refuse("Oh My Pi overlays for %q, which is no role of an issue pod or the controller", role)
 		}
 		for _, file := range files {
 			if !filepath.IsAbs(file) || strings.Contains(file, ":") {
@@ -489,13 +498,14 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatch: opts.Dispatch, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		pod: opts.Pod, issueRoles: issueRoles, deploymentApps: opts.DeploymentApps,
+		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels), controllerWatchedWorkflows: watchedWorkflowsValue(opts.ControllerWatchedWorkflows),
 		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
-		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace, len(issueRoles)),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
@@ -529,9 +539,23 @@ func configureProber(opts Options) (*Runtime, error) {
 	return r, nil
 }
 
-// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the workflow's order: every
-// issue role, then the controller.
-var roleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// issueRolesOf is the one rule of the order of an issue pod's roles: Legion's six in the workflow's
+// order (claim.Roles), then each role deployed defines, sorted by name, so every reader of the
+// list and every pod built from it sees the same order whatever order the map gives.
+func issueRolesOf(deployed appauth.DeploymentApps) []claim.Role {
+	return append(slices.Clone(claim.Roles), slices.Sorted(maps.Keys(deployed))...)
+}
+
+// IssueRoles is issueRolesOf exported, the one rule of the order of an issue pod's roles, for the
+// daemon's own reads of the deployment that build no runtime (`legion config check` and the boot's
+// check of the operator's pod, checkOperatorConfig), so they refuse what configure refuses.
+func IssueRoles(deployed appauth.DeploymentApps) []claim.Role { return issueRolesOf(deployed) }
+
+// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the order the image probe is
+// told them: every issue role (issueRoles), then the controller.
+func (r *Runtime) roleConfigRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
 // checkRequirements is why requirements, what's (an issue pod's, the controller's pod's, or the
 // repository cache's), is not a reservation, or nil when it is one: cpu and memory each limited and

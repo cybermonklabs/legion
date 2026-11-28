@@ -22,7 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// The places of today's fixed phases where a step runs (workflow's placeOnWalk), which a start
+// The places in the default steps where a step runs (workflow's placeOnWalk), which a start
 // records its agent under.
 var (
 	implementingPlace = record.StepPlace{Task: "default", Kind: "step", Place: 2}
@@ -55,7 +55,7 @@ func newAwaitRig(t *testing.T) *awaitRig {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{r.facts}, Dispatch: r.statuses, PluginRelaunchable: true, RoleFor: phase.RoleFor,
+		Handlers: []intake.Handler{r.facts}, Dispatch: r.statuses, PluginRelaunchable: true,
 		Releaser: h.runtime, Trees: h.store, Tokens: handoffTokens{}, GitHubAPI: newHandoffGitHub(t).url,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		AwaitStream: func(_ context.Context, token claim.Token) {

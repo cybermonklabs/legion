@@ -19,15 +19,16 @@ const (
 	ScopeChildren Scope = "children"
 )
 
-// The bars of metric 2: the six roles, each holding the phases that role works, and the seventh
-// for the phases no role works. "A seventh bar, 'no role', holds the phases no role works:
-// `awaiting_person` and `held`", and the spec's "Phase boundaries before observations" holds it
-// to those two alone — a handoff starts the next phase, so no hour falls between two phases for
-// it to hold. `awaiting_children`, which dispatch://INFRA-3320 added after that spec, is a third
-// phase no role works (RoleFor in packages/daemon/internal/phase gives it none), a parent
-// waiting on its open children, so it is on that bar too. Time in the queue is on no bar, and
-// neither is an hour the work time leaves out, so the seven bars of an issue add up to its work
-// time (barPartsOf).
+// The bars of metric 2: Legion's six roles, each holding the phases that role works, a bar for
+// each role the deployment defines that worked a step of an issue, holding that role's spans of
+// `step` (barsOf), and the bar for the phases no role works. "A seventh bar, 'no role', holds the
+// phases no role works: `awaiting_person` and `held`", and the spec's "Phase boundaries before
+// observations" holds it to those two alone — a handoff starts the next phase, so no hour falls
+// between two phases for it to hold. `awaiting_children`, which dispatch://INFRA-3320 added after
+// that spec, is a third phase no role works (RoleFor in packages/daemon/internal/phase gives it
+// none), a parent waiting on its open children, so it is on that bar too. Time in the queue is on
+// no bar, and neither is an hour the work time leaves out, so the bars of an issue add up to its
+// work time (barPartsOf).
 const barNoRole = "no_role"
 
 // mergerPhases are the two phases of the merger's bar, "merging and awaiting merge", and the two a
@@ -36,18 +37,74 @@ const barNoRole = "no_role"
 // implementer's bar and a table names it retro (the spec's metric 2 and "Phase words in tables").
 var mergerPhases = []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}
 
-// bars are the seven stacked bars of metric 2, each with the phases it holds.
-var bars = []struct {
+// bar is one bar of metric 2: its role and the phases it holds, or, for a role the deployment
+// defines (step), that role's spans of `step` (PhaseSpan.Role).
+type bar struct {
 	Role   string
 	Phases []string
-}{
-	{"architect", []string{phaseDesign, legion.PhaseAccepting}},
-	{"planner", []string{legion.PhasePlanning}},
-	{"implementer", []string{legion.PhaseImplementing, legion.PhaseRetro}},
-	{"tester", []string{legion.PhaseTesting}},
-	{"reviewer", []string{legion.PhaseReviewing}},
-	{"merger", mergerPhases},
-	{barNoRole, []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseHeld}},
+	step   bool
+}
+
+// spansOf is the spans of timeline the bar holds.
+func (b bar) spansOf(timeline []PhaseSpan) []Span {
+	if !b.step {
+		return phaseSpansOf(timeline, b.Phases...)
+	}
+	var spans []Span
+	for _, one := range timeline {
+		if one.Phase == legion.PhaseStep && one.Role == b.Role {
+			spans = append(spans, one.Span)
+		}
+	}
+	return normalize(spans)
+}
+
+// bars are the seven bars of Legion's six roles and of no role, each with the phases it holds, in
+// the order a fold lists them: the six roles' bars, then the no-role bar. A bar of a role the
+// deployment defines stands between the two where a step of that role was worked (barsOf), and
+// legion-idle-time reads the six roles' bars alone (idleByRole).
+var bars = []bar{
+	{Role: "architect", Phases: []string{phaseDesign, legion.PhaseAccepting}},
+	{Role: "planner", Phases: []string{legion.PhasePlanning}},
+	{Role: "implementer", Phases: []string{legion.PhaseImplementing, legion.PhaseRetro}},
+	{Role: "tester", Phases: []string{legion.PhaseTesting}},
+	{Role: "reviewer", Phases: []string{legion.PhaseReviewing}},
+	{Role: "merger", Phases: mergerPhases},
+	{Role: barNoRole, Phases: []string{legion.PhaseAwaitingPerson, legion.PhaseAwaitingChildren, legion.PhaseHeld}},
+}
+
+// barsOf is the bars of metric 2 where roles are the roles the deployment defines that worked a
+// step, in the order a fold lists them: Legion's six (bars), then one for each of roles, by name,
+// then the bar of no role. A `step` span whose role no read named is on the bar of the role "",
+// which holds its hours rather than letting them fall off every bar.
+func barsOf(roles []string) []bar {
+	sorted := slices.Clone(roles)
+	slices.Sort(sorted)
+	own := len(bars) - 1
+	all := append(make([]bar, 0, len(bars)+len(sorted)), bars[:own]...)
+	for _, role := range sorted {
+		all = append(all, bar{Role: role, step: true})
+	}
+	return append(all, bars[own])
+}
+
+// stepRolesOf is the role of each `step` span of timeline, each once: the roles the deployment
+// defines whose bar the timeline holds hours on (barsOf).
+func stepRolesOf(timeline []PhaseSpan) []string {
+	var roles []string
+	for _, one := range timeline {
+		if one.Phase == legion.PhaseStep && !slices.Contains(roles, one.Role) {
+			roles = append(roles, one.Role)
+		}
+	}
+	return roles
+}
+
+// ownBar is whether role names one of the seven bars (bars), not the bar of a role the deployment
+// defines: what tells the bars of such roles apart in an issue's parts and in a day's
+// (PhaseTimeDay, FoldPhaseTime).
+func ownBar(role string) bool {
+	return slices.ContainsFunc(bars, func(own bar) bool { return own.Role == role })
 }
 
 // The four classes of issue a Legion session filed (metric 4).
@@ -265,12 +322,12 @@ func (c *computation) workedSpansOf(issue *Issue) []Span {
 	return c.workedOf(issue).worked
 }
 
-// barSpansOf is the hours of an issue its seven bars share out, computed once: the spans of the
-// work time metric 1 counts (workedSpansOf), which hold no hour of the queue or out of the
-// workflow, with the queue's own spans taken out once more, which moves no span and keeps the
-// queue, which is on no bar, off them by the bars' own rule. Metric 2's bars and metric 3's hours
-// after the first review are both the measure of these spans, so neither of an issue's values
-// counts an hour its own bars leave out.
+// barSpansOf is the hours of an issue its bars share out, computed once: the spans of the work
+// time metric 1 counts (workedSpansOf), which hold no hour of the queue or out of the workflow,
+// with the queue's own spans taken out once more, which moves no span and keeps the queue, which
+// is on no bar, off them by the bars' own rule. Metric 2's bars and metric 3's hours after the
+// first review are both the measure of these spans, so neither of an issue's values counts an
+// hour its own bars leave out.
 //
 // The answer is shared with every caller, and every caller reads it and nothing more: normalize,
 // subtract and intersect each build a new slice and write to no argument, so no caller can move
@@ -353,19 +410,21 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 	return first, !first.IsZero()
 }
 
-// barPartsOf is one issue's part of metric 2, keyed by role: its time on each of the seven bars
-// (bars), shared out over the five segments, each hour going to the first segment of the
+// barPartsOf is one issue's part of metric 2, keyed by role: its time on each of its bars
+// (barsOf), shared out over the five segments, each hour going to the first segment of the
 // precedence that holds. The per-issue facts store these parts (ProjectFactsClosed) and
 // PhaseTimeDay adds them up across the finished issues.
 //
 // The hours shared out are the issue's work time and nothing else (the spec's "Rule details —
 // Parked and pre-work hours in phase time": "An hour that work time to merge leaves out is on no
 // bar of phase time ... So the bars of an issue add up to its work time, and the two cards
-// agree"). Each bar takes the phases it holds, so the seven are a partition of the work time: the
+// agree"). Each bar takes the phases it holds, so the bars are a partition of the work time: the
 // timeline leaves no hour between two phases (the spec's "Phase boundaries before observations"),
-// and every phase an issue can be in is on one of the seven bars but `queued` and `done`, the
+// and every phase an issue can be in is on one of the bars but `queued` and `done`, the
 // queue and the time out of the workflow before the close, whose hours the work time leaves out
-// (queuedSpans, outOfWorkflowSpans).
+// (queuedSpans, outOfWorkflowSpans): `step` is on the bar of the role each of its spans names
+// (barsOf), so the issue's parts are keyed by Legion's six roles, each role of the deployment
+// whose step its timeline holds, and no_role.
 //
 // A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
 // is whether there are any, which is what a bar's issue count counts, kept apart from Hours
@@ -373,9 +432,10 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 func (c *computation) barPartsOf(issue *Issue) map[string]BarPart {
 	view := c.viewOf(issue)
 	shared := c.barSpansOf(issue)
-	parts := make(map[string]BarPart, len(bars))
-	for _, bar := range bars {
-		spans := intersect(phaseSpansOf(view.timeline, bar.Phases...), shared)
+	issueBars := barsOf(stepRolesOf(view.timeline))
+	parts := make(map[string]BarPart, len(issueBars))
+	for _, bar := range issueBars {
+		spans := intersect(bar.spansOf(view.timeline), shared)
 		segments := view.split(spans)
 		parts[bar.Role] = BarPart{Hours: round(segments.total()), HoldsHours: len(spans) > 0, Segments: segments}
 	}
@@ -477,17 +537,26 @@ func reviewRounds(issue *Issue, timeline phaseTimeline) int {
 // review that requests changes move out of testing and reviewing, and a backward move
 // (`request_backward_move`, the daemon workflow's TriggerBackward rows) out of any of them. Before
 // cybermonklabs/legion#4464 a head that started conflicting with its base sent the issue back out
-// of any of them too, and the history this reads holds those moves.
+// of any of them too, and the history this reads holds those moves. `step` is not one of them: a
+// step of a role the deployment defines that stands before the implementer moves to implementing
+// when it passes, a forward move, and a step after the implementer moves there when it fails, so
+// a move from `step` to implementing says neither. Its run does (StepRun.Returned), and
+// sentBackOnce reads that.
 var sentBackPhases = []string{
 	legion.PhaseTesting, legion.PhaseReviewing, legion.PhaseAccepting,
 	legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
 }
 
-// sentBackOnce is whether the issue moved from one of sentBackPhases to `implementing`: off the
-// status history written before the observed part of its timeline begins, and off that observed
-// part from there on, as the review rounds beside it are. Before observations the move is the
-// status's (sentBackStatuses): `needs_review` is the status of both reviewing and accepting,
-// `retro` the status of both retro and merging, and `in_progress` the status of implementing.
+// sentBackOnce is whether the issue was sent back to `implementing`. Out of one of
+// sentBackPhases, the move is read off the status history written before the observed part of
+// its timeline begins, and off that observed part from there on, as the review rounds beside it
+// are. Before observations the move is the status's (sentBackStatuses): `needs_review` is the
+// status of both reviewing and accepting, `retro` the status of both retro and merging, and
+// `in_progress` the status of implementing, but not the `in_progress` a step of a role the
+// deployment defines starts with (Issue.stepStatus). Out of such a step, the send-back is the
+// return of a run that failed (StepRun.Returned), before observations and after them alike: no
+// status says it, since the step's `in_progress` is its own, and no phase does, since a step that
+// passes can move to implementing too (sentBackPhases).
 // `in_progress` is the status of awaiting_children as well (the daemon's phaseStatus, in
 // packages/daemon/internal/workflow/table.go), so a stop for an open child out of testing,
 // reviewing or accepting writes the same move of status as a send-back, and before observations
@@ -498,8 +567,14 @@ var sentBackPhases = []string{
 // there brings it to implementing (dispatch://INFRA-3320, record.ReturnStep in
 // packages/daemon/internal/record), so the send-back is the move across that wait.
 func sentBackOnce(issue *Issue, timeline phaseTimeline) bool {
-	if statusMoved(timeline.statusesBefore(issue), sentBackStatuses, statusImplementing) {
+	statuses := timeline.statusesBefore(issue)
+	if statusMoved(slices.DeleteFunc(slices.Clone(statuses), issue.stepStatus), sentBackStatuses, statusImplementing) {
 		return true
+	}
+	for _, run := range issue.Runs {
+		if run.Returned && run.End != nil {
+			return true
+		}
 	}
 	for index := max(timeline.firstObserved, 1); index < len(timeline.spans); index++ {
 		if timeline.spans[index].Phase != legion.PhaseImplementing {

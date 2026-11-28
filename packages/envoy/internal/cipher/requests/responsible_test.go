@@ -268,17 +268,24 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 }
 
 // TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion role claim token and nothing
-// else: the controller's token and a token that ends in no role name no issue.
+// else: the token of one of Legion's six roles or of a role the deployment defines, a name of the
+// role grammar (legionrole.IsRole), a "-" in it included. The controller's token, a claim on
+// the controller's name, a token that ends in no role and a role outside the grammar name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
 	for claim, want := range map[string]string{
-		"legion-acme-acme-12-planner":    "ACME-12",
-		"legion-widget-widget-12-merger": "WIDGET-12",
-		"legion-acme-acme7-3-architect":  "ACME7-3",
-		"legion-acme-controller":         "",
-		"legion-acme-acme-12":            "",
-		"legion-acme-acme-12-janitor":    "",
-		"legion-acme-12-planner":         "",
-		"":                               "",
+		"legion-acme-acme-12-planner":                    "ACME-12",
+		"legion-widget-widget-12-merger":                 "WIDGET-12",
+		"legion-acme-acme7-3-architect":                  "ACME7-3",
+		"legion-acme-acme-12-janitor":                    "ACME-12",
+		"legion-acme-acme-12-code-check":                 "ACME-12",
+		"legion-acme-acme-12-" + strings.Repeat("a", 32): "ACME-12",
+		"legion-acme-acme-12-" + strings.Repeat("a", 33): "",
+		"legion-acme-acme-12-controller":                 "",
+		"legion-acme-acme-12-Planner":                    "",
+		"legion-acme-controller":                         "",
+		"legion-acme-acme-12":                            "",
+		"legion-acme-12-planner":                         "",
+		"":                                               "",
 	} {
 		if got := issueKeyOfClaim(claim); got != want {
 			t.Errorf("issueKeyOfClaim(%q) = %q; want %q", claim, got, want)

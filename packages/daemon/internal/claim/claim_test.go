@@ -8,12 +8,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// The six words a role travels as: the pane's `LEGION_ROLE`, the register response's `role`, the
+// The six words Legion's own roles travel as (a role of the deployment travels as its name): the pane's `LEGION_ROLE`, the register response's `role`, the
 // `workers` key in the state the plugin reads. A renamed word is a cross-language break, so the
 // list is pinned here rather than left to the constant declarations.
 func TestRoleConstantsAreTheWireWords(t *testing.T) {
@@ -261,7 +262,7 @@ func TestNewTokenIsTheShippedRoleToken(t *testing.T) {
 	}{
 		{"a lowercase issue key", "legion", "legion-208", RoleTester, `"legion-208"`},
 		{"an issue key with no number", "legion", "LEGION", RoleTester, `"LEGION"`},
-		{"a role no agent holds", "legion", "LEGION-208", Role("operator"), `"operator"`},
+		{"a role outside the grammar", "legion", "LEGION-208", Role("Operator"), `"Operator"`},
 		{"a project that is not a token", "Legion", "LEGION-208", RoleTester, `"Legion"`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -273,6 +274,78 @@ func TestNewTokenIsTheShippedRoleToken(t *testing.T) {
 				t.Errorf("the refusal does not name %s: %v", testCase.wantFragment, err)
 			}
 		})
+	}
+}
+
+// A deployment defines roles of its own, so a claim can be on a role outside Legion's six: a name
+// of Dispatch's role grammar for a step, `^[a-z][a-z0-9-]{0,31}$`. Its token has the shape of every
+// role token, and the role after the issue's part may hold a "-" of its own. The controller is no
+// such role, and neither is a name outside the grammar.
+func TestATokenOfADeploymentRole(t *testing.T) {
+	if token, err := NewToken("acme", "ACME-1", Role("checker")); err != nil || token != "legion-acme-acme-1-checker" {
+		t.Errorf("NewToken(acme, ACME-1, checker) = %q, %v; want legion-acme-acme-1-checker", token, err)
+	}
+	for token, want := range map[Token]struct {
+		issue string
+		role  Role
+	}{
+		"legion-acme-acme-1-checker":      {"legion-acme-acme-1", "checker"},
+		"legion-acme-acme-1-code-checker": {"legion-acme-acme-1", "code-checker"},
+		"legion-acme-acme-1-tester":       {"legion-acme-acme-1", RoleTester},
+	} {
+		if issue, role, ok := token.Cut(); !ok || issue != want.issue || role != want.role {
+			t.Errorf("%s.Cut() = %q, %q, %t; want %q, %q, true", token, issue, role, ok, want.issue, want.role)
+		}
+		if role, ok := token.Role(); !ok || role != want.role {
+			t.Errorf("%s.Role() = %q, %t; want %q", token, role, ok, want.role)
+		}
+	}
+	for _, token := range []Token{"legion-acme-acme-1-controller", "legion-acme-acme-1-Checker", "legion-acme-acme-1", "legion-acme-acme-1-"} {
+		if issue, role, ok := token.Cut(); ok {
+			t.Errorf("%s.Cut() = %q, %q; want no role", token, issue, role)
+		}
+	}
+	if role, ok := Token("legion-acme-controller").Role(); !ok || role != RoleController {
+		t.Errorf("legion-acme-controller.Role() = %q, %t; want the controller", role, ok)
+	}
+	for _, role := range []Role{RoleController, "Checker", "a::b", "", "1checker", Role("c" + strings.Repeat("x", 32))} {
+		if token, err := NewToken("acme", "ACME-1", role); err == nil {
+			t.Errorf("NewToken(acme, ACME-1, %q) = %q, want a refusal", role, token)
+		}
+	}
+}
+
+func TestIsDeploymentRoleDistinguishesTheIssueClaimRoles(t *testing.T) {
+	for _, role := range []Role{"checker", "code-checker", Role("c" + strings.Repeat("x", 31))} {
+		if !IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = false, want true", role)
+		}
+	}
+	for _, role := range append(slices.Clone(Roles), RoleController, "", "Checker", Role("c"+strings.Repeat("x", 32))) {
+		if IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = true, want false", role)
+		}
+	}
+}
+
+// A claim can be on one of Legion's six or on any name of the role grammar but the controller's;
+// IsBuiltin takes the six alone.
+func TestARoleIsLegionsOrANameOfTheRoleGrammar(t *testing.T) {
+	for _, role := range append(slices.Clone(Roles), "checker", "code-checker", "c", Role("c"+strings.Repeat("x", 31))) {
+		if !IsRole(role) {
+			t.Errorf("IsRole(%q) = false, want true", role)
+		}
+		if want := slices.Contains(Roles, role); IsBuiltin(role) != want {
+			t.Errorf("IsBuiltin(%q) = %t, want %t", role, !want, want)
+		}
+	}
+	for _, role := range []Role{RoleController, "", "Checker", "1checker", "-checker", "a::b", "code_checker", Role("c" + strings.Repeat("x", 32))} {
+		if IsRole(role) {
+			t.Errorf("IsRole(%q) = true, want false", role)
+		}
+		if IsBuiltin(role) {
+			t.Errorf("IsBuiltin(%q) = true, want false", role)
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -447,7 +448,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role, step record.MergeForwardStep) string {
 		t.Helper()
 		pr := recordedPR(t, pool, "LEGION-208")
-		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, role, step, conflictHead)
+		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, plan.Deployment{}, role, step, conflictHead)
 	}
 
 	t.Run("an ask the release before made in merging", func(t *testing.T) {
@@ -1549,11 +1550,11 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			pr := recordedPR(t, pool, "LEGION-208")
 			issue := storedIssue(t, pool, "LEGION-208")
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
+			if why := leftMergeForwardAt(issue, false, &pr, plan.Deployment{}, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
 				t.Fatalf("the merger's ask in merging is undelivered: %s", why)
 			}
 			issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Merging}
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
+			if why := leftMergeForwardAt(issue, false, &pr, plan.Deployment{}, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
 				t.Fatalf("the merger's ask in a hold from merging is undelivered: %s", why)
 			}
 
@@ -1564,7 +1565,7 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 			if issue.Phase != target {
 				t.Fatalf("the backward move left the issue in %s, want %s", issue.Phase, target)
 			}
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why == "" {
+			if why := leftMergeForwardAt(issue, false, &pr, plan.Deployment{}, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why == "" {
 				t.Errorf("a queued merger ask still reaches %s after the backward move", target)
 			}
 		})
@@ -1582,10 +1583,10 @@ func TestALandedMergeForwardKeepsItsReviewAfterABackwardMove(t *testing.T) {
 		To: phase.Retro, Reason: "retro needs to read the merged code"})
 	pr := recordedPR(t, pool, "LEGION-208")
 	issue := storedIssue(t, pool, "LEGION-208")
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardLanded, conflictHead); why == "" {
+	if why := leftMergeForwardAt(issue, false, &pr, plan.Deployment{}, claim.RoleMerger, record.MergeForwardLanded, conflictHead); why == "" {
 		t.Fatal("the queued merger landing still reaches retro after the backward move")
 	}
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleReviewer, record.MergeForwardReview, conflictHead); why != "" {
+	if why := leftMergeForwardAt(issue, false, &pr, plan.Deployment{}, claim.RoleReviewer, record.MergeForwardReview, conflictHead); why != "" {
 		t.Fatalf("the review of the merge went undelivered: %s", why)
 	}
 	if !mergeForwardReviewOwed(pr) {

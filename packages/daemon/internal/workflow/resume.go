@@ -7,7 +7,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -61,13 +60,18 @@ import (
 // for the issue's admission slot in a phase that keeps one and for none in accepting, retro or merging. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
+// The sweep runs first so the resume reads the trees it closed as lingering. The stop of each task
+// a step of a role the deployment no longer defines still has to run (stopLostRoles) comes next,
+// so the resume finds those issues held and starts no lost role. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.stopLostRoles(ctx, tx); err != nil {
 		return intake.Result{}, err
 	}
 	owners, err := e.suspendedPhaseOwners(ctx, tx)
@@ -133,8 +137,9 @@ type phaseOwners struct {
 // the boot reads its phase workers by a read of its own (admit's phaseWorkers) and sends only the
 // work of an entry a claim stands behind (owedEntryRoles). It writes nothing.
 //
-// The phase's owner is the role that works the issue's phase (phase.RoleFor) on an issue in the
-// workflow whose tree is running — this generation of it, by the one rule every reader of that
+// The phase's owner is the worker of the issue's open phase (OpenRoleOf: the role that works its
+// phase, at step the role of its running step) on an issue in the workflow whose tree is
+// running — this generation of it, by the one rule every reader of that
 // question asks (record.RunningRoots, record.TreeRuns): its lifecycle stands open under the
 // workflow, its root does not linger, and its root is not itself waiting in the line for the
 // tree to be opened. A lingering tree's claims stay suspended until re-admission runs the tree
@@ -172,8 +177,8 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	}
 	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
 	for _, issue := range issues {
-		role := phase.RoleFor(issue.Phase)
-		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
+		role := OpenRoleOf(issue)
+		if role == "" || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
 		root, ok := byKey[issue.Tree]

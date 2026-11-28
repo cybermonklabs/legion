@@ -29,6 +29,20 @@ func TestAnUnknownReservationKeyIsRefused(t *testing.T) {
 	}
 }
 
+// A claim can be on a role a deployment defines, but such a role never had a reservation of its
+// own: a key named for one is a key that is neither the issue pod's nor the controller's, refused
+// as any other, while a key of one of Legion's six is still refused naming the key that replaced it.
+func TestAReservationKeyNamedForADeploymentRoleIsNotGone(t *testing.T) {
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {checker: {cpu: 1}}\n"), noEnv)
+	if want := `runtime.kubernetes.resources key "checker" must be issue or controller`; err == nil || err.Error() != want {
+		t.Errorf("LoadForValidation = %v, want %q", err, want)
+	}
+	_, err = LoadForValidation(writeConfigFile(t, kubernetesFile+"    resources: {tester: {cpu: 1}}\n"), noEnv)
+	if want := "runtime.kubernetes.resources.tester is gone: an issue pod has one reservation, runtime.kubernetes.resources.issue"; err == nil || err.Error() != want {
+		t.Errorf("LoadForValidation = %v, want %q", err, want)
+	}
+}
+
 // The issue pod's entry settles field by field over its default, as a role's did: a raised limit
 // alone is requested in full, a lower request beside its limit is kept, and the disk bound's two
 // sides settle apart. A request past its limit is refused naming both keys of the pod's entry.

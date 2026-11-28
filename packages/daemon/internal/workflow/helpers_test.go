@@ -90,13 +90,16 @@ func mergingEngine() *Engine {
 	return mergingEngineAt(time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC))
 }
 
-// mergingEngineAt is mergingEngine with its clock at now.
+// mergingEngineAt is mergingEngine with its clock at now. Its deployment defines the roles these
+// tests' plans name (deploymentRoles), as the settings of a deployment that defines them give the
+// engine, so a step of one of them is no role the deployment lost.
 func mergingEngineAt(now time.Time) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		// The project opens its production check with the tester, the role a project that names
 		// no production_check gets (INFRA-809); an engine with no role opens no check at all.
 		ProductionCheckRole: claim.RoleTester,
+		Deployment:          deploymentRoles(),
 		Clock:               func() time.Time { return now },
 	}, nil)
 }

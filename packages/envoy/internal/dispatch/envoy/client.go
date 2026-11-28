@@ -911,8 +911,9 @@ func (c *Client) RoleAgents(ctx context.Context, roleToken string) ([]listenerwi
 }
 
 // IssueAgents returns every session the Legion agent registry holds for an issue, by role in
-// workflow order (architect, planner, implementer, tester, reviewer, merger), then newest first;
-// none when it holds none. Any answer but a 200 is ErrUnavailable.
+// workflow order (architect, planner, implementer, tester, reviewer, merger), each role of the
+// deployment after them by name, then newest first; none when it holds none. Any answer but a 200
+// is ErrUnavailable.
 func (c *Client) IssueAgents(ctx context.Context, issueKey string) ([]listenerwire.LegionAgentAnswer, error) {
 	return c.legionAgents(ctx, "/v1/legion/agents", "?issue="+url.QueryEscape(issueKey))
 }

@@ -7,7 +7,7 @@ Kubernetes deployments (`docs/kubernetes.md`) get a pod boundary instead.
 
 The daemon gets GitHub App installation tokens from the secrets broker; the App private keys
 stay in the broker.
-Raw key secrets are not used.
+This runbook's daemon uses no raw key secret.
 Configure each App with `app_id` and `token_command`, as [the App section](#the-legion-implementer-and-legion-reviewer-apps) shows.
 
 `secrets` and `agent-secrets` are two CLIs over two stores, and a name can exist in both.
@@ -163,7 +163,7 @@ Both Apps are public GitHub Apps, so any GitHub account can install them.
 What such an install gives depends on where the daemon gets its tokens.
 A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the profile names, each an account of the secret's `github-owners` tag, so an install by any other account gives nothing.
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
-There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that acts as that App (the implementer, the merger and each role of `roles` whose `github_app` is `implement`), and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
 The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
 Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
@@ -172,7 +172,7 @@ The controller's default owner is refused at once instead, because `ControllerCr
 The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
 What an install changes for a running pod is in `docs/kubernetes.md`.
 
-Each App needs its own `app_id` and `token_command`, with no second credential source.
+Each App needs its own `app_id` and exactly one credential source, and this runbook's is `token_command`.
 See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rotation procedure.
 
 ## What a pane's `gh`, `git` and `jj` are
@@ -833,6 +833,29 @@ service under the project scope `person`, of a machine nobody has signed in on a
 lists, still reads and is refused every write `403 SIGN_IN_REQUIRED` (`docs/kubernetes.md`, "The
 Dispatch identity the broker can issue").
 
+## Roles the deployment defines
+
+`roles` defines roles of the deployment's own, which a step of an owner's plan names as it names Legion's planner, implementer, tester, reviewer and acceptance.
+Each key is the role's name: a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit, and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`).
+Each value holds the role's `type` and `prompt_file`, and may hold its `model` and `github_app`.
+The `type` of its steps is one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds.
+The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.
+The `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose.
+The `github_app` is the App the role works as, `implement` or `review`, `review` by default.
+A role of the type `review` works as the review App, and the loader refuses one that names `implement`.
+`role_types` lists the types a deployment adds to Legion's five, each named once.
+The daemon's start reads each role's `prompt_file` and refuses one it cannot read (`roles.<name>.prompt_file <path> cannot be read: <error>`).
+`legion config check` makes the same refusal and prints one line for each role, `roles.<name>: type <type>, model <model>, App <app>, prompt <path>`.
+
+A step of such a role runs at the phase `step`, at the place the task's steps give it.
+Its agent's prompt is `mechanics/headless.md`, its `prompt_file` and the daemon's `worker-common.md`.
+It writes no handoff record: it reports its step with `handoff_complete`, the verdict `pass` or `fail` and the commit its workspace stands on, and a fail may name `return_to`, the place of an earlier step of its task.
+Such a role is a phase worker: `worker_backends`, `role_config_files`, `worker_stall_backstop_hours` and a hook's `roles` take it as they take Legion's.
+Under `runtime: kubernetes` every issue pod is built for it beside Legion's six, whatever the issue's plan names, with its Secret and its launcher connection.
+The launcher starts its shim, with a state home of its own, only when the daemon starts the role.
+An issue pod built before the role was defined runs it once the pod's update round or its release replaces the pod.
+Until then a start the workflow asks for waits, and a launch the supervisor makes itself, such as an operator's resume or a retry, is refused and charged as a launch failure ([Kubernetes](kubernetes.md)).
+
 ## Phase workers on Claude Code
 
 `worker_backends` in `legion.yaml` runs a role on another agent harness than Oh My Pi:
@@ -842,7 +865,7 @@ worker_backends:
   implementer: claude
 ```
 
-Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`)
+Each key is an issue role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`) or a role of `roles`
 and each value `omp` or `claude`; a role left out runs on Oh My Pi. What each harness may run is
 one table, `runtime.Backends` (`packages/daemon/internal/runtime/backend.go`): Claude Code runs the
 phase workers alone, since the architect's loop and the controller's are proven only on Oh My Pi,
@@ -901,7 +924,7 @@ shapes both runtimes build from those paths — the agent command, the session i
 rules, the MCP document and Claude Code's own variables — are one package,
 `packages/daemon/internal/claudelaunch`; the pod's side of it is in `docs/kubernetes.md`.
 
-The daemon names no model for Claude Code under either runtime. In a pane its key reaches it the
+The daemon names no model for Claude Code under either runtime, except the `model` a role of `roles` names, which its launch passes as `--model`. In a pane its key reaches it the
 way an Oh My Pi pane's does: `provider_keys` (for example
 `ANTHROPIC_API_KEY: <secretsd key>`) is exported by the shim into `legion claude-bridge`'s
 environment, which Claude Code inherits, and into every Oh My Pi pane's as well. A key meant for the
@@ -1092,9 +1115,10 @@ provider_keys:
   weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
-  `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
-  issue role where the block names none; a pane of a role the list leaves out loads none of this
-  experiment's overlays or instructions while its unit keeps the arm it drew.
+  `roles` lists the issue roles whose launches load the experiment's arms, each once, and it may
+  name only Legion's six. Where the block names none, every issue role loads them, each role of
+  `roles` included. A pane of a role the list leaves out loads none of this experiment's overlays
+  or instructions while its unit keeps the arm it drew.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole

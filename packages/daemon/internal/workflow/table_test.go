@@ -2,23 +2,26 @@ package workflow
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
-	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
+	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerStepPassed, TriggerStepFailed,
+	TriggerRetroCompleted, TriggerPullRequestMerged, TriggerSignOff, TriggerBackward,
 }
 
 // testLines are the lines the table tests hold TableOf to: today's, which an issue with no plan
-// rows walks, and six that a plan of this release walks (plan.Line): a task of an implementer and
-// a reviewer, one of a planner, an implementer and the owner's acceptance, one of an implementer
-// alone, and three in another order than today's: a review before the test, the owner's
-// acceptance before the review, and a planner after the implementer.
+// rows walks, and seven that a plan of this release walks (plan.Line): a task of an implementer
+// and a reviewer, one of a planner, an implementer and the owner's acceptance, one of an
+// implementer alone, three in another order than today's: a review before the test, the owner's
+// acceptance before the review, and a planner after the implementer, and one of an implementer
+// and a role of the deployment, which runs as step.
 var testLines = [][]phase.Phase{
 	phase.Order,
 	{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
@@ -27,6 +30,7 @@ var testLines = [][]phase.Phase{
 	{phase.Implementing, phase.Reviewing, phase.Testing, phase.Retro, phase.Merging},
 	{phase.Implementing, phase.Accepting, phase.Reviewing, phase.Retro, phase.Merging},
 	{phase.Implementing, phase.Planning, phase.Retro, phase.Merging},
+	{phase.Implementing, phase.Step, phase.Retro, phase.Merging},
 }
 
 // todaysTable is the table the workflow walked before an issue's plan picked its line, written
@@ -204,6 +208,48 @@ func TestTheTableOfALineInAnyOrderGoesBackByTheLine(t *testing.T) {
 	}
 }
 
+// Two steps of roles of the deployment both run as step, so the rows of a stored walk are keyed by
+// the place: the line of `implementer checker linter` moves on from step 2 to step 3 and from
+// step 3 to its retro, a failed step goes back to each step before it (step 3 to step 2 and to
+// step 1, step 2 to step 1 alone), and a move back goes from step 3 to step 2. TableOf builds its
+// rows by the positions of the line, not by the first place of each phase, and StoredTableOf adds
+// the fail rows to each earlier step that the fail row to the implementer does not reach.
+func TestTwoPlacesThatRunAsStepAreTwoRows(t *testing.T) {
+	t.Parallel()
+	line := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	step := func(n int) record.TaskPlace { return record.TaskPlace{Kind: record.PlaceStep, Position: n} }
+	retro := record.TaskPlace{Kind: record.PlaceRetro}
+	targets := func(rows []Row, trigger TriggerKind, from record.TaskPlace) []record.TaskPlace {
+		var to []record.TaskPlace
+		for _, row := range rows {
+			if row.Trigger == trigger && row.FromPlace == from {
+				to = append(to, row.ToPlace)
+			}
+		}
+		return to
+	}
+	stored, plain := StoredTableOf(line), TableOf(line)
+	for _, tc := range []struct {
+		name    string
+		rows    []Row
+		trigger TriggerKind
+		from    record.TaskPlace
+		want    []record.TaskPlace
+	}{
+		{"TableOf: step 2 passes to step 3", plain, TriggerStepPassed, step(2), []record.TaskPlace{step(3)}},
+		{"TableOf: step 3 passes to the retro", plain, TriggerStepPassed, step(3), []record.TaskPlace{retro}},
+		{"StoredTableOf: step 2 passes to step 3", stored, TriggerStepPassed, step(2), []record.TaskPlace{step(3)}},
+		{"StoredTableOf: step 3 passes to the retro", stored, TriggerStepPassed, step(3), []record.TaskPlace{retro}},
+		{"StoredTableOf: step 3 fails to step 1 and to step 2", stored, TriggerStepFailed, step(3), []record.TaskPlace{step(1), step(2)}},
+		{"StoredTableOf: step 2 fails to step 1 alone", stored, TriggerStepFailed, step(2), []record.TaskPlace{step(1)}},
+		{"StoredTableOf: step 3 moves back to step 1 and to step 2", stored, TriggerBackward, step(3), []record.TaskPlace{step(1), step(2)}},
+	} {
+		if got := targets(tc.rows, tc.trigger, tc.from); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: %s from %+v goes to %+v, want %+v", tc.name, tc.trigger, tc.from, got, tc.want)
+		}
+	}
+}
+
 // validateTable says why rows is not the whole table of line, nil when it is: every phase and
 // trigger the line declares has a complete row into the phase that line sends it to, every
 // backward edge of the line has its row, and no row stands where the line declares none.
@@ -281,6 +327,8 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 		return in(phase.Testing)
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return in(phase.Reviewing)
+	case TriggerStepPassed, TriggerStepFailed:
+		return in(phase.Step)
 	case TriggerRetroCompleted:
 		return in(phase.Retro)
 	case TriggerPullRequestMerged:
@@ -301,7 +349,7 @@ func wantTarget(line []phase.Phase, from phase.Phase, trigger TriggerKind) (phas
 	switch trigger {
 	case TriggerGateOpened:
 		return line[0], true
-	case TriggerTesterFailed, TriggerReviewRejected:
+	case TriggerTesterFailed, TriggerReviewRejected, TriggerStepFailed:
 		return phase.Implementing, true
 	case TriggerPullRequestMerged:
 		return phase.Done, true
@@ -351,6 +399,8 @@ var awaitingChildrenIgnores = map[TriggerKind]string{
 	TriggerTesterFailed:        "the tester's completion of a phase the wait stopped is refused, HANDOFF_NOT_CURRENT_PHASE",
 	TriggerReviewApproved:      "a review GitHub records during the wait is recorded and starts no phase",
 	TriggerReviewRejected:      "a review GitHub records during the wait is recorded and starts no phase",
+	TriggerStepPassed:          "the completion of a step of a role the deployment defines, of a phase the wait stopped, is refused, HANDOFF_NOT_CURRENT_PHASE",
+	TriggerStepFailed:          "the completion of a step of a role the deployment defines, of a phase the wait stopped, is refused, HANDOFF_NOT_CURRENT_PHASE",
 	TriggerRetroCompleted:      "no retro runs before the parent is accepted, after its children",
 	TriggerPullRequestMerged:   "a merge during the wait is recorded on the pull request and read at the return",
 	TriggerSignOff:             "sign_off on a parent in awaiting_children is refused, WAITING_ON_CHILDREN",

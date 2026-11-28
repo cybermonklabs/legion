@@ -158,7 +158,8 @@ type DeliveryView struct {
 	ID   string `json:"id"`
 	Task string `json:"task"`
 	// Phase is the issue phase the task was queued for, and empty for a task of no phase — an
-	// operator's own, an architect's. It is what says whether a pending task is still the work to
+	// operator's own, an architect's. With the issue's generation, and at step the running step's
+	// role (record.Issue.StepIsOf), it is what says whether a pending task is still the work to
 	// do, so an operator reading a claim can see it rather than infer it from the task's prose.
 	Phase       phase.Phase `json:"phase,omitempty"`
 	QueuedAt    time.Time   `json:"queuedAt"`

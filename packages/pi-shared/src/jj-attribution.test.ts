@@ -184,11 +184,26 @@ describe("exportJjSessionAttribution", () => {
     );
   });
 
-  // The role is read from LEGION_ROLE in one place, and only a role name passes it on.
+  // A role of the deployment, `checker`, is a claim's role as Legion's six are, and its commits
+  // carry it as theirs do.
+  it("writes Legion-Role: checker for a role of the deployment", async () => {
+    const dir = await stateDir();
+    await exportJjSessionAttribution(ROOT_ID, dir, {
+      ...paneAttributionOptions({ LEGION_ROLE: "checker" }),
+      env: {},
+      resolveBase: async () => "/u/base.toml",
+    });
+    const lines = (await overlayText(dir)).split("\n");
+    expect(lines).toContain(`commit_trailers = '"Omp-Session: ${ROOT_ID}\\nLegion-Role: checker"'`);
+    expect(lines).toContain(`  "Legion-Role: checker\\n",`);
+  });
+
+  // The role is read from LEGION_ROLE in one place, and only a role name passes it on: a role of
+  // the step grammar (`isStepRole`) or the controller's.
   it.each([
     ["unset", undefined],
     ["empty", ""],
-    ["bogus", "bogus"],
+    ["outside the role grammar", "Bogus"],
     ['x"y', 'x"y'],
   ])("writes the session line alone for LEGION_ROLE %s", async (_name, role) => {
     const dir = await stateDir();
@@ -205,7 +220,7 @@ describe("exportJjSessionAttribution", () => {
   // Containment, as for the issue key: the role is interpolated into a jj template inside a TOML
   // literal, so the writer checks a caller's value again.
   it.each([
-    ["a value that is no role", "bogus"],
+    ["a value outside the role grammar", "Bogus"],
     ["a value holding a double quote", 'x"y'],
     ["a role with a trailing newline", "tester\n"],
   ])("writes the session line alone for %s passed as the role", async (_name, role) => {

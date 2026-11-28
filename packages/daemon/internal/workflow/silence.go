@@ -110,7 +110,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if issue.Generation != generation {
 		return nil, nil
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if working := OpenRoleOf(*issue); working == "" || working != role {
 		return nil, nil
 	}
 	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)

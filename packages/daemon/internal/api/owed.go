@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -71,13 +70,12 @@ type OwedResponse struct {
 // each refused turn arms asks this route before it goes. A run of refusals that can clear fails
 // no claim, so its reminders keep their pace.
 //
-// A daemon that reads no issue record, or does not know which role works a phase
-// (Options.Pool, Options.RoleFor), answers 500 rather than "nothing owed": the answer says only
-// what the record says, and an empty answer would give a guess as the record's word. The reminder
-// reads the 500 as a read that failed, which reminds no one and arms no reminder
-// (dispatch://INFRA-2746 R7). A phase worker that owes its phase and goes quiet is sent its task
-// again by the daemon's silence sweep (tellSilentPhaseWorkers in internal/daemon/silence.go), not
-// by a reminder.
+// A daemon that reads no issue record (Options.Pool) answers 500 rather than "nothing owed": the
+// answer says only what the record says, and an empty answer would give a guess as the record's
+// word. The reminder reads the 500 as a read that failed, which reminds no one and arms no
+// reminder (dispatch://INFRA-2746 R7). A phase worker that owes its phase and goes quiet is sent
+// its task again by the daemon's silence sweep (tellSilentPhaseWorkers in
+// internal/daemon/silence.go), not by a reminder.
 func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 	var req OwedRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
@@ -112,7 +110,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		s.writeAnswer(w, r, AnswerOwed, http.StatusOK, OwedResponse{})
 		return
 	}
-	if s.pool == nil || s.roleFor == nil {
+	if s.pool == nil {
 		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, so it cannot say what this claim owes")
 		return
 	}
@@ -130,7 +128,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.writeAnswer(w, r, AnswerOwed, http.StatusOK, owedBy(c, position, owner, s.roleFor))
+	s.writeAnswer(w, r, AnswerOwed, http.StatusOK, owedBy(c, position, owner))
 }
 
 // owningArchitect is the architect claim that owns a phase worker on issue now (OwedResponse's
@@ -154,9 +152,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 	return owner, err
 }
 
-// owedBy is what claim c owes with its issue's record standing at position, roleFor naming the
-// role that works each phase (phase.RoleFor), and owner the architect that owns c
-// (owningArchitect), which every answer about a recorded issue names, owed or not.
+// owedBy is what claim c owes with its issue's record standing at position, the role that works
+// the issue's phase read from the issue (record.Issue.RoleAt: phase.RoleFor, and at step the role
+// of its running step), and owner the architect that owns c (owningArchitect), which every answer
+// about a recorded issue names, owed or not.
 //
 // The answer reads the record one way (dispatch://INFRA-2746 R1). Every claim it tells it owes a
 // completion would have that completion taken by the completion route (answerCompletion), the
@@ -200,23 +199,23 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     (supervise.HoldsTask) carries no run, no entry and no look, so a claim that holds it and was
 //     left serving no run serves none, confirmed or not; and a wake's task names no phase, so a
 //     claim that holds one unconfirmed and has served no run serves none either.
-//   - The claim's role works the phase the issue stands on (roleFor), the tree does not linger,
-//     where a completion moves nothing, and the phase is not merging with its pull request
-//     merged (record.MergedInMerging), which is what finishes merging (workflow.PhaseFinished)
-//     while a merged root stands in merging until the rest of its tree leaves. So a role whose
-//     phase has ended owes nothing, whatever it was handed: the issue moved to another role's
-//     phase, to one no role works (awaiting_person, awaiting_children, done, held), or its tree
-//     closed. A merger in merging whose pull request is not merged owes the merge, since the
-//     merger merges.
+//   - The claim's role works the phase the issue stands on (record.Issue.RoleAt, which at step is
+//     the role of the running step), the tree does not linger, where a completion moves nothing,
+//     and the phase is not merging with its pull request merged (record.MergedInMerging), which
+//     is what finishes merging (workflow.PhaseFinished) while a merged root stands in merging
+//     until the rest of its tree leaves. So a role whose phase has ended owes nothing, whatever it
+//     was handed: the issue moved to another role's phase or another step's role, to one no role
+//     works (awaiting_person, awaiting_children, done, held), or its tree closed. A merger in
+//     merging whose pull request is not merged owes the merge, since the merger merges.
 //   - The claim is neither behind nor above the entry its role's phases row stands on
 //     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared. The
-//     route's entry fence (entryFence) reads the same predicate (record.EntriesDiffer). A claim
-//     behind its entry owes nothing: the route refuses its completion HANDOFF_STALE_ENTRY
-//     wherever behindEntryClause gives a clause, and the daemon sends that entry's task itself
-//     (the delivery it already queued, the owed-entry repair, the silence sweep), so the claim
-//     stands level once a turn confirms that task. The entry read is the one the claim serves, not
-//     the one it was given (supervise.Claim.GivenEntry): a task queued and not yet confirmed
-//     leaves the claim behind for the route.
+//     route's entry fence (intake.EntryFence) compares them the same way (record.EntriesDiffer).
+//     A claim behind its entry owes nothing: the route refuses its completion
+//     HANDOFF_STALE_ENTRY wherever intake.BehindEntryClause gives a clause, and the daemon sends
+//     that entry's task itself (the delivery it already queued, the owed-entry repair, the
+//     silence sweep), so the claim stands level once a turn confirms that task. The entry read is
+//     the one the claim serves, not the one it was given (supervise.Claim.GivenEntry): a task
+//     queued and not yet confirmed leaves the claim behind for the route.
 //   - The row does not record the claim's completion of that entry (record.PhaseRow.Completed). A
 //     reviewer whose round waits for a review, or a merger whose completion the workflow recorded
 //     without moving the issue, owes nothing, and the daemon sends a level claim no entry's work.
@@ -224,9 +223,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     another role to merge the base forward onto the head the pull request stands at, the pull
 //     request is open, the merge has not landed, the role asked still owes it where the issue
 //     stands, and the ask's hold told this role to stop and to wait for the new head: the
-//     planner, the tester, the reviewer or the merger of the phase the issue stands in, for an ask
-//     of the implementer made after implementing, in that phase or carried into it, one that
-//     records no asked role included, and not once the implementer was told the ask is withdrawn.
+//     planner, the tester, the reviewer or the merger of the phase the issue stands in, or at step
+//     the role of the running step (record.MergeForwardWorker), for an ask of the implementer
+//     made after implementing, in that phase or carried into it, one that records no asked role
+//     included, and not once the implementer was told the ask is withdrawn.
 //     The completion fence of a merge forward (workflow's mergedForwardRefusal) reads that rule
 //     too, and so does every start of the phase's worker, which holds that worker by it rather
 //     than asking it (workflow's holdStartedWorker, mergeForwardOnEntry). The hold never reaches
@@ -237,7 +237,7 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // A prompt of the task Oh My Pi acknowledged and has not answered (supervise's
 // Machine.outstanding) makes a late turn the task's, so the confirmation it gives is what
 // ServingCheck, ServingRun and ServingEntry, and the completion route with them, read here.
-func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, roleFor func(phase.Phase) claim.Role) OwedResponse {
+func owedBy(c supervise.Claim, position completionPosition, owner claim.Token) OwedResponse {
 	issue := position.issue
 	if issue == nil {
 		return OwedResponse{}
@@ -249,12 +249,12 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
 	}
-	if position.lingers || roleFor(issue.Phase) != c.Role {
+	if position.lingers || issue.RoleAt(issue.Phase) != c.Role {
 		return nothing
 	}
 	serving, entry, _ := claimServes(c, *issue)
 	if !record.PhaseOwed(serving, issue.Generation, entry, position.entry, position.completed,
-		record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role),
+		record.MergeForwardHolds(position.pullRequest, *issue, issue.Phase, c.Role),
 		record.MergedInMerging(position.pullRequest, issue.Phase)) {
 		return nothing
 	}

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The `legion` tool takes the completion and the backward move of a role that a Legion deployment
+  defines, as it takes those of Legion's own roles. Such a role works the phase `step` and writes
+  no handoff record, so its completion reports the commit its workspace stands on, and its fail
+  may name `return_to`. A commit made in such a role's session names that role on its
+  `Legion-Role:` line. The architect skill's plan guide says that such a role runs where its step
+  stands in the plan, at the phase `step`. The tool's description of `CHILD_UNDER_ACCEPTED_PARENT`
+  names both ways the architect prompts give to run such a child. Its `step` description says that
+  a deployment that gates one step takes only that step's document without the step.
+time: 2026-11-23T20:05:28Z
+custom:
+    Issue: pr5164

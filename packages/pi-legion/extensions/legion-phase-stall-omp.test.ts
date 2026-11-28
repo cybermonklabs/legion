@@ -726,8 +726,8 @@ test.skipIf(skip)(
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
     // The tool text the model is offered names the report's `verdict` and its two values. The
-    // tester, the role the daemon takes it from, is not held: the text names the tester in other
-    // sentences too, so a check of it could not fail.
+    // roles the daemon takes it from, the tester and a role of the deployment, are not held: the
+    // text names them in other sentences too, so a check of them could not fail.
     const offered = legionToolDescription(turns[0] as Request);
     expect(namesMissing(offered, ["`verdict`", "pass|fail"])).toEqual([]);
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");

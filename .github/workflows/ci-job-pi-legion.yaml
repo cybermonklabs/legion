@@ -107,7 +107,8 @@ jobs:
       # scripts/skill-scenarios/rig.test.ts runs rig.sh judge-omp's container with the runner's own
       # Docker. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
       # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
-      # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run` inside packages/daemon.
+      # scripts/skill-scenarios/daemon-pane.test.ts runs daemon-pane.go with `go run`, and
+      # daemon-pane_test.go with `go test`, inside packages/daemon.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

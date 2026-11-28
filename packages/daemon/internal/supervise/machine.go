@@ -1185,13 +1185,14 @@ type Deps struct {
 	// PhaseRole names the role working the current phase of issue, which the gate's order puts
 	// first among the starts no request raised that wait behind another (podQueue.next): the first
 	// start to reach a pod that holds nothing goes at once whatever its role (PodStarts.grant). It
-	// is the workflow's own reading of the issue record (internal/workflow's OpenPhaseRole), "" for
-	// an issue it does not record, for a phase no role works, and for a phase the architect works
-	// (admitted, accepting), which has no phase worker, so the order falls back to claim.Roles
-	// there. It is read at each start into a gated pod that no request raised, before the gate
-	// answers, since the order reads it of no other, bounded by Timeouts.RPC; an error is logged
-	// and read as no phase worker, so the start waits in the order of claim.Roles. nil is a daemon
-	// with no workflow, where no role is the phase worker.
+	// is the workflow's own reading of the issue record (internal/workflow's OpenRoleOf, which at
+	// step names the role of the running step), "" for an issue it does not record, for a phase no
+	// role works, and for a phase the architect works (admitted, accepting), which has no phase
+	// worker, so the order falls back to claim.Roles there. It is read at each start into a gated
+	// pod that no request raised, before the gate answers, since the order reads it of no other,
+	// bounded by Timeouts.RPC; an error is logged and read as no phase worker, so the start waits
+	// in the order of claim.Roles. nil is a daemon with no workflow, where no role is the phase
+	// worker.
 	PhaseRole func(ctx context.Context, issue string) (claim.Role, error)
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
@@ -1217,14 +1218,19 @@ type Deps struct {
 	// that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
 	// any decision in flight (Machine.View). nil holds no delivery back.
 	IssueInTurn func(issue string, except claim.Token) (claim.Token, bool)
-	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
-	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
-	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
-	// moved on is that same staleness one step later and is dropped rather than sent. It is asked
-	// only about a delivery that names a phase; a task an operator delivered by hand names none and
-	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
-	// task of no run. nil holds every delivery.
-	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// PhaseHolds says whether d, a delivery queued for c, is still the work of c's issue: the
+	// workflow enqueues a task for the phase and run its issue was in, and at the phase step, which
+	// every role a deployment defines runs as, for the step of c's role, and the outbox refuses to
+	// start a role for a phase or a step the issue has left (daemon/outbox.go), so a delivery
+	// queued before the phase, the step or the run moved on is that same staleness one step later
+	// and is dropped rather than sent. The same answer judges a start's work before the claim is
+	// brought back for it (StartWork), as a delivery of that phase and run. A start that brings a
+	// role back and hands it nothing marks its delivery (BringsBack), and the answer then holds it
+	// to its phase and run alone (record.BroughtBackHolds). It is asked only about a delivery or a
+	// start that names a phase; a task an operator delivered by hand names none and is never put to
+	// it, which the machine decides rather than this answer. d's generation is 0 for a task of no
+	// run. nil holds every delivery.
+	PhaseHolds func(ctx context.Context, c Claim, d Delivery) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -3517,7 +3523,7 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // cause is why the process the claim still records is let go, which the let-go records with
 // what that process ended (letGo, recordEnd); noEnd for a launch that lets none go.
 func (m *Machine) launch(ctx context.Context, cause string) error {
-	return m.launchAfter(ctx, false, false, false, nil, cause)
+	return m.launchAfter(ctx, false, false, false, nil, cause, StartWork{})
 }
 
 // launchAfter is launch, whose first try waits the backoff when charged: the launch follows a
@@ -3572,14 +3578,98 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // launch that took none, which the gate decides by the rule RequestSpawn.Place states. Only the
 // gate reads it, and no field of the machine holds it; a retry raised anew from the top takes a
 // place afresh, passing nil.
-func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, place *wakepace.Place, cause string) error {
-	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, false, nil, cause) }
+//
+// start is the work a workflow start brings the claim back for (StartWork, revive), the zero
+// StartWork for every other launch. Its caller judged it under this lock already (startHolds),
+// so a launch that runs here is not judged twice. A launch that waited is judged again where its
+// wait ends (startLeftWhileParked): at the end of a park — the pacing's turn, the pod gate's grant,
+// the pause's let-out (runWake, podStartDue) — and here, where a retry relaunchLater armed comes
+// back over a claim left launching with no process (the probe interval's, the session store's,
+// the pod round's, the lifecycle check's).
+func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bool, place *wakepace.Place, cause string, start StartWork) error {
+	again := func(ctx context.Context) error {
+		return m.launchAfter(ctx, charged, exempt, false, nil, cause, start)
+	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, m.pluginRelaunch.waitsUnder(), again, err)
 	}
-	return m.reserveWake(ctx, exempt, place, func(ctx context.Context) error {
-		return m.launchNow(ctx, charged, exempt, requested, cause)
+	if left, err := m.startLeftWhileParked(ctx, m.pluginRelaunch.waitsUnder(), start, again); left {
+		return err
+	}
+	return m.reserveWake(ctx, exempt, place, start, func(ctx context.Context) error {
+		return m.launchNow(ctx, charged, exempt, requested, cause, start)
 	}, again)
+}
+
+// startLeftWhileParked is the one rule a start that waited keeps where its wait ends: a claim
+// written launching with no process — the state every park and every armed retry leaves it in
+// (waitOnMachine, askPod, pauseGate, relaunchLater) — whose start's work its issue has left since
+// starts no process (startLeft), unless the claim holds a task of work its issue still holds
+// (pendingWorkHolds). The outbox delivers a newer start's task to a claim it finds launching
+// (deliverLater), so a step that sends the role back to work while its launch waits — a checker's
+// return to implementing over the promotion's start that brought the implementer back — leaves
+// that task on the claim, and the launch goes on for it: its process is sent the task at its ready
+// (sendPending), where suspending the claim would retire it unsent (settle). The launch carries its
+// start on unchanged, so the end of a later wait of the same launch judges the two again in the
+// same order.
+//
+// It answers whether the launch ends here, and what ending it answered: the start left, or a read
+// failed — the start's or the held task's — which relaunchRefused tries again with again, armed
+// under kind, the kind the launch waits under (pluginIntent.waitsUnder), as the lifecycle recheck
+// beside it arms its retry. A claim that still records its process, or that was not left
+// launching, was judged by the decision that raised its launch and is judged by nothing here,
+// and so is the zero StartWork.
+func (m *Machine) startLeftWhileParked(ctx context.Context, kind WakeKind, start StartWork, again func(context.Context) error) (bool, error) {
+	if m.claim.State != StateLaunching || m.claim.Locator != nil {
+		return false, nil
+	}
+	switch err := m.startHolds(ctx, start); {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, ErrStartLeft):
+		holds, read := m.pendingWorkHolds(ctx)
+		if read != nil {
+			return true, m.relaunchRefused(ctx, kind, again, read)
+		}
+		if holds {
+			p := m.claim.Pending
+			m.log.Info("supervise: the launch this start waited for is of work its issue has left, but the claim holds a task of work its issue still holds; the launch goes on for that task",
+				"error", err, "delivery", p.ID, "phase", string(p.Phase), "generation", p.Generation)
+			return false, nil
+		}
+		return true, m.startLeft(ctx, err)
+	default:
+		return true, m.relaunchRefused(ctx, kind, again, err)
+	}
+}
+
+// pendingWorkHolds is whether the claim holds a task its launch may go on for although the start
+// the launch waited for is of work its issue has left (startLeftWhileParked): a task of a phase
+// that hands the claim work (HoldsWork; a task of news alone hands none), that no turn has taken,
+// and whose phase and run its issue still holds by the judge every queued task is sent by
+// (phaseHolds, Deps.PhaseHolds). A claim that holds no such task answers false, and so does one
+// whose task names no phase, which that judge is never asked about: an operator's own, which no
+// start of the workflow launched for. The error is the judge's read.
+func (m *Machine) pendingWorkHolds(ctx context.Context) (bool, error) {
+	p := m.claim.Pending
+	if !HoldsWork(p) || p.Phase == "" || !p.ConfirmedAt.IsZero() {
+		return false, nil
+	}
+	return m.phaseHolds(ctx, *p)
+}
+
+// startLeft ends a start's launch that waited and whose work the issue left during the wait, over
+// a claim that holds no task of work its issue still holds (startLeftWhileParked): the claim
+// records no process, so none is stopped, and it is suspended for the daemon, its session kept,
+// the end a launch the tree's lifecycle refuses over a claim with no process takes too
+// (relaunchRefused). Whatever task of a phase the claim holds then — the one the start handed it,
+// or one queued during the wait that hands no work its issue still holds — is retired unsent with
+// the suspension (settle), and the start of the role's next work resumes the claim by rule. A
+// suspension for the daemon is no stranded claim of a role that works no step the task stands at
+// (workflow.Stranded).
+func (m *Machine) startLeft(ctx context.Context, err error) error {
+	m.log.Info("supervise: the launch this start waited for is of work its issue has left; suspending the claim with no process started", "error", err)
+	return m.suspended(ctx, SuspendedByDaemon, nil)
 }
 
 // launchNow is launchAfter past its lifecycle check and its wake gate: the launch itself, and the
@@ -3610,7 +3700,9 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // activity report (letGo, recordEnd, the store's putClaim). The retries this launch arms — a
 // failed write's here, a session store's that could not answer (startWaitsForStore), a pod
 // round's (startWaitsForPodRound) — launch a claim that records no process any more, so they
-// pass noEnd.
+// pass noEnd; they carry start, the work of the start this launch is for, so the retry, which
+// finds the claim launching with no process, judges it again as a parked launch's turn does
+// (launchAfter).
 //
 // Each try of a claim of an issue pod asks the pod's start gate right before it asks the runtime
 // for its process, so no role's process starts while another role of the pod starts or loads its
@@ -3620,7 +3712,7 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt, requested bo
 // that try's start (askPod, podStartDue, launchTries). A parked try of a launch of the
 // stale-plugin lane keeps the refresh credit that launch was admitted on through the park
 // (heldTryWake, laneLaunchOwed).
-func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool, cause string) error {
+func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool, cause string, start StartWork) error {
 	// The intent is read before it is committed rather than taken, because committing takes it
 	// off the machine (commitPluginRelaunch, takePluginRelaunch) and the retry a failed write
 	// arms must put that same one back where it runs. Reading it without taking it is what the
@@ -3646,7 +3738,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 	if !m.replaceEndedSession(ctx) {
 		m.replaceAgedSession(ctx, exempt)
 	}
-	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting}, nil)
+	return m.launchTries(ctx, launchTry{intent: intent, charged: charged, exempt: exempt, requested: requested, waiting: waiting, start: start}, nil)
 }
 
 // launchTry is what every try of one launch reads, and what a try parked at its issue pod's gate
@@ -3654,11 +3746,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt, requested bool
 // retries it may arm (relaunchAtProbe); whether its next try waits the backoff (charged); whether
 // the request that raised it is one the wake pacing lets through, which also keeps the controller's
 // aged session (exempt, replaceAgedSession); whether a request raised it at all, which the pod's
-// gate reads (requested); and whether the launch retries a wait for its pod's update round that is
-// logged already, which a charged failure ends (startWaitsForPodRound, waiting).
+// gate reads (requested); whether the launch retries a wait for its pod's update round that is
+// logged already, which a charged failure ends (startWaitsForPodRound, waiting); and the work of
+// the workflow start it is for (start), which a retry raised from the top judges again
+// (launchAfter).
 type launchTry struct {
 	intent                              *pluginIntent
 	charged, exempt, requested, waiting bool
+	start                               StartWork
 }
 
 // podGrant is a try the pod's gate granted after it parked (podStartDue): the boot token its
@@ -3767,10 +3862,10 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		}
 		m.claim.LastStartFailure, m.claim.LastStartFailureAt = storetext.FarSideError(err.Error()), m.deps.Clock.Now()
 		if errors.Is(err, runtime.ErrSessionStore) {
-			return m.startWaitsForStore(starting, err, l.charged, l.exempt)
+			return m.startWaitsForStore(starting, err, l.charged, l.exempt, l.start)
 		}
 		if errors.Is(err, runtime.ErrAwaitingPodRound) {
-			return m.startWaitsForPodRound(starting, err, l.charged, l.exempt, l.waiting)
+			return m.startWaitsForPodRound(starting, err, l.charged, l.exempt, l.waiting, l.start)
 		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
@@ -3797,7 +3892,8 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 // on while the wake carries the hold, the grant starting with token, the boot token the try was
 // written with; and a fresh try of the same launch, asked of the gate anew, once it carries none,
 // as a let-out after a pause runs it (letOutHeldLaunch, runWake). Its again is the launch raised
-// anew from the top, for that let-out's lifecycle recheck (launchFromTop, relaunchRefused).
+// anew from the top, for that let-out's lifecycle recheck (launchFromTop, relaunchRefused). Its
+// start is the launch's (l.start), judged again where the hold ends (startLeftWhileParked).
 //
 // Its kind is the one l's launch waits under (pluginIntent.waitsUnder): a held try of a launch of
 // the stale-plugin lane is that lane's launch still owed, so the machine keeps the refresh credit
@@ -3810,7 +3906,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 // re-registration and letGo does not clear it, so the stale contract the launch was raised over
 // stands through the hold, and a held try's claim is launching.
 func (m *Machine) heldTryWake(l launchTry, token string) *wake {
-	held := &wake{kind: l.intent.waitsUnder(), state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l)}
+	held := &wake{kind: l.intent.waitsUnder(), state: m.claim.State, paid: true, ran: true, again: m.launchFromTop(l), start: l.start}
 	held.run = func(ctx context.Context) error {
 		if held.park == nil {
 			return m.launchTries(ctx, l, nil)
@@ -3885,7 +3981,7 @@ func (m *Machine) relaunchAtProbe(l launchTry) {
 // pause (heldTryWake, wake.again).
 func (m *Machine) launchFromTop(l launchTry) func(context.Context) error {
 	return m.retryHolding(l.intent, func(ctx context.Context) error {
-		return m.launchAfter(ctx, l.charged, l.exempt, false, nil, noEnd)
+		return m.launchAfter(ctx, l.charged, l.exempt, false, nil, noEnd, l.start)
 	})
 }
 
@@ -3985,13 +4081,13 @@ const (
 // credit goes back as the decision ends (laneLaunchOwed). The store's error is a far side's text:
 // the line, the claim and the notices carry it as the claim keeps one (storetext.FarSideError,
 // logFarSideError).
-func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
+func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool, start StartWork) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
 		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, WakeLaunch, func(ctx context.Context) error {
-		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
+		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd, start)
 	})
 	return errors.Join(err, m.persist(ctx))
 }
@@ -4014,7 +4110,8 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // identity. A round can take hours, so the wait logs one line, with the runtime's refusal, which
 // names the pod, at the refusal that begins it; waiting is whether this refusal is a retry of a
 // wait already logged (podRoundWaiting). The process the launch let go is let go already, so the
-// retry lets none go (noEnd). The retry is an ordinary launch's, WakeLaunch, as a session store's
+// retry lets none go (noEnd), and it carries start, the work of the start the launch is for, as
+// startWaitsForStore's does. The retry is an ordinary launch's, WakeLaunch, as a session store's
 // is (startWaitsForStore), so a launch of the stale-plugin lane that meets this gives its refresh
 // credit back as the decision ends.
 //
@@ -4023,13 +4120,13 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
 // round would come, and this wait would never end. The write below publishes it, before the
 // retry is due.
-func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
+func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool, start StartWork) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
 		m.log.Warn(podRoundWaitLine, "generation", m.claim.Generation, "retry", podRoundRetry, "error", err)
 	}
 	m.relaunchLater(podRoundRetry, WakeLaunch, func(ctx context.Context) error {
-		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
+		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd, start)
 	})
 	m.podRoundWaiting = true
 	m.awaitsPod = nil

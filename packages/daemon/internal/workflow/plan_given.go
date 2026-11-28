@@ -273,7 +273,7 @@ type writtenVersion struct {
 // each other task it changes takes the steps its block now names, and each task it removes is
 // deleted. It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := givenRows(fact, given, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -411,8 +411,9 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // to the generation waits at no act (PutPlan keeps where a task the generation holds stands). A
 // task the version leaves as it was keeps its stored steps; any other task takes the steps its
 // block names (StepsOf), or, for a block that names none, defaults, the project's default steps
-// (Config.DefaultSteps), each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, given givenVersion, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// (Config.DefaultSteps), each with the type its role has in d, the engine's deployment
+// (planSteps).
+func givenRows(fact intake.PlanGiven, given givenVersion, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: given.source, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -425,7 +426,7 @@ func givenRows(fact intake.PlanGiven, given givenVersion, defaults []plan.Step, 
 			steps = append(steps, given.stored.Steps[task.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(fact.Issue, fact.Generation, task.ID, plan.StepsOf(task, defaults))...)
+		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, task.ID, plan.StepsOf(task, defaults))...)
 	}
 	return version, tasks, steps
 }

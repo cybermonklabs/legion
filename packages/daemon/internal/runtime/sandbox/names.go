@@ -388,7 +388,7 @@ const (
 const volumeResetAnnotation = "legion.dev/volume-reset"
 
 // secretsReleasedAnnotation is the release's record on the Sandbox of an issue's kept volume that
-// it deleted the Secrets the Sandbox owns: the provisioning Secret and the six role Secrets
+// it deleted the Secrets the Sandbox owns: the provisioning Secret and each role's Secret
 // (deleteIssueSecrets). Its value is the Sandbox's uid. The release writes it once every delete
 // has succeeded, so it is never on a Sandbox that still owns one of them. A launch that keeps the
 // Sandbox removes it before it writes the first Secret (relaunch, annotate). A Sandbox
@@ -439,10 +439,10 @@ const (
 // asked for, its Service's.
 const maxNameLength = 63
 
-// SandboxName is the Sandbox and pod name for an issue, or for the project controller. The six role
-// claims of an issue share it, and its one container; their generations live in each process
-// locator instead. A role claim's token always ends in one fixed role word, so cutting it
-// (claim.Token.Cut) preserves the project and issue token even where an issue name has hyphens.
+// SandboxName is the Sandbox and pod name for an issue, or for the project controller. Every role
+// claim of an issue shares it, and its one container; their generations live in each process
+// locator instead. A role claim's token is cut at its first four "-" (claim.Token.Cut), so the
+// project and issue token it keeps is the same whatever the role, a role with a "-" included.
 // The controller's token (claim.ControllerToken) ends in no workflow role and names its Sandbox
 // whole, `legion-<project>-controller`, which no issue's can be: an issue's part always ends in
 // `-<digits>`, and one past dnsName's length in a dash and eight hex digits.
@@ -454,9 +454,12 @@ func SandboxName(t claim.Token) string {
 	return dnsName(pod, maxNameLength)
 }
 
-// launcherRoles is every role a launcher can run: the six workflow roles of an issue pod, and the
-// controller of the project controller's pod. Each has a role Secret of its own in its pod.
-var launcherRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// launcherRoles is every role a launcher of the runtime can run: every role of its issue pods
+// (issueRoles: Legion's six, then each role the deployment defines), and the controller of the
+// project controller's pod. Each has a role Secret of its own in its pod.
+func (r *Runtime) launcherRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
 // issueSandboxName is SandboxName of issue's role claims, from the issue key. project need not
 // already be a claim.ProjectToken (the caller's own Options.Project, the legion.dev/project

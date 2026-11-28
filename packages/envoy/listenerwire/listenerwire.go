@@ -821,7 +821,8 @@ type LegionAgentEntry struct {
 	LegionProject string `json:"legion_project"`
 	// Issue is the Dispatch issue key the session works, upper case.
 	Issue string `json:"issue"`
-	// Role is one of the six workflow roles (legionagents.Roles).
+	// Role is one of the six workflow roles (legionagents.Roles) or a role the deployment defines
+	// in its settings: a name of the role grammar ^[a-z][a-z0-9-]{0,31}$ but controller.
 	Role string `json:"role"`
 	// RoleToken is legion-<legion_project>-<issue lower-cased>-<role>, byte for byte what
 	// claim.NewToken and roleToken build.

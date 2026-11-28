@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -801,29 +802,46 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 	return open, nil
 }
 
-// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot while
-// no slot of the issue stands (slotWaitingStart): the issue gave its slot back to wait on another,
-// or had its work come back, and waits in the admission line. The outbox holds that start back
-// until the slot comes, and the start then wakes the worker an idle release suspended. So a
-// backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
-// worker to its phase's work while the admission cap says the issue may not run.
+// WaitingStart is one start that waits for its issue's admission slot (PodRecords.SlotWaitingStarts):
+// the role it starts and the phase and run (generation) it was queued for, as its payload names
+// them (record.SuperviseRequest).
+type WaitingStart struct {
+	Role       claim.Role
+	Phase      phase.Phase
+	Generation uint64
+}
+
+// SlotWaitingStarts is every start issue owes a worker that waits for its admission slot while no
+// slot of the issue stands (slotWaitingStart), oldest first: the issue gave its slot back to wait
+// on another, or had its work come back, and waits in the admission line. The outbox holds such a
+// start back until the slot comes, and the start then wakes the worker an idle release suspended,
+// so a backstop of an issue that owes one of its current work wakes no one (the workflow's
+// podBackstopDue): a wake would put the worker to its phase's work while the admission cap says
+// the issue may not run.
 //
-// Only a start of the issue's current phase and generation counts. An older one stays in the
-// outbox until admission finishes it without acting (admit's finishFencedStarts), which a pause
-// defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
-// would leave the released worker with nothing to wake it once that row goes. Phase and
-// generation are the whole fence here although finishFencedStarts also finishes a row whose
-// issue left the workflow or whose tree lingers, and one a retired claim's stop outlived: the
-// backstop's wake refuses the first two itself (the workflow's wakeReleased reads
-// InWorkflowNotLingering), and a retired claim is never the released claim the backstop wakes.
-func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
-	var waits bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`
-		and exists (select 1 from issues i where i.key = outbox.issue
-			and i.phase = outbox.payload->>'phase'
-			and i.generation = coalesce((outbox.payload->>'generation')::bigint, 0)))`,
-		issue).Scan(&waits); err != nil {
-		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
+// It answers each start as its payload names it and judges none: which of them is the issue's
+// current work is the workflow's to say, against the issue's record, by the rule's one statement
+// (record.Issue.HoldsQueued, on the start's run), as admission says it of the same rows before it
+// finishes one without acting (admit's finishFencedStarts).
+func (p *PodRecords) SlotWaitingStarts(ctx context.Context, tx pgx.Tx, issue string) ([]WaitingStart, error) {
+	rows, err := tx.Query(ctx, `select coalesce(payload->>'role', ''), coalesce(payload->>'phase', ''),
+			coalesce((payload->>'generation')::bigint, 0)
+		from outbox where issue = $1 and `+slotWaitingStart+`
+		order by id`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("read the starts of %s that wait for its admission slot: %w", issue, err)
 	}
-	return waits, nil
+	defer rows.Close()
+	var starts []WaitingStart
+	for rows.Next() {
+		var start WaitingStart
+		if err := rows.Scan(&start.Role, &start.Phase, &start.Generation); err != nil {
+			return nil, fmt.Errorf("read the starts of %s that wait for its admission slot: %w", issue, err)
+		}
+		starts = append(starts, start)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the starts of %s that wait for its admission slot: %w", issue, err)
+	}
+	return starts, nil
 }

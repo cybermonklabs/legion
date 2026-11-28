@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 
 	"github.com/sjawhar/envoy/pgdsn"
 
@@ -114,7 +115,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 		return bootReads{}, err
 	}
 	if cfg.InstructionsPath != "" {
-		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
+		if r.instructions, err = cfg.ReadInstructions(); err != nil {
 			return bootReads{}, err
 		}
 	}
@@ -122,11 +123,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// the deployment's instructions are and refused the same way. The engine is given words and
 	// never a path, so a file a hook names is as much a part of boot as the instructions are: a
 	// missing one refuses boot, and `legion config check` with it.
-	for _, hook := range cfg.Hooks {
+	for index, hook := range cfg.Hooks {
 		if hook.PromptFile == "" {
 			continue
 		}
-		words, err := config.ReadHookPrompt(hook.Name, hook.PromptFile)
+		words, err := config.ReadHookPrompt(index, hook)
 		if err != nil {
 			return bootReads{}, err
 		}
@@ -265,7 +266,7 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 // quotes, and every arm of the `experiments` key, `experiments.memory` included, in the
 // experiments' words.
 func checkRoleConfigFiles(cfg config.Config) error {
-	for _, role := range config.RoleConfigRoles {
+	for _, role := range overlayRoles(cfg) {
 		for _, file := range cfg.RoleConfigFiles[role] {
 			if err := podsafety.CheckOverlay(file); err != nil {
 				return fmt.Errorf("role_config_files.%s names %s, which the %s's Oh My Pi could not read: %w", role, file, role, err)
@@ -286,6 +287,17 @@ func checkRoleConfigFiles(cfg config.Config) error {
 		}
 	}
 	return nil
+}
+
+// overlayRoles are the roles whose role_config_files the boot reads: Legion's
+// (config.RoleConfigRoles, the controller among them), then each role of `roles` in the file's
+// order, so an overlay of a role the deployment defines is read at boot as one of Legion's is.
+func overlayRoles(cfg config.Config) []claim.Role {
+	roles := slices.Clone(config.RoleConfigRoles)
+	for _, role := range cfg.Roles {
+		roles = append(roles, role.Name)
+	}
+	return roles
 }
 
 // CheckedNATS is whom the daemon's NATS credentials authenticate as, as CheckStart read them: the

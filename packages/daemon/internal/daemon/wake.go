@@ -585,12 +585,13 @@ func (r *outbox) logRefusedByOpenResume(issue string, role claim.Role, detail st
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole) while that worker gets one
-// (getsBackstop). An architect gets none — nothing of its own is due, and a sub-architect woken
-// for nothing would hold a pod open for the backstop period — and neither does an issue whose
-// phase no role works. The row records now as its arm time, the instant its due time is computed
-// from: the backstop of an issue the daemon records as waiting on another issue is measured from
-// it (workflow.WaitSilenceBound, fireDueBackstops).
+// worker of the pod's open phase (workflow.OpenRoleOf, which at step is the role of the running
+// step, read with the issue) while that worker gets one (getsBackstop, told that phase and that
+// role). An architect gets none — nothing of its own is due, and a sub-architect woken for nothing
+// would hold a pod open for the backstop period — and neither does an issue whose phase no role
+// works. The row records now as its arm time, the instant its due time is computed from: the
+// backstop of an issue the daemon records as waiting on another issue is measured from it
+// (workflow.WaitSilenceBound, fireDueBackstops).
 //
 // A worker that owes its phase nothing gets none either (dispatch://INFRA-2746 R1), but for the
 // two kinds of claim getsBackstop keeps, which it states. Such a worker is one whose completion of
@@ -629,7 +630,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenPhaseRole(issue.Phase)
+	role := workflow.OpenRoleOf(issue)
 	if role == "" {
 		return nil
 	}
@@ -652,7 +653,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 			if err != nil {
 				return err
 			}
-			facts, gets, err = getsBackstop(ctx, r.records, tx, issue.Phase, issue.Generation, whole)
+			facts, gets, err = getsBackstop(ctx, r.records, tx, issue.Phase, issue.StepRole, issue.Generation, whole)
 			return err
 		}); err != nil {
 			return fmt.Errorf("read whether %s's %s gets a backstop before arming one: %w", issue.Key, role, err)
@@ -682,11 +683,12 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 }
 
 // getsBackstop is whether c, a claim of the role that works the phase its issue stands at (at,
-// at the issue's generation), gets a backstop when its pod is released or a pause stops it: it
-// owes that phase its completion, by the rule the owed answer and the idle release's reminder
-// hold read (record.PhaseOwed), or it is of one of the two kinds of claim that owe nothing and
-// still get one: a claim that holds a task of the issue's run and phase that no turn has
-// confirmed, of its row's entry, of an earlier one or of no entry, while it is behind its entry
+// at the issue's generation, with stepRole the role of its running step, which works it at step),
+// gets a backstop when its pod is released or a pause stops it: it owes that phase its
+// completion, by the rule the owed answer and the idle release's reminder hold read
+// (record.PhaseOwed), or it is of one of the two kinds of claim that owe nothing and still get
+// one: a claim that holds a task of the issue's run and phase that no turn has confirmed, of its
+// row's entry, of an earlier one or of no entry, while it is behind its entry
 // or still serves an earlier run of the issue (holdsUndeliveredEntryTask), and a claim that holds
 // a task of news alone of the issue's run and phase that no turn has confirmed, whatever it owes
 // and whatever entry it serves (holdsUndeliveredNewsTask). It is the one statement of that rule
@@ -698,7 +700,8 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // that run is not yet delivered still serves the earlier run. It reads, through tx as the idle
 // view reads them (record.FillIdleClaims), the entry its role's phases row stands on, whether that
 // row records its completion, whether a merge forward of the issue's pull request holds its role
-// and whether that pull request is merged while the issue stands in merging. It answers those
+// (at step, read of stepRole, the worker the hold reaches: record.MergeForwardHolds) and whether
+// that pull request is merged while the issue stands in merging. It answers those
 // facts beside the verdict, for the line of a caller that arms nothing. c is the whole claim
 // (store.ClaimTx), since the run and the entry it serves are read from its pending delivery, the
 // run and the entry it last served and its update round, and the task it holds, of either kind,
@@ -713,11 +716,11 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // delivery the store holds: the release, the cancel and the decline read the claim whole
 // (store.ClaimTx), and the stop hands it the claim it writes, with that delivery, in the same
 // transaction.
-func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, generation uint64,
+func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, stepRole claim.Role, generation uint64,
 	c supervise.Claim) (pods.IdleClaim, bool, error) {
 	facts := []pods.IdleClaim{{Role: c.Role}}
 	facts[0].ReadServing(c, generation, at)
-	if err := record.FillIdleClaims(ctx, records, tx, c.Issue, at, facts); err != nil {
+	if err := record.FillIdleClaims(ctx, records, tx, c.Issue, at, stepRole, facts); err != nil {
 		return pods.IdleClaim{}, false, err
 	}
 	f := facts[0]
@@ -814,8 +817,8 @@ func holdsUndeliveredNewsTask(c supervise.Claim, at phase.Phase, generation uint
 // a cancel or a decline of a release stops for a pause (store.ReleaseCancelPause.GetsBackstop, set
 // by pausedCancel for outbox.cancelRelease and outbox.declineRelease), through the outbox's
 // records.
-func (r *outbox) getsBackstop(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error) {
-	_, gets, err := getsBackstop(ctx, r.records, tx, at, generation, c)
+func (r *outbox) getsBackstop(ctx context.Context, tx pgx.Tx, at phase.Phase, stepRole claim.Role, generation uint64, c supervise.Claim) (bool, error) {
+	_, gets, err := getsBackstop(ctx, r.records, tx, at, stepRole, generation, c)
 	return gets, err
 }
 

@@ -46,7 +46,8 @@ const (
 	// IdleHoldInTurn: a claim of the pod has a process in a turn, starting or stopping, or one
 	// whose launch is not yet known.
 	IdleHoldInTurn
-	// IdleHoldDelivery: a task, notice, message or start waits for delivery to a role of the pod.
+	// IdleHoldDelivery: a task, notice, message or start waits for delivery to a role of the pod;
+	// a start that waits for its pod, built before its role, is none (pods.StartWaitsForPodPrefix).
 	IdleHoldDelivery
 	// IdleHoldBackgroundWork: a live role's session reported background work of its own running.
 	IdleHoldBackgroundWork
@@ -87,7 +88,8 @@ const (
 	// IdleHoldOvertaken: the pod was given work after its release was marked — a claim of it was
 	// started or resumed, or holds a process, at any of the release's role stops or at its
 	// teardown, or, at the first of the stops, before any role process was stopped, a task,
-	// notice, message or start reached a role of the pod — so that row cancelled the release
+	// notice, message or start reached a role of the pod, a start that waits for its pod excepted
+	// — so that row cancelled the release
 	// and the roles go on in the same pod. It is one hold wherever the release read it, because
 	// it is one thing that happened (store.ReleaseCauseOvertaken).
 	IdleHoldOvertaken
@@ -136,7 +138,8 @@ const (
 	// hold as two across the records written before and after it.
 	IdleHoldUnownedSuspensionHolds
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
-	// the pod, and the delivery is what brings a role back into it.
+	// the pod, and the delivery is what brings a role back into it. A start that waits for its pod
+	// is none, since the next pod serves it.
 	IdleHoldUnownedDelivery
 	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
 	// them lingers. Such a pod is a close's to stop, as it is for the idle rule
@@ -322,7 +325,8 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 //
 //   - no task, notice, message or start waits for delivery to a role of the pod, but a start
 //     queued for news alone, or a worker start that waits for an admission slot its issue does not
-//     hold, each of which wakes the claim a release suspends when it runs (pods.IdleView.Waiting);
+//     hold, each of which wakes the claim a release suspends when it runs, and a start that waits
+//     for its pod (pods.IdleView.Waiting);
 //
 //   - each live role's session reported, after its last turn, that it runs no background work. A
 //     claim with no report, or one whose report predates its last turn, is never released: that
@@ -817,10 +821,11 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 	return false
 }
 
-// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenPhaseRole),
+// idlePhaseOpen is whether the claim is the worker of the issue's open phase (OpenRoleAt, which at
+// step is the role of the running step the view reads with the issue, pods.IdleView.StepRole),
 // serving the current generation as the owed answer reads the run a claim serves
 // (pods.IdleClaim.ServingGeneration, supervise.Claim.ServingAt): the one shape of claim a phase
 // reminder is armed in.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenPhaseRole(view.Phase) == c.Role && c.ServingGeneration == view.Generation
+	return OpenRoleAt(view.Phase, view.StepRole) == c.Role && c.ServingGeneration == view.Generation
 }

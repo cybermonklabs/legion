@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 
 	"gopkg.in/yaml.v3"
@@ -13,13 +14,44 @@ import (
 // repositoryRenamesKey is `repository_renames`, the key every refusal of it names.
 const repositoryRenamesKey = "repository_renames"
 
+// repositoryShape is a repository written in the characters GitHub allows, ghrepo's owner and
+// name joined by one "/": an owner of a letter or a digit and then at most 38 letters, digits, "-"
+// and "_", and a name of at most 100 letters, digits, "-", "_" and ".".
+var repositoryShape = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// repositoryNamed reports whether a refusal may name repository, a value of a repository's place,
+// as written: one of a repository's shape (repositoryShape) that holds no token's run in any case
+// (tokenShapedInAnyCase). repositoryShape takes capitals, as GitHub's names hold them, so it takes
+// a token of mixed case written as a repository (`acme/ghp_…`) too, and only its run, read in lower
+// case, shows it. Any other repository is named by its place.
+func repositoryNamed(repository string) bool {
+	return repositoryShape.MatchString(repository) && !tokenShapedInAnyCase(repository)
+}
+
+// parseRepository is ghrepo.Parse for repository, a value the file or the environment writes at
+// what. Parse's refusal quotes the value whole, so it is printed only where the value has a key's
+// shape (keyShape), a bare word such as `widgets`, or is a repository a refusal may name
+// (repositoryNamed), such as one ending in `.git`, whose refusal says how to write it. Any other
+// value Parse refuses is refused by what alone: a value of neither shape, a token pasted where the
+// repository goes among them (`ghp_…` holds no "/"), is no typo of one, and a value of a
+// repository's shape that holds a token's run in any case can be a token written as one. A
+// repository Parse takes is taken whatever it holds.
+func parseRepository(what, repository string) (ghrepo.Repository, error) {
+	parsed, err := ghrepo.Parse(what, repository)
+	if err != nil && !keyShape(repository) && !repositoryNamed(repository) {
+		return ghrepo.Repository{}, fmt.Errorf(`%s must be "owner/name": an owner of at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit, and a name of at most 100 ASCII letters, digits, "-", "_" and ".", other than "." and "..", not ending in ".git"`, what)
+	}
+	return parsed, err
+}
+
 // readRepositoryRenames is `repository_renames`: a list of mappings, each exactly a `from` and a
-// `to` Parse takes, the repository as it was and the one it moved to. It is a top-level key rather
-// than a project's, because the equivalence serves the intake filters and a binary-wide comparison,
-// neither of which is per project. An entry that is not a mapping, a field that is not one of the
-// two, a missing or empty side and a side Parse refuses are each refused naming the entry; the
-// structural rules over the whole list are ghrepo.NewRenames' (checkRepositoryRenames), once the
-// list is read. An absent key, a null one and an empty list are each no rename.
+// `to` Parse takes (parseRepository), the repository as it was and the one it moved to. It is a
+// top-level key rather than a project's, because the equivalence serves the intake filters and a
+// binary-wide comparison, neither of which is per project. An entry that is not a mapping, a field
+// that is not one of the two, a missing or empty side and a side Parse refuses are each refused
+// naming the entry; the structural rules over the whole list are ghrepo.NewRenames'
+// (checkRepositoryRenames), once the list is read. An absent key, a null one and an empty list are
+// each no rename.
 func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -46,10 +78,10 @@ func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error
 			return nil, err
 		}
 		var rename ghrepo.Rename
-		if rename.From, err = ghrepo.Parse(field+".from", from); err != nil {
+		if rename.From, err = parseRepository(field+".from", from); err != nil {
 			return nil, err
 		}
-		if rename.To, err = ghrepo.Parse(field+".to", to); err != nil {
+		if rename.To, err = parseRepository(field+".to", to); err != nil {
 			return nil, err
 		}
 		renames = append(renames, rename)
@@ -60,10 +92,26 @@ func readRepositoryRenames(value *yaml.Node, key string) ([]ghrepo.Rename, error
 // checkRepositoryRenames settles the list `repository_renames` read into the one equivalence every
 // consumer takes (ghrepo.Renames), refusing what that value cannot hold — a repository renamed to
 // itself, one renamed twice, a chain of two pairs, one owner's repositories moved to two owners —
-// with the key before the pair ghrepo names. A file that configures none settles the zero value,
-// which answers exactly as strings.EqualFold does.
+// with the key before the pair ghrepo names. The refusal names a pair's repository only where a
+// refusal may name it (repositoryNamed), and its owner only where that holds no token's run in any
+// case; any other is named by its place, `repository_renames[<n>].from` or `.to`. A file that
+// configures none settles the zero value, which answers exactly as strings.EqualFold does.
 func checkRepositoryRenames(file fileConfig, cfg *Config) error {
-	renames, err := ghrepo.NewRenames(file.RepositoryRenames)
+	pairs := file.RepositoryRenames
+	renames, err := ghrepo.NewRenamesNamed(pairs, func(index int, from bool) (string, string) {
+		side, field := pairs[index].To, fmt.Sprintf("%s[%d].to", repositoryRenamesKey, index)
+		if from {
+			side, field = pairs[index].From, fmt.Sprintf("%s[%d].from", repositoryRenamesKey, index)
+		}
+		repository, owner := side.String(), side.Owner()
+		if !repositoryNamed(repository) {
+			repository = field
+		}
+		if tokenShapedInAnyCase(owner) {
+			owner = "the owner of " + field
+		}
+		return repository, owner
+	})
 	if err != nil {
 		return fmt.Errorf("%s: %w", repositoryRenamesKey, err)
 	}
@@ -77,7 +125,9 @@ func checkRepositoryRenames(file fileConfig, cfg *Config) error {
 // renames settle and knows nothing of them, so the pair is caught here, where both the
 // equivalence and every project's list stand. A rename is read wherever a name is compared
 // (ghrepo.Renames.Same), so the two entries select the one repository, and the list would name
-// that repository twice while saying nothing a single entry does not.
+// that repository twice while saying nothing a single entry does not. The refusal names each
+// entry's repository only where a refusal may name it (repositoryNamed), and the entry's place
+// alone otherwise.
 func checkCommitIssueTrailerRenames(cfg *Config) error {
 	if cfg.RepositoryRenames.IsZero() {
 		return nil
@@ -89,10 +139,24 @@ func checkCommitIssueTrailerRenames(cfg *Config) error {
 				if !cfg.RepositoryRenames.Same(named.String(), repo.String()) {
 					continue
 				}
-				return fmt.Errorf("projects.%s.commit_issue_trailer_repos[%d] (%s) and projects.%s.commit_issue_trailer_repos[%d] (%s) name one repository: %s makes %s and %s one repository, so the list names it twice; name it once",
-					key, earlier, named, key, index, repo, repositoryRenamesKey, named, repo)
+				earlierAt, earlierName := trailerEntry(key, earlier, named)
+				laterAt, laterName := trailerEntry(key, index, repo)
+				return fmt.Errorf("%s and %s name one repository: %s makes %s and %s one repository, so the list names it twice; name it once",
+					earlierAt, laterAt, repositoryRenamesKey, earlierName, laterName)
 			}
 		}
 	}
 	return nil
+}
+
+// trailerEntry is the entry at index of project key's `commit_issue_trailer_repos`, repo, as
+// checkCommitIssueTrailerRenames places it and names its repository: the entry's place followed by
+// the repository in parentheses, and the repository, where a refusal may name it
+// (repositoryNamed), and the place alone for both otherwise.
+func trailerEntry(key string, index int, repo ghrepo.Repository) (place, name string) {
+	field, repository := fmt.Sprintf("projects.%s.commit_issue_trailer_repos[%d]", key, index), repo.String()
+	if !repositoryNamed(repository) {
+		return field, field
+	}
+	return field + " (" + repository + ")", repository
 }

@@ -2,9 +2,14 @@
 # (pi-legion-build.py) is the half a pull request runs, the typecheck and the pack.
 GATE = gate("pi_legion", "pi-legion", runs=[
     script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
-               'const result = Bun.spawnSync(["go", "run", "-overlay", overlay, "./cmd/daemon-pane", ...args], {',
+               'const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];',
                f"daemon-pane.test.ts and daemon-standin.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="build",
                overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go"}),
+    script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
+               'const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];',
+               f"daemon-pane.test.ts, run by {at('pi-legion', 'Test pi-legion')}", DAEMON, ["./cmd/daemon-pane"], mode="test",
+               overlay={f"{DAEMON}/cmd/daemon-pane/main.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane.go",
+                        f"{DAEMON}/cmd/daemon-pane/main_test.go": "packages/pi-legion/scripts/skill-scenarios/daemon-pane_test.go"}),
     script_run("packages/pi-legion/scripts/skill-scenarios/label-texts.sh",
                'go test -c -o "$bin/" ./internal/workflow ./internal/daemon ./internal/api',
                "`label-texts.sh build`, which rig.sh batch-scored runs in a build pod's scored Job (scored-job.sh), "
@@ -62,8 +67,8 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("scripts/daemon-contract.sh", "`scripts/e2e/lib/pack-plugin.sh#$root/scripts/daemon-contract.sh` writes its number into the packed manifest, which `packages/pi-legion/scripts/prepack.test.ts#packs from a copy` holds to `daemonContract`"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts`"),
     (f"{DAEMON}/internal/prompts/**/*.md", "`packages/pi-legion/src/skills-guard.test.ts#promptsRoot` is a root of the skill:// links `packages/pi-legion/src/skills-guard.test.ts#skillLinks` reads"),
-    ("docs/site/src/content/docs/legion/concepts.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads it"),
-    ("docs/site/src/content/docs/legion/troubleshooting.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads it"),
+    ("docs/site/src/content/docs/legion/concepts.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say a review's request for changes or a review step's fail counts a round` reads it"),
+    ("docs/site/src/content/docs/legion/troubleshooting.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say a review's request for changes or a review step's fail counts a round` reads it"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh; `packages/pi-legion/scripts/prepack.test.ts#scripts/e2e/lib/pack-plugin.sh` packs with it"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
@@ -71,7 +76,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies it beside rig.sh, and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
-    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#goInDaemonModule` writes the overlay and runs go run or go test"),
     ("packages/pi-legion/scripts/skill-scenarios/label-texts.sh", "`packages/pi-legion/scripts/skill-scenarios/label-texts.sh#compile` runs go test -c of three daemon packages"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")

@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // largeTree is the issue count of the large tree the owed route is asked about here: twice the 514
@@ -56,12 +55,12 @@ func (c *statementCount) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBa
 
 func (*statementCount) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-// serveOwedOver has h's server read the records through records over pool, with the workflow's
-// table of which role works each phase (workflow.RoleFor), as the daemon wires the owed route.
+// serveOwedOver has h's server read the records through records over pool, as the daemon wires
+// the owed route: the role that works each phase is the issue's own (record.Issue.RoleAt).
 func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: pool, Record: records, RoleFor: workflow.RoleFor,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: pool, Record: records,
 	}).Handler
 }
 

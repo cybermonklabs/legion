@@ -134,17 +134,38 @@ func (staticTokens) Token(_ context.Context, repo ghrepo.Repository) (string, er
 // staticCredentialExpiry is the lease expiry every rendered test credential carries.
 var staticCredentialExpiry = time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 
+// appOf is the App a role of Legion's acts as (appauth.AppRoleFor, under a deployment that
+// defines no role of its own); a role it does not define fails the test.
+func appOf(t testing.TB, role claim.Role) appauth.AppRole {
+	t.Helper()
+	app, err := appauth.AppRoleFor(role, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+// legionApp is appOf for a helper with no test to fail: it panics on a role the deployment does
+// not define, which only a test of a role Legion does not have reaches.
+func legionApp(role claim.Role) appauth.AppRole {
+	app, err := appauth.AppRoleFor(role, nil)
+	if err != nil {
+		panic(err)
+	}
+	return app
+}
+
 // staticCredentialToken is the write token staticCredential renders for role: one per App, so a
 // review role's files and an implement role's differ as the two Apps' tokens do.
 func staticCredentialToken(role claim.Role) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_token"
+	return "ghs_" + string(legionApp(role)) + "_token"
 }
 
 // staticOwnerToken is the lease staticCredential renders for role on an owner other than the
 // issue's: that owner's own installation lease, which a role's bundle holds at the role's own
 // permissions and no narrower (appauth.GitHubCredential, INFRA-2543).
 func staticOwnerToken(role claim.Role, owner string) string {
-	return "ghs_" + string(appauth.AppRoleFor(role)) + "_lease_" + owner
+	return "ghs_" + string(legionApp(role)) + "_lease_" + owner
 }
 
 // staticCredential is the runtime's GitHubCredential in every test: a bundle of repo's owner —
@@ -152,14 +173,17 @@ func staticOwnerToken(role claim.Role, owner string) string {
 // controller's — holding the role's App's token for that owner (appauth.AppRoleFor), and acme
 // holding acme's own, rendered as gh's files with a fixed expiry; repo's owner is the default.
 func staticCredential(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	app := string(appauth.AppRoleFor(role))
+	app, err := appauth.AppRoleFor(role, nil)
+	if err != nil {
+		return ghconfig.Bundle{}, err
+	}
 	owner := strings.ToLower(repo.Owner())
 	if owner == "" {
 		owner = "sjawhar"
 	}
 	return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
-		"acme": ghconfig.Render(staticOwnerToken(role, "acme"), app, staticCredentialExpiry),
-		owner:  ghconfig.Render(staticCredentialToken(role), app, staticCredentialExpiry),
+		"acme": ghconfig.Render(staticOwnerToken(role, "acme"), string(app), staticCredentialExpiry),
+		owner:  ghconfig.Render(staticCredentialToken(role), string(app), staticCredentialExpiry),
 	}}, nil
 }
 
@@ -215,7 +239,7 @@ func servingAddedOwner(o *Options) {
 		if err != nil {
 			return bundle, err
 		}
-		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(legionApp(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
 	o.GitHubCredential = credential
@@ -295,7 +319,7 @@ func servingRenamed(repos ...ghrepo.Repository) func(*Options) {
 		apps := sourceOf(&namedLeases{}, installedOnServed{repos: listed})
 		o.CacheRepositories = listed
 		o.Tokens = servingTokens{served: served, renames: renames}
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, nil, nil)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, nil)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

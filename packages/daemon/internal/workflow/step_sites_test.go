@@ -82,7 +82,7 @@ func mergingChild(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
 	seedChildPR(t, pool, record.PullRequestOpen)
-	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 }
 
 // holdFrom holds key from the phase from, where the death of that phase's worker's claim leaves it.
@@ -106,9 +106,10 @@ func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, writ
 	})
 }
 
-// move runs one transition of key on trigger (into target, for a backward move) through engine,
-// on the record as the store holds it, with handoff as the completion's row.
-func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow) {
+// move runs one transition of key on trigger (into target, for a backward move or a named return;
+// the zero place names none) through engine, on the record as the store holds it, with handoff as
+// the completion's row.
+func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target record.TaskPlace, handoff record.PhaseRow) {
 	t.Helper()
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		pr, err := engine.store.PullRequest(ctx, tx, key)
@@ -191,11 +192,11 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 	run := func(t *testing.T, between func(pool *pgxpool.Pool)) (start, end record.StepRecord, pool *pgxpool.Pool) {
 		pool = migratedPool(t)
 		stepRoot(t, pool, phase.Implementing)
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		between(pool)
 		// The restart: a new engine on a new store over the same database, and its boot.
 		rebooted(t, pool)
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		start, end = runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 		return start, end, pool
 	}
@@ -237,8 +238,8 @@ func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
 	starting, ending := stepEngine(nil), stepEngine(nil)
 	starting.cfg.Clock = func() time.Time { return began }
 	ending.cfg.Clock = func() time.Time { return ended }
-	move(t, pool, starting, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, ending, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, starting, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, ending, "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	start, end := runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 	if want := began.Truncate(time.Microsecond); start.StartedAt == nil || !start.StartedAt.Equal(want) {
 		t.Fatalf("the start of testing began at %v, want %s, the moment its engine read to the microsecond", start.StartedAt, want)
@@ -256,11 +257,11 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Planning)
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, "", record.PhaseRow{})
-	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	before := len(stepWrites(t, pool, "LEGION-208"))
-	move(t, pool, engine, "LEGION-208", TriggerReviewRejected, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerReviewRejected, record.TaskPlace{}, record.PhaseRow{})
 	writes := stepWrites(t, pool, "LEGION-208")
 	if len(writes) != before+2 {
 		t.Fatalf("the rejection wrote %d step rows, want its end and one start: %+v", len(writes)-before, writes[before:])
@@ -287,7 +288,7 @@ func TestAMoveBackToTheRetroReturnsToPlaceZero(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Retro)
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-208", TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	applyFacts(t, pool, engine)("merger-moves-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleMerger, To: phase.Retro,
 		Reason: "the retro missed a finding"})
 	if got := issueAt(t, pool, "LEGION-208"); got != phase.Retro {
@@ -338,16 +339,16 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	stepRoot(t, pool, phase.Implementing)
 	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		w, err := engine.walk(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		if err := engine.endStep(ctx, tx, issue, w, stepStopped); err != nil {
+		if err := engine.endStep(ctx, tx, issue, w, standingIn(record.StandsAt(issue)), stepStopped); err != nil {
 			return err
 		}
-		return engine.endStep(ctx, tx, issue, w, stepStopped)
+		return engine.endStep(ctx, tx, issue, w, standingIn(record.StandsAt(issue)), stepStopped)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
 		onStored(t, pool, engine, key, endTwice)
@@ -401,7 +402,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 		return StepAgent{Session: "s1", Model: "second/second-model"}
 	})
 	report := "0b0e4c3e-5d0a-4a35-9c55-1f2e3d4c5b6a"
-	move(t, pool, engine, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{Role: claim.RoleTester, HandoffRecord: report})
+	move(t, pool, engine, "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{Role: claim.RoleTester, HandoffRecord: report})
 	writes := stepWrites(t, pool, "LEGION-208")
 	if len(writes) != 2 {
 		t.Fatalf("step rows = %+v, want the end of testing and the start of reviewing", writes)
@@ -424,7 +425,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	t.Run("no agent read", func(t *testing.T) {
 		pool := migratedPool(t)
 		stepRoot(t, pool, phase.Testing)
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		for _, w := range stepWrites(t, pool, "LEGION-208") {
 			if w.Session != nil || w.Model != nil {
 				t.Fatalf("write = %+v, want no session and no model with no StepAgent", w)
@@ -433,7 +434,7 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	})
 }
 
-// The report of a step is the handoff its role's completion named, whichever of that completion
+// The report of a step whose role writes a handoff is the handoff its role's completion named, whichever of that completion
 // and the review event lands first: an event that decides the round first ends the review before
 // the reviewer completes, and the completion then names its handoff on that ended run's record,
 // so one write of the run carries it. That write is the run's: its id, its role, its type, its
@@ -559,7 +560,7 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 	t.Run("accepting", func(t *testing.T) {
 		pool := migratedPool(t)
 		stepRoot(t, pool, phase.Reviewing)
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, stepEngine(nil), "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		writes := stepWrites(t, pool, "LEGION-208")
 		if len(writes) != 2 {
 			t.Fatalf("step rows = %+v, want the end of reviewing and the start of accepting", writes)
@@ -575,7 +576,7 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 			Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
 		seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Entry: 4, EntryRaisedAt: stepClock.Add(-48 * time.Hour)})
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerRetroCompleted, "", record.PhaseRow{})
+		move(t, pool, stepEngine(nil), "LEGION-208", TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 		writes := stepWrites(t, pool, "LEGION-208")
 		if len(writes) != 3 {
 			t.Fatalf("step rows = %+v, want the end of the retro, the start of the merge and its end", writes)
@@ -670,7 +671,7 @@ func TestAChildsAcceptanceIsItsOwningArchitects(t *testing.T) {
 
 			t.Run("the approval starts it", func(t *testing.T) {
 				writes := run(t, phase.Reviewing, func(pool *pgxpool.Pool, engine *Engine) {
-					move(t, pool, engine, "LEGION-209", TriggerReviewApproved, "", record.PhaseRow{})
+					move(t, pool, engine, "LEGION-209", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 				})
 				if len(writes) != 2 || !isStart(writes[0]) || !isEnd(writes[1]) || writes[1].ID != writes[0].ID {
 					t.Fatalf("the writes of LEGION-209's step 5 = %+v, want the start of accepting and its end", writes)
@@ -700,7 +701,7 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 	stepRoot(t, pool, phase.Testing)
 	t0 := stepClock.Add(-3 * time.Hour)
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Entry: 2, EntryRaisedAt: t0})
-	move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	writes := stepWrites(t, pool, "LEGION-208")
 	if len(writes) != 2 {
 		t.Fatalf("step rows = %+v, want the end of testing and the start of reviewing", writes)
@@ -779,7 +780,7 @@ func TestAnIssueAtAdmittedRunsNoStep(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := engine.endStep(ctx, tx, root, w, stepStopped); err != nil {
+		if err := engine.endStep(ctx, tx, root, w, standingIn(record.StandsAt(root)), stepStopped); err != nil {
 			return err
 		}
 		return engine.StartStepRecord(ctx, tx, root)

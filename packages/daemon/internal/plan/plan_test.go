@@ -59,25 +59,24 @@ func TestParseSteps(t *testing.T) {
 // The default steps walk today's line: the five steps' phases in order, then Legion's own retro
 // and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
-	if got := Line(defaultSteps(t), Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, phase.Order) {
+	if got := Line(defaultSteps(t)); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)
 	}
 	steps, _ := ParseSteps("implementer reviewer")
 	want := []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}
-	if got := Line(steps, Deployment{Roles: BuiltinRoles()}); !reflect.DeepEqual(got, want) {
+	if got := Line(steps); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Line(implementer reviewer) = %v, want %v", got, want)
 	}
 }
 
-// Each role of a step in this release is one of Legion's five, with the type and the phase of
-// today's line that it runs as.
+// Each of Legion's own roles of a step is one of five, with the type of work it does.
 func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	want := map[string]RoleDef{
-		"planner":     {Name: "planner", Type: TypePlanning, Phase: phase.Planning},
-		"implementer": {Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
-		"tester":      {Name: "tester", Type: TypeTesting, Phase: phase.Testing},
-		"reviewer":    {Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
-		"acceptance":  {Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
+		"planner":     {Name: "planner", Type: TypePlanning},
+		"implementer": {Name: "implementer", Type: TypeImplementation},
+		"tester":      {Name: "tester", Type: TypeTesting},
+		"reviewer":    {Name: "reviewer", Type: TypeReview},
+		"acceptance":  {Name: "acceptance", Type: TypeReview},
 	}
 	roles := BuiltinRoles()
 	if !reflect.DeepEqual(roles, want) {
@@ -86,6 +85,26 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	delete(roles, "planner")
 	if _, ok := BuiltinRoles()["planner"]; !ok {
 		t.Fatal("a caller that changed one answer of BuiltinRoles changed the next")
+	}
+}
+
+// How a step runs is decided by its role alone: each of Legion's five roles of a step runs as its
+// own phase, and every other role, a role of the deployment, runs as the phase step. No type is
+// read, so a role of the deployment whose type is review still runs as step.
+func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
+	for role, want := range map[string]phase.Phase{
+		"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
+		"reviewer": phase.Reviewing, "acceptance": phase.Accepting,
+		"checker": phase.Step, "linter": phase.Step, "owner": phase.Step,
+	} {
+		if got := RunsAs(role); got != want {
+			t.Errorf("RunsAs(%q) = %q, want %q", role, got, want)
+		}
+	}
+	steps, _ := ParseSteps("implementer checker linter")
+	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	if got := Line(steps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Line(implementer checker linter) = %v, want %v", got, want)
 	}
 }
 
@@ -111,7 +130,7 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 		if len(p.Tasks) != 1 || p.Tasks[0].NamesSteps() || p.Tasks[0].Steps != nil {
 			t.Fatalf("FromBlocks(%v) = %+v, want one task with no steps", attributes, p.Tasks)
 		}
-		if r := Supported(p); len(r) != 0 {
+		if r := Supported(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
 			t.Fatalf("Supported(%v) = %+v, want none", attributes, r)
 		}
 		if r := Validate(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
@@ -190,19 +209,22 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// CanMoveBack holds every pair of two different workflow phases but the 14 no line of a task
-// Supported takes makes as a move back, written out here rather than read from the checks: each
-// step phase to retro or to merging, and retro to merging, since the retro and the merge end every
+// CanMoveBack holds every pair MovePairs holds but the 16 no line of a task Supported takes makes
+// as a move back, written out here rather than read from the checks: each step phase, step among
+// them, to retro or to merging, and retro to merging, since the retro and the merge end every
 // line, and implementing to testing, reviewing or accepting, since the steps that read the
-// implementer's pull request come after it. Among the 28: a move back of another order than
+// implementer's pull request come after it. Among the 41: a move back of another order than
 // today's (testing-reviewing, on implementer reviewer tester), a planner's move back to the
-// implementer (planning-implementing, on implementer planner), and the merge's move back to the
-// retro.
+// implementer (planning-implementing, on implementer planner), the merge's move back to the
+// retro, and the moves of a step of a role the deployment defines, which may stand before the
+// implementer or after it: step-implementing (implementer checker), implementing-step (checker
+// implementer) and step-step (implementer checker linter).
 func TestCanMoveBackHoldsTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"step-retro", "step-merging",
 	}
 	for _, pair := range phase.MovePairs() {
 		from, to, _ := phase.ParsePair(pair)
@@ -211,7 +233,8 @@ func TestCanMoveBackHoldsTheMovesBackOfEveryLineSupportedTakes(t *testing.T) {
 			t.Errorf("CanMoveBack(%s, %s) = %t, want %t", from, to, can, fires)
 		}
 	}
-	for _, move := range [][2]phase.Phase{{phase.Testing, phase.Reviewing}, {phase.Planning, phase.Implementing}, {phase.Merging, phase.Retro}} {
+	for _, move := range [][2]phase.Phase{{phase.Testing, phase.Reviewing}, {phase.Planning, phase.Implementing}, {phase.Merging, phase.Retro},
+		{phase.Step, phase.Implementing}, {phase.Implementing, phase.Step}, {phase.Step, phase.Step}} {
 		if !CanMoveBack(move[0], move[1]) {
 			t.Errorf("CanMoveBack(%s, %s) = false, want a move back", move[0], move[1])
 		}

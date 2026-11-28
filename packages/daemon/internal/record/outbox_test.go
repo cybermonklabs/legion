@@ -654,6 +654,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward hold naming the launch an ask was sent at", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardHold, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen, SentLaunch: 2}, reason: "only a merge-forward ask sent again at a launch"},
+		{name: "a merge-forward landed naming a worker", payload: MergeForwardMessage{Role: "checker", Step: MergeForwardLanded, Head: "c0de", Landed: "f00d", Base: "main", Phase: phase.Step, PullRequest: 42, Worker: "checker"}, reason: "only a merge-forward review at step names a worker"},
+		{name: "a merge-forward review outside step naming a worker", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "f00d", Base: "main", Phase: phase.Testing, PullRequest: 42, Worker: claim.RoleTester}, reason: "only a merge-forward review at step names a worker"},
+		{name: "a merge-forward review at step naming one of Legion's roles", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "f00d", Base: "main", Phase: phase.Step, PullRequest: 42, Worker: claim.RoleTester}, reason: "only a merge-forward review at step names a worker"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "a state change of no project", payload: stateChange("", "run", phaseMoved), reason: `the project "", which is no bare Dispatch project key`},
 		{name: "a state change keyed by an issue rather than its project", payload: stateChange("LEGION-208", "run", phaseMoved), reason: `the project "LEGION-208", which is no bare Dispatch project key`},
@@ -664,8 +667,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a state change of no issue", payload: StateChange{Project: "LEGION", Run: "run", Changes: []StateFieldChange{phaseMoved}}, reason: `the issue "", which is no issue key`},
 		{name: "a state change naming no field", payload: stateChange("LEGION", "run"), reason: "names no field the write moved"},
 		{name: "a state change of a field Dispatch does not observe", payload: stateChange("LEGION", "run", StateFieldChange{Field: "status", Old: json.RawMessage(`null`), New: json.RawMessage(`"todo"`)}), reason: `the field "status", which is none of`},
-		{name: "a claim change naming no role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "", which is none of a claim's six`},
-		{name: "a claim change of the controller", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Role: claim.RoleController, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "controller", which is none of a claim's six`},
+		{name: "a claim change naming no role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "", which is no role of a claim`},
+		{name: "a claim change of the controller", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Role: claim.RoleController, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "controller", which is no role of a claim`},
 		{name: "a phase change naming a role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldPhase, Role: claim.RoleTester, Old: json.RawMessage(`null`), New: json.RawMessage(`"testing"`)}), reason: "only a claim change names one"},
 		{name: "a change with no old value", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, New: json.RawMessage(`"LEGION-200"`)}), reason: "write null as null"},
 		{name: "a change whose new value is no JSON", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, Old: json.RawMessage(`null`), New: json.RawMessage(`LEGION-200`)}), reason: "write null as null"},
@@ -1622,12 +1625,12 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 	roles := append([]claim.Role{claim.RoleController}, claim.Roles...)
 	for _, at := range phase.Order {
 		for _, role := range roles {
-			if got, want := MergeForwardHolds(asked(head, at), at, role), held[at] == role; got != want {
+			if got, want := MergeForwardHolds(asked(head, at), Issue{}, at, role), held[at] == role; got != want {
 				t.Errorf("an ask of the head made in %s holds the %s in %s = %t, want %t", at, role, at, got, want)
 			}
 			closed := asked(head, at)
 			closed.State = PullRequestClosed
-			if MergeForwardHolds(closed, at, role) {
+			if MergeForwardHolds(closed, Issue{}, at, role) {
 				t.Errorf("a pull request closed with its ask of %s standing holds the %s in %s, want no hold: it gets no push and no landing", at, role, at)
 			}
 		}
@@ -1636,7 +1639,7 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 		role claim.Role
 		at   phase.Phase
 	}{{claim.RoleImplementer, phase.Implementing}, {claim.RoleImplementer, phase.Retro}, {claim.RoleArchitect, phase.Accepting}} {
-		if MergeForwardHolds(asked(head, named.at), named.at, named.role) {
+		if MergeForwardHolds(asked(head, named.at), Issue{}, named.at, named.role) {
 			t.Errorf("an ask of the head made in %s holds the %s, want no hold: the hold does not reach it", named.at, named.role)
 		}
 	}
@@ -1644,7 +1647,7 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 	// there (classify.MergeForwardStands). An ask the record names at admitted holds no role, the architect
 	// included, since the hold reaches the planner, the tester, the reviewer and the merger alone.
 	for _, role := range roles {
-		if MergeForwardHolds(asked(head, phase.Admitted), phase.Admitted, role) {
+		if MergeForwardHolds(asked(head, phase.Admitted), Issue{}, phase.Admitted, role) {
 			t.Errorf("an ask of the head made in admitted holds the %s, want no hold: the hold reaches no role that works admitted", role)
 		}
 	}
@@ -1654,10 +1657,10 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 	for at, role := range held {
 		pullRequest := asked(head, at)
 		pullRequest.HeadSHA, pullRequest.MergeForward.Landed = landed, landed
-		if MergeForwardHolds(pullRequest, at, role) {
+		if MergeForwardHolds(pullRequest, Issue{}, at, role) {
 			t.Errorf("an ask made in %s that landed at %s still holds the %s, want no hold", at, landed, role)
 		}
-		if MergeForwardHolds(asked(older, at), at, role) {
+		if MergeForwardHolds(asked(older, at), Issue{}, at, role) {
 			t.Errorf("an ask of head %s made in %s holds the %s while the pull request stands at %s, want no hold", older, at, role, head)
 		}
 		// An ask of the implementer made in any other phase of the line but implementing, a
@@ -1667,19 +1670,19 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 			if other == at || at == phase.Merging {
 				continue
 			}
-			if got, want := MergeForwardHolds(asked(head, other), at, role), other != phase.Implementing; got != want {
+			if got, want := MergeForwardHolds(asked(head, other), Issue{}, at, role), other != phase.Implementing; got != want {
 				t.Errorf("an ask made in %s holds the %s in %s = %t, want %t", other, role, at, got, want)
 			}
 		}
-		if MergeForwardHolds(nil, at, role) {
+		if MergeForwardHolds(nil, Issue{}, at, role) {
 			t.Errorf("no pull request holds the %s in %s, want no hold", role, at)
 		}
-		if MergeForwardHolds(&PullRequest{State: PullRequestOpen, Number: 42, HeadSHA: head}, at, role) {
+		if MergeForwardHolds(&PullRequest{State: PullRequestOpen, Number: 42, HeadSHA: head}, Issue{}, at, role) {
 			t.Errorf("a pull request with no ask holds the %s in %s, want no hold", role, at)
 		}
 		withdrawn := asked(head, at)
 		withdrawn.MergeForward.Withdrawn = true
-		if MergeForwardHolds(withdrawn, at, role) {
+		if MergeForwardHolds(withdrawn, Issue{}, at, role) {
 			t.Errorf("an ask made in %s that the implementer was told is withdrawn holds the %s in %s, want no hold", at, role, at)
 		}
 	}
@@ -1717,9 +1720,50 @@ func TestMergeForwardHoldsOnlyTheRolesItsHoldReachesAtItsHeadAndPhaseUntilItLand
 		{name: "an ask that records no asked role, made in merging, of another head", pr: askedOf(older, "", phase.Merging)},
 	} {
 		for _, role := range roles {
-			if got, want := MergeForwardHolds(merging.pr, phase.Merging, role), merging.held && role == claim.RoleMerger; got != want {
+			if got, want := MergeForwardHolds(merging.pr, Issue{}, phase.Merging, role), merging.held && role == claim.RoleMerger; got != want {
 				t.Errorf("%s holds the %s in merging = %t, want %t", merging.name, role, got, want)
 			}
+		}
+	}
+}
+
+// At step the worker a merge forward's hold reaches is the role of the running step, which the
+// issue names (Issue.StepRole, MergeForwardWorker) and the phase alone cannot: an ask of the
+// implementer made after implementing, in step or carried into it, holds the checker of a task at
+// the checker's step and no other role, another role of the deployment and Legion's tester
+// included. A landed ask, an ask of another head and an ask made in implementing hold it not, as
+// they hold no worker of any other phase; and an issue at step that names no running step's role
+// holds nobody. The owed route, the idle view and a backstop's writer read this rule at step
+// (api's owedBy, FillIdleClaims, internal/daemon's getsBackstop).
+func TestMergeForwardHoldsTheRoleOfTheRunningStepAtStep(t *testing.T) {
+	const head, landed, older = "c0de", "d00d", "beef"
+	asked := func(of string, in phase.Phase) *PullRequest {
+		return &PullRequest{State: PullRequestOpen, Number: 42, HeadSHA: head,
+			MergeForward: &MergeForward{Head: of, Base: "main", Phase: in, Role: claim.RoleImplementer, Why: ConflictCheckNotGreen}}
+	}
+	atChecker := Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker"}
+	roles := append([]claim.Role{claim.RoleController, "checker", "linter"}, claim.Roles...)
+	for _, in := range []phase.Phase{phase.Step, phase.Testing} {
+		for _, role := range roles {
+			if got, want := MergeForwardHolds(asked(head, in), atChecker, phase.Step, role), role == "checker"; got != want {
+				t.Errorf("an ask of the implementer made in %s holds the %s at the checker's step = %t, want %t", in, role, got, want)
+			}
+			if MergeForwardHolds(asked(head, in), Issue{Key: "LEGION-208", Phase: phase.Step}, phase.Step, role) {
+				t.Errorf("an ask made in %s holds the %s at a step whose role the issue does not name, want no hold", in, role)
+			}
+		}
+	}
+	landedAsk := asked(head, phase.Step)
+	landedAsk.HeadSHA, landedAsk.MergeForward.Landed = landed, landed
+	for name, pullRequest := range map[string]*PullRequest{
+		"an ask that landed":          landedAsk,
+		"an ask of another head":      asked(older, phase.Step),
+		"an ask made in implementing": asked(head, phase.Implementing),
+		"no pull request":             nil,
+		"a pull request with no ask":  {State: PullRequestOpen, Number: 42, HeadSHA: head},
+	} {
+		if MergeForwardHolds(pullRequest, atChecker, phase.Step, "checker") {
+			t.Errorf("%s holds the checker at its step, want no hold", name)
 		}
 	}
 }

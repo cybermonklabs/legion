@@ -56,6 +56,7 @@ const PHASE_MARKS: Readonly<
   integrating: { marked: "merging", words: PHASE_WORDS.integrating },
   awaiting_merge: { marked: "merging" },
   held: { words: PHASE_WORDS.held },
+  step: { words: PHASE_WORDS.step },
 };
 
 function isMarkedPhase(phase: string): phase is keyof typeof PHASE_MARKS {

@@ -8,61 +8,66 @@ import (
 )
 
 // The gate of the read of GitHub's merge state asks for each of two reasons, and for nothing else
-// (dispatch://INFRA-4374 R0, R4): a fact that moves the head of an issue in implementing or a phase
-// after it on its task's line, and a push to the base of an issue in a phase after implementing on
-// that line. On the default steps (phase.Order) that is implementing through merging, and testing
-// through merging. A head move before implementing, a base push in implementing or before it, and a
+// (dispatch://INFRA-4374 R0, R4): a fact that moves the head of a task at the implementer's place
+// or a place after it on its line, and a push to the base of a task at a place after the
+// implementer's. On the default steps (phase.Order) that is implementing through merging, and
+// testing through merging. A head move before the implementer, a base push at the implementer's
+// place or before it, a task at no place (an issue in admitted, or out of the workflow), and a
 // fact that moves neither the head nor the base ask nothing. A planner step after the implementer
 // (`implementer planner reviewer`) works on a branch whose pull request is open, so its planning
-// is read for as testing is; a planner before it is read for nothing. A held issue is read for as
-// the phase it is held from. The third reason a read is owed, a review round that waits on
+// is read for as testing is; a planner before it is read for nothing. The gate reads the place,
+// never the phase: `checker implementer linter` reads step at place 1 and at place 3, and only the
+// linter's place 3 stands after the implementer. A held issue is read for at the place it is held
+// from, which its caller hands over. The third reason a read is owed, a review round that waits on
 // GitHub's answer whatever the fact, is not the gate's: workflow's mergeStateOwed adds it, so a
 // review in reviewing asks nothing here.
 func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
-	in := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
-	heldFrom := func(at phase.Phase) record.Issue {
-		return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
-	}
+	step := func(n int) record.TaskPlace { return record.TaskPlace{Kind: record.PlaceStep, Position: n} }
+	retro, merge, none := record.TaskPlace{Kind: record.PlaceRetro}, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskPlace{}
+	// The places of today's line, phase.Order.
+	planning, implementing, tested, reviewing, accepting := step(1), step(2), step(3), step(4), step(5)
 	plannedAfter := []phase.Phase{phase.Implementing, phase.Planning, phase.Reviewing, phase.Retro, phase.Merging}
+	checkedAround := []phase.Phase{phase.Step, phase.Implementing, phase.Step, phase.Retro, phase.Merging}
 	for _, tc := range []struct {
 		name  string
-		issue record.Issue
 		line  []phase.Phase
+		place record.TaskPlace
 		fact  MergeStateFact
 		want  bool
 	}{
-		{"a review in reviewing", in(phase.Reviewing), phase.Order, MergeStateFactOther, false},
-		{"a settlement in merging", in(phase.Merging), phase.Order, MergeStateFactOther, false},
+		{"a review in reviewing", phase.Order, reviewing, MergeStateFactOther, false},
+		{"a settlement in merging", phase.Order, merge, MergeStateFactOther, false},
 
-		{"a head move in planning", in(phase.Planning), phase.Order, MergeStateFactHeadMove, false},
-		{"a head move in implementing", in(phase.Implementing), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move in testing", in(phase.Testing), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move in reviewing", in(phase.Reviewing), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move in accepting", in(phase.Accepting), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move in retro", in(phase.Retro), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move in merging", in(phase.Merging), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move of an issue held from implementing", heldFrom(phase.Implementing), phase.Order, MergeStateFactHeadMove, true},
-		{"a head move of an issue that left the workflow", in(phase.Done), phase.Order, MergeStateFactHeadMove, false},
-		{"a head move in admitted", in(phase.Admitted), phase.Order, MergeStateFactHeadMove, false},
-		{"a head move in a planning after the implementer", in(phase.Planning), plannedAfter, MergeStateFactHeadMove, true},
-		{"a head move of an issue held from a planning after the implementer", heldFrom(phase.Planning), plannedAfter, MergeStateFactHeadMove, true},
-		{"a head move in testing on a line with no tester", in(phase.Testing), plannedAfter, MergeStateFactHeadMove, false},
+		{"a head move in planning", phase.Order, planning, MergeStateFactHeadMove, false},
+		{"a head move in implementing", phase.Order, implementing, MergeStateFactHeadMove, true},
+		{"a head move in testing", phase.Order, tested, MergeStateFactHeadMove, true},
+		{"a head move in reviewing", phase.Order, reviewing, MergeStateFactHeadMove, true},
+		{"a head move in accepting", phase.Order, accepting, MergeStateFactHeadMove, true},
+		{"a head move in retro", phase.Order, retro, MergeStateFactHeadMove, true},
+		{"a head move in merging", phase.Order, merge, MergeStateFactHeadMove, true},
+		{"a head move of a task at no place", phase.Order, none, MergeStateFactHeadMove, false},
+		{"a head move in a planning after the implementer", plannedAfter, step(2), MergeStateFactHeadMove, true},
+		{"a head move at a step after the implementer", checkedAround, step(3), MergeStateFactHeadMove, true},
+		{"a head move at a step before the implementer", checkedAround, step(1), MergeStateFactHeadMove, false},
+		{"a head move in testing on a line with no tester, which stands at no place of it", plannedAfter, none, MergeStateFactHeadMove, false},
 
-		{"a base push in planning", in(phase.Planning), phase.Order, MergeStateFactBasePush, false},
-		{"a base push in implementing", in(phase.Implementing), phase.Order, MergeStateFactBasePush, false},
-		{"a base push of an issue held from implementing", heldFrom(phase.Implementing), phase.Order, MergeStateFactBasePush, false},
-		{"a base push in testing", in(phase.Testing), phase.Order, MergeStateFactBasePush, true},
-		{"a base push in reviewing", in(phase.Reviewing), phase.Order, MergeStateFactBasePush, true},
-		{"a base push in accepting", in(phase.Accepting), phase.Order, MergeStateFactBasePush, true},
-		{"a base push in retro", in(phase.Retro), phase.Order, MergeStateFactBasePush, true},
-		{"a base push in merging", in(phase.Merging), phase.Order, MergeStateFactBasePush, true},
-		{"a base push of an issue held from accepting", heldFrom(phase.Accepting), phase.Order, MergeStateFactBasePush, true},
-		{"a base push in a planning after the implementer", in(phase.Planning), plannedAfter, MergeStateFactBasePush, true},
-		{"a base push in implementing before a planner", in(phase.Implementing), plannedAfter, MergeStateFactBasePush, false},
-		{"a base push in testing on a line with no tester", in(phase.Testing), plannedAfter, MergeStateFactBasePush, false},
+		{"a base push in planning", phase.Order, planning, MergeStateFactBasePush, false},
+		{"a base push in implementing", phase.Order, implementing, MergeStateFactBasePush, false},
+		{"a base push in testing", phase.Order, tested, MergeStateFactBasePush, true},
+		{"a base push in reviewing", phase.Order, reviewing, MergeStateFactBasePush, true},
+		{"a base push in accepting", phase.Order, accepting, MergeStateFactBasePush, true},
+		{"a base push in retro", phase.Order, retro, MergeStateFactBasePush, true},
+		{"a base push in merging", phase.Order, merge, MergeStateFactBasePush, true},
+		{"a base push of a task at no place", phase.Order, none, MergeStateFactBasePush, false},
+		{"a base push in a planning after the implementer", plannedAfter, step(2), MergeStateFactBasePush, true},
+		{"a base push in implementing before a planner", plannedAfter, step(1), MergeStateFactBasePush, false},
+		{"a base push at a step after the implementer", checkedAround, step(3), MergeStateFactBasePush, true},
+		{"a base push at a step before the implementer", checkedAround, step(1), MergeStateFactBasePush, false},
+		{"a base push at the implementer's place between two steps", checkedAround, step(2), MergeStateFactBasePush, false},
+		{"a base push in testing on a line with no tester, which stands at no place of it", plannedAfter, none, MergeStateFactBasePush, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := MergeStateReadOwed(tc.issue, tc.line, tc.fact); got != tc.want {
+			if got := MergeStateReadOwed(tc.line, tc.place, tc.fact); got != tc.want {
 				t.Fatalf("MergeStateReadOwed = %v, want %v", got, tc.want)
 			}
 		})

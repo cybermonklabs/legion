@@ -146,8 +146,9 @@ type IssueFacts struct {
 	StartedAt   *time.Time
 	MergedAt    *time.Time
 
-	// Bars is the issue's part of each of the seven bars of metric 2, keyed by role, every bar
-	// present (barPartsOf).
+	// Bars is the issue's part of each of its bars of metric 2, keyed by role: the seven, every
+	// one present, and one for each role the deployment defines whose step its timeline holds
+	// (barPartsOf).
 	Bars map[string]BarPart
 
 	// SentBack and the two hours after the first review are the rest of metric 3's row

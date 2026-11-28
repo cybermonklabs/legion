@@ -113,7 +113,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 		t.Fatalf("the move out of admitted wrote the plans %+v, want the one %+v", plans, first)
 	}
 
-	move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 {
 		t.Fatalf("the move out of planning left %d plan records, want the one the start wrote", len(plans))
 	}
@@ -189,7 +189,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			root := stepRoot(t, pool, phase.Accepting)
 			seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := stepEngine(nil)
-			move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
 				Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: tc.rating})
 			assertPhase(t, pool, phase.Merging)
@@ -239,16 +239,16 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 	retro := func(rating int, reason string) {
 		t.Helper()
 		engine := stepEngine(nil)
-		move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 3, Issue: root.Key, Role: claim.RoleImplementer,
 			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &record.PlanRating{Rating: rating, Reason: reason}})
 		assertPhase(t, pool, phase.Merging)
 	}
 	retro(2, "The plan put the tests after the review.")
 	engine := stepEngine(nil)
-	move(t, pool, engine, root.Key, TriggerBackward, phase.Implementing, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerBackward, stepPlace(2), record.PhaseRow{})
 	for _, trigger := range []TriggerKind{TriggerImplementationReady, TriggerTesterPassed, TriggerReviewApproved} {
-		move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, trigger, record.TaskPlace{}, record.PhaseRow{})
 	}
 	assertPhase(t, pool, phase.Accepting)
 	retro(4, "The plan left the migration to its last step.")

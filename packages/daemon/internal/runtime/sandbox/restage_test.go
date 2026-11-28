@@ -456,11 +456,11 @@ const repositoryDirectory = "acme/widgets"
 func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) {
 	t.Helper()
 	projectGhItems(t, g, r, name, ghItemsFor(slices.Sorted(slices.Values(append(slices.Clone(staticDirs), repositoryDirectory)))...))
-	for _, role := range podKindFor(claim.RoleTester).roles() {
+	for _, role := range podKindFor(claim.RoleTester).roles(r) {
 		if g.secret(roleSecretName(name, role)) == nil {
 			continue
 		}
-		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		rendered := ghconfig.Render(staticOwnerToken(role, "acme"), string(appOf(t, role)), staticCredentialExpiry)
 		editSecret(g, roleSecretName(name, role), func(secret *corev1.Secret) {
 			secret.Data[GitHubHostsKey(repositoryDirectory)] = []byte(rendered.Hosts)
 			secret.Data[GitHubConfigKey(repositoryDirectory)] = []byte(rendered.Config)
@@ -474,7 +474,7 @@ func projectARepositoryDirectory(t *testing.T, g *rig, r *Runtime, name string) 
 // r reads to hold it.
 func projectGhItems(t *testing.T, g *rig, r *Runtime, name string, items []corev1.KeyToPath) {
 	t.Helper()
-	roles := podKindFor(claim.RoleTester).roles()
+	roles := podKindFor(claim.RoleTester).roles(r)
 	project := func(spec *corev1.PodSpec) {
 		for i, volume := range spec.Volumes {
 			for _, role := range roles {
@@ -613,7 +613,7 @@ func servedOwnerDirs(t *testing.T, repos []ghrepo.Repository) []string {
 	served := servesOneOf(listed)
 	renames := ghrepo.MustRenames(smokeRename)
 	installed := appauth.NewInstalled()
-	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil)
+	credential := appauth.GitHubCredential(sourceOf(&namedLeases{}, installedOnServed{repos: listed}), served, renames, installed, nil, nil, nil)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		if _, err := credential(context.Background(), role, recordedSmoke); err != nil {
 			t.Fatalf("the %s's bundle: %v", role, err)

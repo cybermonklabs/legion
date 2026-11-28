@@ -72,27 +72,31 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
 // file it is in.
 const collapsed = (file: string) => readFileSync(file, "utf8").replace(/\s+/g, " ");
 
-// Only a review that requests changes counts a review round (the daemon's recordRound): a tester's
-// fail and a move back, the architect's from `accepting` among them, count none, as the architect's
-// prompt parts say (`go/architect-common.md`). The two guides that say what the cap counts say so
-// too, and each sentence that counted every move back is gone. A move made at a conflicting head
-// raises no pair, whoever made it (recordPass), so the concepts page says that of any such move.
-// The guides are read where they live in the repository.
-test("the guides say only a review that requests changes counts a round", () => {
+// A review's request for changes counts a review round, and so does the fail of a step of the type
+// review whose agent is not the owner (the daemon's recordRound, at a fail where reviewFails
+// holds). A tester's fail, the fail of a step of another type and a move back, the architect's
+// from `accepting` among them, count none, as the architect's prompt parts say
+// (`go/architect-common.md`). The two guides that say what the cap counts say so too, and each
+// sentence that counted every move back is gone. A move made at a conflicting head raises no pair,
+// whoever made it (recordPass), so the concepts page says that of any such move. The guides are
+// read where they live in the repository.
+test("the guides say a review's request for changes or a review step's fail counts a round", () => {
   const guide = (relative: string, duties: RegExp[]) => {
     const text = collapsed(path.join(REPO_ROOT, "docs/site/src/content/docs/legion", relative));
     return duties.filter((duty) => !duty.test(text)).map((duty) => `${relative} lacks ${duty}`);
   };
   expect([
     ...guide("concepts.md", [
-      /Only a review that requests changes counts a round: a tester's fail and a move back by a worker or the architect count none\./,
-      /A request for changes made while the record holds the head conflicting with its base is a conflict round/,
+      /A review's request for changes counts a round\. So does the fail of a step of the type review whose agent is not the owner\. A tester's fail, the fail of a step of any other type and a move back by a worker or the architect count none\./,
+      /A round counted while the record holds the head conflicting with its base is a conflict round/,
       /a move made while the head conflicts with its base raises no pair/,
       /^(?![\s\S]*Every move back to an earlier phase counts a round)/,
+      /^(?![\s\S]*Only a review that requests changes counts a round)/,
     ]),
     ...guide("troubleshooting.md", [
-      /only a review that requests changes raises the count/,
+      /A review's request for changes raises the count\. So does the fail of a step of the type review whose agent is not the owner\. A tester's fail, the fail of a step of another type and a move back raise none\./,
       /^(?![\s\S]*every move back to an earlier phase raises the count)/,
+      /^(?![\s\S]*only a review that requests changes raises the count)/,
     ]),
   ]).toEqual([]);
 });

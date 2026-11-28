@@ -12,7 +12,7 @@
 // Oh My Pi, and it appends its own role, pod uid and generation to a marker file on the issue pod's
 // own disk, and sleeps. That disk is the pod's own ephemeral volume and dies with it (INFRA-80), so
 // the marker proves a role's identity within one pod and nothing across pods. Within the pod it is
-// shared: SandboxName (see names.go) is one name for all six of an issue's role claims, so one issue
+// shared: SandboxName (see names.go) is one name for every role claim of an issue, so one issue
 // pod's resident roles each append their own launches to the same file, and a check reads only its
 // own claim's lines back out of it (roleIncarnations); a pod replacement leaves a fresh, empty one.
 // Continuity across a pod replacement is the session table's instead. Every runtime of the run keeps
@@ -924,7 +924,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 		r.claims = append(r.claims, &liveClaim{
 			token: token, tree: c.tree, issue: c.issue, role: c.role, name: c.name,
 			// The marker sits at the root of the issue's volume: TreeRoot is mounted read-write in
-			// the pod's one container and seen by every role there (issuePod.launcherContainer), so the six
+			// the pod's one container and seen by every role there (issuePod.launcherContainer), so the
 			// roles of an issue share the one file, and it is the pod's own ephemeral disk, so it
 			// dies with the pod — the property this file's header claims. No pod mounts
 			// ompSessionsDir any more, which is why the marker is not there.

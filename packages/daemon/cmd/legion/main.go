@@ -227,13 +227,18 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			api.PluginSourceOf(pair.PiLegion), api.PluginSourceOf(pair.PiEnvoy), pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
-	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
-	// other.
+	// The roles Claude Code runs here: Legion's phase workers that worker_backends puts on it, in
+	// claim.Roles' order (the default steps' order), then each role of the deployment it puts
+	// there, in the file's order; the loader refuses any other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
 		if cfg.BackendFor(role) == runtime.BackendClaude {
 			claude = append(claude, string(role))
+		}
+	}
+	for _, role := range cfg.Roles {
+		if cfg.BackendFor(role.Name) == runtime.BackendClaude {
+			claude = append(claude, string(role.Name))
 		}
 	}
 	if len(claude) == 0 {
@@ -269,8 +274,11 @@ func pluginsLine(cfg config.Config) string {
 // check at a merge, one naming its `default_steps` (defaultStepsLine), so an operator reads back
 // the steps an issue runs when its owner gives no plan, and, for a project whose
 // `watched_workflows` names entries, one naming each entry with the events it resolved to
-// (watchedWorkflowsLine); a project that names none prints no such line. After them, one line per
-// configured repository rename
+// (watchedWorkflowsLine); a project that names none prints no such line. Then one line per role
+// the deployment defines in `roles`, in the file's order (roleLine): its type, its model, the
+// GitHub App it works as and its prompt file, which the check reads as the start does
+// (config.CheckRolePrompts). After them, one line per configured
+// repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -307,6 +315,9 @@ func pluginsLine(cfg config.Config) string {
 func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err == nil {
+		err = config.CheckRolePrompts(cfg.Roles)
+	}
+	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
 	var checked daemon.CheckedNATS
@@ -337,6 +348,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		if line := watchedWorkflowsLine(key, cfg.Projects[key]); line != "" {
 			fmt.Fprintln(stdout, line)
 		}
+	}
+	for _, role := range cfg.Roles {
+		fmt.Fprintln(stdout, roleLine(role))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -392,6 +406,17 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// roleLine is `legion config check`'s line for one role of `roles`: its type, its model (the
+// overlay's default where the file names none), the GitHub App it works as and its prompt file as
+// the loader resolved it.
+func roleLine(role config.Role) string {
+	model := role.Model
+	if model == "" {
+		model = "the overlay's default"
+	}
+	return fmt.Sprintf("roles.%s: type %s, model %s, App %s, prompt %s", role.Name, role.Type, model, role.GitHubApp, role.PromptFile)
 }
 
 // controllerAccountLine is `legion config check`'s line for runtime.kubernetes.pod.controller_service_account,
@@ -1378,8 +1403,9 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 
 // entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
 // named for, the entry the phases row of the role of its current phase stands on and the entry
-// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
-// architect, the arms the state names for it.
+// that role was given (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running
+// step, the role the state's two numbers are of), and, for a root's architect, the arms the state
+// names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
@@ -1408,14 +1434,20 @@ type entryBehind struct {
 // past its architect's phases are its phase worker's, which the line names for no root. The
 // numbers are named for the role a phase worker works on any other issue, which is
 // dispatch://INFRA-2800's line; a role of the architect's, a child at admitted among them, which
-// phase.RoleFor names the architect's phase, is named for nothing. An issue whose current phase
-// names no role at all carries neither number and is never named for them: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the line.
+// phase.RoleFor names the architect's phase, is named for nothing. At step the role is the one
+// that runs the issue's step, which the state names (api.Issue.StepRole) and no phase does, and
+// so is the role of an issue held from step, which carries no number as every held issue does. An
+// issue whose current phase names no role at all carries neither number and is never named for
+// them: the projection writes them only where a role works the issue's phase, and that is the role
+// this reads back for the line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
 		role := phase.RoleFor(issue.Phase)
+		if issue.Phase == phase.Step || issue.Phase == phase.Held && issue.HeldFrom == string(phase.Step) {
+			role = legionclaim.Role(issue.StepRole)
+		}
 		if legionclaim.IsTreeRoot(key, issue.Tree) {
 			if len(issue.ArchitectStalls) == 0 {
 				continue

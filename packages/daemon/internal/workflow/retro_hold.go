@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -223,8 +224,9 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 // moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
 // hold wrote none and the record still holds the status of the last step (PhaseStatus(held) is
 // empty). The implementer is started with the task the pass into the retro would have started it
-// with (transition): the handoff of the step the task passed last, which the hold kept on that
-// step's phases row, and the pull request. Its start raises its entry and the count of starts of
+// with (transition): the report of the step the task passed last, its handoff, or the verdict of
+// a role of the deployment, which writes none, as the hold kept them on that step's phases row,
+// and the pull request. Its start raises its entry and the count of starts of
 // the retro's place (start, which writes the retro's step), not restart, which raises neither,
 // since this retro never ran. The act is children_done, which the log line names: no row of the
 // table moves a held issue.
@@ -259,7 +261,9 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if len(steps) == 0 || w.Place != (record.TaskPlace{Kind: record.PlaceRetro}) {
 		return false, fmt.Errorf("start the held retro of %s: task %s stands at %+v of the line %v, not at its retro", parent.Key, w.Task, w.Place, w.Line)
 	}
-	last, err := e.phaseRow(ctx, tx, parent.Key, phase.RoleFor(steps[len(steps)-1]))
+	// The report of the task's last step is on the row of that step's role, whatever runs it: one of
+	// Legion's roles or a role the deployment defines, whose phase (step) names no role of its own.
+	last, err := e.phaseRow(ctx, tx, parent.Key, claim.Role(w.Steps[len(w.Steps)-1].Role))
 	if err != nil {
 		return false, err
 	}

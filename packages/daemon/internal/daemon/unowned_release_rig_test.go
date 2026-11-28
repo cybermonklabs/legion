@@ -153,9 +153,10 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 		// The other start that makes such a pod again: the row the daemon queues for a phase
 		// worker, written through the record store the daemon writes it through. It is queued
 		// after the release and not before, because a row waiting for delivery to a role of the
-		// issue is a conjunct of the rule itself (workflow.IdleHoldUnownedDelivery) — a release
-		// taken under such a start would leave it to find its pod gone — so the start of a pod
-		// this rule released is always a start made after it.
+		// issue is a conjunct of the rule itself (workflow.IdleHoldUnownedDelivery), save a start
+		// that waits for its pod, which the next pod serves — a release taken under any other
+		// start would leave it to find its pod gone — so the start of a pod this rule released is
+		// a start made after it, or one that waited for that pod.
 		enqueueOutbox(t, rig.pool, rig.records, mustOutboxRow(t, issue.key, record.SuperviseRequest{
 			Op: "start", Tree: issue.key, Role: issue.role, Generation: 1, Phase: phase.Implementing,
 			Task: "Continue " + issue.key + ". Phase: implementing.",

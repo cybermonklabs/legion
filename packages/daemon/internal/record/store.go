@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/stateevent"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -78,10 +79,12 @@ func (s *Postgres) StatePublished() bool { return s.state.Load() != nil }
 
 // judgedTables is every table an admission judgement reads (blockers.JudgeLine over
 // ReadLineFacts): the issue records, the slots, the tree lifecycles, the design gates, the outbox
-// rows of the starts owed (OwedStarts) and the Dispatch mirror with its claims (DispatchIssuesOf,
-// DispatchChildren). TestAnAdmissionJudgementReadsOnlyTheJudgedTables holds a judgement's reads to
-// this list.
-var judgedTables = []string{"issues", "slots", "tree_lifecycles", "design_gates", "outbox", "dispatch_issues", "dispatch_claims"}
+// rows of the starts owed (OwedStarts), the Dispatch mirror with its claims (DispatchIssuesOf,
+// DispatchChildren), and the plan rows each issue's record reads the role of its running step
+// from (issueColumns' last column, Issue.StepRole). TestAnAdmissionJudgementReadsOnlyTheJudgedTables
+// holds a judgement's reads to this list.
+var judgedTables = []string{"issues", "slots", "tree_lifecycles", "design_gates", "outbox", "dispatch_issues", "dispatch_claims",
+	"plan_tasks", "plan_steps"}
 
 // JudgedWrites is how many rows tx has inserted, updated or deleted so far in the tables an
 // admission judgement reads (judgedTables), as Postgres counts the current transaction's own
@@ -146,8 +149,13 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issue's claim (RecordClaimLeft), as the JSON it stores, null for none. The four issues.memory_*
 // columns are no part of it: what a unit was drawn is an assignment row of its own (AssignmentsOf,
 // AssignmentsFor), and nothing this release's daemon runs reads the columns but the back-fill of
-// 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, claim_left`
+// 20261111045636_experiment_assignments. Its last column is no column of issues: it is the role
+// of the step the issue's task stands at, read from the plan rows of the issue's generation
+// (Issue.StepRole), "" where they hold none or the task stands at no step. A run holds one task
+// in this release, so the read finds one row at most.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, claim_left, ` +
+	`coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position ` +
+	`where t.issue = issues.key and t.generation = issues.generation and t.running_kind = 'step'), '')`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -397,14 +405,17 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// four columns: its write of a later answer leaves them as they were, and the read
 	// (issueColumns) takes the document only while that moment is the answer's now standing. A
 	// zero version and an empty document or step are written as null, as the migration leaves them.
+	// observed_step_role is no value of the issue handed in: it is read from the plan rows as they
+	// stand when the issue is written (stepRoleObserved), which a move of the task wrote first, so
+	// the next write compares against the role this one served.
 	const statement = `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact, awaiting_answered_step, view_of,
 		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority,
-		resolved_known, resolved_priority, priority_from)
+		resolved_known, resolved_priority, priority_from, observed_step_role)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::integer, 0), $32, nullif($33::text, ''), nullif($34::text, ''), nullif($35::text, ''),
-		$36, $37, $38, $39, nullif($40::text[], '{}'), $41, $42, $43, $44, $45)
+		$36, $37, $38, $39, nullif($40::text[], '{}'), $41, $42, $43, $44, $45, ` + stepRoleObserved + `)
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -424,7 +435,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
 		children_wait_children = excluded.children_wait_children, children_waited_at = excluded.children_waited_at,
 		priority = excluded.priority, resolved_known = excluded.resolved_known, resolved_priority = excluded.resolved_priority,
-		priority_from = excluded.priority_from`
+		priority_from = excluded.priority_from, observed_step_role = excluded.observed_step_role`
 	args := []any{issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
@@ -766,7 +777,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
 		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
-		&claimLeft); err != nil {
+		&claimLeft, &issue.StepRole); err != nil {
 		return nil, err
 	}
 	// The columns' checks hold both to Dispatch's 0 to 3 or null, each of which DispatchPriority
@@ -2194,8 +2205,9 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// promotion writes again. The counts go with the rounds: the new generation counts its
 		// moves back from nothing, and the cap mark goes with them, so the architect is told again
 		// at the new generation's own first crossing of the cap. The commit the daemon recorded for
-		// the reviewer's own review goes with the decision: the new generation's first review reads
-		// the whole change.
+		// the reviewer's own review goes with the decision, and so does the commit a review step of a
+		// role the deployment defines read (the workflow's recordStepReview): the new generation's
+		// first review reads the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_awaiting = null, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0, step_task = '', step_place = 0 where " + where,
@@ -3855,8 +3867,8 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. The store repeats this last rule (its slotWaitingStart, which
 // TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot holds to this one), so the idle release
-// keeps no pod for such a start; what the start means for a backstop is the store's
-// PodRecords.WaitsForItsSlot's to say. Supervise rows need no other such rule: a stop names the
+// keeps no pod for such a start; what the start means for a backstop is the workflow's
+// podBackstopDue's to say, by Issue.HoldsQueued. Supervise rows need no other such rule: a stop names the
 // run it ends through the claim's own record of the newest start run against it
 // (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
 // runtime delayed. And a state row ($7 is the state lane's kinds) waits while an unfinished state
@@ -3916,7 +3928,7 @@ const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox ol
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
-// its claims and then acts on what it read — a start launches the role the issue's phase names, a
+// its claims and then acts on what it read — a start launches the role of the issue's phase, or of its running step at step, a
 // suspend stops the roles a start launched, a workspace removal takes the workspace they used — and
 // they were written to run one after another, each in the state its predecessor leaves (OutboxLane).
 // A lifecycle lane runs its rows that way on its own, but a lane is one daemon's: with the rule in
@@ -4235,6 +4247,34 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 		return nil, fmt.Errorf("list the held outbox rows of %s: %w", project, err)
 	}
 	return held, nil
+}
+
+// StartsWaitingForPod is, for each issue of project, the roles whose start row waits because the
+// issue's pod was built before the deployment defined them: a supervise start whose last error
+// begins with pods.StartWaitsForPodPrefix (the outbox's roleWaitsForItsPod writes it; the idle
+// view's startWaitsForPodRow reads the same rows). Each role once, in the order of its rows.
+func (s *Postgres) StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error) {
+	rows, err := tx.Query(ctx, `select issue, payload->>'role' from outbox
+		where split_part(issue, '-', 1) = $1 and kind = 'supervise' and payload->>'op' = 'start'
+		and starts_with(coalesce(last_error, ''), $2) order by id`, project, pods.StartWaitsForPodPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+	}
+	defer rows.Close()
+	waiting := map[string][]claim.Role{}
+	for rows.Next() {
+		var issue, role string
+		if err := rows.Scan(&issue, &role); err != nil {
+			return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+		}
+		if !slices.Contains(waiting[issue], claim.Role(role)) {
+			waiting[issue] = append(waiting[issue], claim.Role(role))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the starts of %s that wait for their pod: %w", project, err)
+	}
+	return waiting, nil
 }
 
 // heldRowsSQL is HeldRows' statement, built once from the outbox's rules (outboxClaimable,

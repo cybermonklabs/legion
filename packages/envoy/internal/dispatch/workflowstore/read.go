@@ -16,41 +16,16 @@ import (
 // the runs happened: by generation, then by start, a run whose start never arrived first, then by
 // id. The attempt is the place of a run among the issue's runs of the same task, step and kind in
 // that order, from 1, so the retro and the merge, both at step 0, each count from 1. An issue
-// Legion never ran answers none.
-//
-// It reads the `part_of` tuples into the issue through workflow_tuples_inbound, whose predicate
-// the literal to_kind implies, and joins each to its node row, so it costs the issue's own runs
-// and nothing else.
+// Legion never ran answers none. It reads the issue's runs as IssuesSteps reads them.
 func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error) {
-	rows, err := q.Query(ctx, `
-		select n.id, n.attributes
-		from workflow_tuples t
-		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
-		where t.to_kind = '`+KindIssue+`' and t.to_id = $1 and t.kind = '`+RelationPartOf+`'
-			and t.from_kind = '`+KindStep+`' and t.asserted
-	`, issue)
+	runs, err := IssuesSteps(ctx, q, []string{issue})
 	if err != nil {
-		return nil, fmt.Errorf("read the steps of %s: %w", issue, err)
+		return nil, err
 	}
-	defer rows.Close()
-	var steps []StepRead
-	for rows.Next() {
-		var id string
-		var attributes []byte
-		if err := rows.Scan(&id, &attributes); err != nil {
-			return nil, fmt.Errorf("read the steps of %s: %w", issue, err)
-		}
-		step, err := stepFrom(id, attributes)
-		if err != nil {
-			return nil, err
-		}
+	steps := make([]StepRead, 0, len(runs[issue]))
+	for _, step := range runs[issue] {
 		steps = append(steps, StepRead{Step: step})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the steps of %s: %w", issue, err)
-	}
-
-	slices.SortFunc(steps, func(left, right StepRead) int { return compareRuns(left.Step, right.Step) })
 	type place struct {
 		task, kind string
 		step       int
@@ -64,9 +39,48 @@ func IssueSteps(ctx context.Context, q Queryer, issue string) ([]StepRead, error
 	return steps, nil
 }
 
+// IssuesSteps answers, by issue, every run of every step of each issue of keys, in the order the
+// runs happened (compareRuns). An issue Legion never ran answers none. It reads the `part_of`
+// tuples into those issues through workflow_tuples_inbound, whose predicate the literal to_kind
+// implies, and joins each to its node row, so it costs their own runs and nothing else. The
+// metrics' fallback timeline reads it for the runs of the steps of the roles a deployment defines.
+func IssuesSteps(ctx context.Context, q Queryer, keys []string) (map[string][]Step, error) {
+	rows, err := q.Query(ctx, `
+		select t.to_id, n.id, n.attributes
+		from workflow_tuples t
+		join workflow_nodes n on n.kind = t.from_kind and n.id = t.from_id
+		where t.to_kind = '`+KindIssue+`' and t.to_id = any($1) and t.kind = '`+RelationPartOf+`'
+			and t.from_kind = '`+KindStep+`' and t.asserted
+	`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the steps of %d issues: %w", len(keys), err)
+	}
+	defer rows.Close()
+	runs := map[string][]Step{}
+	for rows.Next() {
+		var issue, id string
+		var attributes []byte
+		if err := rows.Scan(&issue, &id, &attributes); err != nil {
+			return nil, fmt.Errorf("read the steps of %d issues: %w", len(keys), err)
+		}
+		step, err := stepFrom(id, attributes)
+		if err != nil {
+			return nil, err
+		}
+		runs[issue] = append(runs[issue], step)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the steps of %d issues: %w", len(keys), err)
+	}
+	for _, held := range runs {
+		slices.SortFunc(held, compareRuns)
+	}
+	return runs, nil
+}
+
 // NewestPlan answers the plan of one issue's newest run: the plan node of the issue of the highest
 // generation, as ProjectPlans picks it (MadePlan.newerThan), nil where the issue has none. It reads
-// the `part_of` tuples into the issue as IssueSteps does, so it costs the issue's own plans alone.
+// the `part_of` tuples into the issue as IssuesSteps does, so it costs the issue's own plans alone.
 func NewestPlan(ctx context.Context, q Queryer, issue string) (*Plan, error) {
 	rows, err := q.Query(ctx, `
 		select n.id, n.attributes, n.made_at

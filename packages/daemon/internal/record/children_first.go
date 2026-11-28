@@ -81,7 +81,8 @@ func StartedParents(issues []Issue, owed map[string]OwedStart) []string {
 }
 
 // OpenChildHolds says whether p is a phase whose start an open Dispatch child of the issue holds
-// once its phases have started (dispatch://INFRA-3320 R9): planning through accepting. The
+// once its phases have started (dispatch://INFRA-3320 R9): planning through accepting, and step,
+// where a role the deployment defines works a step of the task between them. The
 // issue's first phase is not among the starts it reaches — that start is the admission line's
 // (ChildrenFirstCandidates, workflow's StartFirstPhase) — nor retro and merging, which start once
 // the daemon has accepted the issue (AcceptedPhase), after its children. The workflow's guard on
@@ -90,7 +91,7 @@ func StartedParents(issues []Issue, owed map[string]OwedStart) []string {
 // starts an open child holds.
 func OpenChildHolds(p phase.Phase) bool {
 	switch p {
-	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting:
+	case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting:
 		return true
 	}
 	return false

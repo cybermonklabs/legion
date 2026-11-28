@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -96,6 +98,12 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a role", req.Role))
 		return
 	}
+	role := string(req.Role)
+	if !claim.IsBuiltin(req.Role) && !s.spawnableDeploymentRole(role) {
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("role %q is not a spawnable role; deployment-defined roles: %s",
+			req.Role, s.deploymentRoleNames()))
+		return
+	}
 	token, err := claim.NewToken(s.project, req.Issue, req.Role)
 	if err != nil {
 		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
@@ -145,6 +153,28 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	s.operatorDone(r, token)
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
+}
+
+// spawnableDeploymentRole says whether role is a role of the deployment the operator may start: one
+// the deployment's settings define that runs as the phase step and is none of Legion's six. The
+// plan's built-in steps, including owner acceptance, are not deployment roles.
+func (s *server) spawnableDeploymentRole(role string) bool {
+	return plan.RunsAs(role) == phase.Step && !claim.IsBuiltin(claim.Role(role)) && s.deployment.Defines(role)
+}
+
+// deploymentRoleNames lists the spawnable roles configured in addition to Legion's six.
+func (s *server) deploymentRoleNames() string {
+	var names []string
+	for role := range s.deployment.Roles {
+		if s.spawnableDeploymentRole(role) {
+			names = append(names, role)
+		}
+	}
+	if len(names) == 0 {
+		return "none"
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // drawExperiments draws the tree-unit experiments the project declares for tree, for the open

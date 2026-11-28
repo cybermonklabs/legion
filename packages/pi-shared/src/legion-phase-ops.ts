@@ -1,4 +1,4 @@
-import { type LegionRole, zodSchemaApi } from "@legion/contracts";
+import { type LegionStepRole, zodSchemaApi } from "@legion/contracts";
 import { daemonContract, type PluginManifest } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
@@ -31,7 +31,8 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  readonly role: LegionRole;
+  /** One of Legion's six or a role of the deployment (the deployment roles' contract entry). */
+  readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
   readonly generation: number;
@@ -143,17 +144,14 @@ const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED 
   long: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
 });
 
-/** The refusal of a `return_to` that is not the place of a step. */
-const RETURN_TO_REFUSAL =
-  "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first";
-
-/** `handoff_complete`'s `return_to`: the step of the issue's running task that a step that failed
- * names for its task to return to, by its place in the task, 1 for its first
- * (`LegionHandoffCompleteRequest`'s `returnTo`, which goes on the wire). */
-const returnTo = z
-  .number({ error: RETURN_TO_REFUSAL })
-  .int({ error: RETURN_TO_REFUSAL })
-  .min(1, { error: RETURN_TO_REFUSAL });
+/** `op`'s `return_to`: the step of the issue's running task that a step that failed, or a move
+ * back, names for its task to return to, by its place in the task, 1 for its first (the
+ * `returnTo` of `LegionHandoffCompleteRequest` and of `LegionPhaseBackwardRequest`, which goes on
+ * the wire). Anything else is refused naming the operation. */
+function returnTo(op: "handoff_complete" | "request_backward_move") {
+  const error = `${op}'s return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first`;
+  return z.number({ error }).int({ error }).min(1, { error });
+}
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
@@ -215,7 +213,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       check_opened_at: checkOpening.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
-      return_to: returnTo.optional(),
+      return_to: returnTo("handoff_complete").optional(),
     })
       // A rating of the plan carries its reason, and the daemon takes neither alone
       // (PLAN_RATING_INPUT, the contract's `legionPlanRatingLoneField`): one without the other is
@@ -248,6 +246,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
             : "request_backward_move requires to",
       }),
       reason: requiredString("request_backward_move", "reason"),
+      // The step the move returns to, by its place in the task: the daemon takes the place and
+      // refuses a `to` that is not the phase that step runs as.
+      return_to: returnTo("request_backward_move").optional(),
     }),
     // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
@@ -330,9 +331,10 @@ export const PHASE_OP_SENTENCES = {
     "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
-    "That move counts no review round: only a review that requests changes counts one. ",
+    "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
+    "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -346,8 +348,8 @@ export const PHASE_OP_SENTENCES = {
 
 /**
  * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
- * daemon ends that refusal with (`staleEntryInstruction` in
- * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
+ * daemon ends that refusal with (`StaleEntryInstruction` in
+ * `packages/daemon/internal/intake/facts.go`), so the worker reads one instruction in its tool and
  * in the refusal. The daemon's golden test writes its constant to
  * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
  * the description below to that file.
@@ -373,24 +375,24 @@ export function legionToolDescription(host: {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
-    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off; " +
+    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; " +
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
+    "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-    "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-    "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
-    "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+    "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
+    "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
+    "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
     "(RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion, a step of a role of the deployment and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "names `check_opened_at`, the RFC 3339 opening time in its `Production check of <KEY>` task, with its stored microseconds unchanged. " +
     "Only that field selects a check report, on any phase. Without it the call completes a step. A report carries its verdict and summary, " +
@@ -464,11 +466,12 @@ export interface PhaseOpRuntime {
   /** What a completion by `role` reports beside its summary while the issue stands at `phase`
    * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
    * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
-   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
-   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
+   * that left phase has none or the implementer's left record names no head, or at `step`, the
+   * phase of a role of the deployment, which writes no record. Throws naming the remedy when the
+   * phase the role works writes records and has none, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -667,11 +670,16 @@ export async function executePhaseOp(
           throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
         }
       }
+      // The target `step` and `return_to` arrived with the daemon's roles of a deployment
+      // (deploymentRolesContract's entry). An older daemon refuses either with a 400 and moves
+      // nothing: `step` as `INVALID_PHASE`, and `returnTo` as a body with an unknown field. So the
+      // move is sent as asked, and that refusal is the answer the caller reads.
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,
         reason: args.reason,
         ...(issue === undefined ? {} : { issue }),
+        ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),
       });
       return {};
     }

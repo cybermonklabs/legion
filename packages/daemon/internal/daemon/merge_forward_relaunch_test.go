@@ -797,7 +797,7 @@ func (r *freshSessionRig) testerHeld(when string) {
 	r.t.Helper()
 	var left string
 	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.issue.Key, claim.RoleTester, record.MergeForwardHold, owedAskHead)
+		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.runner.deployment, r.issue.Key, claim.RoleTester, record.MergeForwardHold, owedAskHead)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the rule of the tester's hold: %v", err)

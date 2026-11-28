@@ -58,7 +58,8 @@ const (
 	// process.
 	liveHolderBytes = 256 << 20
 	// liveIdleSleeps is how many idle processes the test starts beside the holder, so that a scan
-	// reads about as many processes as an issue pod of six roles holds.
+	// reads about as many processes as an issue pod holds whose deployment defines no role of its
+	// own.
 	liveIdleSleeps        = 50
 	liveSampleEvery       = 100 * time.Millisecond
 	liveSecondsDefault    = 120

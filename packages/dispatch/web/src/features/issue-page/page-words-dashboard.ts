@@ -90,6 +90,9 @@ export const PHASE_WORDS = freeze({
   integrating: "Integrating",
   /** `held`, which marks no step. */
   held: "Held",
+  /** `step`, a step of a role the Legion deployment defines, which marks no step: such a step may
+   *  stand at any place of the issue's plan. */
+  step: "At a deployment role's step",
   /** A phase that none of the others names. */
   another: "In another phase",
 } as const);

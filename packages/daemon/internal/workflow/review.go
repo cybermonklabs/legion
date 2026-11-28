@@ -329,7 +329,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		}
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
+			if err := e.mergeForward(ctx, tx, *issue, w, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
@@ -715,7 +715,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
+	roles := []claim.Role{issue.RoleAt(record.StandsAt(*issue))}
 	if !record.StandsIn(*issue, phase.Merging) {
 		roles = append(roles, claim.RoleImplementer)
 	}
@@ -774,8 +774,8 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 const answerSkew = 10 * time.Second
 
 // byReviewer says whether review is the reviewer's own review-App session, not merely a review the
-// review App submitted: the controller now holds the review App's token too, so every role's
-// review arrives under the same bot login (Config.ReviewAppLogin). What tells the reviewer's
+// review App submitted: the controller now holds the review App's token too, so every review-App
+// role's review arrives under the same bot login (Config.ReviewAppLogin). What tells the reviewer's
 // review from any other review-App session's - the controller's, an architect's, a sibling tree's
 // role - is the Legion footer every Legion role appends to a pull-request review
 // (intake.PullRequestReview.LegionSession), matched against reviewerSession, the session the
@@ -1484,12 +1484,13 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 // moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
-	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")
+	return e.transition(ctx, tx, issue, TriggerImplementationReady, record.TaskPlace{}, row, pr, "")
 }
 
 // settleRound acts on what issue's review round comes to (reviewRound, with row its reviewer's and
 // pr its pull request as the fact left them), and says whether it moved the issue. An ended round
-// moves on, its request for changes back to implementing; a stuck round is told to the architect,
+// moves on, its request for changes back to the first step of the type implementation before the
+// reviewer's; a stuck round is told to the architect,
 // in a notice whose summary is by, the fact that wrote it - unless it was told already. For the
 // two causes a review decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
@@ -1509,9 +1510,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, record.TaskPlace{}, row, pr, row.Decision.Body)
 	case roundApproved:
-		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
+		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
 	case roundStuck:
 		if r.cause == stuckMergeState {
 			return false, e.tellStuckMergeState(ctx, tx, issue, row, r, by)
@@ -1623,8 +1624,8 @@ func toldFinding(r round) record.StuckTold {
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
 // when the fact owes that read (mergeStateOwed, Config.ReadMergeState): the round the fact has
 // just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
-// or the fact moves the head of an issue in implementing through merging, which a conflict with
-// the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
+// or the fact moves the head of an issue in a phase a merge forward is asked in, which a conflict
+// with the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
 // It is the engine's own account of what the round is owed rather than a second reading of
 // the record beside it, and it runs on the commit, so the fact's transaction waits for no GitHub
 // call.
@@ -1696,15 +1697,15 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 }
 
 // mergeStateOwed says whether a fact of kind fact owes a read of pr's merge state, by one of the
-// gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of an issue in
-// implementing or a phase after it, a base push of an issue in a phase after it) or by the third,
-// which the gate does not hold: the issue's review round waiting on GitHub's answer for the head
-// (reviewRound's waitsOnMergeState), or ended by an approval the fact did not move on, worked out
-// here only for a fact the gate owes no read for. It is the one decision both askMergeState, for a
-// fact of one pull request, and basePush, for each pull request on a pushed base, read by. A pull
-// request that is not open is owed nothing: it merges nothing until a reopen, which asks again,
-// and its round waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one),
-// so the test of its state here saves the store reads below.
+// gate's two reasons (classify.MergeStateReadOwed, at the place the walk's task stands at on its
+// line: a head move of a task at the implementer's place or after it, a base push of one after
+// it) or by the third, which the gate does not hold: the issue's review round waiting on GitHub's
+// answer for the head (reviewRound's waitsOnMergeState), or ended by an approval the fact did not
+// move on, worked out here only for a fact the gate owes no read for. It is the one decision both
+// askMergeState, for a fact of one pull request, and basePush, for each pull request on a pushed
+// base, read by. A pull request that is not open is owed nothing: it merges nothing until a
+// reopen, which asks again, and its round waits on no answer (classify.RoundWaitsOnMergeState
+// holds only for an open one), so the test of its state here saves the store reads below.
 func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) (bool, error) {
 	if pr.State != record.PullRequestOpen {
 		return false, nil
@@ -1717,7 +1718,8 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 	if err != nil {
 		return false, err
 	}
-	if classify.MergeStateReadOwed(*issue, w.Line, fact) {
+	place, _ := w.placeIn(record.StandsAt(*issue))
+	if classify.MergeStateReadOwed(w.Line, place, fact) {
 		return true, nil
 	}
 	// The round's own answer matters only where the fact and the phase owe no read: every phase
@@ -1747,8 +1749,9 @@ func (e *Engine) mergeStateOwed(ctx context.Context, tx pgx.Tx, pr *record.PullR
 // "<from>-<to>" pair, spelled as phase.MovePairs() spells the pairs (phase.Pair): a review
 // that sends the work back and a test that sends it back are two counts and never one. Both rise
 // here, where every backward move passes, rather than beside the review round, which only a
-// review requesting changes opens (recordRound): a hook standing on that count would never see a
-// tester's fail or a worker's own move back.
+// review requesting changes or the fail of a step of the type review whose agent is not the owner
+// opens (recordRound): a hook standing on that count would never see a tester's fail or a
+// worker's own move back.
 //
 // A move the record holds as a conflict with the base raises no pair and fires no hook: nobody
 // sent the work back, so there is no move of a kind for a hook to count, and the pass it still
@@ -1784,8 +1787,9 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return e.fireWorkBackHooks(ctx, tx, issue.Key, from, to, counts.BackwardMoves, pr)
 }
 
-// recordRound counts task one more review round, which only a review that requested changes
-// ends, and tells the architect once for each value review_round_cap holds. The counts are the
+// recordRound counts task one more review round, which a review that requested changes ends, as
+// the fail of a step of the type review whose agent is not the owner does, and tells the architect
+// once for each value review_round_cap holds. The counts are the
 // task's, where recordPass keeps them. The move's own pair and the deployment's hooks are counted
 // where every backward move passes (recordPass), so a round and a move are counted apart: this
 // one is the cap's, and everything it writes it writes in the move's own transaction.

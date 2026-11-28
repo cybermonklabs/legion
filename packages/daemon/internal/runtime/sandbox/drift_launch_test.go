@@ -41,7 +41,9 @@ func microVMChanged(edit func(*MicroVM)) func(*Options) {
 // not are the account, which the launch reads itself (accountDrift,
 // TestALaunchKeepsAnAccountDriftedPodARoundCoversAndReplacesOneNoRoundCovers), and the shape its
 // template was built from — the image, the kind's own reservation, an operator volume or mount,
-// the disk size and the sandbox, each key of podShapeRecord — which
+// the disk size and the sandbox, each a key of podShapeRecord, whose `roles` the launch does not
+// read, since a pod built before a role keeps it and its start waits (runtime.ErrAwaitsPodUpdate) —
+// which
 // the launch reads through the same one computation the round's reasons are named from
 // (shapeDrift). Nothing else would: PodDrift answers nothing for such a pod, so no round is ever
 // opened over it, and a launch that kept it would leave the project controller running for ever in

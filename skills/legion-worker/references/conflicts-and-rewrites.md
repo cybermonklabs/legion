@@ -1,10 +1,29 @@
 # Conflicts, retargets, and a wrong pushed commit
 
-Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-forward message asks you to merge the base forward or to stop writing the workspace, your own architect asks you to resolve a conflict another tree reported, the change needs something only the base has, the pull request is retargeted, you read a merge of the base, or a commit you pushed is wrong.
+Read this section for a conflict GitHub reports, a merge-forward message, a change that needs something only the base has, a retarget, a merge of the base, or a wrong pushed commit.
 
 ## Reintegrating the base
 
-The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), its own architect asks because of a conflict another tree reported, the change needs something only the base has, or the pull request was retargeted. Past the review the merger merges the base forward when it merges, for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base"), so the implementer merges then only when the daemon's merge-forward message or the merger asks it. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
+The implementer merges the base into the issue branch on only three triggers:
+
+- GitHub reports the pull request `CONFLICTING`.
+  The daemon's merge-forward message counts as this trigger because two reads of GitHub confirmed the conflict (*The daemon's ask*, below).
+  A request from your own architect, for a conflict another tree reported, counts only if it identifies a conflict GitHub reports.
+
+- The change needs something only the base has, such as a fix for its only red check.
+
+- The pull request was retargeted.
+
+Outside `implementing`, wait for the daemon's merge-forward message because the current phase owns the workspace.
+In `retro`, in `merging`, and in `accepting` with no task step after acceptance, the merger owns the merge.
+The daemon asks the merger in `merging`.
+In those phases, merge only if the daemon already sent you the merge-forward message or the merger asks you to.
+The merger merges forward for a conflict or for a check the base's newer code breaks (its role prompt, "A head that conflicts with its base").
+If any other message asks for a merge without identifying a conflict GitHub reports, reply with this rule and do not merge.
+
+Never merge just to refresh CI or to pick up the default branch.
+Each merge creates a new head, reruns CI and can void a review.
+Never use `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
 1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 
@@ -38,9 +57,9 @@ gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submit
 A head that conflicts with its base keeps the issue in its phase. The daemon reads GitHub twice, at least a minute apart, and acts only on a conflict both reads report. It acts only when the next step needs a mergeable head, which is so in four cases. The issue stands in `merging`. A check the base requires has no green result on the head, since GitHub runs no check on a conflicting head. The base requires a pull request to be current with it. The daemon could not read the base's rules. Where every step of the task has run, in `retro` or in `accepting` with no step of its task after it, the conflict waits for the merger.
 
 - Before `merging` the implementer gets a merge-forward message on its role topic, and in `merging` the merger does. Merge the base forward in `$LEGION_WORKSPACE`, the one workspace every role of the issue shares, as *Reintegrating the base* says, and push the issue branch, with no handoff and no completion for the merge. In `implementing` the phase is the implementer's, and its assignment and its completion stand.
-- In `testing` and `reviewing`, the phase's worker is told to stop writing the workspace: stop at once, complete nothing at the old head, and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
+- In `testing`, `reviewing` and `step`, the phase's worker (at `step`, the role of the deployment whose step runs) is told to stop writing the workspace: stop at once, complete nothing at the old head, and keep your turn and its jobs. When the push lands you are told the new head: read the merge as above and go on at that head.
 - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; it moved nothing, and the daemon keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`.
-  Read the merge (*Reading a merge of the base*, above), then complete again at the new head with a handoff that names it.
+  Read the merge (*Reading a merge of the base*, above), then complete again at the new head, with a handoff that names it where your phase writes one.
 
 ## A wrong pushed commit
 

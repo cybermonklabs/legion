@@ -350,7 +350,7 @@ func ownersPart(task string) (before, text, round string, ok bool) {
 func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
 	var rows []record.PhaseRow
 	var err error
-	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
+	if place, _ := w.placeIn(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
 		}
@@ -365,7 +365,7 @@ func standingText(issue record.Issue, dir func(key string, repo ghrepo.Repositor
 	if !w.Stored {
 		return at, nil
 	}
-	place, ok := w.PlaceOf(issue.Phase)
+	place, ok := w.placeIn(issue.Phase)
 	if !ok {
 		return Standing{}, fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}
@@ -400,7 +400,8 @@ func stepsLine(words []string) string {
 // most one step of an issue, so its row holds that step's facts, and each step before a running
 // one completed in the run that led to it: a step that runs again after a return writes its new
 // record on the row before the step after it starts. A step whose role writes no handoff (the
-// owner's acceptance) has no line.
+// owner's acceptance, and a role of the deployment, whose verdict only the task of the step after
+// it names) has no line.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {

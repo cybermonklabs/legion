@@ -35,14 +35,15 @@ var (
 // are the daemon's (internal/daemon).
 //
 // A launch never replaces a live pod a round covers for one of these reasons (relaunch,
-// roundCovers): it keeps the pod and starts its role in it, since the round, not the launch, is
-// what ends the roles already running there. The one exception is the round's own: where the
-// round over the pod is over and no role process runs in it (Options.RoundPodEnds), the launch
-// replaces the pod as that round's replacement, under the round's mark, rather than start a role
-// the round would end a moment later. A pod no round covers has no such round to wait for, so its
-// launch replaces it for every kind of drift, as every launch did before the round existed — save
-// a launch installing a stale-plugin pair, which replaces such a pod for its shape only where the
-// pod was built on another image (podImageDrift).
+// roundCovers): it keeps the pod and starts its role in it, where the pod was built with that role
+// (a role the deployment defined since waits, runtime.ErrAwaitsPodUpdate), since the round, not the
+// launch, is what ends the roles already running there. The one exception is the round's own:
+// where the round over the pod is over and no role process runs in it (Options.RoundPodEnds), the
+// launch replaces the pod as that round's replacement, under the round's mark, rather than start a
+// role the round would end a moment later. A pod no round covers has no such round to wait for,
+// so its launch replaces it for every kind of drift, as every launch did before the round existed
+// — save a launch installing a stale-plugin pair, which replaces such a pod for its shape only
+// where the pod was built on another image (podImageDrift).
 
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
@@ -98,6 +99,12 @@ type podShapeRecord struct {
 	Mounts    []corev1.VolumeMount        `json:"mounts,omitempty"`
 	Disk      string                      `json:"disk"`
 	Sandbox   *sandboxShape               `json:"sandbox,omitempty"`
+	// Roles are the kind's roles beyond Legion's six, by name: each role the deployment defines,
+	// for an issue pod (podKind.roles), and none for the controller's pod or for a deployment
+	// that defines none, whose annotation is then the one a release before the roles of a
+	// deployment wrote, so no pod drifts for the field itself. A role added makes every issue
+	// pod's annotation differ, so PodDrift reads its Sandbox (rolesDrift).
+	Roles []string `json:"roles,omitempty"`
 }
 
 // sandboxShape is the sandbox a microVM pod runs in, as its shape records it: the RuntimeClass
@@ -156,6 +163,12 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 			where.Metadata = &sandboxMetadataShape{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
 	}
+	var roles []string
+	for _, role := range kind.roles(r) {
+		if claim.IsDeploymentRole(role) {
+			roles = append(roles, string(role))
+		}
+	}
 	encoded, err := json.Marshal(podShapeRecord{
 		Image:     r.image,
 		Resources: kind.resources(r),
@@ -163,9 +176,10 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 		Mounts:    r.pod.VolumeMounts,
 		Disk:      r.volumeSize.String(),
 		Sandbox:   where,
+		Roles:     roles,
 	})
 	if err != nil {
-		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
+		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image and roles alone", "error", err)
 		return ""
 	}
 	return string(encoded)
@@ -244,10 +258,11 @@ func (c SandboxConfig) ofIssueLabel(label string) SandboxType {
 // requirements at admission, so a pod need not match the template it was made from, which is why
 // the repository cache's own check reads the template too (templateResized).
 //
-// A template carrying no shape at all was written before this release, and is compared by image
-// alone, exactly as imageDrift compares a pod: such a Sandbox never reads as having drifted
-// resources, volumes or mounts, whatever its pod holds, since nothing recorded what it was built
-// from and a guess would replace pods the operator never changed.
+// A template carrying no shape at all was written before this release, and is compared here by
+// image alone, exactly as imageDrift compares a pod (its roles are read apart, from its launcher's
+// command, rolesDrift): such a Sandbox never reads as having drifted resources, volumes or mounts,
+// whatever its pod holds, since nothing recorded what it was built from and a guess would replace
+// pods the operator never changed.
 //
 // Equality is semantic, not textual: a quantity spelled otherwise (1024Mi for 1Gi) is the same
 // reservation and the same disk, and a configuration that encodes differently but means the same
@@ -311,7 +326,8 @@ func sameQuantity(held, want string) bool {
 	return heldErr == nil && wantErr == nil && heldQuantity.Cmp(wantQuantity) == 0
 }
 
-// templateImageDrift is how a Sandbox written before this release is compared: the first container
+// templateImageDrift is how a Sandbox written before this release is compared by image (its roles
+// are compared apart, rolesDrift): the first container
 // of its stored template — an init container or the pod's own — running an image other than the
 // one this runtime launches every container with, as one reason. A pod is built whole from one
 // image, so one container's drift is the pod's.
@@ -381,8 +397,8 @@ func podImageDrift(s *sandbox, want string) bool {
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
-// disk, and the sandbox its issue's pod runs in — and leakCheckDrift, the leak check digest its
-// install is held to), the ServiceAccount the pod runs as
+// disk, and the sandbox its issue's pod runs in — rolesDrift, the roles its launcher runs, and
+// leakCheckDrift, the leak check digest its install is held to), the ServiceAccount the pod runs as
 // (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
 // first — the operator's volume and mount holding its role's overlays, the secrets broker's
 // enrollment, the session store, and the GitHub owners its
@@ -464,7 +480,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
 		}
-		drifted = r.shapeDrift(s, shape)
+		drifted = append(r.shapeDrift(s, shape), rolesDrift(s, kind.roles(r))...)
 	}
 	// The leak check digest the pod records, read from the same stored template's annotations and,
 	// where the template records none, from the Sandbox's record of the check this daemon pushed
@@ -747,4 +763,64 @@ func podKindFor(role claim.Role) podKind {
 		return controllerPod{}
 	}
 	return issuePod{}
+}
+
+// templateRoles are the roles the stored template of the Sandbox read as s builds its pod with
+// (builtRoles). It reads every pod this layout builds, its template recording a shape or none, so
+// a pod is judged by the roles it was built with, never by the roles the runtime has now. None is
+// a template no launcher of this layout wrote.
+func templateRoles(s *sandbox) []claim.Role {
+	return builtRoles(s.Spec.PodTemplate.Spec)
+}
+
+// builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
+// names (issuePod.launcherContainer writes one for each role of the launch,
+// controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored
+// template's alike.
+func builtRoles(spec corev1.PodSpec) []claim.Role {
+	var roles []claim.Role
+	for _, container := range spec.Containers {
+		for i := 0; i+1 < len(container.Command); i++ {
+			if container.Command[i] == "--role" {
+				roles = append(roles, claim.Role(container.Command[i+1]))
+				i++
+			}
+		}
+	}
+	return roles
+}
+
+// rolesDrift is the one reason a pod built before a role of the deployment drifts by: where
+// roles (the kind's roles now, podKind.roles) hold one that the Sandbox s's template was built
+// without, `roles <the template's>, now <the runtime's>`. A pod built with a role the deployment
+// no longer defines gets no reason: it runs every role there is.
+func rolesDrift(s *sandbox, roles []claim.Role) []string {
+	held := templateRoles(s)
+	if !slices.ContainsFunc(roles, func(role claim.Role) bool { return !slices.Contains(held, role) }) {
+		return nil
+	}
+	return []string{"roles " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(roles)}
+}
+
+// PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
+// template was built without role (templateRoles), and true; "" and false where the issue has
+// no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
+// makes no API call.
+func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return "", false
+	}
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil {
+		return "", false
+	}
+	pod := r.storedPod(name)
+	if !livePod(s, pod) {
+		return "", false
+	}
+	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+		return "", false
+	}
+	return string(pod.UID), true
 }

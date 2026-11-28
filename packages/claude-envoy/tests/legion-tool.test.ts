@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import type { LegionRole } from "@legion/contracts"
+import type { LegionStepRole } from "@legion/contracts"
 import { daemonContract } from "@legion/contracts/daemon-contract"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
@@ -284,7 +284,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
     {
       daemon: client,
       claim: () => implementer,
-      handoffReport: async (phase: LegionPhase, role: LegionRole) => {
+      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
         lookups.push(`${phase} ${role}`)
         return {
           commit: "a".repeat(40),
@@ -327,7 +327,7 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
     {
       daemon: client,
       claim: () => implementer,
-      handoffReport: async (phase: LegionPhase, role: LegionRole) => {
+      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
         lookups.push(`${phase} ${role}`)
         return { commit: standing }
       },
@@ -373,6 +373,44 @@ test("a tester's fail sends return_to as returnTo", async () => {
       verdict: "fail",
       commit: tested,
       returnTo: 1,
+    },
+  })
+})
+
+// A role of the deployment runs on Claude Code as on Oh My Pi (the deployment roles' contract
+// entry): its claim reaches the same phase ops, and its completion of the step it works carries its
+// verdict and the commit its workspace stands on, with no handoff record.
+test("a role of the deployment's handoff_complete sends its verdict and commit", async () => {
+  const { client, requests } = await daemon({
+    state: stateAtPhase("step", { stepRole: "checker" }),
+  })
+  const standing = "e".repeat(40)
+  const lookups: string[] = []
+  await executeLegionTool(
+    {
+      daemon: client,
+      claim: () => ({
+        ...implementer,
+        role: "checker",
+        claimToken: "legion-legion-legion-208-checker",
+      }),
+      handoffReport: async (phase: LegionPhase, role: LegionStepRole) => {
+        lookups.push(`${phase} ${role}`)
+        return { commit: standing }
+      },
+      branchHead: noBranchHead,
+    },
+    { op: "handoff_complete", summary: "Checked.", verdict: "pass" },
+  )
+  expect(lookups).toEqual(["step checker"])
+  expect(requests.at(-1)).toEqual({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    body: {
+      grantId: "grant-for-one-command",
+      summary: "Checked.",
+      verdict: "pass",
+      commit: standing,
     },
   })
 })

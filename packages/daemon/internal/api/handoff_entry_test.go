@@ -111,8 +111,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	// implementer's fix pushed, so this turn's verdict on the head before it is no answer for it.
 	// The worker does that task's work and writes a handoff of its own, and the refusal never
 	// sends this completion's record again.
-	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
-		t.Fatalf("the refusal is %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	if !strings.HasSuffix(message, ". "+intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal is %q, want it to end with the instruction the legion tool's description carries, %q", message, intake.StaleEntryInstruction)
 	}
 	if !strings.Contains(message, "a handoff of its own") {
 		t.Fatalf("the refusal is %q, want it to tell the worker to complete the new task with a handoff of its own", message)
@@ -191,8 +191,8 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
 		}
 	}
-	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
-		t.Fatalf("the refusal = %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	if !strings.HasSuffix(message, ". "+intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal = %q, want it to end with the instruction the legion tool's description carries, %q", message, intake.StaleEntryInstruction)
 	}
 	if recorded := facts.recorded(); len(recorded) != 0 {
 		t.Fatalf("the refused completion reached the workflow as %+v, want no fact", recorded)
@@ -200,32 +200,32 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 }
 
 // What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
-// daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
-// description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
-// it after the code. This golden is where the two meet, as released-contracts.json is for the
-// numbered contracts: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to
-// the file, so a word changed on the Go side fails here until the fixture is written again
+// daemon ends every intake.StaleEntry refusal with intake.StaleEntryInstruction, and the legion
+// tool's description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`)
+// carries it after the code. This golden is where the two meet, as released-contracts.json is for
+// the numbered contracts: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description
+// to the file, so a word changed on the Go side fails here until the fixture is written again
 // (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
 //
 // The code is written out here beside it, so a rename of the constant's value — which would
 // otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestStaleEntryInstructionGolden(t *testing.T) {
-	if staleEntryCode != "HANDOFF_STALE_ENTRY" {
-		t.Fatalf("staleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", staleEntryCode)
+	if intake.StaleEntryCode != "HANDOFF_STALE_ENTRY" {
+		t.Fatalf("intake.StaleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", intake.StaleEntryCode)
 	}
-	// What decided the refusal stands in the middle of it (behindEntryClause), so the instruction
-	// is still the text the refusal ends with, whichever clause it carries.
-	decided := behindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
+	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
+	// instruction is still the text the refusal ends with, whichever clause it carries.
+	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
 	for clause, pending := range map[string]*supervise.Delivery{
 		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
 	} {
-		refusal := staleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
-		if !strings.HasSuffix(refusal, clause+". "+staleEntryInstruction) {
-			t.Fatalf("staleEntry with pending %+v = %q, want %q and then exactly %q", pending, refusal, clause, staleEntryInstruction)
+		refusal := intake.StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
+		if refusal.Code != intake.StaleEntryCode || !strings.HasSuffix(refusal.Message, clause+". "+intake.StaleEntryInstruction) {
+			t.Fatalf("intake.StaleEntry with pending %+v = %+v, want code %s, %q and then exactly %q", pending, refusal, intake.StaleEntryCode, clause, intake.StaleEntryInstruction)
 		}
 	}
-	golden(t, "stale-entry.json", map[string]string{"code": staleEntryCode, "instruction": staleEntryInstruction})
+	golden(t, "stale-entry.json", map[string]string{"code": intake.StaleEntryCode, "instruction": intake.StaleEntryInstruction})
 }
 
 // The comparison is made only when both sides name an entry, which is what carries a daemon
@@ -637,7 +637,7 @@ func TestAFurtherCompletionAfterATakenBehindCompletionIsAnsweredAsNoLongerTheRol
 // R2: a root architect's completion at admitted is answered as it was while phase.RoleFor named
 // no role for that phase, though admitted is now the architect's and its row carries an entry
 // there. Behind that entry the entry fence answers HANDOFF_NOT_CURRENT_PHASE, as it answers any
-// role at a phase it does not work (entryFence's guard for admitted). Level with it the
+// role at a phase it does not work (intake.EntryFence's guard for admitted). Level with it the
 // completion goes on to the workflow, which refuses the architect before it reads the phase the
 // completion is of (phase.Of, which answers admitted for the architect where the route took the
 // issue's phase for its empty answer). The control is the same behind completion at accepting,
@@ -653,7 +653,7 @@ func TestArchitectUnchangedByItsCompletionAtAdmitted(t *testing.T) {
 	}{
 		{name: "behind its entry at admitted", at: phase.Admitted, served: 1, code: "HANDOFF_NOT_CURRENT_PHASE"},
 		{name: "level with its entry at admitted", at: phase.Admitted, served: 2, code: "ACCEPTANCE_IS_SIGN_OFF"},
-		{name: "the control, behind its entry at accepting", at: phase.Accepting, served: 1, code: staleEntryCode},
+		{name: "the control, behind its entry at accepting", at: phase.Accepting, served: 1, code: intake.StaleEntryCode},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _, _ := newEntryHarness(t)
@@ -745,8 +745,8 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 
 // queuedStart is the newest start the outbox holds for role on issue, with its row id: the row the
 // outbox runner would deliver next.
-// A phase worker's start is one row, which carries the task and its entry and waits for the
-// issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
+// A phase worker's start is one row, which carries the task and its entry and, in a phase that
+// keeps a slot (record.KeepsSlot), waits for the issue's admission slot (workflow.StartOrOwe). A start with no task is a role admission brings
 // back beside it and is of no entry, so it is not one of these.
 func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64, record.SuperviseRequest) {
 	t.Helper()
@@ -816,25 +816,26 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 
 // holdPhases wires the supervisor to the issue record the way daemon.go wires
 // workflowRuntime.phaseHolds in production, with the predicate that function answers with
-// (record.PhaseHolds): a task carries the phase and the run it was queued for, and one the issue
-// has left is dropped rather than sent. The harness wires none of its own, so every delivery
-// holds until a test asks for this.
+// (record.DeliveryHolds, which holds a start that brings a role back to its phase and run alone and
+// every other delivery to its role's place too): a task carries the phase and the run it was queued
+// for, and one the issue has left is dropped rather than sent. The harness wires none of its own,
+// so every delivery holds until a test asks for this.
 //
 // It must be called before the test creates its first claim: testSupervisor.Create copies deps
 // by value into each machine it makes (supervise.NewMachine), so a machine made before this call
 // carries no hook of it at all and every delivery of that machine's holds (supervise's
 // phaseHolds), which is a test passing with the rule it is about never asked.
 func holdPhases(h *harness) {
-	h.supervisor.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
+	h.supervisor.deps.PhaseHolds = func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
 		var issue *record.Issue
 		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			issue, err = record.NewStore().Issue(ctx, tx, key)
+			issue, err = record.NewStore().Issue(ctx, tx, c.Issue)
 			return err
 		}); err != nil {
 			return false, err
 		}
-		return record.PhaseHolds(issue, queuedFor, generation), nil
+		return record.DeliveryHolds(issue, c.Role, d), nil
 	}
 }
 
@@ -856,5 +857,35 @@ func deliverPhaseTask(t *testing.T, h *harness, token claim.Token, id, task stri
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: task, ID: id,
 		Phase: p, Generation: generation, Entry: entry}); err != nil {
 		t.Fatalf("deliver %s to %s: %v", id, token, err)
+	}
+}
+
+// A completion carries the entry its claim serves, the one value the entry fence reads, so the
+// workflow can hold a review step's commit to the entry that stands: a tester serving entry 1
+// reports entry 1, whether its row stands on 2 (a behind completion at the recorded head, which
+// the fence takes) or on 1.
+func TestACompletionCarriesTheEntryItsClaimServes(t *testing.T) {
+	for _, row := range []int64{2, 1} {
+		t.Run(fmt.Sprintf("the row on %d", row), func(t *testing.T) {
+			h, _, facts := newEntryHarness(t)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			seedEntry(t, h, "LEGION-208", claim.RoleTester, row)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+
+			completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+
+			var entries []int64
+			for _, fact := range facts.recorded() {
+				if completed, ok := fact.(intake.HandoffComplete); ok && completed.Role == claim.RoleTester {
+					entries = append(entries, completed.Entry)
+				}
+			}
+			if len(entries) != 1 || entries[0] != 1 {
+				t.Fatalf("the tester's completions carried the entries %v, want the one completion's 1, the entry its claim serves", entries)
+			}
+		})
 	}
 }

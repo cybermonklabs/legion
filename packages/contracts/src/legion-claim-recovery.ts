@@ -1,18 +1,25 @@
 import { z } from "zod";
-import { LEGION_ROLES } from "./legion-roles";
+import { isStepRole } from "./legion-roles";
 
 /**
  * The two claim recoveries the controller asks for, `fresh_session` and `compact`: the body they
  * share, and the answer each gives through the controller's door and the operator's alike.
  *
- * Go owns all three shapes, `packages/daemon/internal/api/freshsession.go` (`ClaimRequest`,
- * `FreshSessionResponse`) and `compact.go` (`CompactResponse`), and the fixtures pin them as they
- * pin the rest of the API (`legion-api.test.ts`). Importers read them through
+ * Go owns all three shapes, `packages/daemon/internal/api/agentdoor.go` (`ClaimRequest`),
+ * `freshsession.go` (`FreshSessionResponse`) and `compact.go` (`CompactResponse`), and the
+ * fixtures pin them as they pin the rest of the API (`legion-api.test.ts`). Importers read them through
  * `@legion/contracts/legion-api`, which re-exports all three; this module has no export entry of
  * its own (`package.json`).
  */
 
 const nonEmptyString = z.string().min(1);
+
+/** The role of a claim of an issue: one of Legion's six or a role of the deployment (the deployment
+ * roles' contract entry), a name of the step grammar but the controller's (`isStepRole`).
+ * `legion-api.ts` reads its claims' roles through this one schema too. */
+export const legionStepRole = z.string().refine(isStepRole, {
+  message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",
+});
 
 /** `api.ClaimRequest`, what either of the two recoveries names: the agent on `role` of
  * `issue`, under the caller's controller grant. The two are actions on an agent (stop, retry,
@@ -102,7 +109,7 @@ const nonEmptyString = z.string().min(1);
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: legionStepRole,
 });
 
 /** `api.FreshSessionResponse`, what became of a fresh session. It is empty wherever the claim

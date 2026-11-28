@@ -142,7 +142,7 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 		{Task: "", Reason: "the plan has 2 tasks (b, a), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 	}
-	if got := Supported(two); !reflect.DeepEqual(got, want) {
+	if got := Supported(two, builtin); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
 	}
 
@@ -150,7 +150,7 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 	if got := Sinks(aToE.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
 		t.Fatalf("Sinks(the plan of tasks a to e) = %q, want [e]", got)
 	}
-	got := Supported(aToE)
+	got := Supported(aToE, builtin)
 	if len(got) == 0 || got[0].Reason != "the plan has 5 tasks (a, b, c, d, e), and this release runs one task for each issue."+yet {
 		t.Fatalf("Supported(the plan of tasks a to e) = %+v, want the refusal of its five tasks first", got)
 	}

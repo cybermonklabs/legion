@@ -18,7 +18,7 @@ section can use the words without stopping to explain them.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime each issue runs in one pod of its own, from one published worker image: every agent of
   the issue runs in that pod, each in Linux namespaces of its own, and talks to the daemon over a
-  connection the pod dials back. A phase worker's role may run on Claude Code instead, under either
+  connection the pod dials back. A phase worker's role, a role of the deployment among them, may run on Claude Code instead, under either
   runtime (`worker_backends` in `legion.yaml`); it does the same work through the same `legion`
   tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -50,14 +50,14 @@ An issue may name any `owner/name`, and the account that installs a role's GitHu
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
 is installed on.
 Each token is minted on that owner's installation with the role's own permissions: the implement
-App's write set for the implementer and the merger, the review App's review set for every other
-role.
+App's write set for the implementer, the merger and each role of `roles` whose `github_app` is
+`implement`, the review App's review set for every other role.
 The bundle holds one directory per owner the App is installed on, one more per owner a
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
 An issue pod shows its roles the directories that both Apps' bundles hold.
-No directory holds a read-only token, so a role writes in every repository its App reaches,
-whichever owner holds it.
+No directory holds a read-only token, so the role's whole bundle can write in every repository
+its App reaches, whichever owner holds it.
 The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
 or, for a repository a configured rename moved, the directory of the owner it moved to.
 The controller's bundle is the one bundle of read-only tokens.
@@ -80,9 +80,11 @@ repositories alone.
 The controller is the one Legion agent a person talks to directly. By default (`controller:
 operator`) the operator starts it with `legion controller start` in a terminal on their own machine,
 and it runs there as an interactive Oh My Pi session; closing that terminal leaves the project
-without a controller until someone runs the command again. Under `controller: daemon` (Kubernetes
-only) the daemon launches it as a pod in the cluster and relaunches it when it dies; a person
-reaches it through Dispatch. The daemon wakes it when something needs a judgment no tree owns:
+without a controller until someone runs the command again.
+Under `controller: daemon` the daemon launches it and relaunches it when it dies, as a pod in the
+cluster or a pane under tmux.
+A person reaches it through Dispatch.
+The daemon wakes it when something needs a judgment no tree owns:
 
 - a `triage` issue labelled `legion` by an agent session, to admit, park or leave to you (a
   person's label is queued by the daemon: the issue moves to `todo` without the controller);
@@ -189,13 +191,16 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
+| `step` | the role of the deployment the step names | Runs each step of a role the deployment defines (`roles` in `legion.yaml`, below). Its agent does what its `prompt_file` asks, writes no handoff, and reports `pass` or `fail` with the commit its workspace stands on. The issue's Dispatch status is `in_progress`. | the App its `github_app` names, the review App by default |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
-A failed test or a review that requests changes sends the issue back to `implementing` from
-testing or review, and the change goes through the issue's steps after the implementer again: in
-the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
+A failed test, a review that requests changes or the fail of a step of a role of the deployment
+sends the issue back to the first step of the type implementation before the step that failed (the
+implementer's `implementing`, unless a role of the deployment of that type stands before it), or to
+the earlier step a fail names with `return_to`, and the change goes through the issue's steps after
+it again: in the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own.
 The round reads no check's conclusion, since the reviewer reads the code commit's checks on GitHub
@@ -217,9 +222,12 @@ own required checks.
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
 **plan** that picks which of these steps it runs and in what order: one task whose steps are
-some of `planner implementer tester reviewer acceptance:owner`, in the order the owner names them,
+some of `planner implementer tester reviewer acceptance:owner` and of the roles the deployment
+defines, each named once, in the order the owner names them,
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
+and after each other step of the type implementation,
+since Legion's retro is done by the implementer,
 where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
@@ -258,9 +266,23 @@ It is not logged as an earlier owner's plan.
 The step tells them in one `plan-not-taken` notice, which names each version and the group and
 offers no `register_plan`.
 
+A deployment adds roles of its own in `legion.yaml`: `roles` names each one with its `type` (one
+of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds)
+and its `prompt_file`. A role may also name its `model`, and its `github_app`, `implement` or
+`review`, the review App by default.
+A role of the type `review` works as the review App, and the loader refuses one that names
+`implement`.
+A step of such a role reads no pull request, so a plan may put it at any place, except that a role
+of the type implementation stands before the `implementer` step, since Legion's retro is done by
+the implementer. It runs at `step` and reports `pass` or `fail`: a fail sends the work back as a
+failed test does, and a fail of a step of the type review counts a review round. A role the
+deployment no longer defines stops each task that still has a step of it to run, and its owner is
+told (`docs/deployment.md`, "Roles the deployment defines").
+
 A step a plan leaves out hands its duty on. With no tester step, the implementer's own results
-against the issue's checks are the evidence, and a reviewer step refuses to approve while any of
-them has no pass at the head. With no reviewer step, nothing approves the head, so on a base that
+against the issue's checks are the evidence, beside whatever a step of a role of the deployment
+records as its prompt file asks, and a reviewer step refuses to approve while any of
+them has no pass at the head. With no reviewer step, no reviewer approves the head, so on a base that
 requires an approving review the merger waits and tells the architect which review is missing.
 The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
 at each round, and before each completion, its retro's included, answers and resolves each bot
@@ -503,14 +525,18 @@ it (`resting-root`).
 
 ## Handoffs on the Dispatch issue
 
-Each phase ends by writing a **handoff**, a small JSON record on its Dispatch issue, kept under the
-phase's word: `plan`, `implement`, `test` and `review`. The worker writes it with
+Each phase of Legion's planner, implementer, tester and reviewer ends by writing a **handoff**, a
+small JSON record on its Dispatch issue, kept under the phase's word: `plan`, `implement`, `test`
+and `review`. The worker writes it with
 `dispatch handoff-write` under its own session, and every write adds a version; the next phase's
 task names the version the daemon accepted, which it reads with
 `dispatch handoff-read --version <n>`. A handoff is the copy that survives: when a worker
 comes back after a restart, or a memory disagrees with a record, the record wins. The issue's
 Conversation in Dispatch lists every version, and opens each to its fields. The merger writes
-none, and nor does the architect.
+none, and nor does the architect. A step of a role of the deployment writes none either: it
+reports the verdict `pass` or `fail` and the commit its workspace stands on, and the task of the
+step after it, or of the step its fail sends the work back to, names
+`Step <i> (<role>) reported: <verdict>.` with its summary.
 
 A handoff's body is `head`, the commit the phase ended at, and, where the role has one, a `note`
 of at most 1,000 characters that tells the next role how to run the issue's checks in the worker
@@ -519,7 +545,7 @@ and `failed`. A worker writes its handoff once, when it completes its phase. Wha
 hold stays out of it: the diff, the pull request body, each check's result, the GitHub review,
 and `plan.md` with its plan checks and its departures from the spec.
 
-A worker's completion names its record, and the daemon reads that record back from Dispatch before
+A completion that ends a phase with a handoff names its record, and the daemon reads that record back from Dispatch before
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
@@ -583,16 +609,16 @@ Legion uses GitHub's own review mechanisms rather than labels:
   whatever the base requires, and the daemon acts once the issue enters `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. Before
   `merging` the implementer is asked on its role topic to merge the base forward in the issue
-  workspace and push, with no handoff and no completion for it, and the tester or the reviewer
-  holding the phase is told to stop writing the workspace and not to complete its phase at the old
-  head, and keeps its turn, its background jobs, its process and its session. In `merging` the
-  merger is asked: the merge is its own, and it resolves the conflict itself. Each launch of the
-  merger is told the merge forward it owes one time, a launch that comes up in `merging` and the
-  launch that is up when the issue moves back into `merging` after its message ended outside
-  `merging` alike. The architect is told once with a `checks-red` notice naming the phase the
-  issue stays in and the role asked. In `implementing` only the implementer is told. A parent
-  that waits in `awaiting_children` is asked nothing, and once it is back in a phase this rule
-  reads it as any other issue.
+  workspace and push, with no handoff and no completion for it, and the tester, the reviewer or
+  the role of the deployment holding the phase (at `step`) is told to stop writing the workspace
+  and not to complete its phase at the old head, and keeps its turn, its background jobs, its
+  process and its session. In `merging` the merger is asked: the merge is its own, and it resolves
+  the conflict itself. Each launch of the merger is told the merge forward it owes one time, a
+  launch that comes up in `merging` and the launch that is up when the issue moves back into
+  `merging` after its message ended outside `merging` alike. The architect is told once with a
+  `checks-red` notice naming the phase the issue stays in and the role asked. In `implementing`
+  only the implementer is told. A parent that waits in `awaiting_children` is asked nothing, and
+  once it is back in a phase this rule reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a
@@ -634,15 +660,17 @@ Legion uses GitHub's own review mechanisms rather than labels:
   At the round cap the architect decides, in the turn the notice wakes, whether to narrow the next
   rounds, split work
   off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
-  let converging rounds run, and posts that decision on the issue. Only a review that requests
-  changes counts a round: a tester's fail and a move back by a worker or the architect count none.
-  A request for changes made while the record holds the head conflicting with its base is a
-  conflict round, which `review_round_cap` does not count. The implementer answers such a round
-  with a forward merge, which no reviewer asked for. The cap's message names both numbers, the
-  rounds counted and the conflict rounds left out.
+  let converging rounds run, and posts that decision on the issue. A review's request for changes
+  counts a round.
+  So does the fail of a step of the type review whose agent is not the owner.
+  A tester's fail, the fail of a step of any other type and a move back by a worker or the architect count none.
+  A round counted while the record holds the head conflicting with its base is a conflict round, which
+  `review_round_cap` does not count.
+  The implementer answers such a round with a forward merge, which no reviewer asked for.
+  The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
-  or any other of the 28 moves back a task's line can make, such as `testing-reviewing` on a
+  or any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a
   task whose reviewer step comes before its tester step —
   beside the round count, and a move made while the head conflicts with its base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an
@@ -783,7 +811,10 @@ days, by default): the look at that bound is the last, and a `pending` there clo
 as not run, which the agent writes on the pull request. `legion state` prints how many checks
 are open and the oldest of them, with when its next look is due.
 
-A child's close deletes its pod, and the disk goes with it; a root's close releases any admission
+A child's close deletes its pod, and the disk goes with it.
+Where the close is the child's merge and a production check opens, the pod and its disk go when
+the check's first look ends.
+A root's close releases any admission
 slot its issues still held, which happens once no other issue of its tree is still in the
 workflow, and the finished tree **lingers** for
 `linger_hours` (72 by default) in case work resumes, each member's conversation kept in the session

@@ -23,7 +23,7 @@ var testClaude = ClaudeLaunch{Binary: "/opt/claude/bin/claude", PluginDir: "/opt
 // claim's prompt file, a path, never the prompt's text.
 func TestClaudeInnerCommand(t *testing.T) {
 	const promptFile = "/state/secrets/c-system-prompt.md"
-	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, promptFile)
+	got := claudeInnerCommand("/opt/legion/legion", testClaude, "/state/claude/c/mcp.json", "11111111-2222-4333-8444-555555555555", false, promptFile, "")
 	want := "/opt/legion/legion claude-bridge -- /opt/claude/bin/claude -p --input-format stream-json --output-format stream-json --verbose" +
 		" --replay-user-messages" +
 		" --thinking-display summarized" +
@@ -34,7 +34,7 @@ func TestClaudeInnerCommand(t *testing.T) {
 	if got != want {
 		t.Errorf("fresh:\n%s\nwant\n%s", got, want)
 	}
-	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, "/state dir/p.md")
+	resumed := claudeInnerCommand("/opt/legion/legion", testClaude, "/m.json", "11111111-2222-4333-8444-555555555555", true, "/state dir/p.md", "")
 	if !strings.Contains(resumed, " --resume 11111111-2222-4333-8444-555555555555 ") || strings.Contains(resumed, "--session-id") ||
 		!strings.HasSuffix(resumed, " --append-system-prompt-file '/state dir/p.md'") {
 		t.Errorf("resumed: %s", resumed)
@@ -224,5 +224,14 @@ func TestClaudeLauncherLaunch(t *testing.T) {
 	}
 	if want := " --append-system-prompt-file /state/secrets/c-system-prompt.md"; !strings.HasSuffix(inner, want) {
 		t.Errorf("Launch = %s, want it to end %s", inner, want)
+	}
+	// A role whose spec names its model runs it on the pane's Claude Code.
+	spec.Model = "checker-model"
+	modelled, _, err := launcher.Launch(spec, host, "/state/secrets/c-system-prompt.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(modelled, " --model checker-model ") {
+		t.Errorf("Launch with the model checker-model = %s, want it to hold --model checker-model", modelled)
 	}
 }

@@ -2198,7 +2198,8 @@ That wait can outlive the usual shutdown reserve only while `Client.Close` waits
 ### The Legion state intake
 
 The Legion state intake (`legion.Intake`, `internal/dispatch/legion/intake.go`) takes every Legion daemon's state events from the durable `legion-state-events` on `notifications.legion.*.state`, under a hold as the GitHub intake's is (`delivery.NewHeldDurable`), and runs whenever the process has NATS, with or without the GitHub App.
-A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot or wait, a role's claim, the admission block, or its boot.
+A daemon publishes one message for each transaction it committed that moved what Dispatch observes: an issue's phase, tree, slot, wait or step role, a role's claim, the admission block, or its boot.
+An issue's step role (`stepRole`) is the role of the deployment whose step the issue runs or is held from, so a move from one step of the deployment to another, which moves no phase, publishes a message that names the step role.
 Each message names the store its sequence is counted in (`stateId`, which the state route serves as `daemon.stateId`), and the intake applies no message of another store than the one its starting point read, and no message at all while no good whole read has given the project's cursor a store.
 A write of the project's Legion setting that names another daemon, and a delete of the setting, record the store the cursor held as the store of the daemon the setting named before, with the URL the cursor followed (`legion_event_cursors.previous_state_id`, `previous_state_url`).
 The intake finishes each message of that store unapplied while the cursor holds no store or another store, and logs `legion intake: a state message of the daemon the project's Legion setting named before is dropped` at INFO, at most once an hour for each project.
@@ -3503,6 +3504,11 @@ A row of a step of an option also holds, in `moved`, what that step changed, whi
 The head of the call's recovery point stays in `request_keys.recovery`, and a row goes with its key through the foreign key's cascade.
 Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
 A new table: the foreign key holds `request_keys` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so a keyed request's claim waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261124122030_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionrole.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
+It narrows nothing, so it rolls: the release before it writes only the six, which the wider check takes, and reads a role as text.
+Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
@@ -5927,7 +5933,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion board of the project its path names, from what Dispatch recorded of that project's daemon (the Legion state intake, Background loops above); the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
-  Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, own priority, the priority it resolves to and the issue that priority comes from (`priority`, `resolved_priority`, `priority_from`), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  Thirteen columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `step`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, own priority, the priority it resolves to and the issue that priority comes from (`priority`, `resolved_priority`, `priority_from`), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  The `step` column holds an issue at a step of a role the Legion deployment defines.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/issues/{key}/legion` (GET; cookie, trusted header, or bearer)
@@ -7018,8 +7025,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only a Legion daemon's own broker token; with it off, the actor must be a Legion daemon's session)
 
-  Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
+  Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionrole.IsRole`).
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
@@ -7037,16 +7044,19 @@ Each item below names a path with its method and identity, then its purpose.
   Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
   Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
   The answer does not carry the mark.
-  A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
+
+- `/api/v1/issues/{key}/role-holders` (PUT: its refusals, the project's mark and its answer)
+
+  A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue and notifies nobody.
   Each publication the route takes marks the issue's project (`project_role_holder_marks`) in the transaction that writes the set, an empty set included, and a refused one marks nothing.
   The mark puts the issues of the project that Legion runs under the check of who writes their spec and Verification document (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below).
-  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, in workflow order.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name.
 
   - **The change event.**
     A write that changes the set appends one issue event, `issue.role_holders_changed`, in the transaction that stores it.
-    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in workflow order and each pair `{role, session, recorded_at}`.
+    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in the order the answer names them (Legion's six in workflow order, then each role the deployment defines by name) and each pair `{role, session, recorded_at}`.
     The event's actor and `created_at` are the write's actor, the daemon's session, and the time of the write.
     `GET /api/v1/issues/{key}/events` serves it, so the issue's log says which session held each role at a past time; the log holds no change made before the release that writes the event.
     A write that stores the set already stored, as the daemon's publication at each boot does, appends nothing.
@@ -7074,7 +7084,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
 
-  The set that the daemon last published: `{issue, holders}` in workflow order, and `[]` when no session holds a role.
+  The set that the daemon last published: `{issue, holders}`, Legion's six in the order of the default steps, then every role the deployment defines by name, and `[]` when no session holds a role.
   A closed issue reads too, and an issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)

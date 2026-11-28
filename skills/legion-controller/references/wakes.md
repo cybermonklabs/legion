@@ -40,6 +40,10 @@ It comes only when the stall's replacement failed the architect's claim and the 
 
 The daemon could not ask the session store for a role's start. Open one finding ask for the operator that names the issue, the role and `reason`, however many notices the fault sends. Send no role a message, park nothing and write no status.
 
+## `pod-wait-held`
+
+`role` waits for a pod made before the deployment defined it, and no update round or release of the pod comes. `dispatch ask` the operator to resume or stop a claim the operator suspended, and resume or stop yours. If the idle release is off and no role runs in the pod, ask the operator, quoting `reason`. Never propose deleting the pod. It comes once per wait.
+
 ## `provider-errors`
 
 Six turns of `role` in a row ended in a provider error; the daemon keeps prompting. It tells an architect too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it; `fresh_session` it only when a later notice says it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.

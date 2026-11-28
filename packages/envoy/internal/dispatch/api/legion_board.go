@@ -52,6 +52,7 @@ var legionBoardColumnLabels = map[string]string{
 	legion.ColumnImplementing:     "Implementing",
 	legion.ColumnTesting:          "Testing",
 	legion.ColumnReviewing:        "Reviewing",
+	legion.ColumnStep:             "Deployment step",
 	legion.ColumnAccepting:        "Accepting",
 	legion.ColumnRetro:            "Retro",
 	legion.ColumnMerging:          "Merging",
@@ -106,10 +107,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the twelve columns, in the order legion.Columns lists them;
+// the view draws them. ID is one of the thirteen columns, in the order legion.Columns lists them;
 // the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_children,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,step,accepting,retro,merging,awaiting_children,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }

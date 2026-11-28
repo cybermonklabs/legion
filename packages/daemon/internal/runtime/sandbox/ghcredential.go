@@ -75,7 +75,7 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // repository a tick, however many of that repository's pods the walk holds, and a repository whose
 // mint fails is logged once and left to the next tick, where its pods are tried again. The gh
 // bundles are built once per App role and repository of the tick in the same way (appauth.Bundles),
-// so a tick over an issue pod reads its two Apps' installations and not its six roles'.
+// so a tick over an issue pod reads its two Apps' installations and not each of its roles'.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -118,9 +118,15 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		}
 		// The pod's own repository is read once here, for every role of it and for its
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
-		// (refreshGitHubCredential).
+		// (refreshGitHubCredential). Refresh only roles both built into the pod and still
+		// configured. A newly added role has no Secret in an old pod, and a dropped role's
+		// GitHub lease should expire without another mint.
 		repo, named := fetchRepository(pod)
-		for _, role := range kind.roles() {
+		configuredRoles := kind.roles(r)
+		for _, role := range builtRoles(pod.Spec) {
+			if !slices.Contains(configuredRoles, role) {
+				continue
+			}
 			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo, bundles)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {

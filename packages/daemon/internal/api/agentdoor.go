@@ -12,7 +12,7 @@ import (
 // ClaimRequest is what every action of the agent door names (agentDoor): the agent on Role of
 // Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own agent cannot be named at all
-// (claim.IsRole, whose six roles the controller is not one of). The six actions take the same
+// (claim.IsRole, which refuses the controller). The six actions take the same
 // three members, so they take one type.
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
@@ -174,11 +174,12 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 	return claimTarget{machine: m, token: token, issue: req.Issue, role: role, by: by}, true
 }
 
-// roleList names the roles a claim can be on, in claim.Roles' order.
+// roleList names the roles a claim can be on: Legion's six, in claim.Roles' order, and each role
+// the deployment defines, which a claim of an issue's step is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
 		names = append(names, string(role))
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", ") + ", or a role of this deployment"
 }

@@ -134,6 +134,14 @@ type Spec struct {
 	// on with every other child closed, so hours 44 to 48 stand as nonzero `awaiting_children`
 	// hours on the root. Off by default so the golden files keep their recorded rows.
 	AwaitingChildren bool
+	// DeploymentStep has each tree's implemented child, after its second review, stand at a step
+	// of `checker` (deploymentRole), a role the deployment defines, from hour 22 to its close at
+	// hour 24. The checker's session writes on the child at hour 22, and in a tree the sampler saw
+	// the sampler records phase `step` and step_role `checker` at hour 22, the checker's claim
+	// working from hour 22 to hour 24, and step_role `null` at hour 24, so the child's last 2 h
+	// of reviewing become 2 h under the board's step column. Off by default so the golden files
+	// keep their recorded rows.
+	DeploymentStep bool
 }
 
 // spacing is how long before the tree after it each tree opens.
@@ -399,6 +407,12 @@ func (s *seeding) tree(index int) {
 	}
 	s.roleEvent(implemented, "tester", "comment.created", `{}`, at(14))
 	s.handoff(implemented, "test", "tester", at(15))
+	// Under Spec.DeploymentStep the child stands at a step of `checker`, a role the deployment
+	// defines, from hour 22 to its close: the checker's session writes on it as its step starts,
+	// before the merger closes it, so its events keep their time order.
+	if s.spec.DeploymentStep {
+		s.roleEvent(implemented, deploymentRole, "comment.created", `{}`, at(22))
+	}
 	s.roleEvent(implemented, "merger", "issue.closed", `{"status":"done"}`, at(24))
 	if s.spec.Merged {
 		s.pullRequest(implemented, number+1, at(4), at(23))
@@ -410,13 +424,18 @@ func (s *seeding) tree(index int) {
 	if icebox {
 		implementedPhases = append(implementedPhases, phaseMark{12, legion.PhaseHeld})
 	}
-	s.phases(implemented, at, append(implementedPhases,
+	implementedPhases = append(implementedPhases,
 		phaseMark{14, legion.PhaseTesting},
 		phaseMark{16, legion.PhaseReviewing},
 		phaseMark{18, legion.PhaseImplementing},
 		phaseMark{20, legion.PhaseReviewing},
-		phaseMark{24, legion.PhaseDone},
-	))
+	)
+	if s.spec.DeploymentStep {
+		implementedPhases = append(implementedPhases, phaseMark{22, legion.PhaseStep})
+		s.claim(implemented, deploymentRole, at(22), at(24))
+		s.stepRole(implemented, deploymentRole, at(22), at(24))
+	}
+	s.phases(implemented, at, append(implementedPhases, phaseMark{24, legion.PhaseDone}))
 
 	// The child a reviewer and a merger took through: a person answered its ask, and it is the
 	// one issue of the tree that reaches all three of the merger's phases.
@@ -754,6 +773,22 @@ func (s *seeding) claim(issue, role string, started, ended time.Time) {
 	}
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"working"`, started)
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"idle"`, ended)
+}
+
+// deploymentRole is the role the deployment defines whose step Spec.DeploymentStep writes: a name
+// of the role grammar and none of Legion's own, as a deployment's `roles` key is.
+const deploymentRole = "checker"
+
+// stepRole writes the role of the step the issue ran at `step` (legion.FieldStepRole): role from
+// the moment the step started, and `null` from the moment it left the step, which is what the
+// sampler records of an issue that runs no such step. The metrics put the step's hours on that
+// role's bar by it.
+func (s *seeding) stepRole(issue, role string, started, ended time.Time) {
+	if !s.observed {
+		return
+	}
+	s.observe(issue, legion.FieldStepRole, fmt.Sprintf("%q", role), started)
+	s.observe(issue, legion.FieldStepRole, "null", ended)
 }
 
 // waiting writes the wait the daemon recorded of the issue: the wait a read found while the

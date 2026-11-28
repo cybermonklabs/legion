@@ -1865,31 +1865,40 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 // printed as the state shows it (api.PluginSourceOf, read from the rule, never written out here),
 // and a made-up user name, password and signature in a private tarball URL's userinfo and query
 // are not printed. When worker_backends runs any role on Claude Code, the line gains one sentence
-// naming those roles, whose plugin is the worker image's and never an install.
+// naming those roles, whose plugin is the worker image's and never an install: Legion's phase
+// workers in the order the workflow reaches them, then each role of the deployment in the file's
+// order.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it sets the package variables piEnvoyVersion and piLegionVersion.
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
+	const checkerRole = "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n"
 	// Built from its parts, so that no source line holds a URL with a password.
 	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
 	const pluginSignature = "madeUpSignature0123"
 	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=" + pluginSignature
-	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
-		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
+	for _, tc := range []struct{ name, extra, legion, envoy, roles, want string }{
+		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
-		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
+		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "", "",
 			"plugins: @sjawhar/pi-legion " + api.PluginSourceOf(privateURL) + " @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
-		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
+		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
-		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",
+		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1", "",
 			"plugins: @sjawhar/pi-legion 9.7.1 @sjawhar/pi-envoy 9.6.2 (from legion.yaml)\n"},
-		{"the Claude Code roles' plugin is the image's", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n" + claudeRoles, "", "",
+		{"the Claude Code roles' plugin is the image's", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n" + claudeRoles, "", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)" + claudeSentence + "\n"},
-		{"the Claude Code roles are named beside the gap too", claudeRoles, "", "",
+		{"the Claude Code roles are named beside the gap too", claudeRoles, "", "", "",
 			"plugins: none — set runtime.kubernetes.plugins or run a release build; " +
 				"a daemon that knows none relaunches no process on another plugin contract" + claudeSentence + "\n"},
+		{"a role of the deployment on Claude Code is named", checkerRole + "worker_backends: {implementer: claude, checker: claude}\n", "", "",
+			"roles.checker: type testing, model checker-model, App review, prompt <dir>/checker.md\n",
+			"plugins: none — set runtime.kubernetes.plugins or run a release build; " +
+				"a daemon that knows none relaunches no process on another plugin contract" +
+				". Claude Code runs implementer, checker, whose plugin is the worker image's: " +
+				"a plugin-contract change for such a role is answered by a new image, not by an install.\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			linkedLegion, linkedEnvoy := piLegionVersion, piEnvoyVersion
@@ -1897,11 +1906,15 @@ func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 			piLegionVersion, piEnvoyVersion = tc.legion, tc.envoy
 
 			config := kubernetesCheckConfig(t, tc.extra)
+			dir := filepath.Dir(config)
+			if err := os.WriteFile(filepath.Join(dir, "checker.md"), []byte("You check the change.\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 
 			secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
-			want := demoCheckConfigOK + secretsGap + defaultCacheLine + tc.want
+			want := demoCheckConfigOK + strings.ReplaceAll(tc.roles, "<dir>", dir) + secretsGap + defaultCacheLine + tc.want
 			if code != 0 || out.String() != want || errb.Len() != 0 {
 				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 			}

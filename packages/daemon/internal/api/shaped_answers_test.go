@@ -358,9 +358,10 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording 51 and 59 is served the report of claims nothing will wake without its
 		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
 		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
-		// version.go's 56. Every entry whose state that process knows stays, in the order the
-		// report named it. The field is older than the floor, so the case names no value that
-		// arrived with it.
+		// version.go's 56. Every entry of Legion's roles whose state that process knows stays, in
+		// the order the report named it. A pod this far back is below deploymentRolesContract too,
+		// so an entry of a role of the deployment goes. The field is older than the floor, so the
+		// case names no value that arrived with it.
 		droppedStrandedState: {
 			state: populatedState, low: treeContract, high: fixAttemptsContract,
 			carries: func(t *testing.T, body []byte) bool {
@@ -373,7 +374,10 @@ func valueStripCases() map[string]valueStripCase {
 				every, _ := strandedServed(t, whole)
 				var kept []map[string]string
 				for _, entry := range every {
-					if entry["state"] != string(supervise.StateRetired) {
+					// The pod is below deploymentRolesContract too, so a claim of a role outside
+					// Legion's six is no entry of its body either (shaping.go's
+					// withoutDeploymentRoleClaims).
+					if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
 						kept = append(kept, entry)
 					}
 				}
@@ -574,7 +578,9 @@ func valueStripCases() map[string]valueStripCase {
 		// An issue in `awaiting_children`, and the word at `heldFrom` and at a held task's `phase`,
 		// which no reader below gateBasisContract admits: the pod is served the issue's `phase` as
 		// `admitted` and neither other key where it names the word, and every other phase word as
-		// the body at gateBasisContract serves it.
+		// the body at gateBasisContract serves it. The word `step` is no word of this strip: the
+		// band of deploymentRolesContract, above this pod, serves an issue at step, its hold from
+		// step and a pending task at step as at `implementing` first (withoutDeploymentRoles).
 		droppedPhase: {
 			state: stateCarryingEveryDeclaredValue, low: pauseContract, high: entryNumber(gateBasisContract),
 			carries: func(t *testing.T, body []byte) bool {
@@ -590,6 +596,10 @@ func valueStripCases() map[string]valueStripCase {
 				for place, word := range phaseWordsServed(t, whole) {
 					got, carried := served[place]
 					switch {
+					case word == string(phase.Step) && got != string(phase.Implementing):
+						t.Errorf("the {%d, %d} pod is served %s as %q, want implementing: the band of deploymentRolesContract serves step as implementing below it",
+							pauseContract, entryNumber(gateBasisContract), place, got)
+					case word == string(phase.Step):
 					case word != string(phase.AwaitingChildren) && got != word:
 						t.Errorf("the {%d, %d} pod is served %s as %q, want %q: the strip takes only the word its process refuses",
 							pauseContract, entryNumber(gateBasisContract), place, got, word)
@@ -610,7 +620,8 @@ func valueStripCases() map[string]valueStripCase {
 		// A pod recording the contract before shapedAnswersContract is served every issue held for
 		// `task-stopped` or `children` without its `holdReason`: the two arrived at
 		// OwnerPlanContract, and the pod's process reads the key with `z.literal("escalated")`.
-		// The hold's `heldFrom` stays, and so does every escalated hold. No pod's reckoning holds
+		// The hold's `heldFrom` stays, served as implementing where it is step, since such a pod is
+		// below deploymentRolesContract too, and so does every escalated hold. No pod's reckoning holds
 		// a claim at or above shapedAnswersContract, since a build from that contract on states
 		// its own (podContracts), so the pod's claim at OwnerPlanContract moves neither half and
 		// the pod alone at it is served this daemon's own body, as production serves it. The
@@ -631,6 +642,11 @@ func valueStripCases() map[string]valueStripCase {
 					want := hold
 					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
 						want[0] = ""
+					}
+					// The pod is below deploymentRolesContract too, so a hold from step is served as
+					// one from implementing (shaping.go's withoutDeploymentRoles).
+					if hold[1] == string(phase.Step) {
+						want[1] = string(phase.Implementing)
 					}
 					if served[key] != want {
 						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",

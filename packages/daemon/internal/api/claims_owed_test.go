@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -510,7 +511,7 @@ func TestClaimOwedIsOwedOnlyWhereTheCompletionRouteTakesACompletion(t *testing.T
 			t.Fatalf("the tester serves entry %d, want 1: the case's own premise", serving)
 		}
 		tester.owesNothing(t)
-		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 2)), http.StatusConflict, staleEntryCode)
+		refused(t, h.complete(completionOf(t, tester, "test", headSHA, 2)), http.StatusConflict, intake.StaleEntryCode)
 	})
 
 	t.Run("an open entry with no completion", func(t *testing.T) {
@@ -823,6 +824,81 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 	}
 }
 
+// At step the role that works the issue is the role of its running step, which the issue names
+// (record.Issue.RoleAt), not the phase: the claim of that role, serving the issue's run, owes the
+// step, and the claim of another role of the deployment, or of one of Legion's own, serving the
+// same run, owes nothing there. The fault is a rule that reads the phase alone (phase.RoleFor),
+// which names no role at step, so the running step's own claim would owe nothing.
+func TestClaimOwedAtAStepIsTheRunningStepsRoles(t *testing.T) {
+	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker", Generation: 1}}
+	if got, want := owedBy(supervise.Claim{Role: "checker", ServingGeneration: 1}, position, ""), (OwedResponse{Owes: true, Work: "the step phase of LEGION-208"}); got != want {
+		t.Errorf("the checker at its running step owes %+v, want %+v", got, want)
+	}
+	for _, role := range []claim.Role{"linter", claim.RoleTester, claim.RoleImplementer} {
+		if got := owedBy(supervise.Claim{Role: role, ServingGeneration: 1}, position, ""); got.Owes || got.Work != "" {
+			t.Errorf("the %s at the checker's step owes %+v, want nothing", role, got)
+		}
+	}
+}
+
+// At step a merge forward holds the role of the running step (record.MergeForwardHolds, which
+// reads the step's role from the issue), so the checker the implementer's ask holds at its step
+// owes nothing while that merge has not landed, as a tester held in testing owes nothing; once the
+// ask lands, the checker owes its step again. The fault is a hold that names the worker from the
+// phase alone: at step that names no role, so the held checker would be told it owes its step.
+func TestClaimOwedAtAStepIsNothingWhileAMergeForwardHoldsTheStepsRole(t *testing.T) {
+	const head = "c0de"
+	pr := &record.PullRequest{State: record.PullRequestOpen, Number: 42, HeadSHA: head,
+		MergeForward: &record.MergeForward{Head: head, Base: "main", Phase: phase.Step, Role: claim.RoleImplementer, Why: record.ConflictCheckNotGreen}}
+	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Step, StepRole: "checker", Generation: 1},
+		pullRequest: pr}
+	checker := supervise.Claim{Role: "checker", ServingGeneration: 1}
+	if got := owedBy(checker, position, ""); got.Owes || got.Work != "" {
+		t.Errorf("the checker held at its step by the implementer's merge forward owes %+v, want nothing", got)
+	}
+	landed := *pr.MergeForward
+	landed.Landed = "d00d"
+	pr.MergeForward = &landed
+	if got, want := owedBy(checker, position, ""), (OwedResponse{Owes: true, Work: "the step phase of LEGION-208"}); got != want {
+		t.Errorf("the checker at its step once the merge forward landed owes %+v, want %+v", got, want)
+	}
+}
+
+// POST /legion/v1/claims/owed at a step, through the server and the store: the route takes a
+// role the deployment defines as a phase worker (isPhaseWorker), and reads the role of the running
+// step from the issue's plan rows (record.Issue.StepRole). In `implementer checker` at step 2, the
+// checker's claim owes its step's work, and the claim of the critic, another role of the
+// deployment, owes nothing; each is named the architect that owns it, as every phase worker on a
+// recorded issue is. A gate that took Legion's six alone would answer both with nothing at all,
+// no architect named, and a rule that read the phase alone would owe the checker nothing.
+func TestTheOwedRouteAtAStepOwesTheRunningStepsRoleItsWork(t *testing.T) {
+	const key = "LEGION-208"
+	deployment := checkerDeployment()
+	deployment.Roles["critic"] = plan.RoleDef{Name: "critic", Type: plan.TypeReview}
+	h, _, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Deployment: deployment})
+	seedIssueAt(t, h, key, phase.Step)
+	seedCheckerStep(t, h, key)
+	architect := newLiveClaim(t, h, key, claim.RoleArchitect)
+	for _, tc := range []struct {
+		role claim.Role
+		owes bool
+	}{{"checker", true}, {"critic", false}} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			seedEntry(t, h, key, tc.role, 1)
+			worker := newLiveClaim(t, h, key, tc.role)
+			takeTask(t, h, worker.token, "outbox:77", "the step of "+key, 1, 1)
+
+			got := worker.owed(t)
+
+			if got.Owes != tc.owes || (got.Work != "") != tc.owes || got.Architect != architect.token {
+				t.Fatalf("the %s at the checker's running step is told %+v; want owes %t, work named exactly when owed, and the architect %s",
+					tc.role, got, tc.owes, architect.token)
+			}
+		})
+	}
+}
+
 // The merger merges (dispatch://INFRA-714): merging is its working phase, with no wait for the
 // daemon's merge after it, so a merger whose issue stands in merging with its pull request open
 // owes that phase, and the answer names it. The merged pull request is what finishes merging
@@ -920,7 +996,7 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		serving := supervise.Claim{Role: claim.RoleTester, Pending: relaunch, ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: opened}}
 		done := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Done},
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, Role: claim.RoleTester, Looks: 2, LookOpen: true}}
-		if got, want := owedBy(serving, done, "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+		if got, want := owedBy(serving, done, ""), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
 			t.Errorf("a tester serving a look and holding %s (confirmed %v) owes %+v, want %+v", relaunch.ID, !confirmed.IsZero(), got, want)
 		}
 		working := supervise.Claim{Role: claim.RoleTester, Pending: relaunch}
@@ -928,7 +1004,7 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 		if serving := working.ServingRun(); serving != 0 {
 			t.Fatalf("a tester holding %s (confirmed %v) serves run %d, want none: the case's own premise", relaunch.ID, !confirmed.IsZero(), serving)
 		}
-		if got := owedBy(working, inPhase, "", workflow.RoleFor); got != (OwedResponse{}) {
+		if got := owedBy(working, inPhase, ""); got != (OwedResponse{}) {
 			t.Errorf("a tester in its open phase holding %s (confirmed %v) and serving no run owes %+v, want nothing", relaunch.ID, !confirmed.IsZero(), got)
 		}
 	}
@@ -952,10 +1028,10 @@ func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing
 		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
 	}
-	if got, want := owedBy(tester, check(&closed), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
+	if got, want := owedBy(tester, check(&closed), ""), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {
 		t.Errorf("a tester whose served look's check closed, holding a confirmed testing task in testing, owes %+v, want %+v", got, want)
 	}
-	if got, want := owedBy(tester, check(nil), "", workflow.RoleFor), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
+	if got, want := owedBy(tester, check(nil), ""), (OwedResponse{Owes: true, Work: "the production check of LEGION-208"}); got != want {
 		t.Errorf("a tester whose served look the check still holds open owes %+v, want %+v", got, want)
 	}
 }
@@ -989,20 +1065,6 @@ func TestClaimOwedRefusesACallerThatCannotProveItsClaim(t *testing.T) {
 	})
 }
 
-// A daemon that cannot say which role works a phase answers 500, not "nothing owed": the answer
-// says only what the record says, and an empty answer would give a guess as the record's word.
-// The reminder reads the 500 as a read that failed, which reminds no one (dispatch://INFRA-2746
-// R7); the daemon's silence sweep sends a quiet worker that owes its phase its task again.
-func TestClaimOwedIsAFailureWhereTheDaemonCannotReadWhoWorksThePhase(t *testing.T) {
-	h := newHarness(t)
-	seedIssueAt(t, h, "LEGION-208", phase.Testing)
-	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("owed on a daemon with no RoleFor = %d, want 500; body %s", recorder.Code, recorder.Body)
-	}
-}
-
 // unreadableIssues is a record store whose read of an issue fails, as a database that is down or
 // refuses the read fails it.
 type unreadableIssues struct{ record.Store }
@@ -1032,7 +1094,7 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T)
 // mirror is held to is the handler's own body.
 func TestClaimOwedResponseGolden(t *testing.T) {
 	position := completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 1}}
-	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester, ServingGeneration: 1}, position, "legion-legion-legion-208-architect", workflow.RoleFor))
+	golden(t, "owed.json", owedBy(supervise.Claim{Role: claim.RoleTester, ServingGeneration: 1}, position, "legion-legion-legion-208-architect"))
 }
 
 // The answer names the architect that owns the claim now, the end of the owner walk the daemon's

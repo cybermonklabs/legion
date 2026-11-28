@@ -59,10 +59,18 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
 
 ## The simplify pass and the `Thermo` line
 
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes; a docs-only diff needs none.
+- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first implementing round, after its own results and before it completes.
+  The pass covers every file the diff touches, and a docs-only diff needs none.
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
   A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
   the `Thermo` line names the count and the fixing commit.
 
 - The reviewer's pair runs at the head each round reviews, over the diff that round reads, when that diff touches runtime code;
   the `Thermo` line records the range it read and a row per half, and earlier rounds' rows stay beside them.
+
+## The footer of a comment
+
+- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
+
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.

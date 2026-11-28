@@ -202,12 +202,13 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	// The issue record with every field set. It stands in another project than the pass's, so
 	// the admission line — which is no part of the issue record — puts nothing of its own on the
 	// view, and under a root of its own tree, so the hold's reason is served: the reason is
-	// suppressed by its tree's linger, not by its own.
+	// suppressed by its tree's linger, not by its own. Its hold took it out of step, so the role
+	// of its running step, which no phase names, is served beside the phase the hold left.
 	issue := record.Issue{
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042", Priority: record.P1,
 		Resolved:    record.Resolved{Priority: record.P0, From: "OTHER-1", Known: true},
-		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
+		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Step, Reason: record.HoldEscalated},
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -218,7 +219,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
-		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt, StepRole: "checker",
 		// A person's claim a release left. Its instant is in a zone other than UTC, so the view's
 		// `at` is held to the UTC the projection writes it in.
 		ClaimLeft: &record.ClaimLeft{Holder: "user:alice", Reason: record.ClaimLeftPerson,
@@ -403,7 +404,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"key": issue.Key, "tree": issue.Tree, "phase": issue.Phase,
 			"generation": issue.Generation, "status": issue.Status,
 			"lingerUntil": issue.LingerUntil,
-			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
+			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From, "stepRole": issue.StepRole,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
 			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,

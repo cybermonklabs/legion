@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The Dispatch schemas name the Legion board's thirteenth column, `step`, which holds an issue at a
+  step of a role the Legion deployment defines. The observed view of the state serves an issue's
+  `stepRole`, a state event's change names it as its field `stepRole`, and a claim change names any
+  role of the deployment.
+time: 2026-11-23T07:52:25Z
+custom:
+    Issue: pr5164

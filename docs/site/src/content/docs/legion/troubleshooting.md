@@ -35,11 +35,11 @@ legion config check --config legion.yaml
 | `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
 | `unknown key <key>` (or `unknown key at line <n> under <mapping>, whose name has no key's shape (…)`) | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": the daemon takes each issue's repository from Dispatch …` is one: set the issue's repository, or the project's default repository, in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). A name outside the keys' grammar (lower-case letters, digits and `_`, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit), such as a token or a URL pasted where a key goes, is named by its line alone: open the file at that line. A typo holding a `-` or an upper-case letter is named by its line too. |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
-| `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
+| `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger and each role of the deployment: …` | Claude Code runs the phase workers and each role the deployment defines in `roles`; leave the architect on `omp`. |
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
 | `role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | Under Kubernetes a role's overlay must be a file the operator's mounts carry: mount the ConfigMap holding it, or add the item. |
 | `role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
-| `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is not Legion's, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
+| `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is neither Legion's nor one of `roles`, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
 | `worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <grace> + 2 × <step> = <ladder>, where the first number is …): …` | Raise that role's bound to the ladder the message names, or set `0` to switch the backstop off for that role. The daemon's backstop is there for a worker whose own stall watch is itself broken, and the daemon cannot see that watch running, so a bound below the ladder would end a turn the plugin it backs up is still recovering. The ladder is the longest one call of that worker can legitimately run, plus the grace over a deadline a call declared for itself (`LEGION_STALL_CALL_GRACE_MS`, 5 minutes), plus the two gaps between the recovery steps (`LEGION_STALL_STEP_MS`, 2 minutes each). The longest call is the larger of two numbers, and the message says which one it took: the bound a tool call no deadline judges gets (`LEGION_STALL_CALL_BOUND_MS`, by default 4 hours for an implementer and a reviewer and 1 hour for every other role and the controller, and that default again where the deployment sets `0`, which switches the worker's watch off rather than bounding its calls at zero), and the hour the host clamps a deadline a call declares for itself to ([legion.yaml](/legion/legion/running-legion/#legionyaml)). |
 | `projects.<KEY>.memory.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a project with no `memory` block gets), `on`, or `random`. |
 | `projects.<KEY>.memory is <mode> and names no config_files: …` | A mode other than `off` draws new trees into the memory group, and those trees read their overlays from that key: name at least one, or set `mode: off`. |
@@ -56,7 +56,8 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes` (or `projects.<KEY>.experiments.<NAME>.variants[<n>] name "…" must match ^[a-z0-9-]{1,32}$: a draw records the variant it drew by name`, or `projects.<KEY>.experiments.<NAME>.variants names <name> twice`) | An experiment's name and an arm's name are 1 to 32 characters of `a-z`, `0-9` and `-`, and each is named once, because every draw records both. |
 | `projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a block that names no mode gets), `on`, or `random`. |
 | `projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")` | The unit is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue on its own. |
-| `projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)` (or `projects.<KEY>.experiments.<NAME>.roles names no role: …`, `projects.<KEY>.experiments.<NAME>.roles names <role> twice`, or `projects.<KEY>.experiments.<NAME>.roles must be a sequence of Legion issue roles, …`) | `roles` lists the issue roles whose launches load the experiment's arms, each once: `architect`, `planner`, `implementer`, `tester`, `reviewer` or `merger`. The controller runs in no experiment. For every issue role, leave the key out. |
+| `… at line <n> has no key's shape (…): it must be …` | The key takes one of the few words the message lists after `it must be`: a `mode` or a `unit`, an arm's `plan`, a backend of `worker_backends`, a hook's `on`, a role's `github_app`, `production_check` or `runtime.tmux.take_over`. The word at that line is none of them, and it has no key's shape (lower-case letters, digits and `_`, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit). Such a word can be a token pasted where the word goes, so the message names the key and its line, never the word: open the file at that line and write one of the words the message lists. A word of a key's shape is named as written instead, in the key's own refusal, such as `… must be off, on, or random (got "…")`. |
+| `projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)` (or `projects.<KEY>.experiments.<NAME>.roles names no role: …`, `projects.<KEY>.experiments.<NAME>.roles names <role> twice`, or `projects.<KEY>.experiments.<NAME>.roles must be a sequence of Legion issue roles, …`) | `roles` lists the issue roles whose launches load the experiment's arms, each once: `architect`, `planner`, `implementer`, `tester`, `reviewer` or `merger`. The controller runs in no experiment. For every issue role, each role of `roles` included, leave the key out. |
 | `projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists` (or `projects.<KEY>.experiments.<NAME>.variants lists no variant: …`, or `projects.<KEY>.experiments.<NAME> is <mode> and lists one variant: …`) | List the arms the experiment compares. A mode other than `off` needs at least two of them: a draw among one arm measures nothing, so list the arm it is compared against, or set `mode: off`. |
 | `projects.<KEY>.experiments.<NAME> is on and names no on_variant: …` (or `projects.<KEY>.experiments.<NAME>.on_variant names "…", which is no variant of the experiment (…)`) | `mode: on` gives every new unit one arm, so name that arm in `on_variant`, and name one this experiment lists. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.weight must be a whole number above zero (got <n>): …` | A weight is the arm's share of a random draw against its siblings'. An arm of no weight is never drawn, so take it out of the list instead. |
@@ -69,8 +70,8 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM> names no plan: each variant of an experiment that sets plan names how its issues are done` | An experiment that names `plan` in one arm names it in every arm, so that each issue it draws is in a group: write `plan` in each arm, or in none. |
 | `projects.<KEY>.experiments.<NAME> sets plan and is unit <unit>: an experiment that sets how an issue is done draws for each issue, so write unit: issue` | Each issue keeps the group of its own draw for its whole life, so an experiment that sets `plan` draws for each issue: write `unit: issue`. |
 | `projects.<KEY>.experiments.<NAME> and projects.<KEY>.experiments.<NAME> both set plan: one experiment sets how an issue is done` | Each issue would hold two words on how it is done, which may disagree, and one experiment would be measured under the other's arms: keep `plan` in one experiment of the project. |
-| `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
-| `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
+| `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` (or, for an entry the refusal does not print, `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name": …` or `projects.<KEY>.commit_issue_trailer_repos[<n>] names the repository projects.<KEY>.commit_issue_trailer_repos[<m>] names: …`) | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. An entry that holds a run of 8 hex digits, or of 10 letters and digits that holds a digit, read in any case, as a token does, is named by its place alone: open the file at that entry. |
+| `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` (an entry the refusal does not print is named by its place alone, with no `(<owner>/<name>)` after it) | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
 | `capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"` (after the `Config OK` line, exit 0) | A report, not a refusal: the deployment leaves a worker capability open. The check names the rows the file alone decides — `resource-limits` while a role lacks CPU and memory in both requests and limits, `secrets` while no broker is configured — and the daemon logs the same line at boot for every open row, `model-fallback` included when the probe read `retry.modelFallback` false under your overlay or could not read it at all (the probe's OK line marks that `model-fallback=unread`, the probe pod's log says why), `pool-capacity` when the image probe pod was Unschedulable before it scheduled (the detail counts the attempts that waited and quotes the scheduler's reason), and `repository-cache-room` when a repository cache's last health read carries a failure for lack of space, logged also at the first controller tick after the row opens (the detail names each such cache with its claim, its room and the step that failed, and says that room comes from growing the cache's claim in place and raising `runtime.kubernetes.repository_cache.volume`). Close the gap, or add the `capabilities.decided.<name>: "<reason>"` line it prints to record your decision. `legion state --json` lists every row under `capabilities`, each deployment row carrying `source` (`configuration` or `boot`, and `caches` on `repository-cache-room`), and the controller's daily report names each open one. In the daemon's log alone (the check prints no such row), a line without the `; to record a decision` tail — `capability <name> is open: pod <sandbox>/<container> (<role>, <issue>): <fact>`, or `pane <window>:<pane>` under tmux — is a live row (`subagents`, `web-search`, `mcp`, `repository-extensions`, `dispatch-envoy-tools`, `github`) that a running session's own check at its start failed: the daemon logs the fact alone, with the claim, role, issue and locator as the line's attributes, as the session reports ready, then this pod-naming form at boot and at the first controller tick after the set of open rows changed, and `legion state` shows the row `open` with that detail, naming each failing session. The fact is what the session measured inside its Oh My Pi (`web_search is not a registered tool`, `not connected: <server> (<error>)`, `agents the prompts dispatch that the task tool does not resolve: <names>`, `not discovered: <paths>`, `Envoy tools missing: <names>`, `dispatch read failed: <stderr>`, `gh viewer login failed: <stderr>`, or `did not finish within 8 s`). No `capabilities.decided` line applies: fix what the fact names in the session's environment, and the row heals when that process is relaunched with the gap closed or reports anew at its next boot — a session that booted during a Dispatch, GitHub or search-provider outage reads open until then. The session's own report is under `issues.<KEY>.architect.capabilities` or `issues.<KEY>.workers.<role>.claim.capabilities` in `legion state --json`. |
 
@@ -1782,9 +1783,13 @@ These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): only a review that requests
-  changes raises the count, and one made while the head conflicts with its base is a conflict
-  round, which the cap leaves out and the message's second number names. The daemon posts it and
+  ([what counts a round](/legion/legion/concepts/#review-signalling)).
+  A review's request for changes raises the count.
+  So does the fail of a step of the type review whose agent is not the owner.
+  A tester's fail, the fail of a step of another type and a move back raise none.
+  A round counted while the head conflicts with its base is a conflict round, which the cap leaves
+  out and the message's second number names.
+  The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
   on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
@@ -1924,7 +1929,7 @@ These arrive as messages on the Dispatch issue:
   role's phases row is on, and then what decided it, which is one of four readings: the
   completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue; it names no commit at all, so it says nothing about any head; the phase
-  ends with no handoff record this role writes — retro and merging — so nothing the completion
+  ends with no handoff record this role writes — retro, merging, and `step`, the phase of a role of the deployment — so nothing the completion
   names says which entry's work it is, and no head it reports on answers for it; or the move
   that handed the phase out again moved the issue back, which asks for this phase's work to be
   done again whatever head the completion names. When the task of that entry already waits on
@@ -1951,7 +1956,7 @@ These arrive as messages on the Dispatch issue:
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
 
-An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
+An issue that stays in `testing`, `reviewing`, `step`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on a merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
 both reads report, and only when the next step needs a mergeable head. That is so in four cases.
@@ -1968,15 +1973,36 @@ GitHub answered before the newest read the record holds of the same head is drop
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
 forward keeps the phase: the role asked — the implementer, or in `merging` the merger — merges in
 the issue workspace and pushes with no handoff and no completion, the phase's worker, when that is
-the tester or the reviewer, is told to stop writing the workspace and not to complete its phase at
-the old head, and is then told the new head, and `workflow: the merge forward landed`
-names both heads. A completion of the phase the issue stands in that names a head a merge
+the tester, the reviewer or, at `step`, the role of the deployment whose step runs, is told to stop
+writing the workspace and not to complete its phase at the old head, and is then told the new head,
+and `workflow: the merge forward landed` names both heads.
+At `step`, a role the deployment no longer defines is told neither, since its task stays stopped until the role is defined again.
+A hold or a landed queued for such a role before the restart that dropped it is not sent either: the
+restarted daemon logs `outbox merge-forward message finished undelivered: the workflow no longer
+delivers it` with `why` naming `the deployment no longer defines the role <role>`, and the role's
+released claim is not woken.
+A completion of `testing`, `reviewing`, `step` or `retro`, the phase the issue stands in, that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD` and moves nothing; the daemon
 keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`, and the
 completion is made again at the new head. A completion of a phase the issue has already left is
 recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
 the merge and approve the new head. A red check sends nothing back from anywhere.
+
+That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
+defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on
+top of the head a merge forward replaced, its completion names that commit, which is neither the
+replaced head nor the new one, and the daemon takes it: it keeps the heads each merge forward
+replaced and left, not a commit graph, and a commit the role did not push is on no remote. To find
+such a pass, read the commit the role reported:
+
+```sh
+legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<role>"].handoffCommit'
+```
+
+In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents.
+If a parent is the `head` named by `workflow: the merge forward landed`, the step judged the code before the merge.
+The current phase's worker sends the task back to that step with `request_backward_move` and sets `return_to` to the step's place.
 
 The pull request's state as the daemon sees it:
 
@@ -2591,9 +2617,11 @@ notice comes once per handoff commit, from whichever read finds it first.
   `repositories.withoutWebhookApp` in `--json`). Dispatch's GitHub App, the Envoy App whose
   webhook carries GitHub's events, is not known to be installed on a repository a live record
   names. With `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of
-  that repository's events and nothing redelivers them: the repository is worked, and nothing
-  brings its pull requests' changes in, so its issues stand still. An operator installs Dispatch's
-  GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
+  that repository's events and nothing redelivers them. The repository is worked. Its pull
+  requests' changes come in only through the daemon's read of an issue's pull request, at the
+  daemon's start and after every handoff ([GitHub events wait](#github-events-wait)). So an issue
+  that waits on a GitHub event stands still until the next such read. An operator installs
+  Dispatch's GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
   the daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the
   first answer that the App is installed.
   `the webhook App check failed: GITHUB_APP_UNCONFIGURED: …` is a Dispatch that holds no App key

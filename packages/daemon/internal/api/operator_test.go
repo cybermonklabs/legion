@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -191,6 +192,58 @@ func TestSpawnRefusesARequestItCannotName(t *testing.T) {
 	}
 	if calls := h.runtime.Calls(); len(calls) != 0 {
 		t.Fatalf("a refused spawn reached the runtime: %v", h.runtime.Methods())
+	}
+}
+
+// The route takes a name of the role grammar, and a launch of one that is neither Legion's nor a
+// role the deployment defines fails at each attempt after its claim row is written, so a mistyped
+// role is a 400 that names the roles the deployment has, and writes no claim and launches nothing.
+// "acceptance" is a role of a step in the deployment's table (plan.BuiltinRoles) and no claim's.
+// The controls are a role the deployment defines, which launches, and one of Legion's six, which
+// launches in a deployment that defines no role of its own.
+func TestSpawnRefusesARoleTheDeploymentDoesNotDefine(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deployment plan.Deployment
+		role       claim.Role
+		refusal    string
+	}{
+		{"a mistyped role of a deployment that defines the checker", checkerDeployment(), "chekcer",
+			`role "chekcer" is not a spawnable role; deployment-defined roles: checker`},
+		{"a role of a step that is no claim's", checkerDeployment(), "acceptance",
+			`role "acceptance" is not a spawnable role; deployment-defined roles: checker`},
+		{"the checker of a deployment that defines none", plan.Deployment{}, "checker",
+			`role "checker" is not a spawnable role; deployment-defined roles: none`},
+		{"the control: the checker of a deployment that defines it", checkerDeployment(), "checker", ""},
+		{"the control: Legion's tester", plan.Deployment{}, claim.RoleTester, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessIn(t, true, tc.deployment)
+			body := spawnBody()
+			body.Role = tc.role
+			noDraw := func(context.Context, pgx.Tx) error { return nil }
+			if _, err := h.store.OpenOperatorTreeLifecycle(t.Context(), testProject, body.Tree, noDraw); err != nil {
+				t.Fatalf("open the tree for the worker: %v", err)
+			}
+			recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", body)
+			if tc.refusal == "" {
+				if recorder.Code != http.StatusCreated {
+					t.Fatalf("spawn of %s = %d, want 201; body %s", tc.role, recorder.Code, recorder.Body)
+				}
+				return
+			}
+			wantRefusal(t, recorder, http.StatusBadRequest, tc.refusal)
+			token, err := claim.NewToken(testProject, body.Issue, tc.role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, found := h.supervisor.Machine(token); found {
+				t.Fatalf("a refused spawn wrote the claim %s", token)
+			}
+			if calls := h.runtime.Calls(); len(calls) != 0 {
+				t.Fatalf("a refused spawn reached the runtime: %v", h.runtime.Methods())
+			}
+		})
 	}
 }
 
@@ -611,7 +664,7 @@ func failedPhaseWorker(t *testing.T, handler intake.Handler, role claim.Role) (*
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler},
 	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	refused := fake.SpawnResult{Err: errors.New("the runtime refused the launch")}
@@ -788,7 +841,7 @@ func stoppedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.T
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler},
 	}).Handler
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
 	h.ready(token, "ses_implementer", 1)
@@ -909,7 +962,7 @@ func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *test
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{facts}, RoleFor: phase.RoleFor,
+		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{facts},
 	}).Handler
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	// The operator holds this tree, so its sub-architect is spawned through the same route: the

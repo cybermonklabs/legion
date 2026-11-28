@@ -7,7 +7,7 @@ import { z } from "zod";
 import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
-import type { HandoffReport } from "./handoff-record";
+import { findHandoffReport, type HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -85,7 +85,8 @@ function runtime(
   claim: ClaimCapability = implementer,
   state: Record<string, unknown> = daemonFixture("state.json"),
   ratingRefusal?: DaemonRefusal,
-  report: HandoffReport = REPORT
+  report: HandoffReport = REPORT,
+  daemonContract: number | null = CONTRACT
 ) {
   const routes: string[] = [];
   const bytes: { readonly route: string; readonly bytes: number }[] = [];
@@ -99,6 +100,14 @@ function runtime(
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     routes.push(route);
+    if (route === "/healthz") {
+      return Response.json(
+        {},
+        daemonContract === null
+          ? undefined
+          : { headers: { "Legion-Daemon-Contract": String(daemonContract) } }
+      );
+    }
     const body: Record<string, unknown> | undefined =
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     if (body !== undefined) posted.push(body);
@@ -685,6 +694,132 @@ test("a tester's fail sends return_to as returnTo", async () => {
   });
   await executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
+});
+
+/** The claim of a role of the deployment, `checker`, on LEGION-208 (the deployment roles' contract
+ * entry). */
+const checker: ClaimCapability = {
+  ...implementer,
+  role: "checker",
+  claimToken: "legion-legion-legion-208-checker",
+};
+
+// A role of the deployment ends its step with its verdict and the commit its workspace stands on,
+// `@-`; it writes no handoff record, so none is looked up in Dispatch.
+test("a deployment role's completion sends its verdict and the commit it stands on, and no handoff record", async () => {
+  const standing = "c".repeat(40);
+  const looked: string[] = [];
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  const pane: PhaseOpRuntime = {
+    ...ops,
+    handoffReport: (phase, role) =>
+      findHandoffReport({
+        phase,
+        role,
+        env: { LEGION_WORKSPACE: "/workspace", LEGION_ISSUE: "LEGION-208" },
+        jj: async () => standing,
+        latestHandoff: async (issue, word) => {
+          looked.push(`${issue} ${word}`);
+          throw new Error("a deployment role's step writes no handoff record");
+        },
+      }),
+  };
+  await expect(
+    executePhaseOp(pane, { op: "handoff_complete", summary: "Checked.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(looked).toEqual([]);
+  expect(routes).toEqual([
+    "/legion/v1/issues/LEGION-208/record",
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Checked.",
+    verdict: "pass",
+    commit: standing,
+  });
+});
+
+// The roles of a deployment: a move back may name the step it returns to, `return_to`, which goes
+// on the wire as the daemon's `returnTo`, as a failed completion's does; a move that names none
+// sends none.
+test("request_backward_move sends return_to as returnTo", async () => {
+  const { ops, routes, posted } = runtime(checker, stateAtPhase("step"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "request_backward_move",
+      to: "step",
+      reason: "The check needs the earlier checker's report again.",
+      return_to: 2,
+    })
+  ).resolves.toEqual({});
+  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/phase/backward"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    to: "step",
+    reason: "The check needs the earlier checker's report again.",
+    returnTo: 2,
+  });
+  await executePhaseOp(ops, { op: "request_backward_move", to: "implementing", reason: "Red." });
+  expect(posted.at(-1)).not.toHaveProperty("returnTo");
+  await expect(
+    executePhaseOp(ops, { op: "request_backward_move", to: "step", reason: "r", return_to: 0 })
+  ).rejects.toThrow(
+    "request_backward_move's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first"
+  );
+});
+
+// A daemon from before the roles of a deployment refuses a move to `step` and a move that names
+// `returnTo` with a 400, and moves nothing. The bodies below are what such a daemon answered,
+// measured at main `c83e17bb1512`, a daemon from before the deployment roles' contract entry, by
+// api's own workflow harness: `INVALID_PHASE` for `to: step`, and readBody's refusal of an unknown
+// field, with no code, for `returnTo`. The move is sent as asked, and the refusal reaches the
+// caller whole.
+test("request_backward_move reports an older daemon's refusal of step and return_to", async () => {
+  const posted: Record<string, unknown>[] = [];
+  const older = (async (input, init) => {
+    const route = new URL(input.toString()).pathname;
+    if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    posted.push(body);
+    if ("returnTo" in body) {
+      return Response.json(
+        { error: 'invalid request body: json: unknown field "returnTo"' },
+        { status: 400 }
+      );
+    }
+    if (body.to === "step") {
+      return Response.json({ code: "INVALID_PHASE", error: "to is not a phase" }, { status: 400 });
+    }
+    return Response.json({});
+  }) as typeof fetch;
+  const ops: PhaseOpRuntime = {
+    ...runtime(implementer, stateAtPhase("testing")).ops,
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: CONTRACT,
+      fetch: older,
+    }),
+  };
+  await expect(
+    executePhaseOp(ops, { op: "request_backward_move", to: "step", reason: "Red." })
+  ).rejects.toThrow(
+    "POST /legion/v1/phase/backward failed with 400 INVALID_PHASE: to is not a phase"
+  );
+  await expect(
+    executePhaseOp(ops, {
+      op: "request_backward_move",
+      to: "implementing",
+      reason: "Red.",
+      return_to: 1,
+    })
+  ).rejects.toThrow(
+    'POST /legion/v1/phase/backward failed with 400: invalid request body: json: unknown field "returnTo"'
+  );
+  expect(posted.map(({ to, returnTo }) => ({ to, returnTo }))).toEqual([
+    { to: "step", returnTo: undefined },
+    { to: "implementing", returnTo: 1 },
+  ]);
 });
 
 // The description is where the tester reads what its fail may carry and what the daemon refuses:

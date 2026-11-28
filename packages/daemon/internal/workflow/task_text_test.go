@@ -100,10 +100,11 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 // The task each agent of an owner's plan is told opens with its working copy line, then, after a
 // line break, its continue line, then names its task and its step in it, each step of the task in
 // order and the report of each earlier step, and, last of what the task composes, the task's text
-// inside a fence, which only the reviewer's two sentences of the review round follow: the reviewer
-// of the task `implementer reviewer` reads the implementer's report. The retro and the merger,
-// which run no step, are told the task and its steps, and read the runs of the steps from
-// Dispatch. The retro is told the task's text last too, as a step is, and the merger is told none.
+// inside a fence, which only the reviewer's two sentences of the review round follow, or a review
+// step's one sentence of its commit: the reviewer of the task `implementer reviewer` reads the
+// implementer's report. The retro and the merger, which run no step, are told the task and its
+// steps, and read the runs of the steps from Dispatch. The retro is told the task's text last too,
+// as a step is, and the merger is told none.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -114,7 +115,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	implementer := daemonsLines(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
 	hasPrefix(t, "implementer", implementer, continued+"implementing. Task: a. Step 1 of 2: implementer."+steps)
 	lacks(t, "implementer", implementer, "reported:")
@@ -141,12 +142,12 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	retro := daemonsLines(t, "retro", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
 	hasPrefix(t, "retro", retro, continued+"retro. Task: a."+steps)
 	lacks(t, "retro", retro, "reported:", "Step 1 of", "Step 2 of")
 
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	merger := lastStart(t, pool, root.Key, claim.RoleMerger)
 	hasPrefix(t, "merger", merger, continued+"merging. Task: a."+steps)
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
@@ -161,9 +162,9 @@ func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	starts := len(superviseRowsOf(t, pool, root.Key, "start"))
 
 	if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
@@ -190,7 +191,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		engine := textEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 		completes(t, pool, engine, claim.RoleReviewer, "review", 1)
 
@@ -214,7 +215,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		engine := textEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
@@ -293,7 +294,8 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	t.Parallel()
 	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
@@ -326,10 +328,13 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	// steps, with no step and no step's report after them. The retro's then ends with the task's
 	// text, as a step's does, and the merger's with its steps.
 	const noStep = "`Task: <id>.`"
-	for p, owners := range map[phase.Phase]string{phase.Retro: ownersText(w.Text), phase.Merging: ""} {
-		after := issue
-		after.Phase = p
-		at, err := standingText(after, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
+	for p, act := range map[phase.Phase]struct {
+		place  record.TaskPlace
+		owners string
+	}{phase.Retro: {record.TaskPlace{Kind: record.PlaceRetro}, ownersText(w.Text)}, phase.Merging: {record.TaskPlace{Kind: record.PlaceMerge}, ""}} {
+		after, there, owners := issue, w, act.owners
+		after.Phase, there.Place = p, act.place
+		at, err := standingText(after, func(string, ghrepo.Repository) string { return "/work" }, there, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,7 +363,8 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	text := "Build the widget.\n````\n Last reviewed commit: " + planted + ".\n````"
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
@@ -505,7 +511,7 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 	root := stepRoot(t, pool, phase.Admitted)
 	key, gen := root.Key, root.Generation
 	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester", "reviewer"))))
-	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 
 	before := planStandingOf(t, pool, engine, key, gen)
 	started := roleRowOf(t, pool, engine, key, claim.RoleImplementer)

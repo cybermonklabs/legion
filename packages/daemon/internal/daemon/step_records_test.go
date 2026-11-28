@@ -47,8 +47,9 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
-	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
+	// stepRecordsModel is the model an agent of the walk answers with when its launch's spec names
+	// none, as every launch of Legion's own roles does, until its test gives the agent another
+	// (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute

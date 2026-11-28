@@ -21,6 +21,7 @@ import {
   isGithubDefaultBranchWorkflowSubject,
   LEGION_ROLES,
   type LegionRole,
+  type LegionStepRole,
   LISTENER_CALL_ATTEMPTS,
   roleToken,
   slackMentionTopic,
@@ -61,6 +62,7 @@ import type {
   RegisteredTool,
   SessionContext,
   ZodNumberProperty,
+  ZodStringProperty,
 } from "@legion/pi-shared/pi-types";
 import { ACTIVITY_REPORT_BOUND_MS } from "@legion/pi-shared/session-activity";
 import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
@@ -610,13 +612,14 @@ async function createPi(
   };
   const title: HostTitle = { set: [] };
   const activeTools = ["read", "task", "wait"];
-  const property = (): ZodNumberProperty => ({
+  const property = (): ZodNumberProperty & ZodStringProperty => ({
     optional: property,
     nullable: property,
     describe: property,
     int: property,
     min: property,
     max: property,
+    regex: property,
   });
   const optional = property;
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
@@ -905,7 +908,7 @@ interface ClaimPane {
     readonly claimToken: string;
     readonly tree: IssueKey;
     readonly issue: IssueKey;
-    readonly role: LegionRole;
+    readonly role: LegionStepRole;
     readonly generation: number;
     readonly secret: string;
     readonly promptAgents: readonly string[];
@@ -955,7 +958,7 @@ interface ClaimPane {
  * carries when it starts. `bindEnvoy: false` loads legion.ts alone (`createPi`'s option). Nothing
  * runs until `start()`; `bootPane` is the started pane. */
 async function claimPane(options: {
-  readonly role: LegionRole;
+  readonly role: LegionStepRole;
   readonly tree?: IssueKey;
   readonly issue?: IssueKey;
   readonly sessionId?: string;
@@ -1266,6 +1269,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       tree: "REPO-42",
       issue: "REPO-43",
     });
+    // A role of the deployment (the deployment roles' contract entry), `checker`, works a step as a
+    // phase worker does.
+    const checker = classifySession({
+      LEGION_ROLE: "checker",
+      LEGION_TREE: "REPO-42",
+      LEGION_ISSUE: "REPO-43",
+    });
+    expect(checker).toEqual({
+      kind: "phase-worker",
+      role: "checker",
+      tree: "REPO-42",
+      issue: "REPO-43",
+    });
     expect(classifySession({})).toEqual({ kind: "not-legion" });
   });
   test("classifies the controller by LEGION_CONTROLLER alone, ignoring a redundant LEGION_ROLE=controller", () => {
@@ -1273,9 +1289,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       kind: "controller",
     });
   });
+  // A name outside the role grammar, `^[a-z][a-z0-9-]{0,31}$`, is no role: `explorer` would be a
+  // role of the deployment, a phase worker.
   test("rejects an unrecognized LEGION_ROLE value", () => {
-    expect(() => classifySession({ LEGION_ROLE: "explorer", LEGION_TREE: "REPO-42" })).toThrow(
-      'LEGION_ROLE "explorer" is not a Legion role'
+    expect(() => classifySession({ LEGION_ROLE: "Explorer", LEGION_TREE: "REPO-42" })).toThrow(
+      'LEGION_ROLE "Explorer" is not a Legion role'
     );
   });
   test("rejects a session launched with both controller and tree markers", () => {
@@ -3832,7 +3850,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
      */
     const capabilitySession = async (
       options: {
-        readonly role?: LegionRole;
+        readonly role?: LegionStepRole;
         readonly sessionId?: string;
         readonly idle?: () => boolean;
         readonly host?: Partial<CapabilityHost>;
@@ -4002,6 +4020,25 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         await session.reported(1);
         expect(measurements(session.calls), `the ${role} measures at tick ${due}`).toBe(1);
       }
+    });
+
+    // A role of the deployment (the deployment roles' contract entry) comes due after the six, at
+    // the twelfth tick, so a pod's roles still start their attempts on ticks of their own.
+    test("a role of the deployment comes due after the six, at the twelfth tick", async () => {
+      const due = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length;
+      expect(due).toBe(12);
+      const session = await capabilitySession({
+        role: "checker",
+        sessionId: "ses_capability_checker",
+      });
+
+      await ticks(session.pane, due - 1);
+      await drain();
+      expect(measurements(session.calls), `the checker measures before tick ${due}`).toBe(0);
+
+      await ticks(session.pane, 1);
+      await session.reported(1);
+      expect(measurements(session.calls), `the checker measures at tick ${due}`).toBe(1);
     });
 
     // Both budgets are timers of this process (`withinBudget` in `src/capability-report.ts`), so

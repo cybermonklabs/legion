@@ -244,7 +244,7 @@ func TestFromBlocksPlacesEachTaskBlockByItsParent(t *testing.T) {
 		{name: "an element with serves and needs", blocks: withElement,
 			placed: map[string]string{"a": ""}, elements: []Element{{ID: "t1", Of: "a", Under: "a"}},
 			check: func(t *testing.T, p Plan) {
-				for _, refusal := range append(Supported(p), Validate(p, builtin)...) {
+				for _, refusal := range append(Supported(p, builtin), Validate(p, builtin)...) {
 					if refusal.Task == "t1" || strings.Contains(refusal.Reason, "t1") {
 						t.Errorf("the reason %+v names t1, an element that names nothing only a task carries out", refusal)
 					}

@@ -80,8 +80,12 @@ type Delivery struct {
 	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
 	// to attribute an explicitly named check report to the look the worker took, not to choose
 	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
-	CheckLook   CheckLook
-	Phase       phase.Phase
+	CheckLook CheckLook
+	Phase     phase.Phase
+	// BringsBack is set only on the delivery a start's judge asks about (startHolds), for a start
+	// that brings a role back and hands it nothing (StartWork.BringsBack): it is judged by its phase
+	// and run alone. No queued task carries it, and it is never stored.
+	BringsBack  bool `json:"-"`
 	QueuedAt    time.Time
 	DeliveredAt time.Time
 	// MarkedBy is the delivery id the marking prompt carried: the prompt whose acknowledgement set
@@ -1501,16 +1505,19 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 	return m.sendPending(ctx)
 }
 
-// phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
-// that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
-// to the answer at all, so the exemption this package documents is this package's own rather
-// than a promise every implementation has to keep. A daemon with no workflow configured supplies
-// no answer, and every delivery holds.
+// phaseHolds asks whether the issue is still in the phase and run this task was queued for, and,
+// at the phase step, at the step of this claim's role, but for a start that brings the role back
+// and hands it nothing (Delivery.BringsBack), which is held to its phase and run alone: the daemon's
+// answer makes that choice (record.DeliveryHolds). A delivery that names no phase is nobody's
+// to drop — an operator's own, an architect's — and is never put to the answer at all, so the
+// exemption this package documents is this package's own rather than a promise every
+// implementation has to keep. A daemon with no workflow configured supplies no answer, and every
+// delivery holds.
 func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	if m.deps.PhaseHolds == nil || d.Phase == "" {
 		return true, nil
 	}
-	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
+	holds, err := m.deps.PhaseHolds(ctx, m.claim, d)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
 	}

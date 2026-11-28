@@ -75,8 +75,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // does not linger and the root is not itself waiting in the line, the rule record.TreeRuns applies
 // — nothing will wake it, and it is suspended, failed or retired and one of:
 //
-//   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
-//     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left. Only a start
+//   - A worker of its issue's phase: the role that works the phase its worker works
+//     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left, as
+//     record.Issue.RoleAt reads it (at step, the role of the running step). Only a start
 //     of that phase brings back a failed or a retired worker, so either is stranded once no such
 //     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when the
 //     operator or the controller suspended it, or when its suspension was recorded
@@ -216,7 +217,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
-		case c.Role != claim.RoleArchitect && phase.RoleFor(issue.WorkingPhase()) == c.Role:
+		case c.Role != claim.RoleArchitect && issue.RoleAt(issue.WorkingPhase()) == c.Role:
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue
 			}

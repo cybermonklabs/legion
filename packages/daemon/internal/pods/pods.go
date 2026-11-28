@@ -170,12 +170,19 @@ type IdleRoot struct {
 	Answered       bool
 }
 
+// StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's
+// pod was built before the deployment defined its role (the outbox's roleWaitsForItsPod): the one
+// text the outbox writes and the idle view, the release's boundary and the served state read.
+const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
+
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
 // the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
 // in the workflow and its tree root's. Found is false for an issue the record does not hold under
 // the daemon's own project, which is no pod of the workflow's to release: a record another
 // project's daemon keeps of the issue on a shared database is not this daemon's
-// (store.readIdleView).
+// (store.readIdleView). StepRole is the role of the step the issue's task stands at, read from
+// its plan rows as the issue's own record reads it (record.Issue.StepRole), and "" where they
+// hold none: at step, the worker of the issue's open phase, which no phase names.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
@@ -185,6 +192,7 @@ type IdleView struct {
 	Tree        string
 	Found       bool
 	Phase       phase.Phase
+	StepRole    claim.Role
 	Status      string
 	Generation  uint64
 	LingerUntil *time.Time
@@ -196,8 +204,18 @@ type IdleView struct {
 	// wakes the claim a release suspends when it runs. Nor is a hook prompt or a phase-ended
 	// message to a role with no claim this pod answers: such a role comes back only by a start or
 	// a resume, the operator's or the controller's, which brings a pod of its own (store's
-	// idleWaitingRow). The rule reads only whether there is one, so the store reads only that.
+	// idleWaitingRow). A start that waits because the pod was built before its role
+	// (StartWaitsForPodPrefix) is no such delivery either: the pod cannot run it, so it is counted
+	// in StartsWaitingForPod instead. The rule reads only whether there is one, so the store reads
+	// only that.
 	Waiting bool
+	// StartsWaitingForPod are the roles, distinct and in the order their rows were queued, whose
+	// start waits because the issue's pod was built before the deployment defined them (an outbox
+	// start row whose last error begins with StartWaitsForPodPrefix): only the pod's update round
+	// or its release lets them start.
+	StartsWaitingForPod []claim.Role
+	// HeldFor is the reason of the pod's running hold streak (store's pod_holds), "" for none.
+	HeldFor string
 	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in
 	// the outbox: a close's suspend, issue_close or tree_close, or an idle release's role stop.
 	// IssueSuspendQueued is whether the issue's issue_suspend row does, the act of a close that

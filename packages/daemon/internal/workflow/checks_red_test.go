@@ -576,8 +576,8 @@ func implementerPass(t *testing.T, pool *pgxpool.Pool) int {
 	return pass
 }
 
-// implementerRounds is the implementer's count of the review rounds a review ended by requesting
-// changes, which review_round_cap bounds.
+// implementerRounds is the implementer's count of the review rounds, which review_round_cap
+// bounds (recordRound).
 func implementerRounds(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var rounds int

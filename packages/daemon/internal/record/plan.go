@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -148,6 +149,22 @@ func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
 }
 
+// Rank orders the places of one task's line: no place first, then each step by its place, then
+// the retro, then the merge. A move back goes to a place of a lower rank, and a step that ran
+// stands at a lower rank than the place the task stands at, whatever phase each runs as: every
+// step of a role the deployment defines runs as step, so only the place tells two of them apart.
+func (p TaskPlace) Rank() int {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position
+	case PlaceRetro:
+		return math.MaxInt - 1
+	case PlaceMerge:
+		return math.MaxInt
+	}
+	return 0
+}
+
 // valid says whether p is a place a task can stand at.
 func (p TaskPlace) valid() bool {
 	switch p.Kind {
@@ -226,18 +243,18 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 
 // RunningStep is where one running task of a plan stands, as register_plan's answer names it: the
 // task, the act it stands at (a step of the task from place 1, its retro or its merge), and the
-// role whose agent works that act, the role of the phase it runs as (phase.RoleFor). It is the
-// agent an owner tells of a decision for the act that runs now: the task's text carries the
-// decision to every later start of the task, and the agent already at work reads no new start.
+// role whose agent works that act: the role of the phase it runs as (phase.RoleFor), and at step
+// the role the plan names for that step, a role of the deployment. It is the agent an owner tells
+// of a decision for the act that runs now: the task's text carries the decision to every later
+// start of the task, and the agent already at work reads no new start.
 type RunningStep struct {
 	Task  string
 	Place TaskPlace
 	Role  claim.Role
 }
 
-// BuiltinDeployment is the roles a step of this release runs as (plan.BuiltinRoles), read once:
-// the one Deployment the type of a stored step (the workflow's planSteps) and the phase it runs as
-// (Line) are read from.
+// BuiltinDeployment is the deployment of Legion's own roles of a step alone (plan.BuiltinRoles),
+// read once, for a reader that judges or types steps with no deployment of its own to read.
 var BuiltinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 
 // NamedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -251,11 +268,11 @@ func NamedSteps(steps []PlanStep) []plan.Step {
 	return named
 }
 
-// Line is the line of phases a task on steps walks (plan.Line over BuiltinDeployment): the phase
-// of each step's role in the steps' order, then the retro and the merge. A step whose role runs as
-// no phase stands in it as "".
+// Line is the line of phases a task on steps walks (plan.Line): the phase each step's role runs
+// as (plan.RunsAs) in the steps' order, step for a role the deployment defines, then the retro and
+// the merge.
 func Line(steps []PlanStep) []phase.Phase {
-	return plan.Line(NamedSteps(steps), BuiltinDeployment)
+	return plan.Line(NamedSteps(steps))
 }
 
 // LineSteps is the part of line (Line) each step runs: all of it but the retro and the merge,
@@ -296,10 +313,10 @@ func PhaseAt(line []phase.Phase, place TaskPlace, state TaskState) phase.Phase {
 
 // Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
 // of p's tasks, which is the order of their ids; nil where no task runs. The role is the one that
-// works the phase its act runs as (PhaseAt on the task's Line, phase.RoleFor). A running task at no
-// act, which PhaseAt reads as admitted and so as the architect's, at a step its steps do not hold,
-// or at a step whose role runs as no phase is an error: no plan this release takes writes one, and
-// no answer names a running task with no role.
+// works the phase its act runs as (PhaseAt on the task's Line, phase.RoleFor), and at step the
+// role its step names, as Issue.RoleAt reads it. A running task at no act, which PhaseAt reads as
+// admitted and so as the architect's, or at a step its steps do not hold, is an error: no plan this
+// release takes writes one, and no answer names a running task with no role.
 func (p *StoredPlan) Running() ([]RunningStep, error) {
 	var running []RunningStep
 	for _, task := range p.Tasks {
@@ -308,7 +325,12 @@ func (p *StoredPlan) Running() ([]RunningStep, error) {
 		}
 		var role claim.Role
 		if task.Place.Started() {
-			role = phase.RoleFor(PhaseAt(Line(p.Steps[task.Task]), task.Place, task.State))
+			steps := p.Steps[task.Task]
+			at := PhaseAt(Line(steps), task.Place, task.State)
+			role = phase.RoleFor(at)
+			if at == phase.Step {
+				role = claim.Role(steps[task.Place.Position-1].Role)
+			}
 		}
 		if role == "" {
 			return nil, fmt.Errorf("task %s of %s runs at %q %d, which no role of this release works", task.Task, task.Issue, task.Place.Kind, task.Place.Position)
@@ -394,7 +416,8 @@ const planVersionColumns = `issue, generation, version, source, artifact_id, giv
 // giver, at at, becomes GivenBy, which a release before this column reads as the one giver. It
 // answers whether it changed the row: a giver the version names already, as GivenBy or among the
 // earlier givers, changes nothing, so an earlier giver never becomes GivenBy again; and so does a
-// version the store does not hold.
+// version the store does not hold. A change keeps the mark of a write to a plan's rows
+// (noteRowsWritten), which admission reads (RecordsWritten).
 func (s *Postgres) AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, generation uint64, version int, giver claim.Token, at time.Time) (bool, error) {
 	tag, err := tx.Exec(ctx, `update issue_plans set earlier_givers = earlier_givers || given_by, given_by = $4, given_at = $5
 		where issue = $1 and generation = $2 and version = $3 and given_by <> $4 and not ($4 = any(earlier_givers))`,
@@ -402,6 +425,7 @@ func (s *Postgres) AddPlanGiver(ctx context.Context, tx pgx.Tx, issue string, ge
 	if err != nil {
 		return false, fmt.Errorf("add %s to the givers of version %d of the plan of %s at generation %d: %w", giver, version, issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return tag.RowsAffected() > 0, nil
 }
 

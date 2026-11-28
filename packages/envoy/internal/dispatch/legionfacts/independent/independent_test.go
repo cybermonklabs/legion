@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -99,6 +100,152 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 		reading.Scope, reading.Window, computedScope, computedWindow)
 	t.Logf("%d issues compared, %d of them with hours that are all zero, %d roots with awaiting_children hours, %d differences",
 		compared, zeroHours, awaitingChildren, differences)
+}
+
+// TestAStepOfADeploymentRoleReadsAlikeOnBothSides is R1's check over the phase `step`, which the
+// history of the check above never reaches: the two sides compared over issues the sampler saw
+// at a step of a role the deployment defines, `checker`, which is none of Legion's six. STEP-1, a
+// root with no children, implements for 2 h, stands at the checker's step for 3 h and is reviewed
+// for 3 h, so 3 h are under `step` on both sides and none is under `other`. STEP-2 waits in
+// `awaiting_children` from hour 2 to hour 6 while its child STEP-3 stands at the checker's step,
+// so those 4 h are STEP-3's own work and on no part of STEP-2: a root waits on a child at such a
+// step as on a child at any phase from planning to awaiting merge. STEP-4's task is `checker
+// implementer`: the checker's session writes first, at hour 0, so its work time starts there and
+// its first 3 h are the checker's step. STEP-5 stands at the checker's step from hour 4, and the
+// checker's session is the only one that has written on it, which is Legion phase work as an
+// implementer's would be.
+//
+// It fails where the two sides disagree on any fact of the five issues, where either side holds
+// facts the other does not, and where either side does not put an issue's step hours under `step`
+// or starts its work time elsewhere, so a fixture that never reached the step, or a computation
+// that lost it, cannot pass as an agreement.
+func TestAStepOfADeploymentRoleReadsAlikeOnBothSides(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := t.Context()
+	start := time.Date(2026, 11, 10, 4, 0, 0, 0, time.UTC)
+	now := start.Add(8 * time.Hour)
+	at := func(hours int) time.Time { return start.Add(time.Duration(hours) * time.Hour) }
+	exec := func(what, sql string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+
+	exec("seed project", `insert into projects (key, name, default_assignee) values ('STEP', 'Steps', 'alice')`)
+	exec("seed issues", `
+		insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at) values
+			('STEP-1', 'STEP', 1, 'At a step of the checker', 'in_progress', '00000001', null, '{"kind":"system","id":"test"}', $1),
+			('STEP-2', 'STEP', 2, 'A root waiting on its child', 'in_progress', '00000002', null, '{"kind":"system","id":"test"}', $1),
+			('STEP-3', 'STEP', 3, 'A child at a step of the checker', 'in_progress', '00000003', 'STEP-2', '{"kind":"system","id":"test"}', $1),
+			('STEP-4', 'STEP', 4, 'Checked before it is implemented', 'in_progress', '00000004', null, '{"kind":"system","id":"test"}', $1),
+			('STEP-5', 'STEP', 5, 'Worked by the checker alone', 'in_progress', '00000005', null, '{"kind":"system","id":"test"}', $1)
+	`, at(-1))
+	for _, worked := range []struct {
+		key, role string
+		seq, hour int
+	}{
+		{"STEP-1", "implementer", 1, 0},
+		{"STEP-2", "implementer", 1, 0},
+		{"STEP-3", "implementer", 1, 1},
+		{"STEP-4", "checker", 1, 0},
+		{"STEP-4", "implementer", 2, 3},
+		{"STEP-5", "checker", 1, 4},
+	} {
+		exec("seed "+worked.key+"'s "+worked.role, `
+			insert into events (issue_key, seq, type, actor, payload, notify, created_at)
+			values ($1, $2, 'comment.created', $3::text::jsonb, '{}', false, $4)
+		`, worked.key, worked.seq, legiontest.SessionActor(worked.role, worked.key), at(worked.hour))
+	}
+	for _, observed := range []struct {
+		key, field, value string
+		hour              int
+	}{
+		{"STEP-1", "phase", `"implementing"`, 0},
+		{"STEP-1", "phase", `"step"`, 2},
+		{"STEP-1", "step_role", `"checker"`, 2},
+		{"STEP-1", "phase", `"reviewing"`, 5},
+		{"STEP-1", "step_role", `null`, 5},
+		{"STEP-2", "phase", `"implementing"`, 0},
+		{"STEP-2", "phase", `"awaiting_children"`, 2},
+		{"STEP-2", "phase", `"accepting"`, 6},
+		{"STEP-3", "phase", `"implementing"`, 1},
+		{"STEP-3", "phase", `"step"`, 2},
+		{"STEP-3", "step_role", `"checker"`, 2},
+		{"STEP-3", "phase", `"held"`, 6},
+		{"STEP-3", "step_role", `null`, 6},
+		{"STEP-4", "phase", `"step"`, 0},
+		{"STEP-4", "step_role", `"checker"`, 0},
+		{"STEP-4", "phase", `"implementing"`, 3},
+		{"STEP-4", "step_role", `null`, 3},
+		{"STEP-5", "phase", `"step"`, 4},
+		{"STEP-5", "step_role", `"checker"`, 4},
+	} {
+		exec("seed "+observed.key+"'s "+observed.field+" at hour "+strconv.Itoa(observed.hour), `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('STEP', $1, $2, $3::text::jsonb, $4)
+		`, observed.key, observed.field, observed.value, at(observed.hour))
+	}
+
+	population, err := metrics.ReadProject(ctx, database.Pool, "STEP", now)
+	if err != nil {
+		t.Fatalf("read the project's population: %v", err)
+	}
+	computed := map[string]metrics.IssueFacts{}
+	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
+		computed[key] = closed.FactsAt(population.To)
+	}
+	reading, err := independent.Read(ctx, database.Pool, independent.Scope{Project: "STEP"}, independent.Window{To: now})
+	if err != nil {
+		t.Fatalf("read the project independently: %v", err)
+	}
+
+	keys := slices.Sorted(maps.Keys(union(reading.Issues, computed)))
+	if want := []string{"STEP-1", "STEP-2", "STEP-3", "STEP-4", "STEP-5"}; !slices.Equal(keys, want) {
+		t.Errorf("the two sides hold facts of %v, want %v", keys, want)
+	}
+	differences := 0
+	for _, key := range keys {
+		mine, read := reading.Issues[key]
+		theirs, computedIt := computed[key]
+		if !read || !computedIt {
+			t.Errorf("%s has facts from the reading (%t) and from the computation (%t), want both", key, read, computedIt)
+			differences++
+			continue
+		}
+		differences += compareFacts(t, key, mine, theirs)
+	}
+	if differences > 0 {
+		t.Errorf("%d facts differ between the reading and the computation", differences)
+	}
+	// Each side on its own puts each issue's step hours under `step` and starts its work time at
+	// its first worker event, so two sides that both lost a step cannot pass as agreeing.
+	type measured struct {
+		hours map[string]float64
+		work  float64
+	}
+	for _, want := range []struct {
+		key        string
+		step, work float64
+		why        string
+	}{
+		{"STEP-1", 3, 8, "it stood at the checker's step from hour 2 to hour 5"},
+		{"STEP-4", 3, 8, "its checker wrote first, at hour 0, and it stood at the checker's step until hour 3"},
+		{"STEP-5", 4, 4, "its checker wrote first, at hour 4, and it stood at the checker's step from then on"},
+	} {
+		for side, got := range map[string]measured{
+			"the reading":     {reading.Issues[want.key].PhaseHours, reading.Issues[want.key].WorkHours},
+			"the computation": {computed[want.key].PhaseHours, computed[want.key].WorkHours},
+		} {
+			if math.Abs(got.hours["step"]-want.step) > hourTolerance || got.hours["other"] != 0 || math.Abs(got.work-want.work) > hourTolerance {
+				t.Errorf("%s by %s spent %g h in step and %g h in other of %g h of work, want %g h in step and none in other of %g h: %s",
+					want.key, side, got.hours["step"], got.hours["other"], got.work, want.step, want.work, want.why)
+			}
+		}
+	}
+	if waited := reading.Issues["STEP-2"].PhaseHours["awaiting_children"]; waited != 0 {
+		t.Errorf("STEP-2 by the reading spent %g h in awaiting_children, want none: its child stood at the checker's step through all of it", waited)
+	}
 }
 
 // TestIndependentReadAsOfSnapshotAndTitleTieBreak: Read stands what it takes from the log as of

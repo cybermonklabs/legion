@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -16,9 +17,10 @@ import (
 // these folds.
 //
 // A part folds the per-issue values IssueFacts holds (factsOf), which dispatch://INFRA-5577
-// stores as one row an issue: each finished issue's work time, its part of each of the seven
-// bars, its idle hours in each role, its slot wait, its rework row and its children. A filing is
-// an IssueFiling, which that slice stores as rows too.
+// stores as one row an issue: each finished issue's work time, its part of each of its bars (the
+// seven, and one for each role the deployment defines whose step it worked), its idle hours in
+// each role, its slot wait, its rework row and its children. A filing is an IssueFiling, which
+// that slice stores as rows too.
 //
 // Every series is stored in three cuts (R6, D5), which CutSeries names: every issue
 // (`<series>`), the roots of their trees (`<series>:roots`, an issue whose tree root is itself)
@@ -37,8 +39,10 @@ import (
 // day is in is a zero part, and reads as zero counts and no quantile.
 
 // The series of the six Legion evals before their cut (CutSeries). legion-phase-time's series
-// are its seven bars' roles (architect, planner, implementer, tester, reviewer, merger and
-// no_role), legion-idle-time's the six roles, and legion-splitting's filings FilingSeries.
+// are its bars' roles: the seven bars' (architect, planner, implementer, tester, reviewer, merger
+// and no_role), and the role of each step of a role the deployment defines that a finished issue
+// worked (barsOf). legion-idle-time's are the six roles, and legion-splitting's filings
+// FilingSeries.
 const (
 	// SeriesHours is legion-work-time's (each finished issue's work time) and legion-slot-wait's
 	// (each finished issue's slot wait): a sample series.
@@ -159,11 +163,21 @@ func WorkTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 // finished on it: in each cut, one part per bar holding every issue's hours on the bar as a
 // sample, zero where no hour of the issue fell on it, so each bar's median is over the same
 // issues (metric 2); the bar's five segments, summed over the issues that hold hours on it, and
-// how many those are (CountIssues) are its counts.
+// how many those are (CountIssues) are its counts. The bars of a cut are the seven and one for
+// each role the deployment defines whose step an issue of the cut worked (stepRolesIn, barsOf),
+// so an issue of the cut that worked no step of that role is a zero on its bar too. A day on
+// which no issue of the cut worked such a step builds no part of the role's bar, and the fold
+// counts that day's issues on it as zeros (FoldPhaseTime).
 func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 	parts := make([]measures.DayPart, 0, len(Cuts)*len(bars))
 	for _, cut := range Cuts {
-		for _, bar := range bars {
+		var roles []string
+		for _, facts := range finished {
+			if InCut(cut, facts.Root) {
+				roles = stepRolesIn(roles, facts.Bars)
+			}
+		}
+		for _, bar := range barsOf(roles) {
 			values := make([]float64, 0, len(finished))
 			var segments Segments
 			holding := 0
@@ -182,6 +196,18 @@ func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 		}
 	}
 	return parts
+}
+
+// stepRolesIn is roles with each role of an issue's parts of metric 2 (IssueFacts.Bars,
+// barPartsOf) added that names none of the seven bars (ownBar) and that roles does not hold: the
+// roles the deployment defines whose step the issue's timeline holds.
+func stepRolesIn(roles []string, parts map[string]BarPart) []string {
+	for role := range parts {
+		if !ownBar(role) && !slices.Contains(roles, role) {
+			roles = append(roles, role)
+		}
+	}
+	return roles
 }
 
 // barCounts is a bar's segments and the issues holding hours on it, as its part's counts.
@@ -393,16 +419,30 @@ type PhaseTimeFold struct {
 }
 
 // FoldPhaseTime is legion-phase-time over parts, cut by cut
-// (computed:legion/metrics.FoldPhaseTime): the seven bars of metric 2 (bars), each with its
-// segments summed, and the idle share, the bars' rounded idle hours over their rounded hours;
-// nil when parts hold no part of any bar's series in the cut.
+// (computed:legion/metrics.FoldPhaseTime): the bars of metric 2, the seven (bars) and one for each
+// role the deployment defines whose bar a part of the cut is of (stepBarsIn, barsOf), each with
+// its segments summed, and the idle share, the bars' rounded idle hours over their rounded hours;
+// nil when parts hold no part of any bar's series in the cut. parts are the eval's own, so every
+// series of the cut that names none of the seven is such a role's bar.
+//
+// Every bar's median is over every finished issue of the cut (metric 2), and a day builds a part
+// of each of the seven but of a role's bar only where an issue of the cut that finished on it
+// worked the role's step (PhaseTimeDay). So a role's samples are padded with a zero for each
+// finished issue of the cut they hold no sample of, up to the N of the no-role bar, which holds
+// every one (paddedParts): a bar whose samples left those issues out would read its median and
+// its N over fewer issues than its peers.
 func FoldPhaseTime(parts []measures.DayPart, cut Scope) *PhaseTimeFold {
+	roles, finished := stepBarsIn(parts, cut)
 	fold := &PhaseTimeFold{Bars: map[string]BarFold{}}
 	var whole, idle float64
-	for _, bar := range bars {
+	for _, bar := range barsOf(roles) {
 		series := CutSeries(bar.Role, cut)
 		added := measures.FoldSeries(parts, series)
-		samples := sampleFoldOf(parts, series, added)
+		sampled := parts
+		if bar.step {
+			sampled = paddedParts(parts, series, finished)
+		}
+		samples := sampleFoldOf(sampled, series, added)
 		if samples == nil {
 			continue
 		}
@@ -422,6 +462,45 @@ func FoldPhaseTime(parts []measures.DayPart, cut Scope) *PhaseTimeFold {
 		fold.IdleShare = new(round(idle / whole))
 	}
 	return fold
+}
+
+// stepBarsIn is the roles the deployment defines whose bar a part of cut among parts is of, the
+// series that name none of the seven bars (ownBar), each once, and how many samples the cut's
+// no-role bar holds: every finished issue of the cut, since a day builds that bar in every cut
+// (PhaseTimeDay).
+func stepBarsIn(parts []measures.DayPart, cut Scope) ([]string, int) {
+	var roles []string
+	finished := 0
+	noRole := CutSeries(barNoRole, cut)
+	for _, part := range parts {
+		if part.Series == noRole {
+			finished += len(part.Samples)
+			continue
+		}
+		role, of := SplitCutSeries(part.Series)
+		if of == cut && !ownBar(role) && !slices.Contains(roles, role) {
+			roles = append(roles, role)
+		}
+	}
+	return roles, finished
+}
+
+// paddedParts is the parts of series among parts, and one more holding a zero for each of the
+// finished issues of the cut they hold no sample of, where finished counts every one
+// (stepBarsIn): the samples a role's bar reads its N and its median off (FoldPhaseTime).
+func paddedParts(parts []measures.DayPart, series string, finished int) []measures.DayPart {
+	var own []measures.DayPart
+	held := 0
+	for _, part := range parts {
+		if part.Series == series {
+			own = append(own, part)
+			held += len(part.Samples)
+		}
+	}
+	if missing := finished - held; missing > 0 {
+		own = append(own, measures.SamplesPart(time.Time{}, series, make([]float64, missing), nil))
+	}
+	return own
 }
 
 // ShareFold is a share folded: the summed numerator over the summed denominator, Share nil when

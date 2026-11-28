@@ -24,7 +24,7 @@ import (
 // write follows. The root keeps its phase, its linger stays unarmed, none of its claims is stopped,
 // and the architect is told which child left and how. What the child's claims get is the
 // status's: a child closed as done by a human has every claim closed (issue_close); one closed at
-// its merge has five claims closed and the role that works its production check kept for the
+// its merge has every claim closed but that of the role that works its production check, kept for the
 // check the merge opens, whose close writes the suspension (merge_close_test.go); and one parked
 // in backlog, icebox or triage has every claim suspended, and its pod goes with the Sandbox the
 // one IssueSuspend its leave writes deletes. The merged child writes none at its close: that

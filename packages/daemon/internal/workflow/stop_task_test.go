@@ -48,8 +48,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		statuses := len(issueOutboxOf(t, pool, root.Key, string(record.OutboxKindDispatchStatus)))
 		stop := ownersStop(t, root, "a")
 
@@ -127,9 +127,9 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "acceptance:owner")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 
 		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
@@ -185,9 +185,9 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 		apply := applyFacts(t, pool, engine)
 
@@ -243,7 +243,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		planned := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, planned.Key, planned.Generation, "implementer", "tester")
-		move(t, pool, engine, planned.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, planned.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		apply := applyFacts(t, pool, engine)
 		for _, tc := range []struct {
 			name    string
@@ -301,7 +301,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
@@ -376,7 +376,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 					issue = stepChild(t, pool, tc.key, phase.Admitted, nil)
 				}
 				seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer")
-				move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+				move(t, pool, engine, issue.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 				leave(t, pool, engine, issue.Key, tc.status)
 				if task := taskOf(t, pool, engine, issue.Key); task.State != tc.state {
 					t.Fatalf("task a of %s is %s before the stop, want %s", issue.Key, task.State, tc.state)

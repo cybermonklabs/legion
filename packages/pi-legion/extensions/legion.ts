@@ -783,10 +783,11 @@ export default function legionExtension(pi: PiApi): void {
        * INFRA-927: the session measures its six capability rows on this interval, while it is
        * idle, up to three times, until every row is present — a check that lost the boot-time
        * race stayed reported open for the session's whole life, since the boot measured once and
-       * never again. The architect measures first at the sixth tick as every other role does
-       * (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its extra readies make
-       * its waiting notices due at once, which is the same release a relaunched architect's ready
-       * already makes.
+       * never again. The architect measures first at the sixth tick as every other role of
+       * `LEGION_ROLES` does (`CAPABILITY_FIRST_DUE_TICK` plus its index in `LEGION_ROLES`); its
+       * extra readies make its waiting notices due at once, which is the same release a
+       * relaunched architect's ready already makes. A role of the deployment, outside
+       * `LEGION_ROLES`, measures first at the twelfth tick.
        *
        * The measurement's input is snapshotted here, since the host's accessors answer only from
        * a handler and throw at factory time, and it is read before `registerLegionTool()` below,

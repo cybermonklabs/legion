@@ -187,9 +187,11 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if board.Project != "INFRA" {
 		t.Fatalf("the board names project %q, want INFRA", board.Project)
 	}
-	// The twelve columns the board answers, left to right, each with the label the view draws over
-	// it, written out rather than read from legion.Columns and legionBoardColumnLabels, which the
-	// route is built from: a reorder, a lost column or a changed label fails here.
+	// The thirteen columns the board answers, left to right, each with the label the view draws
+	// over it, written out rather than read from legion.Columns and legionBoardColumnLabels, which
+	// the route is built from: a reorder, a lost column or a changed label fails here. Step stands
+	// between Reviewing and Accepting, where a task of the default steps would put a step of a role
+	// the deployment defines.
 	wantColumns := []struct{ id, label string }{
 		{"queue", "Queue"},
 		{"design", "Design"},
@@ -197,6 +199,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		{"implementing", "Implementing"},
 		{"testing", "Testing"},
 		{"reviewing", "Reviewing"},
+		{"step", "Deployment step"},
 		{"accepting", "Accepting"},
 		{"retro", "Retro"},
 		{"merging", "Merging"},
@@ -236,6 +239,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 		legion.ColumnPlanning:         {},
 		legion.ColumnTesting:          {},
 		legion.ColumnReviewing:        {},
+		legion.ColumnStep:             {},
 		legion.ColumnAccepting:        {},
 		legion.ColumnRetro:            {},
 		legion.ColumnMerging:          {},
@@ -319,6 +323,39 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 	}
 	if got := legionColumnKeys(t, board, legion.ColumnMerging); !slices.Equal(got, []string{"INFRA-2", "INFRA-3"}) {
 		t.Errorf("the Merging column holds %v, want the issues in merging and awaiting_merge", got)
+	}
+}
+
+// TestAnIssueAtAStepIsOnTheStepColumn: an issue at `step`, where a role the deployment defines
+// works a step of its task, is on one card, in the Step column between Reviewing and Accepting. No
+// column of Legion's own phases is its: such a step is of any type the deployment names, so
+// neither Testing nor Reviewing says what it is, and a phase the board placed in no column would
+// put the issue on no card while its role works it.
+func TestAnIssueAtAStepIsOnTheStepColumn(t *testing.T) {
+	t.Parallel()
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	key := seedLegionIssue(t, database, "INFRA", 1, "An issue at a step of the checker", "a", nil, "")
+	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"step"`, now.Add(-time.Hour))
+	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
+
+	board := legionBoardOf(t, handler, "INFRA")
+	ids := make([]string, len(board.Columns))
+	var in []string
+	for index, column := range board.Columns {
+		ids[index] = column.ID
+		if slices.ContainsFunc(column.Cards, func(card legionBoardCard) bool { return card.Key == key }) {
+			in = append(in, column.ID)
+		}
+	}
+	if !slices.Equal(in, []string{"step"}) {
+		t.Fatalf("%s at step is on cards of the columns %v, want one card, in the step column", key, in)
+	}
+	if step := slices.Index(ids, "step"); step < 1 || step+1 >= len(ids) ||
+		ids[step-1] != legion.ColumnReviewing || ids[step+1] != legion.ColumnAccepting {
+		t.Errorf("the columns are %v, want step between reviewing and accepting", ids)
 	}
 }
 

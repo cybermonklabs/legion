@@ -177,8 +177,8 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
-	st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
-		return record.FillIdleClaims(ctx, record.NewStore(), tx, issue, at, claims)
+	st.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, stepRole claim.Role, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, record.NewStore(), tx, issue, at, stepRole, claims)
 	})
 	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'testing' where key = $1`, rootIssue); err != nil {
 		t.Fatalf("move %s into testing: %v", rootIssue, err)
@@ -691,7 +691,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 }
 
 // A paused cancel whose ReleaseCancelPause carries a backstop and lacks a rule of who gets it, the
-// workflow's open phase's worker (OpenPhaseRole) or whether that worker gets one (GetsBackstop), is
+// workflow's open phase's worker (OpenRoleAt) or whether that worker gets one (GetsBackstop), is
 // refused with an error that names each rule it lacks, before it reads or writes anything
 // (checkBackstopRules): the release stays marked, and no stop, pod hold, backstop, decline or start
 // is recorded. Where the cancel skipped the backstop in silence instead, it armed none for a worker
@@ -701,7 +701,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 // and arms the implementer's backstop.
 func TestACancelWhileThePauseHoldsABackstopAndNoBackstopRuleIsRefused(t *testing.T) {
 	t.Parallel()
-	const openPhaseRole, getsBackstopRule = "ReleaseCancelPause.OpenPhaseRole", "ReleaseCancelPause.GetsBackstop"
+	const openRoleAt, getsBackstopRule = "ReleaseCancelPause.OpenRoleAt", "ReleaseCancelPause.GetsBackstop"
 	at := pausedAt.Add(time.Minute)
 	for _, act := range []struct {
 		name     string
@@ -730,19 +730,19 @@ func TestACancelWhileThePauseHoldsABackstopAndNoBackstopRuleIsRefused(t *testing
 				paused  ReleaseCancelPause
 				missing []string
 			}{
-				{name: "no GetsBackstop", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker},
+				{name: "no GetsBackstop", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, OpenRoleAt: openWorker},
 					missing: []string{getsBackstopRule}},
-				{name: "no OpenPhaseRole", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, GetsBackstop: getsBackstop},
-					missing: []string{openPhaseRole}},
+				{name: "no OpenRoleAt", paused: ReleaseCancelPause{At: at, Backstop: time.Hour, GetsBackstop: getsBackstop},
+					missing: []string{openRoleAt}},
 				{name: "neither rule", paused: ReleaseCancelPause{At: at, Backstop: time.Hour},
-					missing: []string{openPhaseRole, getsBackstopRule}},
+					missing: []string{openRoleAt, getsBackstopRule}},
 			} {
 				_, err := act.run(st, refused.paused)
 				if err == nil {
 					t.Fatalf("%s with a backstop and %s while paused went through, want it refused naming the rule it lacks",
 						act.name, refused.name)
 				}
-				for _, rule := range []string{openPhaseRole, getsBackstopRule} {
+				for _, rule := range []string{openRoleAt, getsBackstopRule} {
 					if named, want := strings.Contains(err.Error(), rule), slices.Contains(refused.missing, rule); named != want {
 						t.Fatalf("%s with a backstop and %s = %v; names %s %t, want %t", act.name, refused.name, err, rule, named, want)
 					}
@@ -770,7 +770,7 @@ func TestACancelWhileThePauseHoldsABackstopAndNoBackstopRuleIsRefused(t *testing
 
 			// The control: the same act with both rules records the implementer stopped by the
 			// pause, holds the pod and arms the implementer's backstop an hour after the cancel.
-			cancelled, err := act.run(st, ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: implementingWorker,
+			cancelled, err := act.run(st, ReleaseCancelPause{At: at, Backstop: time.Hour, OpenRoleAt: openWorker,
 				GetsBackstop: getsBackstop})
 			if err != nil || cancelled.Pause != pause.ID || cancelled.Declined != act.declines ||
 				!slices.Equal(cancelled.Stopped, []claim.Role{claim.RoleImplementer}) {
@@ -1101,13 +1101,14 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 }
 
 // The store's rule for a start that waits for its admission slot (slotWaitingStart, read by the
-// idle view and by WaitsForItsSlot) repeats record's outboxInOrder, which holds such a start back
+// idle view and by SlotWaitingStarts) repeats record's outboxInOrder, which holds such a start back
 // until the slot comes. The two must agree about one row encoded as the workflow writes it, or the
 // idle rule holds the pod of an issue waiting in the line again, or releases a pod under a start
 // that is due. For a start marked to wait: without a slot the outbox lists no due start, the idle
-// view reads nothing waiting, and the issue waits for its slot; with a slot the start is due, the
-// view reads it as waiting, and the issue no longer waits. An ordinary start, whose payload carries
-// no `needsSlot`, is due, holds the pod and makes no wait, whether a slot stands or not.
+// view reads nothing waiting, and SlotWaitingStarts answers the start with the role, phase and run
+// it was queued for; with a slot the start is due, the view reads it as waiting, and
+// SlotWaitingStarts answers none. An ordinary start, whose payload carries no `needsSlot`, is due,
+// holds the pod and is answered by neither read, whether a slot stands or not.
 func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -1140,23 +1141,28 @@ func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 			}
 			check := func(slot bool) {
 				t.Helper()
-				var due, waits bool
+				var due bool
+				var starts []WaitingStart
 				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					rows, err := record.NewStore().DueRows(ctx, tx, "LEGION", rootIssue, []record.OutboxKind{record.OutboxKindSupervise}, time.Now().Add(time.Minute))
 					if err != nil {
 						return err
 					}
 					due = slices.ContainsFunc(rows, func(r record.OutboxRow) bool { return r.ID == id })
-					waits, err = records.WaitsForItsSlot(ctx, tx, rootIssue)
+					starts, err = records.SlotWaitingStarts(ctx, tx, rootIssue)
 					return err
 				}); err != nil {
 					t.Fatalf("read the outbox: %v", err)
 				}
 				held := tc.needsSlot && !slot
+				var wantStarts []WaitingStart
+				if held {
+					wantStarts = []WaitingStart{{Role: claim.RoleImplementer, Phase: phase.Implementing, Generation: 1}}
+				}
 				view := idleViewOf(t, st, rootIssue)
-				if due == held || waits != held || view.Waiting == held {
-					t.Fatalf("with a slot %t: due %t, waits for its slot %t, the idle view waiting %t; want due %t, waits %t, waiting %t",
-						slot, due, waits, view.Waiting, !held, held, !held)
+				if due == held || !slices.Equal(starts, wantStarts) || view.Waiting == held {
+					t.Fatalf("with a slot %t: due %t, the starts that wait for their slot %+v, the idle view waiting %t; want due %t, starts %+v, waiting %t",
+						slot, due, starts, view.Waiting, !held, wantStarts, !held)
 				}
 			}
 
@@ -1166,6 +1172,67 @@ func TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot(t *testing.T) {
 			}
 			check(true)
 		})
+	}
+}
+
+// SlotWaitingStarts judges no start: with the task of `checker linter` at the linter's step, it
+// answers the slot-waiting start of the checker's step, which the task has left, beside the
+// linter's, each with the role, phase and run it was queued for, oldest first. Which of them
+// silences a backstop is the workflow's to judge, by record.Issue.HoldsQueued (its podBackstopDue,
+// which TestABackstopWakesNoWorkerOfAnIssueThatWaitsForItsSlot holds at step). The issue's record
+// reading the linter as its step's role is the test's premise: a read that judged the starts by
+// the step would answer the linter's alone.
+func TestTheStartsThatWaitForTheirSlotAreAnsweredWhateverStepTheTaskStandsAt(t *testing.T) {
+	t.Parallel()
+	const checker, linter = claim.Role("checker"), claim.Role("linter")
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	inTx(t, st, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: rootIssue, Tree: rootIssue, Project: "LEGION", Title: rootIssue, Phase: phase.Step,
+			Generation: 1, Status: "in_progress", Rank: "A", LastDispatchSeq: 1,
+			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		v := record.PlanVersion{Issue: rootIssue, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: claim.Token("legion-legion-legion-208-architect"), GivenAt: time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)}
+		task := record.PlanTask{Issue: rootIssue, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 1, Role: string(checker), Type: "testing"},
+			{Issue: rootIssue, Generation: 1, Task: "a", Position: 2, Role: string(linter), Type: "review"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, rootIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+	})
+	slotRecords := podRecords(t, st)
+	var issue *record.Issue
+	var starts []WaitingStart
+	inTx(t, st, func(tx pgx.Tx) error {
+		for _, role := range []claim.Role{checker, linter} {
+			row, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: role,
+				Generation: 1, Phase: phase.Step, Task: "Continue.", NeedsSlot: true}, time.Now())
+			if err != nil {
+				return err
+			}
+			if err := records.Enqueue(ctx, tx, row); err != nil {
+				return err
+			}
+		}
+		var err error
+		if issue, err = records.Issue(ctx, tx, rootIssue); err != nil {
+			return err
+		}
+		starts, err = slotRecords.SlotWaitingStarts(ctx, tx, rootIssue)
+		return err
+	})
+	if issue == nil || issue.Phase != phase.Step || issue.Generation != 1 || issue.StepRole != linter {
+		t.Fatalf("UNKNOWN: %s reads %+v, want it at step at generation 1 with the linter's step running: the test's premise", rootIssue, issue)
+	}
+	want := []WaitingStart{{Role: checker, Phase: phase.Step, Generation: 1}, {Role: linter, Phase: phase.Step, Generation: 1}}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("with the linter's step running, the starts that wait for their slot = %+v, want %+v", starts, want)
 	}
 }
 

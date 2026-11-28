@@ -70,7 +70,7 @@ func TestAPlanStoredByTheReleaseBeforeComparesAsItWasGiven(t *testing.T) {
 		key, gen := root.Key, root.Generation
 		steps := givenTask(t, "", "implementer", "tester", "reviewer").Steps
 		seedPlanOfTheReleaseBefore(t, pool, key, gen, record.PlanSourceOwner, "a", "Build the widget.", false, steps)
-		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		before := planStandingOf(t, pool, engine, key, gen)
 		if task := before.task(t); task.State != record.TaskRunning || task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) || task.ParentRef != "" {
 			t.Fatalf("task a of the release before after its gate opened = %+v, want it running at step 1 with no parent", task)
@@ -100,7 +100,7 @@ func TestAPlanStoredByTheReleaseBeforeComparesAsItWasGiven(t *testing.T) {
 		key, gen := root.Key, root.Generation
 		seedPlanOfTheReleaseBefore(t, pool, key, gen, record.PlanSourceDefault, plan.DefaultTask, "The project's default steps.", true,
 			config.Project{}.RunsByDefault())
-		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		before := planStandingOf(t, pool, engine, key, gen)
 		if task := before.task(t); task.Task != plan.DefaultTask || task.State != record.TaskRunning || before.issue.Phase != phase.Planning {
 			t.Fatalf("the default task of the release before after its gate opened = %+v in %s, want default running in planning", task, before.issue.Phase)

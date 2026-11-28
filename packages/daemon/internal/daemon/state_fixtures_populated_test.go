@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -103,6 +105,9 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //   - LEGION-218 and LEGION-219, reviewing roots whose rounds wait on GitHub's merge state: the
 //     first for GitHub's first answer, its architect suspended by the operator; the second held
 //     `behind` its base and told of it, its architect retired by the close of the run before.
+//   - LEGION-240, a root whose task runs the step of checker, a role the deployment defines
+//     (populatedDeployment), at work in a slot, whose checker's start waits for its pod; and
+//     LEGION-241, a root held from that step with the checker's failed claim nothing will wake.
 func populatedRecord(s *seeding) {
 	issue := func(key, tree string, ph phase.Phase, status, repo string, generation uint64, seq int64) record.Issue {
 		branch := "main"
@@ -200,6 +205,19 @@ func populatedRecord(s *seeding) {
 	childAtWork := issue("LEGION-220", "LEGION-208", phase.Implementing, "in_progress", "acme/widgets", 1, 15)
 	childAtWork.Parent = new("LEGION-208")
 
+	// LEGION-240: a root whose owner's plan `implementer checker` moved on to the checker's step, a
+	// role the deployment defines, which the phase alone does not name (record.Issue.StepRole, read
+	// from the plan rows below). It holds a slot and is at work, but its pod was built before the
+	// deployment defined the checker, so the checker's start waits for that pod's update round or
+	// its release (populatedOutbox): no claim of the checker exists yet.
+	stepAtWork := issue("LEGION-240", "LEGION-240", phase.Step, "in_progress", "acme/widgets", 1, 16)
+	// LEGION-241: the same plan at the same step, held from it when its architect escalated the
+	// checker's failed claim, as LEGION-210 was from implementing (workflow's retryOrEscalate). It
+	// keeps the slot the step holds (record.KeepsSlot), as LEGION-210 does, and the failed claim
+	// stays its worker, keyed by the role of the deployment (populatedClaims).
+	stepHeld := issue("LEGION-241", "LEGION-241", phase.Held, "in_progress", "acme/widgets", 1, 17)
+	stepHeld.Hold = &record.Hold{From: phase.Step, Reason: record.HoldEscalated}
+
 	s.putRecorded(
 		recorded{merged, mirror("LEGION-207", "done", 3, ""), at(22, 8, 40, 12)},
 		recorded{root, mirror("LEGION-208", "in_progress", 4, ""), at(22, 8, 58, 14)},
@@ -213,6 +231,8 @@ func populatedRecord(s *seeding) {
 		recorded{waiting, mirror("LEGION-218", "needs_review", 10, ""), at(22, 9, 7, 21)},
 		recorded{stuck, mirror("LEGION-219", "needs_review", 11, ""), at(20, 16, 42, 58)},
 		recorded{childAtWork, mirror("LEGION-220", "in_progress", 15, "LEGION-208"), at(22, 9, 4, 40)},
+		recorded{stepAtWork, mirror("LEGION-240", "in_progress", 16, ""), at(22, 8, 36, 9)},
+		recorded{stepHeld, mirror("LEGION-241", "in_progress", 17, ""), at(22, 8, 12, 47)},
 	)
 	// LEGION-217: what Dispatch says of a child of LEGION-208 its architect has not released, which
 	// the daemon keeps no record of (blockers.Mirror writes every issue fact it applies).
@@ -244,7 +264,7 @@ func populatedRecord(s *seeding) {
 
 	// The issues the daemon has started hold the cap's slots (admit's promotion, record.Store.PutSlot):
 	// LEGION-211's tree has not been opened, LEGION-209 waits at admitted, LEGION-207 closed and
-	// LEGION-214's label is off.
+	// LEGION-214's label is off. The seven outside the P0 bound fill the file's cap of 7.
 	for _, slot := range []record.Slot{
 		{Issue: "LEGION-208", Index: 0, AdmittedAt: at(21, 18, 42, 11)},
 		{Issue: "LEGION-210", Index: 1, AdmittedAt: at(21, 19, 5, 26)},
@@ -252,13 +272,15 @@ func populatedRecord(s *seeding) {
 		{Issue: "LEGION-218", Index: 3, AdmittedAt: at(22, 8, 14, 52)},
 		{Issue: "LEGION-219", Index: 4, AdmittedAt: at(19, 10, 27, 44)},
 		{Issue: "LEGION-220", Index: 5, AdmittedAt: at(22, 7, 52, 18)},
+		{Issue: "LEGION-240", Index: 6, AdmittedAt: at(22, 7, 58, 3)},
+		{Issue: "LEGION-241", Index: 7, AdmittedAt: at(22, 7, 41, 20)},
 	} {
 		s.in("the slot of "+slot.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutSlot(ctx, tx, slot) })
 	}
 	// The promotion of each root it started opened that root's tree (record.Store.OpenTreeLifecycle).
 	// LEGION-207's stays open while its tree lingers: the outbox reserves its cleanup when the linger
 	// ends (outbox's reservedTreeClose).
-	s.openTrees("LEGION", "LEGION-207", "LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219")
+	s.openTrees("LEGION", "LEGION-207", "LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241")
 	// LEGION-200's tree, which an operator opened for a root the daemon keeps no record of
 	// (store.Store.OpenOperatorTreeLifecycle, the operator's spawn), handed LEGION-210 and LEGION-211
 	// over; its lifecycle stands open while a claim of it does.
@@ -326,6 +348,8 @@ func populatedRecord(s *seeding) {
 			pendingOnBasis, "c81e5d3a-7f42-4b96-a0d8-3e6f9b1c2a75"),
 		{Issue: "LEGION-218", ArtifactID: "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38", LatestVersion: 5, ApprovedVersion: new(5), EverOpened: true},
 		{Issue: "LEGION-219", ArtifactID: "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54", LatestVersion: 2, ApprovedVersion: new(2), EverOpened: true},
+		{Issue: "LEGION-240", ArtifactID: "2c6e8a40-5f17-4b93-8d2e-7a1c9f3b5e60", LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true},
+		{Issue: "LEGION-241", ArtifactID: "8d0f2b64-1a39-4c75-9e4b-3c7a5d9f1b82", LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true},
 	} {
 		gate.Step = record.DesignStepSpec
 		s.in("the gate of "+gate.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutGate(ctx, tx, gate) })
@@ -385,6 +409,35 @@ func populatedRecord(s *seeding) {
 			Pass: 3, Rounds: 2, BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 		})
 	})
+	// LEGION-240's and LEGION-241's architects gave the owner's plan `implementer checker`, the
+	// checker a step of the type testing (workflow's planGiven, record.Store.PutPlan), and each task
+	// moved on to the checker's step 2 when its implementer completed (workflow's moveTask,
+	// record.Store.MoveTask), which is where the step role is read from.
+	for _, key := range []string{"LEGION-240", "LEGION-241"} {
+		s.in(key+"'s plan", func(ctx context.Context, tx pgx.Tx) error {
+			version := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: populatedStepPlans[key], Source: record.PlanSourceOwner,
+				GivenBy: s.token("LEGION", key, claim.RoleArchitect), GivenAt: at(22, 7, 40, 0)}
+			task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget, then check it.", State: record.TaskWaiting}
+			steps := []record.PlanStep{
+				{Issue: key, Generation: 1, Task: "a", Position: 1, Role: string(claim.RoleImplementer), Type: "implementation"},
+				{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(populatedChecker), Type: "testing"},
+			}
+			if err := s.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
+				return err
+			}
+			return s.records.MoveTask(ctx, tx, key, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
+		})
+	}
+}
+
+// populatedChecker is the role the populated deployment defines (populatedDeployment), whose step
+// LEGION-240 and LEGION-241 stand at.
+const populatedChecker claim.Role = "checker"
+
+// populatedStepPlans is the document of the owner's plan of each of LEGION-240 and LEGION-241.
+var populatedStepPlans = map[string]string{
+	"LEGION-240": "5e7a9c12-3b4d-4f68-a0c2-9d1e3f5b7a84",
+	"LEGION-241": "b3d5f7a9-1c2e-4d46-8f80-6a2c4e6b8d03",
 }
 
 // populatedClaims writes the populated record's phases rows and claims, and the capability report
@@ -436,6 +489,11 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Issue: "LEGION-219", Role: claim.RoleReviewer, Claim: token("LEGION-219", claim.RoleReviewer), Pass: 2, Rounds: 1, Entry: 2,
 			Decision: &record.ReviewDecision{State: "approved", Head: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 				ToldStuckHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284", ToldStuckState: record.MergeStateBehind}},
+		// The move of LEGION-240's and LEGION-241's tasks into the checker's step raised the
+		// checker's entry, which LEGION-240's waiting start carries and LEGION-241's failed claim was
+		// given.
+		{Issue: "LEGION-240", Role: populatedChecker, Entry: 1, EntryRaisedAt: at(22, 8, 36, 9)},
+		{Issue: "LEGION-241", Role: populatedChecker, Claim: token("LEGION-241", populatedChecker), Entry: 1, EntryRaisedAt: at(22, 7, 58, 30)},
 	} {
 		s.in("the phases row of "+row.Issue+" "+string(row.Role), func(ctx context.Context, tx pgx.Tx) error { return s.records.PutPhase(ctx, tx, row) })
 	}
@@ -536,6 +594,13 @@ func populatedClaims(s *seeding, rows populatedRows) {
 		{Token: token("LEGION-219", claim.RoleReviewer), Project: "legion", Tree: "LEGION-219", Issue: "LEGION-219", Role: claim.RoleReviewer,
 			Generation: 3, State: supervise.StateIdle, Session: "ses_reviewer_219", GivenEntry: 2,
 			Locator: populatedPodLocator(token("LEGION-219", claim.RoleReviewer), "LEGION-219", 3), PluginContract: api.ServingFloor},
+		// LEGION-241's checker failed and nothing has launched it since. It is a worker of the step
+		// its hold took the issue from, with no start of that step queued, so nothing will wake it
+		// (workflow.Stranded), as LEGION-210's implementer is of implementing.
+		{Token: token("LEGION-241", populatedChecker), Project: "legion", Tree: "LEGION-241", Issue: "LEGION-241", Role: populatedChecker,
+			Generation: 1, State: supervise.StateFailed, Session: "ses_checker_241", GivenEntry: 1,
+			FailureCause: supervise.CauseDied, Failure: "launch failures ran out", FailedAt: at(22, 8, 12, 40),
+			Budgets: supervise.Budgets{LaunchFailures: 4, Deaths: 1}},
 	} {
 		s.claimAs(c)
 	}
@@ -582,7 +647,11 @@ type populatedRows struct {
 // implementer entry 4's task, and the sweep's start of its architect behind its entry came due two
 // and a half minutes ago and waits behind it (record.Store.HeldRows); LEGION-208's architect's
 // catch-up waits on its row for the moment the wake pacing reserved (the outbox's start writes it
-// in place of a launch, workflow.Config.Reserve).
+// in place of a launch, workflow.Config.Reserve); and the start of LEGION-240's checker ran and
+// found the issue's pod built before the deployment defined the checker, so it waits on its
+// backoff with the wait's text as its last error (outbox's roleWaitsForItsPod,
+// record.Store.RetryOutbox), which is what the issue's `startWaitsForPod` reads
+// (record.Store.StartsWaitingForPod).
 func populatedOutbox(s *seeding) populatedRows {
 	started := s.enqueue("LEGION-211", record.SuperviseRequest{Op: "start", Tree: "LEGION-200", Role: claim.RoleImplementer,
 		Generation: 2, Phase: phase.Implementing, Entry: 1, Task: populatedTask}, at(22, 8, 54, 0))
@@ -597,6 +666,14 @@ func populatedOutbox(s *seeding) populatedRows {
 	s.enqueue("LEGION-208", record.Notice{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: at(22, 9, 18, 3), PacedFrom: at(22, 9, 16, 58),
 		Reason:  "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
 		CatchUp: &record.CatchUp{Generation: 3, Launch: 4, Gates: []record.CatchUpGate{}, Issues: []record.CatchUpIssue{}}}, at(22, 9, 18, 3))
+	checker := s.enqueue("LEGION-240", record.SuperviseRequest{Op: "start", Tree: "LEGION-240", Role: populatedChecker,
+		Generation: 1, Phase: phase.Step, Entry: 1, Task: "Check the widget. Issue: LEGION-240. Phase: step."}, at(22, 8, 36, 9))
+	tried := s.lease(checker, at(22, 8, 36, 10), time.Minute)
+	waits := fmt.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
+		pods.StartWaitsForPodPrefix, populatedChecker, "LEGION-240", "legion-legion-legion-240", populatedChecker, runtime.ErrAwaitsPodUpdate)
+	s.in("the wait of LEGION-240's checker for its pod", func(ctx context.Context, tx pgx.Tx) error {
+		return s.records.RetryOutbox(ctx, tx, tried.ID, tried.LeaseToken, at(22, 9, 36, 10), waits.Error())
+	})
 	return populatedRows{started211: started, running208: running, runningLease: lease.LeaseToken}
 }
 
@@ -609,6 +686,12 @@ func populatedDeployment(s *seeding) composition {
 	// dispatch_token_file, which the loader refuses beside the setting, so the setting is turned on
 	// in the loaded configuration, with no token file, as the loader leaves it under the setting.
 	cfg.DispatchTokenBroker, cfg.DispatchTokenFile = true, ""
+	// The deployment defines the checker, the role LEGION-240's and LEGION-241's steps name
+	// (`roles`). The settings file sets no `roles`, which settings_test.go pins with a prompt file
+	// of its own, so the role is added to the loaded configuration, with the fixed absolute paths
+	// the settings emit.
+	cfg.Roles = []config.Role{{Name: populatedChecker, Type: "testing", PromptFile: "/etc/legion/roles/checker.md",
+		Model: "checker-model", GitHubApp: config.RoleAppReview}}
 	// Four boots of this project, the first four days before this read (store.Store.RecordBoot).
 	for _, booted := range []time.Time{at(18, 14, 3, 27), at(19, 6, 12, 0), at(21, 2, 44, 9), at(22, 9, 15, 2)} {
 		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)

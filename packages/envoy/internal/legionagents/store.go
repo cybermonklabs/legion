@@ -180,9 +180,10 @@ func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) 
 	return succession(entries), nil
 }
 
-// ByIssue answers every session of the issue, by role in workflow order (Roles), then newest
-// first, each with its replacement within its role token. An issue no session worked answers none,
-// and a key of the issue's that does not decode fails the read with ErrMalformedRecord (list).
+// ByIssue answers every session of the issue, by role in the order of the default steps (Roles),
+// each other role after them by name, then newest first, each with its replacement within its role
+// token. An issue no session worked answers none, and a key of the issue's that does not decode
+// fails the read with ErrMalformedRecord (list).
 func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {
 	if err := ValidateIssue(issue); err != nil {
 		return nil, err

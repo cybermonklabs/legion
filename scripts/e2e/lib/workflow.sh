@@ -235,7 +235,8 @@ issue_claim_states() {
 claim_pending_phase() {
   claims_list | jq -r --arg issue "$1" --arg role "$2" '[.claims[] | select(.issue == $issue and .role == $role)] | last | .pending.phase // empty'
 }
-# claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, the architect's and the five
+# claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims (this run's deployment defines
+# no role of its own), the architect's and the five
 # phase roles', ROLE's in one of the states STATES names (space-separated) and every other in one of
 # OTHERS: how a close leaves an issue, whose production check keeps the role the project's
 # `production_check` names apart from the rest (live at a look, suspended between looks, retired

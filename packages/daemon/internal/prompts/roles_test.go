@@ -40,7 +40,7 @@ func rolePart(t *testing.T, name string) string {
 	return string(body)
 }
 
-// Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
+// Every role of Legion's a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 	for _, role := range claim.Roles {

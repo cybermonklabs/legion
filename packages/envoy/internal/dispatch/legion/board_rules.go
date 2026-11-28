@@ -14,7 +14,8 @@ import "fmt"
 // The board's columns. Queue holds no phase: the board route fills it (legionBoardCompute);
 // Design the `admitted` issues on a card that Queue does not hold — the slot
 // holders, and the ones no card stands above, which are on no other issue's count (the board
-// route's legionBoardCompute); Retro `retro` alone; Merging `merging` and `awaiting_merge`; Waiting
+// route's legionBoardCompute); Step the issues at a step of a role the deployment defines,
+// whatever its type; Retro `retro` alone; Merging `merging` and `awaiting_merge`; Waiting
 // on children the parents in `awaiting_children`, whether or not the daemon's blocked list names
 // them (legionBoardCompute); and Held the phase metric 2 puts on the "no role" bar beside
 // `awaiting_person` and `awaiting_children` (the plan's D11).
@@ -25,6 +26,7 @@ const (
 	ColumnImplementing     = "implementing"
 	ColumnTesting          = "testing"
 	ColumnReviewing        = "reviewing"
+	ColumnStep             = "step"
 	ColumnAccepting        = "accepting"
 	ColumnRetro            = "retro"
 	ColumnMerging          = "merging"
@@ -49,7 +51,10 @@ type Column struct {
 // phases share a column is the board's own choice, made here: `retro` has a column of its own, as
 // it has a word of its own in the spec's tables ("Phase words in tables"), Merging holds the two
 // phases those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
-// b74df7a79b), and
+// b74df7a79b), `step` has a column of its own, since a step of a role the deployment defines is
+// of any type its settings name, which neither Testing nor Reviewing would say, and stands after
+// Reviewing, where a task of the default steps would put a step of its own, though a plan can
+// name one at any place, and
 // `awaiting_children` has a column of its own: a parent in it keeps no slot and waits for none,
 // and no role works it. The metrics key an issue's hours by these columns, so an issue's retro
 // hours are under `retro` there too, and on no merger figure.
@@ -60,6 +65,7 @@ var Columns = []Column{
 	{ColumnImplementing, []string{PhaseImplementing}},
 	{ColumnTesting, []string{PhaseTesting}},
 	{ColumnReviewing, []string{PhaseReviewing}},
+	{ColumnStep, []string{PhaseStep}},
 	{ColumnAccepting, []string{PhaseAccepting}},
 	{ColumnRetro, []string{PhaseRetro}},
 	{ColumnMerging, []string{PhaseMerging, PhaseAwaitingMerge}},

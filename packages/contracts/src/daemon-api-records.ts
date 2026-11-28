@@ -16,7 +16,8 @@
 // `fixtures/daemon-api/contracts/`, so no count of entries includes them.
 //
 // Each operation of a fixture has one condition, read against the record before the entry: an added
-// key path, field path, domain value, answer or route is absent from it, and a removed one present.
+// key path, field path, domain value, answer or route is absent from it, a removed one present, and
+// an opened row of `enumerated-fields.json` present and open from no contract yet.
 // A fixture that breaks one is refused, naming the entry and the operation, because it was written
 // over another set of entries than the ones before it here: an entry that changes what another
 // added comes after that entry both in merge order and in id order.
@@ -61,7 +62,12 @@ const EntryAnswerRow = z.strictObject({
 });
 
 /** One row an entry adds to `enumerated-fields.json`, as `EntryFixture` says. */
-const EntryEnumeratedRow = z.strictObject({ answer: word, keyPath: word, values: words });
+const EntryEnumeratedRow = z.strictObject({
+  answer: word,
+  keyPath: word,
+  values: words,
+  open: z.literal(true).optional(),
+});
 
 /**
  * One entry fixture, `fixtures/daemon-api/contracts/<id>_<slug>.json`: what one entry changes of
@@ -85,8 +91,11 @@ const EntryEnumeratedRow = z.strictObject({ answer: word, keyPath: word, values:
  *   before it names holds only the routes and the typed settings the entry adds to that row, and
  *   that row's own `noBody`. A typed setting is its key alone: it is typed from the entry on.
  * - `enumeratedRows`: the rows the entry adds to `enumerated-fields.json`, without `since`: one for
- *   each enumerated field the entry adds a value to, its `values` being those the entry adds. A
- *   field no row before it declares is a new row.
+ *   each enumerated field the entry adds a value to or opens, its `values` being those the entry
+ *   adds. A field no row before it declares is a new row. `open: true` says the entry ends the
+ *   field's enumeration at its own number, the row's `openFrom`: from there a reader takes any
+ *   word of a grammar no list holds. Such a row is one a row before it declares and no entry
+ *   before it opened, and its `values` are empty unless the entry adds a value too.
  */
 export const EntryFixture = z.strictObject({
   answers: z.array(AnswerChange),
@@ -126,11 +135,14 @@ export interface AnswerRow {
   }[];
 }
 
-/** One row of `enumerated-fields.json` (`internal/api`'s `EnumeratedField`). */
+/** One row of `enumerated-fields.json` (`internal/api`'s `EnumeratedField`). `openFrom`, absent
+ *  for a field that is an enumeration at every contract, is the contract from which it is none:
+ *  `values` are its domain below that contract, and a reader at or above it takes any value. */
 export interface EnumeratedFieldRow {
   readonly answer: string;
   readonly keyPath: string;
   readonly values: readonly { readonly value: string; readonly since: number }[];
+  readonly openFrom?: number;
 }
 
 /** Everything of one contract an entry fixture changes: the record of each answer and of each
@@ -464,8 +476,9 @@ function withAnswerRows(
 }
 
 /** `rows` with `entry`'s rows of `enumerated-fields.json` added, each value arriving at the
- *  entry's number and each row's values sorted by value; `refused` names a row that adds a value
- *  the row already holds. */
+ *  entry's number and each row's values sorted by value, and each row it opens open from that
+ *  number; `refused` names a row that adds a value the row already holds, and a row it opens that
+ *  no row before it declares or that an entry before it opened. */
 function withEnumeratedRows(
   entry: NumberedEntry,
   rows: readonly EnumeratedFieldRow[],
@@ -481,6 +494,20 @@ function withEnumeratedRows(
       (row) => row.answer === added.answer && row.keyPath === added.keyPath
     );
     const before = after[at];
+    let openFrom = before?.openFrom;
+    if (added.open === true) {
+      if (before === undefined) {
+        throw refused(
+          `opens \`${added.keyPath}\` of the ${added.answer} answer in enumerated-fields.json, and the rows before it hold no such row`
+        );
+      }
+      if (openFrom !== undefined) {
+        throw refused(
+          `opens \`${added.keyPath}\` of the ${added.answer} answer in enumerated-fields.json, and that row is open from ${openFrom} already`
+        );
+      }
+      openFrom = entry.number;
+    }
     // The row grows value by value, as the daemon's gate grows it (`withEnumeratedRows` in
     // `internal/api`), so a value an added row names twice is refused as one the row before held.
     const held = new Set(before?.values.map(({ value }) => value));
@@ -496,7 +523,12 @@ function withEnumeratedRows(
       ...(before?.values ?? []),
       ...added.values.map((value) => ({ value, since: entry.number })),
     ].sort((a, b) => byString(a.value, b.value));
-    const row = { answer: added.answer, keyPath: added.keyPath, values };
+    const row = {
+      answer: added.answer,
+      keyPath: added.keyPath,
+      values,
+      ...(openFrom !== undefined ? { openFrom } : {}),
+    };
     if (before === undefined) after.push(row);
     else after[at] = row;
   }

@@ -886,7 +886,8 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []c
 }
 
 // launcherBound reports whether pod is one whose launchers this runtime bound: the Secret of every
-// role of l's pod, its launcher roles, exists, is the Sandbox's, binds pod by uid, and records its
+// role the pod was built with (templateRoles: a pod is judged by its own roles, never by a role the
+// deployment defined after it) exists, is the Sandbox's, binds pod by uid, and records its
 // gh bundle's default owner (GitHubDefaultKey, empty for a controller whose project has no GitHub
 // owner), which every role of one pod shares and l takes as its gitHubDefault, every agent's
 // GH_CONFIG_DIR. A running pod an older runtime made (one worker container, no launchers, or one
@@ -901,7 +902,11 @@ func (r *Runtime) bindLauncherSecrets(ctx context.Context, s *sandbox, roles []c
 // credential (cacheLauncherCredential), so the launcher a kept pod's launch waits for is not
 // refused for a read of its own that failed earlier (credentialRetry).
 func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (bool, error) {
-	for _, role := range l.roles {
+	roles := templateRoles(s)
+	if len(roles) == 0 {
+		return false, nil
+	}
+	for _, role := range roles {
 		name := roleSecretName(s.Name, role)
 		secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, name, metav1.GetOptions{})
 		switch {

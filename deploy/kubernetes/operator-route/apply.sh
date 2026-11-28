@@ -2,7 +2,7 @@
 # Writes the operator's models.yml and overlay.yml, read from the directory it is given, into the
 # ConfigMap this directory's pod.yml mounts: legion-operator-route in namespace legion. The operator
 # keeps both files in that directory, and this script writes the ConfigMap from them: to change the
-# model a role uses, edit overlay.yml there and run it again.
+# model of one of Oh My Pi's model roles, edit overlay.yml there and run it again.
 #
 #   deploy/kubernetes/operator-route/apply.sh --context <kube context> <directory>
 #

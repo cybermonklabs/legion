@@ -109,8 +109,9 @@ type DesignGateDocument struct {
 }
 
 // RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
-// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
-// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+// is one of the six Legion roles or a role the deployment defines, and Session the session that
+// holds it on the issue. The role is a string here rather than claim.Role, because this package
+// names Dispatch's wire shapes.
 type RoleHolder struct {
 	Role    string `json:"role"`
 	Session string `json:"session"`

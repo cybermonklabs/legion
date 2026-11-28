@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { type LegionRole, roleToken } from "@legion/contracts";
+import { type LegionRole, type LegionStepRole, roleToken } from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LEGION_PHASES,
@@ -76,7 +76,7 @@ const noControllerGrant = async (sessionId: string): Promise<never> => {
 };
 
 /** The handoff report of a tool that must never complete a phase. */
-const noHandoffReport = async (phase: LegionPhase, role: LegionRole): Promise<never> => {
+const noHandoffReport = async (phase: LegionPhase, role: LegionStepRole): Promise<never> => {
   throw new Error(`no handoff report expected for the ${role} at ${phase}`);
 };
 
@@ -301,6 +301,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "implementing",
         "testing",
         "reviewing",
+        "step",
         "accepting",
         "retro",
         "merging",
@@ -322,10 +323,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
-    role: {
-      type: "string",
-      enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
-    },
+    role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
     giveUp: { type: "number" },
     consumer: { type: "string" },
     throughSeq: { type: "number" },
@@ -835,9 +833,9 @@ test("read_release_records reads the window with this session's claim, and repor
 // Every phase worker reads one description of the tool, whatever its role, and the daemon alone
 // decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
 // no phase worker is given a description of its own. That one description names the `verdict`
-// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
-// held: the description names the tester in other sentences too, so a check of it could not fail.
-// The case holds no word of it.
+// field and its two values, each once in it. The roles the verdict is taken from, the tester and a
+// role of the deployment, are not held: the description names them in other sentences too, so a
+// check of them could not fail. The case holds no word of it.
 test("every phase worker is given the same description of the legion tool", () => {
   const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
     (role) => toolFor(claimSession(role)).description
@@ -2231,7 +2229,7 @@ function legionState(overrides: Record<string, unknown> = {}): LegionState {
   });
 }
 
-/** The phase workers of an issue, in the order the summary lists them under the architect. */
+/** Legion's phase workers of an issue, in the order the summary lists them under the architect. */
 const WORKER_ROLES = ["planner", "implementer", "tester", "reviewer", "merger"] as const;
 
 /** The state at the size that cut the controller's read (dispatch://INFRA-329): the 92 issues
@@ -2439,6 +2437,13 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
+  // A claim of a role of the deployment (the deployment roles' contract entry) is recovered as
+  // Legion's own roles' are.
+  await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
+  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2485,7 +2490,44 @@ test("the controller reads the state without a grant and sets an issue's status 
     isError: true,
   });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// The summary lists each worker of an issue's map, a role of the deployment's after Legion's own in
+// the order of the default steps, so the controller sees the claim that works a step.
+test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
+  const state = stateOf92Issues(1);
+  const running = state.issues["INFRA-100"];
+  const merger = running?.workers?.merger;
+  if (running === undefined || merger === undefined) {
+    throw new Error("INFRA-100 lacks its merger");
+  }
+  running.workers = { checker: merger, ...running.workers };
+  const { daemon } = recordingDaemon({ state });
+  const summary = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
+  // INFRA-100 is the one issue still running, so every indented line is one of its own.
+  const under = text
+    .split("\n")
+    .filter((line) => line.startsWith("  "))
+    .map((line) => line.trim().split(" ")[0]);
+  expect(under).toEqual([
+    "slot",
+    "gate",
+    "architect",
+    "planner",
+    "implementer",
+    "tester",
+    "reviewer",
+    "merger",
+    "checker",
+  ]);
 });
 
 test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {
@@ -3514,9 +3556,9 @@ test("read_state's summary names the live trees and each held issue with its rea
 
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   expect(admissionLines(golden)).toEqual([
-    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220",
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220 LEGION-240 LEGION-241",
     "waiting LEGION-212 LEGION-211 LEGION-216",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219 LEGION-240 LEGION-241",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
     "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",

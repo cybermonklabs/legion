@@ -65,6 +65,13 @@ func (i *Issue) statusAt(at time.Time, status string) *Issue {
 	return i
 }
 
+// stepRan records a run of a step of role, a role the deployment defines, from start to end, and
+// whether it failed and returned its task to an earlier step.
+func (i *Issue) stepRan(role string, start, end time.Time, returned bool) *Issue {
+	i.Runs = append(i.Runs, StepRun{Role: role, Start: start, End: &end, Returned: returned})
+	return i
+}
+
 // observe records one value a read found changed, the JSON text as legion_observations holds it.
 func (i *Issue) observe(field string, at time.Time, value string) *Issue {
 	i.Observed[field] = append(i.Observed[field], Mark{At: at, Value: value})
@@ -339,13 +346,18 @@ func medianOf(fold *SampleFold) float64 {
 }
 
 // timelineOf is an issue's phase timeline written as "<phase> <from>-<to>" in hours after base,
-// which is what a phase test compares.
+// with `step:<role>` for a step of a role the deployment defines, which is what a phase test
+// compares.
 func timelineOf(population *Population, issue *Issue) []string {
 	spans, _ := population.Phases(issue)
 	written := make([]string, 0, len(spans))
 	for _, span := range spans {
+		phase := span.Phase
+		if span.Role != "" {
+			phase += ":" + span.Role
+		}
 		written = append(written, fmt.Sprintf("%s %g-%g",
-			span.Phase, span.Span.From.Sub(base).Hours(), span.Span.To.Sub(base).Hours()))
+			phase, span.Span.From.Sub(base).Hours(), span.Span.To.Sub(base).Hours()))
 	}
 	return written
 }

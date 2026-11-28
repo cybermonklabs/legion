@@ -132,9 +132,10 @@ func growthBetween(first, later IssueFacts) Growth {
 // but the clock.
 //
 // The issue's own inputs are all of them: its opening and close, its merge, its role events, its
-// handoffs, its statuses, every observation of it and its ask turns. Two rules read another
-// issue, and each takes only the inputs that rule reads, at or before the issue's own end, since
-// every span of the issue ends there:
+// handoffs, its statuses, the start and end of each run of its steps of roles the deployment
+// defines, every observation of it and its ask turns. Two rules read another issue, and each
+// takes only the inputs that rule reads, at or before the issue's own end, since every span of
+// the issue ends there:
 //
 //   - A child's time waiting on a person is the stretches its root was recorded in
 //     `awaiting_person` (waitingOnPersonSpans), so a child reads the root's phase marks that open
@@ -145,8 +146,8 @@ func growthBetween(first, later IssueFacts) Growth {
 //     what ends the wait.
 //   - A root's time waiting on its children is its children's working phases over their work
 //     time (waitingOnChildrenSpans), so a root reads each child's role events, handoffs, statuses,
-//     `phase` and `slot` observations and close, which are the whole of what those spans are made
-//     of (Phases and workedOf).
+//     runs of steps of roles the deployment defines, `phase` and `slot` observations and close,
+//     which are the whole of what those spans are made of (Phases and workedOf).
 //
 // An input of another issue that no rule of this one reads moves nothing of its facts, and is
 // left out so that it moves nothing of its row either: a row closed at a later moment holds other
@@ -234,7 +235,10 @@ func (c *computation) newestInput(issue *Issue) time.Time {
 }
 
 // takeWork hands take every moment of the issue's work its phase timeline and its work time read
-// besides the observations: its role events, its handoffs and its statuses.
+// besides the observations: its role events, its handoffs, its statuses, and the start and the
+// end, where it has one, of each run of a step of a role the deployment defines (Issue.Runs),
+// which the fallback timeline marks (fallbackMarks), the step's own `in_progress` is told by
+// (Issue.stepStatus) and a send-back reads (sentBackOnce).
 func takeWork(issue *Issue, take func(time.Time)) {
 	for _, at := range issue.FirstRoleEvent {
 		take(at)
@@ -244,5 +248,11 @@ func takeWork(issue *Issue, take func(time.Time)) {
 	}
 	for _, mark := range issue.StatusMarks {
 		take(mark.At)
+	}
+	for _, run := range issue.Runs {
+		take(run.Start)
+		if run.End != nil {
+			take(*run.End)
+		}
 	}
 }

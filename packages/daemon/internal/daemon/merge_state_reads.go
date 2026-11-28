@@ -71,16 +71,17 @@ const (
 // GitHub's merge state for an issue's open pull request (workflow's askMergeState, the engine's
 // Config.ReadMergeState): a review round the fact leaves waiting on GitHub's answer for the head,
 // or ended by an approval the fact did not move on (a CI settlement, which moves no issue), and,
-// by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
-// implementing through merging, which can turn the head conflicting with its base
-// (dispatch://INFRA-4374 R0). A push to a base asks for its pull requests' reads all at once
-// instead (queueBaseMergeStates). The daemon's start asks for it too, for each issue whose start
-// read GitHub answered `unknown` (readIssuesAtStart). It queues a ladder of reads for issue that
-// starts with a climb (queueMergeStateFollow, with no pull request to follow). It only records the
-// issue and wakes the reader, so the fact's own transaction waits for no GitHub call, and a second
-// fact of the same issue queued before the reader takes it is one ladder rather than two. A
-// runtime with no reader - the API-only daemon, and a test that drives the ladder itself - queues
-// nothing.
+// by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue where a merge
+// forward stands (classify.MergeForwardStands: its task at the implementer's place, or a place
+// after it on the task's line, a step of a role the deployment defines among them), which can turn
+// the head conflicting with its base (dispatch://INFRA-4374 R0). A push to a base asks for its pull
+// requests' reads all at once instead (queueBaseMergeStates). The daemon's start asks for it too,
+// for each issue whose start read GitHub answered `unknown` (readIssuesAtStart). It queues a ladder
+// of reads for issue that starts with a climb (queueMergeStateFollow, with no pull request to
+// follow). It only records the issue and wakes the reader, so the fact's own transaction waits for
+// no GitHub call, and a second fact of the same issue queued before the reader takes it is one
+// ladder rather than two. A runtime with no reader - the API-only daemon, and a test that drives
+// the ladder itself - queues nothing.
 func (w *workflowRuntime) queueMergeState(issue string) {
 	w.queueMergeStateFollow(issue, nil)
 }

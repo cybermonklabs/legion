@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -99,15 +100,18 @@ func (c NewsChange) to() int {
 }
 
 // NewsMember is one member of a tree as the root architect's summary names it: its key, its phase,
-// what its news is (State), and, for a member owed news, the items its holder is owed. Architect
-// is the key of the issue whose architect holds the member in accepting, where that is an
-// architect other than the tree root's: the member's own, or one between it and the root (the
-// owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none. Back is the phases a move back of the member reaches where the root architect
-// answers it in accepting (NewsYouAnswer), as News.Back is the holder's.
+// the role that works it there (Role, record.Issue.RoleAt: the role of the phase, and at step the
+// role of the running step, which the plan names), what its news is (State), and, for a member
+// owed news, the items its holder is owed. Architect is the key of the issue whose architect holds
+// the member in accepting, where that is an architect other than the tree root's: the member's own,
+// or one between it and the root (the owner walk, record.OwningIssue). The summary names that
+// architect as the one told. Every other member has none. Back is the phases a move back of the
+// member reaches where the root architect answers it in accepting (NewsYouAnswer), as News.Back is
+// the holder's.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
+	Role      claim.Role
 	State     NewsState
 	Items     []NewsChange
 	Architect string
@@ -448,13 +452,13 @@ func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGat
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
 	holder := "the holder of its phase"
-	switch role := phase.RoleFor(member.Phase); {
+	switch {
 	case member.Architect == member.Issue:
 		holder = "its own architect"
 	case member.Architect != "":
 		holder = "the architect of " + member.Architect
-	case role != "":
-		holder = "its " + string(role)
+	case member.Role != "":
+		holder = "its " + string(member.Role)
 	}
 	switch member.State {
 	case NewsSentNow:

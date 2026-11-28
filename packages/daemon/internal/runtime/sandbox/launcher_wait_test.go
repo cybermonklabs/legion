@@ -785,10 +785,10 @@ func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
 		// 6 h 5 min 11 s: launchBound at the default boot timeout and grace over ProvisionBound's 295
 		// minutes, the fetch's whole budget, its attempt on the cache's bucket among its terms, with
 		// the shared clone's bound and the checkout's.
-		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace); got != want || want != 6*time.Hour+5*time.Minute+11*time.Second {
+		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace, len(claim.Roles)); got != want || want != 6*time.Hour+5*time.Minute+11*time.Second {
 			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (6h5m11s)", got, want)
 		}
-		if got, want := on.LaunchBound(), launchBound(boot, keptVolumeAttachWait, on.ProvisionBound(), grace); got != want || got != off.LaunchBound()+keptVolumeAttachWait-boot {
+		if got, want := on.LaunchBound(), launchBound(boot, keptVolumeAttachWait, on.ProvisionBound(), grace, len(claim.Roles)); got != want || got != off.LaunchBound()+keptVolumeAttachWait-boot {
 			t.Fatalf("LaunchBound with keep_volume on = %s, want %s: %s more than with it off", got, want, keptVolumeAttachWait-boot)
 		}
 	})

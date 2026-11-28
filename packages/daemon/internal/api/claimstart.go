@@ -70,7 +70,8 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // agent whose issue works another role's phase or has left the workflow, and any agent on a daemon
 // that records no issues — and its caller starts such an agent another way.
 //
-//   - an issue held for that worker's own role (Options.RoleFor of the phase it is held from) is
+//   - an issue held for that worker's own role (record.Issue.RoleAt of the phase it is held from,
+//     which at step is the role of its running step, a role the deployment defines) is
 //     retried as its architect's retry_or_escalate retries it (intake.RetryOrEscalate): the phase
 //     it was held from comes back, and its role is started on it;
 //   - an issue standing in that worker's own phase has that phase started again
@@ -103,7 +104,7 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // not happened. The line this logs says the start waits and for what.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string,
 	waits *slotWait, restarted bool) {
-	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
+	if !isPhaseWorker(c.Role) || s.pool == nil {
 		return 0, "", nil, false
 	}
 	if stopping := s.stopRefusal("retry"); stopping != "" {
@@ -114,7 +115,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		s.logRequestFailure(r, err, "api: read the issue of a phase worker to retry", "claim", token)
 		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record: %v", c.Issue, err), nil, true
 	}
-	if recorded == nil || s.roleFor(recorded.WorkingPhase()) != c.Role {
+	if recorded == nil || recorded.RoleAt(recorded.WorkingPhase()) != c.Role {
 		return 0, "", nil, false
 	}
 	working := recorded.WorkingPhase()

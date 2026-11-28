@@ -571,7 +571,7 @@ type memberDraft struct {
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
-	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect, Back: m.back}
+	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, Role: m.issue.RoleAt(m.issue.Phase), State: m.state, Architect: m.architect, Back: m.back}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member

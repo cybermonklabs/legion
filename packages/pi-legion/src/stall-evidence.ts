@@ -3,7 +3,7 @@ import path from "node:path";
 import {
   controllerToken,
   isLegionProjectToken,
-  type LegionRole,
+  type LegionStepRole,
   roleToken,
   roleTopic,
 } from "@legion/contracts";
@@ -433,7 +433,8 @@ export interface StallEvidenceRecord {
   /** Which kind of session this is (`src/classify.ts`), which is what decides who is told. */
   readonly session: LegionSessionKind["kind"];
   readonly issue?: string;
-  readonly role?: LegionRole;
+  /** The claim's role: one of Legion's six or a role of the deployment. */
+  readonly role?: LegionStepRole;
   readonly toolCallId: string;
   readonly tool: string;
   /** `stallArgumentsDigest` of the arguments the call was made with. */

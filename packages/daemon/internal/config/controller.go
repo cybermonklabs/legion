@@ -49,6 +49,9 @@ type ControllerConfig struct {
 	// makes it (controllerDispatchBroker).
 	DispatchTokenBroker bool
 	InstructionsPath    string
+	// instructionsUnshaped is whether the file writes `instructions` in no path's shape
+	// (pathShape), so a refusal of the file names the key and never the path (ReadInstructions).
+	instructionsUnshaped bool
 	// OmpInvocation is the invocation as configured, "" when the file sets none; the command
 	// resolves it as the daemon resolves its own (omplaunch.ResolveInvocation), with no pinned
 	// default in Go.
@@ -181,8 +184,12 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 			return ControllerConfig{}, err
 		}
 	}
-	if cfg.InstructionsPath, err = optionalPath("instructions"); err != nil {
+	instructions, err := optionalString(values["instructions"], "instructions")
+	if err != nil {
 		return ControllerConfig{}, err
+	}
+	if instructions != "" {
+		cfg.InstructionsPath, cfg.instructionsUnshaped = underConfig(instructions, configDir), !pathShape(instructions)
 	}
 	if cfg.OmpInvocation, err = optionalString(values["omp_invocation"], "omp_invocation"); err != nil {
 		return ControllerConfig{}, err

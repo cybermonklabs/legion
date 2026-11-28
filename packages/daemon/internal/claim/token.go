@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -22,9 +23,13 @@ var (
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// notAlphanumeric is everything ProjectToken drops.
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
+	// roleName is a role a deployment defines: the role grammar of Dispatch's step record
+	// (packages/envoy/internal/dispatch/workflowstore/write.go), which each of Legion's six matches.
+	roleName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
-// Roles are the six roles a claim can be on, in the order of the default steps (each task names its own).
+// Roles are Legion's six roles, in the order of the default steps (each task names its own). A
+// claim can also be on a role the deployment defines (IsRole).
 var Roles = []Role{RoleArchitect, RolePlanner, RoleImplementer, RoleTester, RoleReviewer, RoleMerger}
 
 // ProjectToken is the project as every token, and the private tmux server, spell it: the
@@ -70,15 +75,18 @@ func KeyOfProject(project, key string) bool {
 // so the write fails instead, and the caller's transaction rolls back.
 var ErrKeyOfAnotherProject = errors.New("the outbox row is keyed by another project's issue, whose rows only that project's daemon runs")
 
-// IsRole reports whether role is one of the six a claim can be on.
+// IsRole reports whether a claim can be on role: one of Legion's six, or a role the deployment
+// defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
 func IsRole(role Role) bool {
-	for _, known := range Roles {
-		if role == known {
-			return true
-		}
-	}
-	return false
+	return role != RoleController && roleName.MatchString(string(role))
 }
+
+// IsBuiltin reports whether role is one of Legion's six (Roles), and no role of the deployment.
+func IsBuiltin(role Role) bool { return slices.Contains(Roles, role) }
+
+// IsDeploymentRole reports whether role is a valid issue claim role outside Legion's six.
+// To check whether that role is configured, consult the deployment.
+func IsDeploymentRole(role Role) bool { return IsRole(role) && !IsBuiltin(role) }
 
 // NewToken is the token of the claim on issue's role: `legion-<project>-<issue project,
 // lowercased>-<number>-<role>`, byte for byte the shipped roleToken
@@ -99,24 +107,24 @@ func NewToken(project, issue string, role Role) (Token, error) {
 	return Token(fmt.Sprintf("legion-%s-%s-%s-%s", project, strings.ToLower(match[1]), match[2], role)), nil
 }
 
-// Cut splits a role claim's token into the issue's part, `legion-<project>-<issue>`, which every
-// role claim of the issue shares, and the role the token ends in; ok is false for a token that
-// ends in no role, such as the controller's.
+// Cut splits a role claim's token, `legion-<project>-<issue project>-<number>-<role>`, at its first
+// four "-": into the issue's part, `legion-<project>-<issue>`, which every role claim of the issue
+// shares, and the role after it, which may hold a "-" of its own (`code-checker`). ok is false for
+// a token that ends in no role (IsRole), such as the controller's.
 func (t Token) Cut() (issue string, role Role, ok bool) {
-	for _, role := range Roles {
-		if prefix, found := strings.CutSuffix(string(t), "-"+string(role)); found {
-			return prefix, role, true
-		}
+	parts := strings.SplitN(string(t), "-", 5)
+	if len(parts) != 5 || parts[0] != "legion" || !IsRole(Role(parts[4])) {
+		return string(t), "", false
 	}
-	return string(t), "", false
+	return strings.Join(parts[:4], "-"), Role(parts[4]), true
 }
 
 // ControllerToken is the project controller's role token, `legion-<project>-controller`
 // (legion-roles.ts:66-69). project is already a ProjectToken.
 func ControllerToken(project string) Token { return Token("legion-" + project + "-controller") }
 
-// Role is the role t names: the workflow role it ends in (Cut), or RoleController for the
-// project controller's token (ControllerToken); ok is false for a token that is neither.
+// Role is the role t names: the role it ends in (Cut), or RoleController for the project
+// controller's token (ControllerToken); ok is false for a token that is neither.
 func (t Token) Role() (role Role, ok bool) {
 	if _, role, ok := t.Cut(); ok {
 		return role, true

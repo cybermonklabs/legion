@@ -6,7 +6,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
@@ -60,13 +59,14 @@ func readLeakCheck(value *yaml.Node, key string) (*fileLeakCheck, error) {
 // resolveLeakCheck settles the deployment's shared public leak check (Config.LeakCheck): each of
 // the two values from the daemon's environment (leakguard.RepositoryVar, leakguard.ManifestVar),
 // which the file's member of the same value overrides, as postgres_dsn overrides
-// LEGION_POSTGRES_DSN. The repository must be one ghrepo.Parse takes and the manifest digest
-// (leakguard.Manifest) 64 lowercase hex digits, each refused naming where it came from. The two are
-// set together or not at all: one without the other is refused naming the half that is set and the
-// two places the missing half may come from, since a check read from a repository with no digest
-// to hold it to, or a digest with no repository to read the check from, is a half of the setting
-// the daemon cannot run. With neither, the deployment runs no shared leak check, which is no
-// refusal (leakguard.Setting.Configured).
+// LEGION_POSTGRES_DSN. The repository must be one ghrepo.Parse takes (parseRepository) and the
+// manifest digest (leakguard.Manifest) 64 lowercase hex digits, each refused naming where it came
+// from; a digest is never quoted, since a value that is no digest need not be one at all, and a
+// near miss is a run of hex digits, as a token is. The two are set together or not at all: one
+// without the other is refused naming the half that is set and the two places the missing half may
+// come from, since a check read from a repository with no digest to hold it to, or a digest with no
+// repository to read the check from, is a half of the setting the daemon cannot run. With neither,
+// the deployment runs no shared leak check, which is no refusal (leakguard.Setting.Configured).
 func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) error {
 	repository, repositoryFrom := env(leakguard.RepositoryVar), leakguard.RepositoryVar
 	sha, shaFrom := env(leakguard.ManifestVar), leakguard.ManifestVar
@@ -89,12 +89,12 @@ func resolveLeakCheck(file fileConfig, env func(string) string, cfg *Config) err
 		return fmt.Errorf("%s is set and the repository is not: set %s, or %s in legion.yaml; %s",
 			shaFrom, leakguard.RepositoryVar, leakCheckRepositoryKey, together)
 	}
-	parsed, err := ghrepo.Parse(repositoryFrom, repository)
+	parsed, err := parseRepository(repositoryFrom, repository)
 	if err != nil {
 		return err
 	}
 	if !manifestSHA256.MatchString(sha) {
-		return fmt.Errorf("%s must be the check's manifest digest, 64 lowercase hex digits (got %+q)", shaFrom, sha)
+		return fmt.Errorf("%s must be the check's manifest digest, 64 lowercase hex digits", shaFrom)
 	}
 	cfg.LeakCheck = leakguard.Setting{Repository: parsed, ManifestSHA256: sha}
 	return nil

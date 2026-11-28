@@ -37,13 +37,13 @@ func TestMergeForwardHoldsNoRoleOnceItLandedThoughThePullRequestStandsAgainAtIts
 		// Before it lands, the ask holds the worker of the phase the issue stands in and no other
 		// role, so the landed rows below test the landed term and not a shape the hold never reaches.
 		for _, role := range roles {
-			if got, want := MergeForwardHolds(pullRequest, c.at, role), role == phase.RoleFor(c.at); got != want {
+			if got, want := MergeForwardHolds(pullRequest, Issue{}, c.at, role), role == phase.RoleFor(c.at); got != want {
 				t.Fatalf("%s, not landed, holds the %s in %s = %t, want %t", c.name, role, c.at, got, want)
 			}
 		}
 		pullRequest.MergeForward.Landed = landed
 		for _, role := range roles {
-			if MergeForwardHolds(pullRequest, c.at, role) {
+			if MergeForwardHolds(pullRequest, Issue{}, c.at, role) {
 				t.Errorf("%s that landed at %s holds the %s in %s while the pull request stands again at %s, want no hold",
 					c.name, landed, role, c.at, head)
 			}

@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -88,7 +87,8 @@ type ObservedInputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works its
-// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// current phase (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step),
+// and the two handshake times beside them are that role's claim's,
 // but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
@@ -144,6 +144,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	held, err := in.Store.HeldRows(ctx, in.Tx, in.Project, "", in.Now)
+	if err != nil {
+		return api.State{}, err
+	}
+	// The roles whose start waits because their issue's pod was built before the deployment
+	// defined them, by issue: a start waiting on its backoff, and a role with no claim to show.
+	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -254,6 +260,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Priority: &priority,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
+		for _, role := range waitingForPod[issue.Key] {
+			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
+		}
 		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
 		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
 		// issue's own or none (api.Issue.PriorityFrom): an issue Dispatch resolved no priority
@@ -318,14 +327,15 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
-		// a child does, since phase.RoleFor answers the architect for admitted and accepting and a
-		// phase role for each phase after; a phase no role works carries neither, where no row
-		// would be read and a difference written for one would never close. No row of a role the
-		// issue has moved past is read either, since that role keeps its entry and is sent nothing.
+		// a child does, since Issue.RoleAt answers the architect for admitted and accepting, a
+		// phase role for each phase of Legion's after, and at step the role of the running step; a
+		// phase no role works carries neither, where no row would be read and a difference written
+		// for one would never close. No row of a role the issue has moved past is read either,
+		// since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
-		role := phase.RoleFor(issue.Phase)
+		role := issue.RoleAt(issue.Phase)
 		if role != "" {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(rows, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
@@ -740,12 +750,15 @@ func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
 }
 
 // putListed puts onto view, an issue of either view of the state (Project, Observe), what
-// listIssues decided of it: the phase, the tree and the wait its own record decides, the slot it
-// holds, and the claims its `architect` and its `workers` show (putClaims). It is the one place
-// those members are built from the records, so each member the observed view reads (api's
-// observedOf) is the full view's.
+// listIssues decided of it: the phase, the tree, the wait and the running step's role its own
+// record decides, the slot it holds, and the claims its `architect` and its `workers` show
+// (putClaims). It is the one place those members are built from the records, so each member the
+// observed view reads (api's observedOf) is the full view's. The step role is named where the issue
+// stands at step or its hold took it out of step, beside the phase that hold left
+// (api.Issue.StepRole, record.ObservationOf); at every other phase the phase names the role, so the
+// view names none.
 func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimView) {
-	view.Phase, view.WaitingOn = l.observed.Phase, l.observed.WaitingOn
+	view.Phase, view.WaitingOn, view.StepRole = l.observed.Phase, l.observed.WaitingOn, l.observed.StepRole
 	if l.observed.Tree != nil {
 		view.Tree = *l.observed.Tree
 	}
@@ -760,7 +773,7 @@ func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimV
 // its handoff, its pass, its rounds and its counts of the moves back. Those counts ride with the
 // claim: a role whose claim has gone shows none of them, and the record keeps them for the role's
 // next claim. The architect's own row is read all the same by Project, for the entry of a root at
-// admitted (phase.RoleFor). view's `workers` is made here where it is nil and a worker is shown.
+// admitted (record.Issue.RoleAt). view's `workers` is made here where it is nil and a worker is shown.
 func (l listedIssue) putClaims(view *api.Issue, views map[claim.Token]api.ClaimView) {
 	if l.architect != nil {
 		architect := views[l.architect.Token]

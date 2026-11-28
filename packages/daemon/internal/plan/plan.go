@@ -6,9 +6,9 @@
 // and judges a later version's change of a running task (RunningChange); it holds no store and
 // calls nothing.
 //
-// It imports internal/phase alone, so both the configuration loader, which reads a project's
-// default steps with this grammar and these checks, and the workflow, which walks the line they
-// make (Line), can import it.
+// Of this repository's packages it imports internal/phase and internal/redact alone, so both the
+// configuration loader, which reads a project's default steps with this grammar and these checks,
+// and the workflow, which walks the line they make (Line), can import it.
 package plan
 
 import (
@@ -26,7 +26,7 @@ import (
 // nothing else.
 type Type string
 
-// The types Legion's list starts with; a deployment adds its own in a later release.
+// The types Legion's list starts with; a deployment adds its own in its `role_types`.
 const (
 	TypeDesign         Type = "design"
 	TypePlanning       Type = "planning"
@@ -114,12 +114,11 @@ func Sinks(tasks []Task) []string {
 	return sinks
 }
 
-// RoleDef is a role a step can name: its name, its type, and the phase of today's line it runs as
-// in this release, where each step is a phase.
+// RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
+// role runs is decided by its name alone (RunsAs).
 type RoleDef struct {
-	Name  string
-	Type  Type
-	Phase phase.Phase
+	Name string
+	Type Type
 }
 
 // Plan is one version of an owner's plan document as Legion reads it.
@@ -138,9 +137,17 @@ type Plan struct {
 	RoleBlocks []string
 }
 
-// Deployment is what the deployment gives a plan: the roles a step can name, by name. In this
-// release that is BuiltinRoles alone.
+// Deployment is what the deployment gives a plan: the roles a step can name, by name, which are
+// Legion's own (BuiltinRoles) and each role the deployment's settings define.
 type Deployment struct{ Roles map[string]RoleDef }
+
+// Defines says whether a step of the deployment can name role: one of Legion's own step roles or a
+// role its settings define. A role it does not define is one a daemon restarted without, whose
+// step no role may start (the workflow's Walk.lostAt) and whose claim no message reaches.
+func (d Deployment) Defines(role string) bool {
+	_, defined := d.Roles[role]
+	return defined
+}
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
@@ -158,10 +165,10 @@ type Element struct {
 	Names []string
 }
 
-// BuiltinRoles is Legion's own roles of a step, each with its type and the phase it runs as: the
-// planner, the implementer, the tester, the reviewer and acceptance, the owner's reading of the
-// finished work. The architect, the merger and the controller are no roles of a step. The answer
-// is a fresh map, so a caller that changes it leaves the next caller's answer whole.
+// BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
+// the tester, the reviewer and acceptance, the owner's reading of the finished work. The
+// architect, the merger and the controller are no roles of a step. The answer is a fresh map, so a
+// caller that changes it leaves the next caller's answer whole.
 func BuiltinRoles() map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(builtinRoles))
 	for _, role := range builtinRoles {
@@ -173,11 +180,31 @@ func BuiltinRoles() map[string]RoleDef {
 // builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
 // task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{
-	{Name: "planner", Type: TypePlanning, Phase: phase.Planning},
-	{Name: "implementer", Type: TypeImplementation, Phase: phase.Implementing},
-	{Name: "tester", Type: TypeTesting, Phase: phase.Testing},
-	{Name: "reviewer", Type: TypeReview, Phase: phase.Reviewing},
-	{Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
+	{Name: "planner", Type: TypePlanning},
+	{Name: "implementer", Type: TypeImplementation},
+	{Name: "tester", Type: TypeTesting},
+	{Name: "reviewer", Type: TypeReview},
+	{Name: "acceptance", Type: TypeReview},
+}
+
+// RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
+// and every other role, one the deployment defines, the phase step, where the role that works the
+// step is the one the plan names for it. It reads the role's name and nothing else, never its
+// type: a role of the deployment whose type is review still runs as step.
+func RunsAs(role string) phase.Phase {
+	switch role {
+	case "planner":
+		return phase.Planning
+	case "implementer":
+		return phase.Implementing
+	case "tester":
+		return phase.Testing
+	case "reviewer":
+		return phase.Reviewing
+	case "acceptance":
+		return phase.Accepting
+	}
+	return phase.Step
 }
 
 // nameWord is the grammar of a role and of a key.
@@ -213,29 +240,30 @@ func StepsOf(t Task, defaults []Step) []Step {
 	return nil
 }
 
-// Line is the phases a task walks in this release, where each step runs as the phase of its
-// role: the steps' phases in their order, then Legion's own retro and merge, which no plan names
-// and no plan leaves out. A role d does not define has no phase and stands in the line as
-// "", which no row of the workflow moves into, so the caller walks only a plan Validate took.
-func Line(steps []Step, d Deployment) []phase.Phase {
+// Line is the phases a task walks: the phase each step runs as (RunsAs), in the steps' order, then
+// Legion's own retro and merge, which no plan names and no plan leaves out.
+func Line(steps []Step) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)
 	for _, step := range steps {
-		line = append(line, d.Roles[step.Role].Phase)
+		line = append(line, RunsAs(step.Role))
 	}
 	return append(line, phase.Retro, phase.Merging)
 }
 
 // CanMoveBack says whether from-to is a move back a task this release takes can make: to stands
-// before from on the Line of some task of Legion's own roles that Supported and Validate take,
-// since a task moves back from a phase of its line to any phase before it (workflow's
-// backwardRows). The set is read off those two checks, over every order of every choice of
-// Legion's five roles, so a later release whose checks take another line moves the set with them.
-// In this release it holds 28 of the 42 pairs of two different workflow phases (phase.MovePairs).
-// The other 14 are a move back of no line: each step phase to retro or to merging, and retro to
-// merging, since the retro and the merge end every line; and implementing to testing, reviewing or
-// accepting, since every tester, reviewer and acceptance step comes after the implementer's
-// (stepReasons). The configuration loader takes a hook's moves from this set alone (config's
-// readHookMoves), so no hook names a move that never fires.
+// before from on the Line of some task that Supported and Validate take (Refusals), since a task
+// moves back from a phase of its line to any phase before it (workflow's backwardRows). The set is
+// read off those two checks, over every order of every choice of Legion's five roles and two roles
+// of a deployment, so a later release whose checks take another line moves the set with them. A
+// step of a role the deployment defines runs as step wherever it stands, whatever its name, so two
+// such roles of the type testing, which may stand before the implementer or after it, stand for
+// every role a deployment defines, and make the pairs of step, step-step among them. In this
+// release it holds 41 of the 57 pairs of phase.MovePairs. The other 16 are a move back of no line:
+// each step phase, step among them, to retro or to merging, and retro to merging, since the retro
+// and the merge end every line; and implementing to testing, reviewing or accepting, since every
+// tester, reviewer and acceptance step comes after the implementer's (stepReasons). The
+// configuration loader takes a hook's moves from this set alone (config's readHookMoves), so no
+// hook names a move that never fires.
 func CanMoveBack(from, to phase.Phase) bool {
 	return movesBack()[phase.Pair(from, to)]
 }
@@ -243,20 +271,27 @@ func CanMoveBack(from, to phase.Phase) bool {
 // movesBack is CanMoveBack's set, each pair written "<from>-<to>" (phase.Pair), built at its
 // first read.
 var movesBack = sync.OnceValue(func() map[string]bool {
-	d := Deployment{Roles: BuiltinRoles()}
+	roles := slices.Clone(builtinRoles)
+	for _, name := range []string{"deployment-a", "deployment-b"} {
+		roles = append(roles, RoleDef{Name: name, Type: TypeTesting})
+	}
+	d := Deployment{Roles: map[string]RoleDef{}}
+	for _, role := range roles {
+		d.Roles[role.Name] = role
+	}
 	found := map[string]bool{}
 	var choose func(steps []Step)
 	choose = func(steps []Step) {
 		p := Plan{Tasks: []Task{{ID: DefaultTask, Steps: steps}}}
 		if len(steps) > 0 && len(Refusals(p, d)) == 0 {
-			line := Line(steps, d)
+			line := Line(steps)
 			for at, from := range line {
 				for _, to := range line[:at] {
 					found[phase.Pair(from, to)] = true
 				}
 			}
 		}
-		for _, role := range builtinRoles {
+		for _, role := range roles {
 			if slices.ContainsFunc(steps, func(step Step) bool { return step.Role == role.Name }) {
 				continue
 			}

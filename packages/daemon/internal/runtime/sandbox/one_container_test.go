@@ -29,7 +29,7 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 }
 
 // An issue pod runs every role of the issue in one container, `roles`, whose PID 1 is one
-// `legion launcher` serving all six (multi-role mode: --roles-dir and one --role per role, each
+// `legion launcher` serving every role (multi-role mode: --roles-dir and one --role per role, each
 // role's token and private directory under the roles directory). Each role's per-role volumes are
 // mounted under /var/run/legion/roles/<role>/ — its launcher token and gh files read-only, its
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
@@ -187,7 +187,7 @@ func TestAnIssuePodServesItsOwnTestPostgres(t *testing.T) {
 		t.Errorf("the controller is told %s=%q, want nothing", launcher.TestPGVariable, value)
 	}
 	// An operator may not point that name anywhere, whether or not this deployment serves one.
-	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, nil,
+	refused := CheckPod(Pod{Env: map[string]string{launcher.TestPGVariable: "postgres://x@127.0.0.1:5433/postgres"}}, append(slices.Clone(claim.Roles), claim.RoleController), nil,
 		testOptions().Tools, []string{"ENVOY_TOKEN"}, nil, postgresStore, NoExchange)
 	if refused == nil || !strings.Contains(refused.Error(), launcher.TestPGVariable) {
 		t.Errorf("CheckPod with %s in the pod env = %v, want it refused", launcher.TestPGVariable, refused)
@@ -828,7 +828,7 @@ func TestARolesQuoteIsItsOwnLinesOfTheSharedLog(t *testing.T) {
 	if got := roleLines(log, claim.RoleMerger, 3); got != "" {
 		t.Errorf("roleLines of a role with no lines = %q, want none", got)
 	}
-	if got, want := containerLines(log, 3), "launcher: connected\ntesters: not mine either"; got != want {
+	if got, want := containerLines(log, 3, claim.Roles), "launcher: connected\ntesters: not mine either"; got != want {
 		t.Errorf("containerLines = %q, want %q", got, want)
 	}
 }
@@ -975,7 +975,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/var/run/legion/gh", "/var/run/legion/gh/x", "/var/run/legion/private", "/var/run/legion/state", "/var/run/legion/agent-secrets",
 		"/var/run/legion/home", "/var/run/legion/home/.config",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil {
+		if err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err == nil {
 			t.Errorf("a mount at %s passed, want it refused", path)
 		}
 	}
@@ -983,7 +983,7 @@ func TestCheckPodRefusesAMountARolesNamespaceHides(t *testing.T) {
 		"/tmp/cache", "/var/tmp/cache", "/run/lock/operator", "/var/lock/operator", "/dev/shm/operator", "/run/shm/operator", "/home/legion/.cache/operator",
 		"/run/operator", "/var/run/operator",
 	} {
-		if err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
+		if err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
 			t.Errorf("a mount at %s was refused: %v; role-init carries it back", path, err)
 		}
 	}
@@ -1007,12 +1007,12 @@ func TestCheckPodRefusesAMountAtOrUnderARolesOwnDevices(t *testing.T) {
 		"/dev/pts": "/dev/pts", "/dev/pts/operator": "/dev/pts", "/dev/mqueue": "/dev/mqueue", "/dev/mqueue/x": "/dev/mqueue",
 		"/dev/ptmx": "/dev/ptmx", "/proc": "/proc", "/proc/sys": "/proc", "/proc/self/fd": "/proc",
 	} {
-		err := CheckPod(mountAt(path), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange)
+		err := CheckPod(mountAt(path), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange)
 		if err == nil || !strings.Contains(err.Error(), "overlaps "+device+", which every role's namespace in an issue pod replaces with a filesystem of its own") {
 			t.Errorf("a mount at %s = %v, want it refused naming %s", path, err, device)
 		}
 	}
-	if err := CheckPod(mountAt("/dev/operator"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
+	if err := CheckPod(mountAt("/dev/operator"), append(slices.Clone(claim.Roles), claim.RoleController), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, NoExchange); err != nil {
 		t.Errorf("a mount at /dev/operator was refused: %v; role-init replaces nothing there", err)
 	}
 }

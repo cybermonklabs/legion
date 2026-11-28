@@ -164,7 +164,8 @@ const RoleTopicPrefix = "notifications.role."
 // committed that queued state events, in sequence order, in one message or, past the message bound,
 // in several (legionStateMessage, packages/contracts/src/legion-api.ts; the outbox's stateEvents
 // executor splits them): each change of what Dispatch observes of an issue (its phase, tree, slot,
-// waitingOn or a role's claim), each change of the admission block, and the boot event that opens
+// waitingOn, stepRole or a role's claim; a move from one step of the deployment to another moves
+// stepRole and no phase), each change of the admission block, and the boot event that opens
 // each run. Dispatch reads it from a durable of its own and writes its observations from it. token
 // is the project token panes are told as LEGION_PROJECT
 // (packages/pi-legion/src/controller-session.ts), never the Dispatch project key, which each

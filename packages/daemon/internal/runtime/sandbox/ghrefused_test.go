@@ -71,14 +71,15 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 // appauth.ControllerCredential and appauth.GitHubDirs) over refusedProjectRepos and tokens, the
 // three sharing the two records their bundles write — the owners each App was read installed on
 // and what the mints found GitHub refuses — as internal/daemon's sandboxRuntime builds them for
-// a project. Each App is installed on every owner the project serves a repository of, so what
-// a bundle holds here is what the mints answer for.
+// a project, the credential over the deployment's roles (Options.DeploymentApps, nil in a rig
+// that sets none; an option that sets it goes first). Each App is installed on every owner the
+// project serves a repository of, so what a bundle holds here is what the mints answer for.
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(tokens, installedOnServed{repos: refusedProjectRepos})
 		served := servesOneOf(refusedProjectRepos)
-		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(apps, served, ghrepo.Renames{}, installed, left, o.DeploymentApps, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(apps, served, ghrepo.Renames{}, installed, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(served, ghrepo.Renames{}, installed, left, roles, repo)
@@ -146,7 +147,7 @@ func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) 
 	}
 }
 
-// The six roles of an issue pod run as two GitHub Apps, and each App's installations answer for
+// The roles of an issue pod run as two GitHub Apps, and each App's installations answer for
 // themselves: one may refuse every lease of an owner the other mints. The pod then projects the
 // directories every role's bundle holds and starts, since a projection item naming a key a
 // role's Secret lacks would stop the pod from starting; a role whose bundle holds more keeps
@@ -159,7 +160,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnServed{repos: refusedProjectRepos}),
-			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, o.Log)
+			servesOneOf(refusedProjectRepos), ghrepo.Renames{}, nil, nil, nil, o.Log)
 	}))
 
 	loc := g.spawn(workerSpec(t))
@@ -170,7 +171,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 		}
 		secret := g.secret(roleSecretName(loc.Sandbox.Name, role))
 		_, holdsAcme := secret.Data[GitHubHostsKey("acme")]
-		if want := appauth.AppRoleFor(role) == appauth.Implement; holdsAcme != want {
+		if want := appOf(t, role) == appauth.Implement; holdsAcme != want {
 			t.Errorf("%s's Secret holds acme's gh files %v, want %v: each role's Secret holds its own bundle", role, holdsAcme, want)
 		}
 	}
@@ -189,7 +190,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			// Each App's installation reaches what the other's does not, so the two bundles
 			// share nothing: the review App only acme's repositories, whose directory is then
 			// that role's own default, and the implement App only the issue owner's.
-			if appauth.AppRoleFor(role) == appauth.Review {
+			if legionApp(role) == appauth.Review {
 				return ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{"acme": bundle.Dirs["acme"]}}, nil
 			}
 			delete(bundle.Dirs, "acme")

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -783,7 +785,9 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 	pool := migratedPool(t)
 	admission := path.seed(t, pool)
 	asked := path.at
-	if !classify.MergeForwardStands(record.Issue{Phase: asked}, phase.Order) {
+	// The parent's place on today's line, which no plan rows change: the step of path.at.
+	place := record.TaskPlace{Kind: record.PlaceStep, Position: slices.Index(phase.Order, asked) + 1}
+	if !classify.MergeForwardStands(phase.Order, place) {
 		asked = phase.Implementing
 	}
 	pwSeedForward(t, pool, forward.asked(asked))
@@ -910,7 +914,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("merge-forward messages queued = %+v, want the implementer's ask alone: the tester's hold was delivered", queued)
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, spParent, queued[0].Role, queued[0].Step, queued[0].Head)
+			_, _, left, err := workflow.MergeForwardAt(context.Background(), record.NewStore(), tx, plan.Deployment{}, spParent, queued[0].Role, queued[0].Step, queued[0].Head)
 			if err != nil || left != "the record holds no merge forward" {
 				t.Fatalf("the queued ask to the implementer is left %q (%v), want it undelivered: the record holds no merge forward", left, err)
 			}

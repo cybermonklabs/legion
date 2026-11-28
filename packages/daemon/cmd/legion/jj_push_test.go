@@ -162,6 +162,18 @@ func rolePushAuthorRows() []rolePushRow {
 				same:     map[string]rolePushIdentity{x.commit: one},
 			}
 		}},
+		// A role the deployment defines writes its own trailer, and LEGION_ROLE_IDENTITIES carries its
+		// identity beside Legion's (internal/daemon's specs.go): its commit, made under another role's
+		// App in the working copy the issue's roles share, is rewritten to its own identity
+		// (setAuthors, authorOrder).
+		{name: "a role of the deployment's trailer, another role's author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+			checker := rolePushIdentity{"legion-checker[bot]", "100000004+legion-checker[bot]@users.noreply.github.com"}
+			table := `{"checker":{"name":"legion-checker[bot]","email":"100000004+legion-checker[bot]@users.noreply.github.com"},` + rolePushTable[1:]
+			f.table = &table
+			c := f.commitOn(impl, impl, "main", rolePushMessage("checked", "checker"))
+			f.bookmark("legion/K-1", c.commit)
+			return rolePushSends("legion/K-1", c, "checker", checker)
+		}},
 	}
 	// emptyWaiting is @ on main, made and described with role's trailer under no identity, so with
 	// an empty author, under legion/K-1, with a write that no command has snapshotted. The dry run
@@ -1349,13 +1361,13 @@ var rolePushTableRows = []struct {
 	{name: "unset"},
 	{name: "empty", value: new("")},
 	{name: "not JSON", value: new("implementer=legion-implementer[bot]")},
-	{name: "an unknown role", value: new(`{"implementer":{"name":"legion-implementer[bot]","email":"100000001+legion-implementer[bot]@users.noreply.github.com"},"wizard":{"name":"wizard","email":"wizard@example.invalid"}}`)},
+	{name: "a key that is no role", value: new(`{"implementer":{"name":"legion-implementer[bot]","email":"100000001+legion-implementer[bot]@users.noreply.github.com"},"Wizard":{"name":"wizard","email":"wizard@example.invalid"}}`)},
 	{name: "an empty name", value: new(`{"implementer":{"name":"","email":"100000001+legion-implementer[bot]@users.noreply.github.com"}}`)},
 	{name: "a name with a line break", value: new(`{"implementer":{"name":"legion-implementer[bot]\nLegion-Role: reviewer","email":"100000001+legion-implementer[bot]@users.noreply.github.com"}}`)},
 }
 
 // A process whose table is unset, as a controller's is, changes nothing and prints nothing. One
-// whose table is set and cannot be used (empty, not JSON, naming a role outside claim.Roles, or
+// whose table is set and cannot be used (empty, not JSON, naming a key that is no role, or
 // holding an empty name or one with a line break) prints one line, runs no metaedit, and the push
 // runs as written.
 func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {

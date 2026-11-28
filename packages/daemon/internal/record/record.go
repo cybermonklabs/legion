@@ -345,6 +345,11 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// StepRole is the role of the step at the place of the issue's task, running or stopped: read
+	// with the issue from its run's plan rows (plan_tasks and plan_steps at the issue's
+	// generation), "" where the run has no plan rows or its task stands at no step. It is read
+	// only: PutIssue writes nothing of it, and workflow's moveTask sets it on the issue it moves.
+	StepRole claim.Role
 	// ClaimLeft is why the newest claim release that judged the issue's Dispatch holder left that
 	// holder's claim (ClaimRelease, which the outbox's releaseClaim runs), nil for none: a release
 	// that took the claim, or that found none, clears it. Only Store.RecordClaimLeft writes it, and
@@ -684,14 +689,15 @@ const (
 // ChildrenWait is the phase start a parent held when it entered awaiting_children because a
 // Dispatch child of it was still open (Issue.ChildrenWait), nil in every other phase: the two
 // change together, as Hold and held do. Start is the phase whose start was held — planning,
-// implementing, testing, reviewing or accepting; Task the task its transition wrote and Reason
-// that transition's reason, which the return names (dispatch://INFRA-3320 R12); Since when the
-// wait on the children began; and Children the children that held the wait. The daemon resumes
-// the parent from this when no open child is left (workflow's ReturnFromChildren): a held
-// planning or implementing starts that phase, and a held testing, reviewing or accepting starts
-// the first step of the issue's walk after the implementer's where that step stands at or before
-// it (ReturnStep), testing on today's line, and the held start itself where the walk holds no such
-// step or the pull request merged during the wait.
+// implementing, testing, reviewing, step or accepting; Task the task its transition wrote and
+// Reason that transition's reason, which the return names (dispatch://INFRA-3320 R12); Since when
+// the wait on the children began; and Children the children that held the wait. The daemon
+// resumes the parent from this when no open child is left (workflow's ReturnFromChildren): a held
+// planning or implementing starts that phase, and a held testing, reviewing or accepting, or a
+// held step after the implementer's, starts the first step of the issue's walk after the
+// implementer's where that step stands at or before it (ReturnStep), testing on today's line, and
+// the held start itself where the walk holds no such step or the pull request merged during the
+// wait.
 // Each task the return starts names every child of Children that merged during the wait.
 type ChildrenWait struct {
 	Start  phase.Phase
@@ -709,9 +715,12 @@ type ChildrenWait struct {
 // R12), as the first step of the issue's walk after the implementer's rather than as itself
 // (ReturnStep): a held testing, reviewing or accepting does, since each round of them before the
 // wait ran on a base without the children's merges, and a held planning or implementing comes
-// back as that phase.
+// back as that phase. A held step, the step of a role the deployment defines, does too where its
+// place stands after the implementer's: several steps can run as step, so the workflow reads that
+// by the place the task stood at through the wait (workflow's Walk.returnPlace), and a step before
+// the implementer's comes back as itself.
 func ReturnsPastImplementing(held phase.Phase) bool {
-	return held == phase.Testing || held == phase.Reviewing || held == phase.Accepting
+	return held == phase.Testing || held == phase.Reviewing || held == phase.Step || held == phase.Accepting
 }
 
 // ReturnStep is the phase a held start of held comes back as once no open child is left and the
@@ -721,7 +730,9 @@ func ReturnsPastImplementing(held phase.Phase) bool {
 // testing on today's line, reviewing on a walk of an implementer, a reviewer and the owner's
 // acceptance, and reviewing for a held testing on a walk that puts the reviewer before the tester;
 // and held itself where no step does: where steps hold no implementer's step or no step of held,
-// or hold held before the implementer's. Any other held start comes back as itself.
+// or hold held before the implementer's. Any other held start comes back as itself. A held step
+// is read here at the first step that runs as step, so the workflow reads a held step by the place
+// its task stood at instead (Walk.returnPlace), since several steps can run as step.
 func ReturnStep(steps []phase.Phase, held phase.Phase) phase.Phase {
 	if !ReturnsPastImplementing(held) {
 		return held
@@ -816,14 +827,36 @@ func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.Answere
 
 // WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
 // the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// the role that works the issue at it (RoleAt: workflow.RoleFor of it, or at step the role of the
+// running step) is the role whose failure holds the issue, the role the stranded report names,
+// and the role the operator's retry of a phase worker acts for (api's retryClaim), which read it
+// here rather than each keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
 	}
 	return i.Phase
+}
+
+// RoleAt is the role that works the issue at p: the role of the step its task stands at
+// (StepRole) for phase.Step, whose role the plan names, and phase.RoleFor(p) for every other
+// phase.
+func (i Issue) RoleAt(p phase.Phase) claim.Role {
+	if p == phase.Step {
+		return i.StepRole
+	}
+	return phase.RoleFor(p)
+}
+
+// StepIsOf says whether the step the issue stands at is role's to report on, where the phase alone
+// cannot say: at phase.Step, every role the deployment defines runs as the one phase, so only the
+// role of the running step (StepRole) works it, and a report or a task of another such role is of
+// a step the task has left or not reached. Every other phase is one role's, which the caller reads
+// from the phase, so it answers true there. It is the one statement of that rule: the engine's
+// judgement of a completion (workflow's handoff), the completion route's fallback to a held task
+// (api's heldTaskNotCurrent) and the judges of queued work (HoldsQueued) all read it.
+func (i Issue) StepIsOf(role claim.Role) bool {
+	return i.Phase != phase.Step || role == i.StepRole
 }
 
 // EventMark places a Dispatch event in its issue's event log: its sequence on the issue (Seq) and
@@ -923,10 +956,11 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound). A review that requested changes ends one,
+	// and so does the fail of a step of the type review whose agent is not the owner. Nothing else
+	// opens one — a tester's fail, the fail of a step of another type and a worker's backward move
+	// each raise Pass. They leave this count where it stands. What review_round_cap bounds is
+	// Rounds less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -974,7 +1008,8 @@ type PhaseRow struct {
 	// approved or requested changes, submitted as the review App from the session the claims
 	// record holds for the claim the daemon starts the reviewer under (workflow's review,
 	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// reviewer's row holds it, beside the row of a role of the deployment whose step is of the type
+	// review, which holds the commit its step's newest run read (workflow's recordStepReview). A person's review does not move it, since the reviewer did not read
 	// that commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
@@ -1672,7 +1707,7 @@ const (
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
 // the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// implementing, or a phase after it on the task's line). The ask's row goes to it
+// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
@@ -3329,6 +3364,10 @@ type Store interface {
 	// row, that row while it runs — by next_at then id. A start behind a branch row no one is
 	// running is not listed. Issue "" is every issue of project.
 	HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error)
+	// StartsWaitingForPod is, for each issue of project, the roles whose start row waits because
+	// the issue's pod was built before the deployment defined them (its last error begins with
+	// pods.StartWaitsForPodPrefix), distinct and in the order of their rows.
+	StartsWaitingForPod(ctx context.Context, tx pgx.Tx, project string) (map[string][]claim.Role, error)
 	// OpenIntakeGiveUps is what the state shows of project's open give-ups: each consumer's count
 	// and newest stream sequence, and the newest records, at most newest, without their headers
 	// and payload (intake_failures.go).
@@ -3762,8 +3801,9 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 // EntriesDiffer is whether entry, the one a claim serves (supervise.Claim.ServingAt, which api's
 // claimServes reads), and rowEntry, the one its role's phases row stands on
 // (PhaseRow.Entry), are both set and differ. Either one 0 is nothing to compare, for the reasons
-// the completion route's entry fence gives (api's entryFence). It is the one comparison that fence
-// and the owed answer (api's owedBy, through PhaseOwed) make, so the two routes read one rule.
+// the completion route's entry fence gives (intake.EntryFence, which the route and the workflow
+// both run). That fence and the owed answer (api's owedBy, through PhaseOwed) make the one
+// comparison, so the two routes read one rule.
 func EntriesDiffer(entry, rowEntry int64) bool {
 	return entry != 0 && rowEntry != 0 && entry != rowEntry
 }
@@ -3811,20 +3851,21 @@ func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
 }
 
 // FillIdleClaims gives each of claims, the claims of issue's pod as the idle view reads them
-// (pods.IdleView), what the record holds of its role while issue stands at at: the entry its
-// role's phases row stands on and whether that row records a completion (PhaseRowOf,
+// (pods.IdleView), what the record holds of its role while issue stands at at, with stepRole the
+// role of its running step (Issue.StepRole, which the idle view reads with the issue): the entry
+// its role's phases row stands on and whether that row records a completion (PhaseRowOf,
 // PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, whether a
-// merge forward of the issue's pull request holds the role (MergeForwardHolds), and whether that
-// pull request is merged while issue stands in merging (MergedInMerging). Those are the facts the
-// idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
-// PhaseOwed), and the ones a backstop's writer reads of the one claim it would arm a backstop for
-// (internal/daemon's getsBackstop). It reads them through tx, the caller's own transaction, in two
-// statements whatever the number of claims: the issue's phases rows and its pull request's row
-// alone (Store.PullRequestRow), since it writes nothing back and reads none of what that pull
-// request remembers of its settled heads, as the completion route's position reads them (api's
-// handoffPosition). The store's idle view calls it through the reader the daemon hands it
-// (store.IdleRecords), since that package cannot import this one.
-func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+// merge forward of the issue's pull request holds the role (MergeForwardHolds, whose worker at
+// step is stepRole), and whether that pull request is merged while issue stands in merging
+// (MergedInMerging). Those are the facts the idle release's reminder hold reads beside each claim
+// (workflow's IdleRelease, through PhaseOwed), and the ones a backstop's writer reads of the one
+// claim it would arm a backstop for (internal/daemon's getsBackstop). It reads them through tx,
+// the caller's own transaction, in two statements whatever the number of claims: the issue's
+// phases rows and its pull request's row alone (Store.PullRequestRow), since it writes nothing
+// back and reads none of what that pull request remembers of its settled heads, as the completion
+// route's position reads them (api's handoffPosition). The store's idle view calls it through the
+// reader the daemon hands it (store.IdleRecords), since that package cannot import this one.
+func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, stepRole claim.Role, claims []pods.IdleClaim) error {
 	rows, err := store.Phases(ctx, tx, issue)
 	if err != nil {
 		return err
@@ -3834,10 +3875,11 @@ func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, a
 		return err
 	}
 	merged := MergedInMerging(pr, at)
+	standing := Issue{Key: issue, Phase: at, StepRole: stepRole}
 	for i := range claims {
 		row := PhaseRowOf(rows, claims[i].Role)
 		claims[i].RowEntry, claims[i].RowCompleted = row.Entry, row.Completed()
-		claims[i].MergeForwardHeld = MergeForwardHolds(pr, at, claims[i].Role)
+		claims[i].MergeForwardHeld = MergeForwardHolds(pr, standing, at, claims[i].Role)
 		claims[i].MergedInMerging = merged
 	}
 	return nil
@@ -3929,15 +3971,76 @@ func (i Issue) Standing() pods.Standing {
 // other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
-// PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
-// of issue, the record of the issue its claim works: the issue is in that phase and, for a task
-// of a run (generation above 0), on that run. An issue the record does not hold (nil) holds every
-// task, since only a claim the workflow never made has none. It is the one definition of that
-// question: the daemon answers supervise's Deps.PhaseHolds with it (daemon's
-// workflowRuntime.phaseHolds, which says why each half is compared), and a test that wires the
-// answer itself calls it too, so the rule it exercises is the one production runs.
-func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
+// HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
+// task a start delivers — is the work of the place the issue stands at now: the issue stands in
+// queuedFor and, at the phase step, at a step of role (StepIsOf). Every role a deployment defines
+// runs as step, so a start or a task queued for the step of one role names a phase that still
+// reads the same while the task stands at the step of another; the role is what tells the two
+// apart. At step the role names the step: a role runs at most one step of a task, since a plan, an
+// owner's or a project's default steps, that names a role at two steps is refused (plan.Supported),
+// as the phases row of a role assumes too (PhaseRow.StepPlace). Away from step the phase alone is
+// compared: one role works several phases (the implementer implementing and retro), and a phase
+// names its one role. It is the one definition of that question, which each judge of queued work
+// asks on its own read: the outbox before it runs a start (daemon's supervise, through
+// HoldsStart), the admission pass before it lets an owed start take a slot (admit's
+// finishFencedStarts), the workflow before a start that waits for its slot silences a backstop
+// (workflow's podBackstopDue), and the supervisor before it sends a queued task and before it
+// brings a claim back for a start (supervise.StartWork), through PhaseHolds, which DeliveryHolds
+// chooses for all of them but one: a start that brings a role back and hands it nothing, which is
+// held to its phase alone (HoldsStart, BroughtBackHolds).
+func (i Issue) HoldsQueued(role claim.Role, queuedFor phase.Phase) bool {
+	return i.Phase == queuedFor && i.StepIsOf(role)
+}
+
+// HoldsStart says whether the outbox's start row start is the work of the place the issue stands
+// at now. A start that hands its role work (HoldsQueued) is held to the role of the step at the
+// phase step; one that brings a role back and hands it nothing (SuperviseRequest.BringsBack) is
+// held to the phase it names alone, as every start was before the phase step: a role of the
+// member that ran another step of the task, or the member's own architect, comes back and is told
+// nothing wherever the member stands. The outbox asks it before it runs a start (daemon's
+// supervise), and the supervisor judges the same start again under the machine's lock
+// (supervise.StartWork) by DeliveryHolds: a start that brings a role back by BroughtBackHolds, the
+// same rule on the phase and the run, and every other start by PhaseHolds.
+func (i Issue) HoldsStart(start SuperviseRequest) bool {
+	if start.BringsBack() {
+		return i.Phase == start.Phase
+	}
+	return i.HoldsQueued(start.Role, start.Phase)
+}
+
+// PhaseHolds says whether a task queued for role at phase queuedFor on run generation is still
+// the work of issue, the record of the issue its claim works: the issue holds the work
+// (HoldsQueued) and, for a task of a run (generation above 0), is on that run. An issue the record
+// does not hold (nil) holds every task, since only a claim the workflow never made has none. It is
+// the one definition of that question, which DeliveryHolds asks of every delivery not marked
+// BringsBack.
+func PhaseHolds(issue *Issue, role claim.Role, queuedFor phase.Phase, generation uint64) bool {
+	return issue == nil || (issue.HoldsQueued(role, queuedFor) && (generation == 0 || generation == issue.Generation))
+}
+
+// BroughtBackHolds is PhaseHolds for a start that brings a role back and hands it nothing
+// (SuperviseRequest.BringsBack, the promotion's start of a mid-phase member's other roles): the
+// issue still stands in the phase it names, as Issue.HoldsStart holds it, and, for a start of a run,
+// is on that run. It never reads the role of the step: at the phase step the role brought back ran
+// another step of the task. The machine judges it again under its own lock with this rule
+// (DeliveryHolds), so a move that commits after the outbox's read stops it there too.
+func BroughtBackHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
 	return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation))
+}
+
+// DeliveryHolds says whether d, a delivery queued for a claim of role or a start the supervisor
+// judges for one (supervise.Deps.PhaseHolds), is still the work of issue, the record of the issue
+// that claim works: a start that brings the role back and hands it nothing
+// (supervise.Delivery.BringsBack) by BroughtBackHolds, and every other delivery by PhaseHolds. It
+// is the one place that choice is made: the daemon answers supervise's Deps.PhaseHolds with it
+// (daemon's workflowRuntime.phaseHolds, which says why each half is compared), and a test that
+// wires that answer itself calls it too (api's holdPhases), so the rule it exercises is the one
+// production runs.
+func DeliveryHolds(issue *Issue, role claim.Role, d supervise.Delivery) bool {
+	if d.BringsBack {
+		return BroughtBackHolds(issue, d.Phase, d.Generation)
+	}
+	return PhaseHolds(issue, role, d.Phase, d.Generation)
 }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"

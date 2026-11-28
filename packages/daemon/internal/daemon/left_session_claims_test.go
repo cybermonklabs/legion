@@ -404,7 +404,7 @@ func newLeftRig(t *testing.T) *leftRig {
 	r.api = api.NewServer("127.0.0.1", 8437, api.Options{
 		Supervisor: sup, BootTokens: api.NewBootTokens(st), Project: "legion", DispatchProject: "LEGION",
 		OperatorToken: leftOperatorToken, Controller: st, Trees: st, Releaser: rt, Pool: pool, Record: records,
-		Handlers: handlers, RoleFor: workflow.RoleFor, Log: quietLogger(),
+		Handlers: handlers, Log: quietLogger(),
 		State: &source{store: st, records: records, project: "LEGION", projectToken: "legion", runtime: "tmux", admissionCap: 4,
 			startedAt:  time.Now(),
 			deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },

@@ -35,9 +35,10 @@ type issue struct {
 	parent string
 	closed *time.Time
 
-	// firstRoleEvent is the first event each Legion role wrote on this issue, by role: an event
-	// of a session titled `Legion <role> · <this issue's key>`. It and handoffs are the Legion
-	// phase work of R1's "every issue for which the project has Legion phase work".
+	// firstRoleEvent is the first event each Legion role wrote on this issue, by role, a role the
+	// deployment defines among them: an event of a session titled `Legion <role> · <this issue's
+	// key>` (parseSessionTitle). It and handoffs are the Legion phase work of R1's "every issue
+	// for which the project has Legion phase work".
 	firstRoleEvent map[string]time.Time
 	handoffs       []handoff
 
@@ -447,13 +448,31 @@ type sessionTitle struct {
 	controller bool
 }
 
-// legionRoles are the six worker types a Legion session can name, which is what makes a title a
-// role's title.
-var legionRoles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
+// isIssueRole is whether role is a role a session can work an issue as: one of Legion's own, or
+// a role the deployment defines, whose name is "a word of `a-z`, `0-9` and `-` that starts with a
+// letter, at most 32 characters" (the deployment guide's "Roles the deployment defines"). Legion's
+// own names are words of that shape too, the owner's `acceptance` among them, so the shape alone
+// is the rule, but for `controller`: a controller's title names a project and no issue, so that
+// word is no role of an issue. It is written out here, byte by byte, rather than taken from the
+// package that states the grammar for the other readers, so this reading stands on the words.
+func isIssueRole(role string) bool {
+	if role == "controller" || len(role) == 0 || len(role) > 32 || role[0] < 'a' || role[0] > 'z' {
+		return false
+	}
+	for _, c := range []byte(role[1:]) {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 // parseSessionTitle reads a session's title as Legion writes it: `Legion <role> · <KEY>` for a
-// role working an issue, and `Legion controller · <PROJECT>` for a project's controller. A title
-// of another shape, or one naming a role Legion does not run, is no Legion session.
+// role working an issue, a role the deployment defines among them, and `Legion controller ·
+// <PROJECT>` for a project's controller. A title of another shape, or one naming no role of an
+// issue (isIssueRole), is no Legion session. So the first event of a deployment's checker on an
+// issue is a first worker event of it, as an implementer's is: "the issue's first worker event"
+// names no role, and a step of such a role works the issue at its place in the task.
 func parseSessionTitle(title string) (sessionTitle, bool) {
 	rest, isLegion := strings.CutPrefix(strings.TrimSpace(title), "Legion ")
 	if !isLegion {
@@ -470,7 +489,7 @@ func parseSessionTitle(title string) (sessionTitle, bool) {
 	if role == "controller" {
 		return sessionTitle{role: role, controller: true}, true
 	}
-	if !slices.Contains(legionRoles, role) {
+	if !isIssueRole(role) {
 		return sessionTitle{}, false
 	}
 	return sessionTitle{role: role, issue: subject}, true

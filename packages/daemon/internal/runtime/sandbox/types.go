@@ -245,6 +245,11 @@ type Options struct {
 	ControllerWatchedWorkflows []WatchedWorkflow
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
+	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the
+	// GitHub App it acts as (the daemon's deploymentApps). Its roles, sorted by name, follow
+	// Legion's six in the runtime's issue roles (issueRolesOf), and each takes overlays
+	// (RoleConfigFiles) as one of Legion's does. Nil is a deployment that defines no role.
+	DeploymentApps appauth.DeploymentApps
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings
 	// overlays a role alone names in PI_CONFIG_FILES, by role, after the operator's own (Pod.Env's
 	// PI_CONFIG_FILES), so each outranks those (mainEnvironment, roleOperatorEnv), and the shim
@@ -311,9 +316,9 @@ type Options struct {
 	// token (controllerPod.launcherContainer).
 	SessionStore ompsessions.Store
 	// Agent is the command the shim wraps, before the Oh My Pi arguments the runtime appends
-	// (`--extension <envoy plugin> --extension <legion plugin> --model @default`, `--resume`,
-	// `--mode rpc`, `--append-system-prompt <the generation's prompt file>`); Oh My Pi itself when
-	// nil.
+	// (`--extension <envoy plugin> --extension <legion plugin> --model <the spec's model, or
+	// @default>`, `--resume`, `--mode rpc`, `--append-system-prompt <the generation's prompt
+	// file>`); Oh My Pi itself when nil.
 	Agent []string
 	// Setup is the deployment's setup command (runtime.kubernetes.setup), an argv each role runs
 	// before each start of its Oh My Pi — after a stale-plugin relaunch's install, in the role's

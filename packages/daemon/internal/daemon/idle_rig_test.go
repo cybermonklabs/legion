@@ -129,6 +129,10 @@ type idleWakeRig struct {
 	baseline map[string]int
 	// toolsPath holds the rig's `legion` and `omp` stand-ins, made once.
 	toolsPath string
+	// streamSocket is the worker stream's listening socket, which every boot of the rig serves on
+	// (heldSocketListen, cfg.WorkerStreamPort), so the launchers of a pod built before a restart
+	// reach the daemon after it, as they reach a deployment's restarted daemon at its one address.
+	streamSocket *os.File
 
 	// stop ends the running daemon, and done answers when it has.
 	stopMu sync.Mutex
@@ -186,6 +190,10 @@ func newIdleWakeRigWith(t *testing.T, opts idleRigOptions, plans map[string]idle
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	// The worker stream listens on one port the rig holds through every restart (restart), so the
+	// address each launcher was handed stays the daemon's.
+	streamSocket, streamPort := heldSocket(t)
+	cfg.WorkerStreamPort = streamPort
 	cfg.WorkerStopTimeout = idleRigStopGrace
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
@@ -210,7 +218,7 @@ func newIdleWakeRigWith(t *testing.T, opts idleRigOptions, plans map[string]idle
 	cfg.DispatchURL = board.url
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener, listenerEnv: opts.ListenerEnv,
-		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
+		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, streamSocket: streamSocket}
 	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
 		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
@@ -234,8 +242,14 @@ func newIdleWakeRigWith(t *testing.T, opts idleRigOptions, plans map[string]idle
 		issue := rig.issue(name)
 		rig.agents.setPlan(issue.key, string(issue.role), plan)
 	}
+	// The boot starts the role process of every pod of the rig at once, while awaitListenerReady
+	// may start the listener again. A process that registered with the listener then would meet
+	// a refused connection or the starting listener's 503 "service starting", and end. So every
+	// role process waits before the listener until the daemon has read the listener ready.
+	rig.agents.holdEnvoy(true)
 	rig.boot()
 	rig.awaitListenerReady()
+	rig.agents.holdEnvoy(false)
 	for _, issue := range rig.issues {
 		rig.launch(issue)
 	}
@@ -264,7 +278,9 @@ func (r *idleWakeRig) listenerReports() map[string]string {
 // awaitListenerReady waits until the daemon has read a `listener_ready` report of the Envoy
 // listener, which is R7's gate: it releases nothing until it has. The listener publishes one at
 // its start and every five minutes after, so a listener that came up before this daemon's durable
-// consumer existed is started again rather than waited out.
+// consumer existed is started again rather than waited out. No role process may register with the
+// listener meanwhile: newIdleWakeRig holds them before it (idleRigAgents.holdEnvoy). A later call,
+// after a restart of the daemon, finds the report the first daemon recorded and starts nothing.
 func (r *idleWakeRig) awaitListenerReady() {
 	r.t.Helper()
 	// The listener's own log is printed by its cleanup when the test fails
@@ -361,8 +377,10 @@ func (r *idleWakeRig) address() string {
 	return r.built.address
 }
 
-// podReady starts the pod's launchers, for the roles the rig gave the issue a claim, and records
-// where each launcher writes its generations so the role process can be handed its boot token.
+// podReady starts the pod's launchers, for the roles the rig gave the issue a claim — the
+// implementer, and each role the rig's configuration defines (cfg.Roles), which no other test of
+// the rig defines — and records where each launcher writes its generations so the role process
+// can be handed its boot token.
 func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	key := pod
 	for _, issue := range r.issues {
@@ -372,7 +390,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	}
 	wanted := map[string]string{}
 	for role, token := range roles {
-		if role == string(claim.RoleImplementer) {
+		if role == string(claim.RoleImplementer) || slices.ContainsFunc(r.cfg.Roles, func(defined config.Role) bool { return string(defined.Name) == role }) {
 			wanted[role] = token
 		}
 	}
@@ -465,7 +483,8 @@ func (r *idleWakeRig) boot() {
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(r.logs, r.logFile()), &slog.HandlerOptions{Level: slog.LevelDebug}))
 	go func() {
 		done <- run(ctx, r.cfg, logger, overrides{
-			listen: heldListen, runtime: r.newRuntime, clock: stillClock{}, idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
+			listen: heldListen, streamListen: heldSocketListen(r.streamSocket, r.cfg.WorkerStreamPort), runtime: r.newRuntime, clock: stillClock{},
+			idleTick: idleRigTick, outboxSweep: idleRigOutboxSweep,
 			workflowTokens: idleRigAppTokens{workflowTokenRecorder: &workflowTokenRecorder{}}, githubAPI: repositoriesGitHub(r.t),
 		})
 	}()
@@ -581,9 +600,10 @@ func (r *idleWakeRig) stopDaemon() {
 	}
 }
 
-// restart stops the daemon and boots it again on the same store, as a deployment's restart does.
-// The wakes the listener reported while it was down are on its durable consumer, which is what
-// makes them wait for it rather than be lost.
+// restart stops the daemon and boots it again on the same store and the same worker stream port,
+// as a deployment's restart does: the launchers of a pod built before it reach the new daemon at
+// the address they were handed (streamSocket). The wakes the listener reported while it was down
+// are on its durable consumer, which is what makes them wait for it rather than be lost.
 func (r *idleWakeRig) restart() {
 	r.t.Helper()
 	r.stopDaemon()
@@ -610,7 +630,11 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
+		app, err := appauth.AppRoleFor(role, opts.DeploymentApps)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
+		rendered := ghconfig.Render("ghs_idle_rig", string(app), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 	}

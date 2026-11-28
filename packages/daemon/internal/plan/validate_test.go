@@ -43,7 +43,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 			t.Fatalf("%v refused: %+v", taken, r)
 		}
 	}
-	// architect, merger and controller are no roles of a step: the step roles are Legion's five.
+	// architect, merger and controller are no roles of a step: Legion's step roles are five, and a deployment adds its own.
 	for _, role := range []string{"architect", "merger", "controller"} {
 		r := Validate(oneTask("a", "implementer "+role), d)
 		want := Refusal{Task: "a", Reason: "step 2 of task a names the role " + role + ", which neither the deployment nor the plan defines."}
@@ -81,21 +81,22 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Validate(empty, d); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Validate(no task) = %+v, want %+v", r, want)
 	}
-	if r := Supported(empty); len(r) != 0 {
+	if r := Supported(empty, d); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
 	taken, err := FromBlocks("plan-md", planDocument, 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}
-	if r := append(Supported(taken), Validate(taken, d)...); len(r) != 0 {
+	if r := append(Supported(taken, d), Validate(taken, d)...); len(r) != 0 {
 		t.Fatalf("a plan of one block with no steps refused: %+v", r)
 	}
 }
 
 // Each cause this release does not carry out yet (Supported), with its exact text and its task.
-// Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
-// of today's line that keep the implementer, with the owner's acceptance.
+// Each cause gets one reason, so a plan with two causes gets two. The taken plans keep the
+// implementer before each tester, reviewer and acceptance step, a role of the deployment of the
+// type implementation before the implementer, and the other steps at any place.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }
@@ -118,11 +119,11 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 				{Task: "a", Reason: "task a needs b, c." + yet},
 			}},
 		{name: "a step that reads a pull request before the implementer", plan: oneTask("a", "reviewer implementer"),
-			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet}}},
+			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet}}},
 		{name: "a task with no implementer", plan: oneTask("a", "tester reviewer"), want: []Refusal{
 			{Task: "a", Reason: "task a has no step implementer." + yet},
-			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads." + yet},
-			{Task: "a", Reason: "step 2 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
+			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none." + yet},
+			{Task: "a", Reason: "step 2 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		}},
 		{name: "a role two times in a task", plan: oneTask("a", "implementer reviewer reviewer"),
 			want: []Refusal{{Task: "a", Reason: "task a names the role reviewer at steps 2 and 3." + yet}}},
@@ -144,18 +145,18 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "f1", Reason: "task f1 is a part of task f." + yet}}},
 		{name: "two causes in one task", plan: oneTask("a", "reviewer implementer reviewer"), want: []Refusal{
 			{Task: "a", Reason: "task a names the role reviewer at steps 1 and 3." + yet},
-			{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
+			{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Supported(tc.plan); !reflect.DeepEqual(got, tc.want) {
+			if got := Supported(tc.plan, builtin); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Supported =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
 	}
 
 	for _, steps := range []string{"implementer reviewer", "planner implementer tester reviewer acceptance:owner", "implementer acceptance:owner", "implementer"} {
-		if r := Supported(oneTask("a", steps)); len(r) != 0 {
+		if r := Supported(oneTask("a", steps), builtin); len(r) != 0 {
 			t.Fatalf("Supported(%s) = %+v, want none", steps, r)
 		}
 	}
@@ -163,7 +164,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	// Both checks run, so a plan with causes of each kind gets the reasons of both, as one refusal.
 	twoTasks := oneTask("a", "implementer prober")
 	twoTasks.Tasks = append(twoTasks.Tasks, Task{ID: "b", Steps: implementer})
-	got := append(Supported(twoTasks), Validate(twoTasks, Deployment{Roles: BuiltinRoles()})...)
+	got := append(Supported(twoTasks, builtin), Validate(twoTasks, builtin)...)
 	want := []Refusal{
 		{Task: "", Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
@@ -239,12 +240,12 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 		"implementer reviewer acceptance:owner tester", "implementer planner", "planner implementer reviewer", "implementer reviewer planner tester",
 		"planner implementer tester reviewer acceptance:owner"} {
 		p := oneTask("a", steps)
-		if r := Refusals(p, Deployment{Roles: BuiltinRoles()}); len(r) != 0 {
+		if r := Refusals(p, builtin); len(r) != 0 {
 			t.Fatalf("%s refused: %+v", steps, r)
 		}
 	}
 	want := Refusal{Task: "a", Reason: "task a names the role tester at steps 2 and 4. This release of Legion does not carry it out yet."}
-	if r := Supported(oneTask("a", "implementer tester reviewer tester")); len(r) != 1 || r[0] != want {
+	if r := Supported(oneTask("a", "implementer tester reviewer tester"), builtin); len(r) != 1 || r[0] != want {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -255,26 +256,106 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 // The planner reads no pull request, so it stands anywhere.
 func TestAStepThatReadsAPullRequestNeedsAnImplementerBeforeIt(t *testing.T) {
 	for _, tc := range []struct{ steps, reason string }{
-		{"tester implementer", "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads."},
-		{"reviewer implementer", "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads."},
-		{"acceptance:owner implementer", "step 1 of task a names acceptance:owner, and no step before it names the role implementer, whose pull request acceptance:owner reads."},
-		{"planner reviewer implementer", "step 2 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads."},
+		{"tester implementer", "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none."},
+		{"reviewer implementer", "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none."},
+		{"acceptance:owner implementer", "step 1 of task a names acceptance:owner, and no step before it names the role implementer, whose pull request acceptance:owner reads; a role of this deployment that reports pass or fail needs none."},
+		{"planner reviewer implementer", "step 2 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none."},
 	} {
 		want := []Refusal{{Task: "a", Reason: tc.reason + yet}}
-		if r := Supported(oneTask("a", tc.steps)); !reflect.DeepEqual(r, want) {
+		if r := Supported(oneTask("a", tc.steps), builtin); !reflect.DeepEqual(r, want) {
 			t.Fatalf("Supported(%s) =\n%+v\nwant\n%+v", tc.steps, r, want)
 		}
 	}
-	if r := Supported(oneTask("a", "implementer planner")); len(r) != 0 {
+	if r := Supported(oneTask("a", "implementer planner"), builtin); len(r) != 0 {
 		t.Fatalf("Supported(implementer planner) = %+v, want none", r)
 	}
 	// The plan `tester` alone has two causes, in the order Supported builds them, and both stand.
 	want := []Refusal{
 		{Task: "a", Reason: "task a has no step implementer." + yet},
-		{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads." + yet},
+		{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none." + yet},
 	}
-	if r := Supported(oneTask("a", "tester")); !reflect.DeepEqual(r, want) {
+	if r := Supported(oneTask("a", "tester"), builtin); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Supported(tester) =\n%+v\nwant\n%+v", r, want)
+	}
+}
+
+// withRole is Legion's own roles and one role of the deployment, name, of type typ.
+func withRole(name string, typ Type) Deployment {
+	roles := BuiltinRoles()
+	roles[name] = RoleDef{Name: name, Type: typ}
+	return Deployment{Roles: roles}
+}
+
+// Legion's retro is done by the implementer in this release, so a task whose last step of the
+// type implementation is a role of the deployment after the implementer is refused: its retro
+// would go to that role's agent, which this release does not carry out. A role of the deployment
+// of the type implementation before the implementer leaves the implementer the last step of that
+// type, and is taken. The control: the same plan under a deployment whose coder does testing work
+// is taken, so the refusal reads the type the deployment gives the role. Each such step is a cause
+// of its own kind, which the refusal bounds as it bounds each kind (reasons): the first
+// MostReasons named, then one reason of the whole plan that counts the rest.
+func TestARetroOfAnotherRoleIsNotCarriedOutYet(t *testing.T) {
+	d := withRole("coder", TypeImplementation)
+	want := []Refusal{{Task: "a", Reason: "task a names coder at step 2, a step of the type implementation after the step implementer at step 1, and Legion's retro is done by the implementer in this release. This release of Legion does not carry it out yet."}}
+	if r := Supported(oneTask("a", "implementer coder"), d); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(implementer coder) =\n%+v\nwant\n%+v", r, want)
+	}
+	for _, taken := range []struct {
+		steps string
+		d     Deployment
+	}{
+		{"coder implementer", d},
+		{"implementer coder", withRole("coder", TypeTesting)},
+	} {
+		p := oneTask("a", taken.steps)
+		if r := Refusals(p, taken.d); len(r) != 0 {
+			t.Fatalf("Supported(%s) under coder of type %s = %+v, want none", taken.steps, taken.d.Roles["coder"].Type, r)
+		}
+	}
+	coders := numbered("coder", MostReasons+3)
+	many := Deployment{Roles: BuiltinRoles()}
+	for _, coder := range coders {
+		many.Roles[coder] = RoleDef{Name: coder, Type: TypeImplementation}
+	}
+	r := Supported(oneTask("a", "implementer "+strings.Join(coders, " ")), many)
+	if len(r) != MostReasons+1 || !strings.Contains(r[MostReasons-1].Reason, "names "+coders[MostReasons-1]+" at step") ||
+		r[MostReasons].Task != "" || !strings.Contains(r[MostReasons].Reason, " 3 ") {
+		t.Fatalf("Supported(implementer and %d coders) = %.3000v, want the first %d named and the 3 left counted", len(coders), r, MostReasons)
+	}
+}
+
+// The refusal of a step that reads a pull request with no implementer step before it says that a
+// role of the deployment, which reports pass or fail, needs none. It reads the role and never the
+// type: a role of the deployment of the type review before the implementer is taken, where
+// Legion's reviewer there is refused.
+func TestAStepThatReadsAPullRequestNamesARoleOfTheDeploymentThatNeedsNone(t *testing.T) {
+	d := withRole("critic", TypeReview)
+	want := []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."}}
+	if r := Supported(oneTask("a", "reviewer implementer"), d); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(reviewer implementer) =\n%+v\nwant\n%+v", r, want)
+	}
+	p := oneTask("a", "critic implementer")
+	if r := Refusals(p, d); len(r) != 0 {
+		t.Fatalf("Supported(critic implementer) = %+v, want none", r)
+	}
+}
+
+// A role runs at most one step of a task: a role of the deployment named at two steps is refused
+// as Legion's own roles are, so neither an owner's plan (api's register_plan) nor a project's
+// default steps (config's checkDefaultSteps), the two writers of a task's steps, can name one. The
+// daemon reads the role of the step a task stands at as the step (record.Issue.HoldsQueued, the
+// phases row of a role), which holds only while this does. The control: the same deployment's
+// plan that names the role once, beside another role of the deployment, is taken.
+func TestARoleOfTheDeploymentAtTwoStepsIsRefused(t *testing.T) {
+	d := withRole("checker", TypeTesting)
+	d.Roles["linter"] = RoleDef{Name: "linter", Type: TypeTesting}
+	want := []Refusal{{Task: "a", Reason: "task a names the role checker at steps 2 and 4." + yet}}
+	if r := Supported(oneTask("a", "implementer checker linter checker"), d); !reflect.DeepEqual(r, want) {
+		t.Fatalf("Supported(implementer checker linter checker) =\n%+v\nwant\n%+v", r, want)
+	}
+	p := oneTask("a", "implementer checker linter")
+	if r := Refusals(p, d); len(r) != 0 {
+		t.Fatalf("Supported(implementer checker linter) = %+v, want none", r)
 	}
 }
 
@@ -465,12 +546,12 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a need at the bound", Validate(planOf(t, 1, taskNeeding("a", atBound)), d), 0, "a", "needs " + atBound + ",", 1},
 		{"a need cut at the start of a character", Validate(planOf(t, 1, taskNeeding("a", wide)), d), 0, "a", wide[:127] + "… (cut from 201 bytes),", 1},
 		{"a role of 301 bytes", Validate(oneTask("a", "implementer "+role), d), 0, "a", cut(role) + ",", 1},
-		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role)), 0, "a", cut(role) + ".", 1},
-		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}), 0, "", cut(role) + ".", 1},
-		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role)), 0, "a", cut(role) + " at steps 2 and 3.", 1},
+		{"a key of 301 bytes", Supported(oneTask("a", "implementer reviewer:"+role), d), 0, "a", cut(role) + ".", 1},
+		{"a role block's id of 301 bytes", Supported(Plan{RoleBlocks: []string{role}, Tasks: []Task{{ID: "a", Steps: []Step{{Role: "implementer"}}}}}, d), 0, "", cut(role) + ".", 1},
+		{"a role of 301 bytes at two steps", Supported(oneTask("a", "implementer "+role+" "+role), d), 0, "a", cut(role) + " at steps 2 and 3.", 1},
 		// The key's reason comes first, then the step's. stepReasons names the whole word
 		// `tester:<key>` twice, so its size includes two quotes.
-		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer")), 1, "a", cut("tester:"+role) + ",", 2},
+		{"a step of 308 bytes read before the implementer", Supported(oneTask("a", "tester:"+role+" implementer"), d), 1, "a", cut("tester:"+role) + ",", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.got) <= tc.at {
@@ -687,10 +768,10 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 	}{
 		{"a need", Validate(planOf(t, 1, taskNeeding("a", plantedURL)), d), "a", quote},
 		{"a role nobody defines", Validate(withSteps(implementer, Step{Role: plantedURL}), d), "a", quote},
-		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}), "", quote},
-		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL})), "a", quote},
-		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL})), "a", quote},
-		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer)), "a", cut("tester:" + redactedURL)},
+		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}, d), "", quote},
+		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL}), d), "a", quote},
+		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL}), d), "a", quote},
+		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer), d), "a", cut("tester:" + redactedURL)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if len(tc.got) == 0 || !slices.ContainsFunc(tc.got, func(r Refusal) bool { return r.Task == tc.task && strings.Contains(r.Reason, tc.quote) }) {

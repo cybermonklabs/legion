@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -48,6 +49,10 @@ type specs struct {
 	copies       *instructionsCopies
 	secrets      map[string]string
 	prompts      *prompts.Composer
+	// roles are the roles the deployment defines (config.Config.Roles), in the file's order:
+	// each launches with its own prompt file (prompts.ComposeStep) and its model, and the owner's
+	// addressing lists them in this order. Nil is a deployment that defines none.
+	roles []config.Role
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
 	// reaches the claim's role, in the order the project's file declares the experiments, and
 	// the daemon's own copies of the instructions those arms name (launchVariants, over the
@@ -265,6 +270,12 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
 	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role), corrected)
+	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
+	// before the tree architect's design-gate line, and the production check line ends every
+	// architect's addressing.
+	if c.Role == claim.RoleArchitect {
+		addressing += " " + DeploymentRolesFragment(s.roles)
+	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -292,15 +303,16 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	// The claim's own identity is the six variables its commits carry (GitIdentity.Env), and a
-	// failed mint of it fails the launch. Every role's of claim.Roles is the table the push step of
-	// `legion jj` reads to set the author of a commit a push sends from the role its Legion-Role
-	// trailer names, where the step's rules let it (runtime.RoleIdentitiesVariable): an issue's
-	// roles share one working copy, so a commit's author may be another role's App. The table is
-	// built with the claim's own identity for its own App's roles and with one resolution of the
-	// other App's (roleIdentities); when the other App's identity cannot be resolved, the launch
-	// goes on with a table of its own App's roles alone, and a commit whose trailer names a role
-	// left out keeps its author. A launch whose context ended during that resolution fails, as one
-	// whose context ended during the claim's own mint does: that is no failure of the other App.
+	// failed mint of it fails the launch. The identity of each role of claim.Roles and of each role
+	// the deployment defines is the table the push step of `legion jj` reads to set the author of a
+	// commit a push sends from the role its Legion-Role trailer names, where the step's rules let it
+	// (runtime.RoleIdentitiesVariable): an issue's roles share one working copy, so a commit's author
+	// may be another role's App. The table is built with the claim's own identity for its own App's
+	// roles and with one resolution of the other App's (roleIdentities); when the other App's
+	// identity cannot be resolved, the launch goes on with a table of its own App's roles alone, and
+	// a commit whose trailer names a role left out keeps its author. A launch whose context ended
+	// during that resolution fails, as one whose context ended during the claim's own mint does:
+	// that is no failure of the other App.
 	// The controller's launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
@@ -318,26 +330,48 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
+	// A role the deployment defines runs the model its settings give it; Legion's roles name none
+	// and run the profile's own (runtime.SpawnSpec.Model).
+	if role, defined := s.roleOf(c.Role); defined && claim.IsDeploymentRole(c.Role) {
+		spec.Model = role.Model
+	}
 	return spec, nil
 }
 
 // roleIdentities is the table of every role's identity a launch of c carries
-// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
-// since one App commits as one identity, and asks nothing more. The other App's roles take that
-// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
-// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
-// a failed mint of one App's lease fails no launch of the other App's role, and the push step
-// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
-// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
-// the error, and nothing is logged.
+// (runtime.RoleIdentitiesVariable), given own, c's own identity: Legion's roles and each role the
+// deployment defines, by the App each acts as (appauth.AppRoleFor). A role of c's own App takes
+// own, since one App commits as one identity, and asks nothing more. The other App's roles take
+// that App's identity, resolved once for all of them (otherAppIdentity). When it cannot be
+// resolved, the table leaves them out and the daemon logs one warning naming c, that App and the
+// error, so a failed mint of one App's lease fails no launch of the other App's role, and the push
+// step leaves the author of a commit whose trailer names a role left out as it is. A resolution
+// that failed once ctx had ended is the launch's own end rather than the other App's failure: it
+// is the error, and nothing is logged.
 func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
-	app := appauth.AppRoleFor(c.Role)
-	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	deployed := deploymentApps(s.roles)
+	app, err := appauth.AppRoleFor(c.Role, deployed)
+	if err != nil {
+		return nil, err
+	}
+	roles := slices.Clone(claim.Roles)
+	for _, role := range s.roles {
+		roles = append(roles, role.Name)
+	}
+	identities := make(map[claim.Role]runtime.GitIdentity, len(roles))
 	var others []claim.Role
-	for _, role := range claim.Roles {
-		if appauth.AppRoleFor(role) == app {
+	otherApp := appauth.Implement
+	if app == appauth.Implement {
+		otherApp = appauth.Review
+	}
+	for _, role := range roles {
+		roleApp, err := appauth.AppRoleFor(role, deployed)
+		switch {
+		case err != nil:
+			continue
+		case roleApp == app:
 			identities[role] = own
-		} else {
+		default:
 			others = append(others, role)
 		}
 	}
@@ -351,14 +385,14 @@ func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository
 			identities[role] = other
 		}
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+		return nil, fmt.Errorf("the git identity of the %s App: %w", otherApp, err)
 	default:
 		log := s.log
 		if log == nil {
 			log = slog.Default()
 		}
 		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
-			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+			"claim", c.Token, "app", otherApp, "error", err)
 	}
 	return identities, nil
 }
@@ -502,12 +536,12 @@ var refusalCooldownVariables = []string{
 //
 // backend is the launch's, as SpawnSpec resolved it (launchBackend). A Claude Code launch gets
 // nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
-// (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude worker's plugin
-// is the image's — so a plugin-contract change for such a role is answered by a new image, not by
-// an install. Such a claim whose recorded contract differs still relaunches: it is the image's
-// plugin that decides, and the image probe is what refuses a wrong one. The daemon-launched
-// controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
-// launch is covered here exactly as before.
+// (runtime/sandbox's plugins.go), no npm install reaches the image's own claude-envoy, and a
+// Claude worker's plugin is the image's — so a plugin-contract change for such a role is answered
+// by a new image, not by an install. Such a claim whose recorded contract differs still
+// relaunches: it is the image's plugin that decides, and the image probe is what refuses a wrong
+// one. The daemon-launched controller runs on Oh My Pi (runtime.Backends runs Claude Code for
+// phase workers alone), so its launch is covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
@@ -572,7 +606,10 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 }
 
 // rolePromptPaths keeps an explicit operator prompt as a narrow test override. Every ordinary
-// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New).
+// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New):
+// Legion's roles their composed parts (prompts.Composer.Compose), a role the deployment defines
+// its own prompt file between the headless mechanics and Legion's worker part
+// (prompts.Composer.ComposeStep). A role neither names is refused, with no prompt.
 func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	override := rolePromptPath(s.stateDir, c.Token)
 	if _, err := os.Stat(override); err == nil {
@@ -583,11 +620,28 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	if s.prompts == nil {
 		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
-	if err != nil {
-		return nil, err
+	if claim.IsBuiltin(c.Role) {
+		parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
+		if err != nil {
+			return nil, err
+		}
+		return parts.RolePromptPaths, nil
 	}
-	return parts.RolePromptPaths, nil
+	role, defined := s.roleOf(c.Role)
+	if !defined {
+		return nil, fmt.Errorf("the role prompt of %s: the deployment defines no role %s", c.Token, c.Role)
+	}
+	return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
+}
+
+// roleOf is the role of the deployment named name, and whether the deployment defines one.
+func (s specs) roleOf(name claim.Role) (config.Role, bool) {
+	for _, role := range s.roles {
+		if role.Name == name {
+			return role, true
+		}
+	}
+	return config.Role{}, false
 }
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
@@ -821,6 +875,31 @@ func DesignGateFragment(steps []record.DesignStep) string {
 func ProductionCheckFragment(check claim.Role) string {
 	return "Production check: " + config.Project{ProductionCheck: check}.ProductionCheckWord() + "."
 }
+
+// DeploymentRolesFragment is the sentence every architect is told after its addressing: the roles
+// a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
+// whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
+// file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
+// one, the model its agent starts with. It is exported for the rigs under packages/pi-legion,
+// which restate it, as AddressingFragment is.
+func DeploymentRolesFragment(roles []config.Role) string {
+	builtin := stepplan.BuiltinRoles()
+	entries := make([]string, 0, len(stepRoleOrder)+len(roles))
+	for _, name := range stepRoleOrder {
+		entries = append(entries, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
+	}
+	for _, role := range roles {
+		entry := fmt.Sprintf("%s (%s)", role.Name, role.Type)
+		if role.Model != "" {
+			entry += " with the model " + role.Model
+		}
+		entries = append(entries, entry)
+	}
+	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+}
+
+// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
+var stepRoleOrder = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers
 // mentions from: its plugin subscribes to each one's mention topic itself, while the session holds

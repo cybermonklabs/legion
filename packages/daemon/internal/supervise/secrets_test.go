@@ -39,7 +39,7 @@ func TestAFreshLaunchEnrollsAtRegistrationWithTheSession(t *testing.T) {
 	}
 }
 
-// In an issue pod six role processes share one pod uid, so the broker tells their enrollments
+// In an issue pod every role process shares one pod uid, so the broker tells their enrollments
 // apart by slot: the pod's real uid stays the identity the broker verifies against the projected
 // token, and the slot is the daemon's own `<role>-g<generation>`, never the composed incarnation.
 func TestAnIssuePodProcessEnrollsWithItsPodUIDAndRoleSlot(t *testing.T) {

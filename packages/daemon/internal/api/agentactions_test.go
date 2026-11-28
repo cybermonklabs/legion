@@ -117,7 +117,7 @@ func TestTheControllersAgentActionsNeedAControllerGrantAClaimRoleAndAClaimOfItsP
 
 			refusedSaying(t, askAgentAction(t, h, op.route, "LEGION-209", claim.RoleController),
 				http.StatusBadRequest, "INVALID_ROLE",
-				"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
+				"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
 					"the project's controller is none of them, and "+op.invalidRole)
 
 			// Another project's claim: only an issue this daemon supervises no claim for.

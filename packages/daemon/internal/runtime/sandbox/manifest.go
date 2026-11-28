@@ -296,16 +296,17 @@ const sessionWriterAudienceFlag = "--session-writer-audience"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
-// test database's, and each launcher role's private ones. The agent-secrets volumes are reserved
-// whether or not this deployment enrolls, the workload identity token whether or not a pod of it,
-// an issue's or the controller's, serves the metadata endpoint, the session writer token whether
-// or not its session database names a writer audience, and the test database's whether or not it
-// sets `runtime.kubernetes.test_postgres`: an operator's pod may never claim them. The exchange
-// identity's (agentSecretsExchangeVolume) is Legion's only where exchange says the deployment
-// names an exchange audience: one that names none keeps that name the operator's, as it was before
-// the key existed. Every launcher role, the controller's included, has a key volume when the pod
-// enrolls and a gh volume always.
-func legionVolumeNames(exchange bool) []string {
+// test database's, and each launcher role's private ones, for every role of roles (the runtime's
+// issue roles, a role the deployment defines among them, then the controller). The agent-secrets
+// volumes are reserved whether or not this deployment enrolls, the workload identity token whether
+// or not a pod of it, an issue's or the controller's, serves the metadata endpoint, the session
+// writer token whether or not its session database names a writer audience, and the test
+// database's whether or not it sets `runtime.kubernetes.test_postgres`: an operator's pod may
+// never claim them. The exchange identity's (agentSecretsExchangeVolume) is Legion's only where
+// exchange says the deployment names an exchange audience: one that names none keeps that name
+// the operator's, as it was before the key existed. Every launcher role, the controller's
+// included, has a key volume when the pod enrolls and a gh volume always.
+func legionVolumeNames(roles []claim.Role, exchange bool) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, workloadIdentityTokenVolume,
 		sessionWriterTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
@@ -313,7 +314,7 @@ func legionVolumeNames(exchange bool) []string {
 	if exchange {
 		names = append(names, agentSecretsExchangeVolume)
 	}
-	for _, role := range launcherRoles {
+	for _, role := range roles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
 			roleVolume(agentSecretsKeyVolume, role))
 	}
@@ -872,7 +873,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	case named != l.kind:
 		return launch{}, refuse("its pod's labels %v name another kind of pod than the one it builds", r.labels(l))
 	}
-	l.roles = named.roles()
+	l.roles = named.roles(r)
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return launch{}, refuse("%w", err)
@@ -929,9 +930,10 @@ func SessionFromVolume(file, root string) (string, error) {
 
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
-// the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, the session, then RPC mode and `--append-system-prompt` naming the file
-// the launcher writes the launch's system prompt to (systemPromptPath), never the text.
+// the Envoy plugin first, `--model` on the model the spec names, `@default` where it names none so
+// the session runs the model the pod's overlay puts on the `default` role, the session, then RPC
+// mode and `--append-system-prompt` naming the file the launcher writes the launch's system prompt
+// to (systemPromptPath), never the text.
 //
 // The session: a launch that resumes a claim's session that records no file names the session's
 // id as one `--resume=<id>` (ResumeSession), which the launcher replaces with the file it looks up
@@ -962,15 +964,17 @@ func SessionFromVolume(file, root string) (string, error) {
 // image leaves unlinked from its profile: Oh My Pi loads a plugin that is both installed and named
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
-// `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
-// for the `default` model role, which every pod's operator overlay sets, the operator's current
-// role is resolved per launch, and a resumed session without the flag runs the session file's
-// recorded model. From Oh My Pi 18.18.6 of the fork (upstream oh-my-pi #18534), a resumed launch
-// under this role alias appends a replacement `model_change` for its resolved model, which later
-// launches without the flag read; that replacement is the role as it stood at the launch that
-// wrote it, so it stands in for no later launch's flag. A profile with no `default` role is not
-// refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
-// to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// A model rides every launch, not the resuming one alone. Where the spec names none, it is
+// @default, Oh My Pi's name for the `default` model role, which every pod's operator overlay sets,
+// the operator's current role is resolved per launch, and a resumed session without the flag runs
+// the session file's recorded model. From Oh My Pi 18.18.6 of the fork (upstream oh-my-pi #18534),
+// a resumed launch under this role alias appends a replacement `model_change` for its resolved
+// model, which later launches without the flag read; that replacement is the role as it stood at
+// the launch that wrote it, so it stands in for no later launch's flag. A profile with no
+// `default` role is not refused here: Oh My Pi launches silently on a built-in model instead,
+// which is the deployment's to notice (deploy/kubernetes/operator-route/README.md, "Changing a
+// role's model"). Where the spec names a model (a role of the deployment's `model`,
+// runtime.SpawnSpec.Model), that model is named in the same place.
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
@@ -979,7 +983,11 @@ func (l launch) agentArgv(agent []string) []string {
 	if l.spec.Plugins != nil {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
-	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
+	model := "@default"
+	if l.spec.Model != "" {
+		model = l.spec.Model
+	}
+	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", model)
 	switch {
 	case l.spec.ResumeSession != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSession)
@@ -1005,13 +1013,15 @@ func (l launch) agentArgv(agent []string) []string {
 // The session is the launch's own (claudeInputs): `--resume <uuid>` of the transcript a replaced
 // pod left, by the id prepare read from the recorded path, and `--session-id <fresh uuid>` when
 // the launch starts a session. Claude Code resumes by id and never by path, so the recorded file
-// name itself is never passed. Options.Agent, the operator's Oh My Pi override, does not reach
-// here: the Claude command is the runtime's, as the tmux lane's is the host's boot-resolved one.
+// name itself is never passed. The model is the spec's (runtime.SpawnSpec.Model, a role of the
+// deployment's `model`), named as `--model` where it is not "". Options.Agent, the operator's Oh
+// My Pi override, does not reach here: the Claude command is the runtime's, as the tmux lane's is
+// the host's boot-resolved one.
 func (l launch) claudeArgv() []string {
 	claude := claudeCodeBinary(roleStateHome(l.spec.Role), l.spec.Generation)
 	paths := claudelaunch.Paths{Legion: l.claude.legion, Claude: claude, PluginDir: claudePluginDir}
 	return claudelaunch.Argv(paths, generationDir(l.spec.Generation)+"/"+claudeMCPFile, l.claude.session, l.claude.resume,
-		systemPromptPath(l.spec.Generation))
+		systemPromptPath(l.spec.Generation), l.spec.Model)
 }
 
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).
@@ -1772,10 +1782,11 @@ const (
 	// (`go help module-auth`) in a directory it then makes read-only, which only `go build
 	// -modcacherw` leaves writable. They are the issue's rather than the tree's because each issue
 	// has a volume of its own; a pair is 751 MiB of build cache and 375 MiB of module cache for this
-	// repository, so the six roles of an issue pod with a pair each would hold five redundant
-	// copies, about 5.5 GiB of the issue's volume spent on nothing. They keep their own place at
-	// `/legion/go`, beside the workspaces rather than under the issue's scratch (scratchRoot),
-	// where they were the issue's one pair before the rest of the scratch became the issue's too.
+	// repository, so roles with a pair each would hold a redundant copy for each role but one, five
+	// for Legion's six roles, about 5.5 GiB of the issue's volume spent on nothing. They keep their
+	// own place at `/legion/go`, beside the workspaces rather than under the issue's scratch
+	// (scratchRoot), where they were the issue's one pair before the rest of the scratch became the
+	// issue's too.
 	// The state home is the one directory of that scratch no two roles share: Oh My Pi's browser
 	// broker takes its lock as an abstract unix socket named from a path under the state home, one
 	// name across every container of the pod, so one state home would block every role's broker

@@ -57,6 +57,14 @@ const awaitingChildren: LegionIssueResponse = {
   state: { ...another.state, phase: "awaiting_children" },
 };
 
+/** `step`, a step of a role the deployment defines, which may stand at any place of the plan, so
+ *  it marks no step of the track. No captured body holds it, so this one is the captured `another`
+ *  with only its phase changed, as `awaitingChildren` is. */
+const atDeploymentStep: LegionIssueResponse = {
+  ...another,
+  state: { ...another.state, phase: "step" },
+};
+
 const PHASE_TABLE: readonly PhaseRow[] = [
   {
     body: planning,
@@ -107,6 +115,13 @@ const PHASE_TABLE: readonly PhaseRow[] = [
     row: "awaiting_children",
     // R3's step and words as written, not through the page's list.
     track: { marked: "admitted", words: "Waiting on children" },
+  },
+  {
+    body: atDeploymentStep,
+    configured: true,
+    phase: "step",
+    row: "step",
+    track: { words: PHASE_WORDS.step },
   },
   ...EACH_STEP,
   { body: done, configured: true, phase: "done", row: "done", track: undefined },

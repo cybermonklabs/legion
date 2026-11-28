@@ -17,6 +17,7 @@
         "issues",
         "issues.*.check",
         "issues.*.phase",
+        "issues.*.role",
         "settings",
         "settings.review_round_cap",
         "settings.worker_boot_timeout_seconds"
@@ -61,6 +62,12 @@
         { "value": "held", "since": 101 },
         { "value": "implementing", "since": 46 }
       ]
+    },
+    {
+      "answer": "state",
+      "keyPath": "issues.*.role",
+      "values": [{ "value": "architect", "since": 46 }, { "value": "tester", "since": 46 }],
+      "openFrom": 102
     },
     {
       "answer": "note",

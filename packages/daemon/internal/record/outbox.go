@@ -424,7 +424,7 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
+// worker's own summary and, beside it, the verdict it gave (the pass or fail of the tester or of a role of the deployment). A
 // review-stuck notice's summary names the fact that wrote it, and its topic is the reviewer's role
 // topic, which the architect asks for the decision.
 type Notice struct {
@@ -1037,13 +1037,16 @@ func CatchUpBasisOf(basis GateBasis) *CatchUpBasis {
 	return stated
 }
 
-// CatchUpIssue is one issue of the tree as a catch-up lists it.
+// CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
+// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
+// phase alone does not name; it is absent at every other phase.
 type CatchUpIssue struct {
-	Key    string      `json:"key"`
-	Parent string      `json:"parent,omitempty"`
-	Title  string      `json:"title"`
-	Phase  phase.Phase `json:"phase"`
-	Status string      `json:"status"`
+	Key      string      `json:"key"`
+	Parent   string      `json:"parent,omitempty"`
+	Title    string      `json:"title"`
+	Phase    phase.Phase `json:"phase"`
+	StepRole claim.Role  `json:"stepRole,omitempty"`
+	Status   string      `json:"status"`
 }
 
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
@@ -1158,6 +1161,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
+// A pod-wait-held notice names an issue whose pod was built before the deployment defined a role
+// whose start waits for it (the outbox's roleWaitsForItsPod), where nothing ends that wait until
+// an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
+// it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
+// release is off and no claim records a process in the pod, so no update round opens over it
+// (told once per wait that finds no process there). Its Role is the waiting role, and its Reason
+// what the controller is told, in words built from structured fields alone. It tells nobody to
+// delete the pod: the pod's disk can hold work a role did not push.
+//
 // A memory-guard-kill notice names one of the controller's own programs that the memory guard of
 // the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
 // the project key, as a tick's is, its Role is the controller, and its Reason names the process,
@@ -1191,6 +1203,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	PodWaitHeldNotice      NoticeKind = "pod-wait-held"
 	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
@@ -1467,7 +1480,7 @@ type SuperviseRequest struct {
 	// stands, the daemon's store reads the same rule (its slotWaitingStart, held to this one by
 	// TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot): the idle release does not keep
 	// the issue's pod for the start (idleWaitingRow). What such a start means for a backstop is
-	// the store's PodRecords.WaitsForItsSlot's to say.
+	// the workflow's podBackstopDue's to say, by Issue.HoldsQueued.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
@@ -1566,6 +1579,18 @@ type SuperviseRequest struct {
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
+
+// BringsBack says whether the request is a start that brings a role back and hands it nothing: a
+// start that carries no task, no news, no entry, no production check's look and no wake's mark. It
+// is the start a re-admission's promotion writes for each role of a mid-phase member that has run
+// and is not the phase's own (admit's startMidPhaseMembers): the role comes back and is told
+// nothing. Such a start serves no work of the phase it names, which is the phase the member stood
+// in when it was queued, so it is held to that phase alone (Issue.HoldsStart) and not to the role
+// of the step: at the phase step the role is the running step's, and a role that ran another step
+// of the task is never that.
+func (r SuperviseRequest) BringsBack() bool {
+	return r.Op == "start" && r.Phase != "" && r.Task == "" && !r.News && r.Entry == 0 && r.CheckLook == 0 && r.WakeKind == ""
+}
 
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
@@ -1694,8 +1719,9 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
 //
 // It stops nothing, so a release cancelled here costs only the read, and it sits before the
-// release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release (outbox.cancelRelease). The teardown waits for it (store.IssueRelease).
+// release's boundary (the first `release` row), so a delivery queued while it runs, save a start
+// that waits for its pod, still cancels the whole release (outbox.cancelRelease). The teardown
+// waits for it (store.IssueRelease).
 //
 // CloseRoles, where it names any role, makes the row the first act of another act: the close of a
 // pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
@@ -1904,13 +1930,14 @@ func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
 // StateField names one field of an issue that a state change can move (stateevent.Field).
 type StateField = stateevent.Field
 
-// The five fields Dispatch observes of an issue, named as the state route serves them.
+// The six fields Dispatch observes of an issue, named as the state route serves them.
 const (
 	StateFieldPhase     = stateevent.FieldPhase
 	StateFieldTree      = stateevent.FieldTree
 	StateFieldSlot      = stateevent.FieldSlot
 	StateFieldWaitingOn = stateevent.FieldWaitingOn
 	StateFieldClaim     = stateevent.FieldClaim
+	StateFieldStepRole  = stateevent.FieldStepRole
 )
 
 // StateFieldChange is one field a write moved (stateevent.FieldChange).
@@ -2508,8 +2535,8 @@ const (
 	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// planner, the tester, the reviewer or the merger, to stop writing the workspace while the
-	// merge runs.
+	// planner, the tester, the reviewer, the merger or, at step, the role of the running step, to
+	// stop writing the workspace while the merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
@@ -2522,7 +2549,7 @@ const (
 	MergeForwardWithdrawn MergeForwardStep = "withdrawn"
 )
 
-// mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
+// mergeForwardRoles is Legion's roles each step of a merge forward may go to: the ask to the
 // implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
 // the merger); the hold to a worker of the phase the issue stays in that is neither the role
 // asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
@@ -2544,19 +2571,25 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list MergeForwardWorker reads for the hold and the landed and a row is validated against
 // (validateOutboxPayload), a merge-forward message by its step and the dropped merge forward a
-// phase-ended message names by the ask.
+// phase-ended message names by the ask. The hold and the landed also go to a role the deployment
+// defines, the worker of a step that runs as step, which reads the head as the tester and the
+// reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
+	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsDeploymentRole(role) {
+		return true
+	}
 	return slices.Contains(mergeForwardRoles[step], role)
 }
 
-// MergeForwardWorker is the worker of the phase at, the role phase.RoleFor gives it, and whether
-// step of a merge forward, a hold or a landed, goes to it (MergeForwardReaches). It is the one rule
-// the workflow addresses the hold and the landed by (workflow's mergeForward, heldWorker, which
-// the start's hold and the completion fence read, and mergeForwardLanded) and a row of either is
-// validated against (validateOutboxPayload): each goes to the worker of the phase it names, and to
-// no other role.
-func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool) {
-	worker := phase.RoleFor(at)
+// MergeForwardWorker is the worker of issue at the phase at, the role that works it there
+// (Issue.RoleAt: the role phase.RoleFor gives at, or at step the role of the running step, which
+// the plan names), and whether step of a merge forward, a hold or a landed, goes to it
+// (MergeForwardReaches). It is the one rule the workflow addresses the hold and the landed by
+// (workflow's mergeForward, heldWorker, which the start's hold and the completion fence read, and
+// mergeForwardLanded) and a row of either is validated against (validateOutboxPayload): each goes
+// to the worker of the phase it names, and to no other role.
+func MergeForwardWorker(step MergeForwardStep, issue Issue, at phase.Phase) (claim.Role, bool) {
+	worker := issue.RoleAt(at)
 	return worker, MergeForwardReaches(step, worker)
 }
 
@@ -2613,17 +2646,19 @@ func OwedMergeForward(pr PullRequest, at phase.Phase) (MergeForward, bool) {
 }
 
 // MergeForwardHolds says whether the merge forward pr records (PullRequest.MergeForward) holds
-// role while the issue stands at at (StandsAt): the merge of the head pr stands at is owed
+// role while issue stands at at (StandsAt): the merge of the head pr stands at is owed
 // (OwedMergeForward: an open ask of that head, not landed, whose asked role still owes it at at),
-// role is the worker of at that the ask's hold reaches (MergeForwardWorker, MergeForwardHold), and
-// role is not the role the ask names (MergeForward.Asked). Such a hold told role to stop writing
-// the workspace, not to complete at the head pr stands at, and to wait for the daemon's landed
-// message (MergeForwardLanded). So an ask of the implementer made after implementing holds the
-// planner, the tester, the reviewer or the merger of each phase the issue stands in until it
-// lands, whether the ask was made in that phase or carried into it, and an ask that records no
-// asked role, which a daemon before cybermonklabs/legion#4979 wrote, holds them alike. The ask
-// made in implementing holds nobody, since it covers implementing alone, whose worker is the role
-// asked; the merger's ask in merging holds nobody either, since merging's worker is the merger. The
+// role is the worker of issue at at that the ask's hold reaches (MergeForwardWorker,
+// MergeForwardHold: at step the role of the running step, issue's StepRole, which the plan names
+// and the phase alone cannot), and role is not the role the ask names (MergeForward.Asked). Such a
+// hold told role to stop writing the workspace, not to complete at the head pr stands at, and to
+// wait for the daemon's landed message (MergeForwardLanded). So an ask of the implementer made
+// after implementing holds the planner, the tester, the reviewer, the merger or the role of the
+// running step of each phase the issue stands in until it lands, whether the ask was made in that
+// phase or carried into it, and an ask that records no asked role, which a daemon before
+// cybermonklabs/legion#4979 wrote, holds them alike. The ask made in implementing holds nobody,
+// since it covers implementing alone, whose worker is the role asked; the merger's ask in merging
+// holds nobody either, since merging's worker is the merger. The
 // role asked is never held: the merge is its own open work, the implementer's in implementing and
 // in retro alike and the merger's in merging, so the ask goes to it and no hold does, and reminding
 // it of that work is what the reminder is for. The architect in accepting is held by nothing, its
@@ -2638,7 +2673,7 @@ func OwedMergeForward(pr PullRequest, at phase.Phase) (MergeForward, bool) {
 // view (FillIdleClaims, PhaseOwed); and the completion fence of a merge forward (workflow's
 // mergedForwardRefusal), which tells a held role that completes to wait for the landed message
 // rather than to complete at the head pr stands at.
-func MergeForwardHolds(pr *PullRequest, at phase.Phase, role claim.Role) bool {
+func MergeForwardHolds(pr *PullRequest, issue Issue, at phase.Phase, role claim.Role) bool {
 	if pr == nil {
 		return false
 	}
@@ -2646,7 +2681,7 @@ func MergeForwardHolds(pr *PullRequest, at phase.Phase, role claim.Role) bool {
 	if !owed {
 		return false
 	}
-	worker, reaches := MergeForwardWorker(MergeForwardHold, at)
+	worker, reaches := MergeForwardWorker(MergeForwardHold, issue, at)
 	return reaches && worker == role && role != asked.Asked()
 }
 
@@ -2688,6 +2723,16 @@ type MergeForwardMessage struct {
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
 	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
+	// Worker is, on a review at step, the role of the running step, a role the deployment defines,
+	// which the review tells what the reviewer decided beside the architect (Tells): no phase names
+	// it, so the landing writes the worker it addressed into the row (workflow's
+	// mergeForwardLanded). Every other row carries none, and a review at step written before the key
+	// carries none either and tells the architect alone. A release before the key refuses a row that
+	// carries it (DecodeOutboxPayload, DisallowUnknownFields), and finishing or stopping the issue
+	// does not take a queued review back, so the rollback of the deployment-roles release takes the
+	// key off each queued row, leaving a review that tells the architect alone (docs/kubernetes.md,
+	// "Rolling back the release whose deployment defines roles").
+	Worker claim.Role `json:"worker,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
@@ -2748,8 +2793,9 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (phase.RoleFor: the planner in planning, the tester in
-// testing, the implementer in retro, the merger in merging; the architect alone in accepting).
+// worker of the phase the issue stands in (Tells: phase.RoleFor, the planner in planning, the
+// tester in testing, the implementer in retro, the merger in merging, and at step the role of the
+// running step the row names; the architect alone in accepting).
 //
 // The withdrawal names the head, the base and the phase the issue stands in, and tells the
 // implementer that the merge forward it was asked for is no longer its work - the merger is asked
@@ -2815,13 +2861,18 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 
 // Tells is the worker of the phase a review names that the reviewer tells what it decided beside
 // the architect (Message): the role phase.RoleFor gives that phase, the planner, the tester, the
-// implementer in retro or the merger, and "" where that is the architect, in accepting, or the
-// reviewer itself. It is "" for every other step, which tells nobody.
+// implementer in retro or the merger, and at step the role of the running step the row names
+// (Worker), which no phase names. It is "" where that is the architect, in accepting, or the
+// reviewer itself, and "" for every other step, which tells nobody.
 func (p MergeForwardMessage) Tells() claim.Role {
 	if p.Step != MergeForwardReview {
 		return ""
 	}
-	if worker := phase.RoleFor(p.Phase); worker != claim.RoleArchitect && worker != p.Role {
+	worker := phase.RoleFor(p.Phase)
+	if p.Phase == phase.Step {
+		worker = p.Worker
+	}
+	if worker != claim.RoleArchitect && worker != p.Role {
 		return worker
 	}
 	return ""
@@ -3470,7 +3521,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
 		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
-		// not be today's, so the pair is any of two different workflow phases (phase.MovePairs).
+		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
+		// workflow phases, or step-step.
 		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}
@@ -3514,13 +3566,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review, or a withdrawal; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the planner, the tester, the reviewer or the merger, a review to the reviewer, and a withdrawal to the implementer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the planner, the tester, the reviewer, the merger or a role of the deployment, a review to the reviewer, and a withdrawal to the implementer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
 		}
 		if value.Step == MergeForwardHold || value.Step == MergeForwardLanded {
-			if worker, _ := MergeForwardWorker(value.Step, value.Phase); worker != value.Role {
+			if value.Phase == phase.Step {
+				// A row names no step of the task, so at step the worker it goes to, the role of the
+				// running step (MergeForwardWorker, Issue.RoleAt), is held only to be a role the
+				// deployment defines, the one kind of role that runs a step there.
+				if !claim.IsDeploymentRole(value.Role) {
+					return fmt.Errorf("a merge-forward hold or landed naming %q goes to the role of the running step, a role the deployment defines; a %s goes to %q", value.Phase, value.Step, value.Role)
+				}
+			} else if worker, _ := MergeForwardWorker(value.Step, Issue{}, value.Phase); worker != value.Role {
 				return fmt.Errorf("a merge-forward hold or landed goes to the worker of the phase it names; a %s naming %q goes to %q, not %q", value.Step, value.Phase, worker, value.Role)
 			}
 		}
@@ -3539,6 +3598,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Step != MergeForwardAsk && value.SentLaunch != 0 {
 			return fmt.Errorf("only a merge-forward ask sent again at a launch names the launch it was sent at; a %s names %d", value.Step, value.SentLaunch)
+		}
+		if value.Worker != "" && (value.Step != MergeForwardReview || value.Phase != phase.Step || !claim.IsDeploymentRole(value.Worker)) {
+			return fmt.Errorf("only a merge-forward review at step names a worker, the role of the running step, a role the deployment defines; a %s naming %q names %q", value.Step, value.Phase, value.Worker)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
@@ -3713,8 +3775,10 @@ func designReview(decision DecisionKind) bool {
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
 // reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
 // or by a failed step that no step before it of the type implementation can take the work back
-// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
-// architect, in its reason.
+// from (workflow's stopUnreturned); or by a step whose role the deployment no longer defines,
+// stopped at the daemon's boot or kept stopped at a person's todo (workflow's lostStop), whose
+// notice names that role. The task's owner reads which task, and which step, which architect or
+// which role, in its reason.
 //
 // `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its
 // retro because it passed its last step, or moved back out of merging, while a hold on its
@@ -3924,7 +3988,7 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
-		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+		ArchitectStalledNotice, PodWaitHeldNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

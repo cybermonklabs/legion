@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -30,7 +31,7 @@ const (
 	changeRun = "5e0c8a7d-2b4f-4d61-9c3e-8f1a6b2d7e94"
 )
 
-// routeFields is the four fields Dispatch observes of an issue, by field, each as the state route
+// routeFields is the five fields Dispatch observes of an issue, by field, each as the state route
 // serves it at the issue: the JSON value, or null where the route serves none.
 type routeFields map[record.StateField]string
 
@@ -121,7 +122,8 @@ func (r *changeRig) put(t *testing.T, issue record.Issue) func(context.Context, 
 func (r *changeRig) view(t *testing.T, key string) routeFields {
 	t.Helper()
 	ctx := context.Background()
-	fields := routeFields{record.StateFieldPhase: "null", record.StateFieldTree: "null", record.StateFieldSlot: "null", record.StateFieldWaitingOn: "null"}
+	fields := routeFields{record.StateFieldPhase: "null", record.StateFieldTree: "null", record.StateFieldSlot: "null", record.StateFieldWaitingOn: "null",
+		stepRoleField: "null"}
 	var state api.State
 	if err := pgx.BeginTxFunc(ctx, r.st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
@@ -142,7 +144,8 @@ func (r *changeRig) view(t *testing.T, key string) routeFields {
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatalf("decode the view of %s: %v", key, err)
 	}
-	for field, name := range map[record.StateField]string{record.StateFieldPhase: "phase", record.StateFieldTree: "tree", record.StateFieldWaitingOn: "waitingOn"} {
+	for field, name := range map[record.StateField]string{record.StateFieldPhase: "phase", record.StateFieldTree: "tree", record.StateFieldWaitingOn: "waitingOn",
+		stepRoleField: "stepRole"} {
 		if value, ok := wire[name]; ok {
 			fields[field] = canonical(t, value)
 		}
@@ -213,7 +216,7 @@ func canonical(t *testing.T, raw json.RawMessage) string {
 // It answers the change's values, field by field: where each named field went from, and to.
 func assertMoved(t *testing.T, key string, got moved, want ...record.StateField) (from, to routeFields) {
 	t.Helper()
-	for _, field := range []record.StateField{record.StateFieldPhase, record.StateFieldTree, record.StateFieldSlot, record.StateFieldWaitingOn} {
+	for _, field := range []record.StateField{record.StateFieldPhase, record.StateFieldTree, record.StateFieldSlot, record.StateFieldWaitingOn, stepRoleField} {
 		if slices.Contains(want, field) == (got.before[field] == got.after[field]) {
 			t.Fatalf("the route serves %s's %s as %s before and %s after the write, want it moved exactly when the test names it (%v): the test's premise",
 				key, field, got.before[field], got.after[field], want)
@@ -427,6 +430,71 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 			t.Fatalf("a phase change through a store with its state events off queued %+v and the route serves %v, want none queued and the phase moved", got.changes, got.after)
 		}
 	})
+}
+
+// stepRoleField is the field a state change names for the role of the step an issue at step runs,
+// the route's `stepRole`.
+const stepRoleField = record.StateFieldStepRole
+
+// A move of a task from one step of a role the deployment defines to another, with the issue at
+// step before and after, moves no phase: the role of the running step is what Dispatch reads of
+// it, through the route's `stepRole` (metric 2 puts a step's hours on that role). So the write
+// queues one state change naming the step role alone, from the role the route served before the
+// move to the one it serves after it. The move out of the step names the phase and the step role,
+// which goes to null. A write that moves neither queues nothing. The task moves first and the issue
+// after it, in one transaction, as the workflow writes them (its moveTask, then WriteIssue), so the
+// change is read against what the route served before the transaction, not against the plan rows
+// the move already wrote.
+func TestAMoveFromOneDeploymentStepToAnotherQueuesTheStepRoleItMoved(t *testing.T) {
+	r := newChangeRig(t)
+	issue := changeIssue("LEGION-50", phase.Step)
+	at := func(position int) record.TaskPlace {
+		return record.TaskPlace{Kind: record.PlaceStep, Position: position}
+	}
+	r.commit(t, issue.Key, func(ctx context.Context, tx pgx.Tx) {
+		t.Helper()
+		issue.StepRole = "checker"
+		r.put(t, issue)(ctx, tx)
+		version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 1, ArtifactID: "artifact-plan-50",
+			Source: record.PlanSourceOwner, GivenBy: "legion-legion-legion-50-architect", GivenAt: time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)}
+		tasks := []record.PlanTask{{Issue: issue.Key, Generation: issue.Generation, Task: "a", PlanVersion: 1, BlockText: "Check the widget.",
+			State: record.TaskRunning, Place: at(2)}}
+		var steps []record.PlanStep
+		for position, role := range []string{"implementer", "checker", "linter"} {
+			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: "a", Position: position + 1, Role: role, Type: "testing"})
+		}
+		steps[0].Type = "implementation"
+		if err := r.records.PutPlan(ctx, tx, version, tasks, steps); err != nil {
+			t.Fatalf("put the plan of %s: %v", issue.Key, err)
+		}
+		// The plan was written after the issue, so the issue is written again: the workflow writes
+		// the issue last in every transaction that moves its task.
+		r.put(t, issue)(ctx, tx)
+	})
+	moveTo := func(p phase.Phase, place record.TaskPlace, role string) func(context.Context, pgx.Tx) {
+		return func(ctx context.Context, tx pgx.Tx) {
+			t.Helper()
+			if err := r.records.MoveTask(ctx, tx, issue.Key, issue.Generation, "a", place, record.TaskRunning); err != nil {
+				t.Fatalf("move the task of %s to %+v: %v", issue.Key, place, err)
+			}
+			issue.Phase, issue.StepRole = p, claim.Role(role)
+			r.put(t, issue)(ctx, tx)
+		}
+	}
+
+	from, to := assertMoved(t, issue.Key, r.commit(t, issue.Key, moveTo(phase.Step, at(3), "linter")), stepRoleField)
+	if from[stepRoleField] != `"checker"` || to[stepRoleField] != `"linter"` {
+		t.Fatalf("the move of %s from the checker's step to the linter's names its step role from %s to %s, want \"checker\" to \"linter\"",
+			issue.Key, from[stepRoleField], to[stepRoleField])
+	}
+	// The control: the same write again moves nothing Dispatch observes.
+	assertMoved(t, issue.Key, r.commit(t, issue.Key, r.put(t, issue)))
+	from, to = assertMoved(t, issue.Key, r.commit(t, issue.Key, moveTo(phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "")),
+		record.StateFieldPhase, stepRoleField)
+	if from[stepRoleField] != `"linter"` || to[stepRoleField] != "null" {
+		t.Fatalf("the move of %s out of the linter's step names its step role from %s to %s, want \"linter\" to null",
+			issue.Key, from[stepRoleField], to[stepRoleField])
+	}
 }
 
 // A write of a slot queues, in its own transaction, one state change naming the slot when it moved

@@ -112,10 +112,10 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 }
 
 // nameMoveEnd names the end of the run issue stands in on w, the walk of its run, that a move on
-// trigger into to ends: the table's own result for the trigger, the step the work returns to, and
-// the report handoff names (endOfTransition). The move names it on the issue as it stood, before
-// the write that moves it.
-func (e *Engine) nameMoveEnd(ctx context.Context, w Walk, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
+// trigger into to, the place of the move's row, ends: the table's own result for the trigger, the
+// step the work returns to, and the report handoff names (endOfTransition). The move names it on
+// the issue as it stood, before the write that moves it.
+func (e *Engine) nameMoveEnd(ctx context.Context, w Walk, issue record.Issue, trigger TriggerKind, to stepSite, handoff record.PhaseRow) error {
 	step, ok := standingStep(w, issue)
 	if !ok {
 		return nil
@@ -270,7 +270,8 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 			}
 			continue
 		}
-		if err := e.endStep(ctx, tx, stood, w, runs.endOf(run)); err != nil {
+		site := placeNamed(record.TaskPlace{Kind: row.Place.Kind, Position: row.Place.Place}, stood.Phase)
+		if err := e.endStep(ctx, tx, stood, w, site, runs.endOf(run)); err != nil {
 			return err
 		}
 	}
@@ -420,10 +421,11 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 }
 
 // phaseAt is the phase whose step runs at place on w, the walk of the run: of its line (Walk.Line,
-// phase.Order for a run with no plan rows), the phase whose step (placeOnWalk) is at place.
+// phase.Order for a run with no plan rows), the phase of the position whose step (placeOnWalk) is
+// at place, so of two steps that run as step, each its own.
 func phaseAt(w Walk, place record.StepPlace) (phase.Phase, bool) {
-	for _, p := range w.Line {
-		if at, _, _, ok := placeOnWalk(w, p); ok && at == place {
+	for at, p := range w.Line {
+		if step, _, _, ok := placeOnWalk(w, placeNamed(placeAt(w.Line, at), p)); ok && step == place {
 			return p, true
 		}
 	}

@@ -186,7 +186,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
 	// yet, then what no release can, each check naming at most plan.MostReasons causes of each kind.
-	refusals := plan.Refusals(given, plan.Deployment{Roles: plan.BuiltinRoles()})
+	// Each judges the plan against the deployment the daemon's settings define (Options.Deployment),
+	// so a role of `roles` is a role a step names.
+	refusals := plan.Refusals(given, s.deployment)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

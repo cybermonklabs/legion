@@ -66,7 +66,8 @@ func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Pha
 
 // cwTransition applies one transition of key on trigger toward target, with handoff the row the
 // move carries and reason its words, as the handler that raises it would, inside a fact's own
-// commit scope.
+// commit scope. The move names target by its first place on the issue's walk (Walk.PlaceOf), and
+// names no place where target is "".
 func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, reason string) {
 	t.Helper()
 	if err := store.Transact(engine.OpenFact(t.Context()), pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -78,7 +79,17 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 		if err != nil {
 			return err
 		}
-		if err := engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, reason); err != nil {
+		var place record.TaskPlace
+		if target != "" {
+			w, err := engine.walk(ctx, tx, *issue)
+			if err != nil {
+				return err
+			}
+			if place, _ = w.PlaceOf(target); place == (record.TaskPlace{}) {
+				return fmt.Errorf("the walk of %s holds no place of %s", key, target)
+			}
+		}
+		if err := engine.transition(ctx, tx, *issue, trigger, place, handoff, pr, reason); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -116,7 +127,10 @@ func cwVerdict(trigger TriggerKind) string {
 // one of those phases is held while a Dispatch child of it is open, whatever the move is — a
 // completion, a review, or a worker's or the architect's move back — and the parent waits in
 // awaiting_children holding that start, with no worker started and the one awaiting-children
-// notice in place of the phase-finished the start would have sent.
+// notice in place of the phase-finished the start would have sent. The rule holds step too, the
+// phase of a role the deployment defines. Today's line has no step, so the table this test walks
+// holds no row of it: TestAnOpenChildHoldsTheStartOfADeploymentStep and
+// TestAParentAtADeploymentStepWaitsForAnOpenChild hold step on a plan that names such a role.
 func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -269,8 +283,9 @@ func TestTheChildrenNoticesEndEachCycleSentenceWithAFullStop(t *testing.T) {
 		{Key: "LEGION-211", Status: "todo", Cycle: cwParent}}
 	want := " " + ChildCycleReason(cwChild, cwParent) + ". " + ChildCycleReason("LEGION-211", cwParent) + "."
 	for name, reason := range map[string]string{
-		"children-first":    ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: open}).Reason,
-		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, childrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open}).Reason,
+		"children-first": ChildrenFirstNotice(record.ChildWait{Parent: cwParent, Open: open}).Reason,
+		"awaiting_children": awaitingChildrenNotice(cwParent, phase.Testing, childrenHold{Start: phase.Reviewing, Cause: "the tester completed testing", Open: open},
+			todaysWalk().childrenReturn(phase.Reviewing)).Reason,
 	} {
 		if !strings.Contains(reason, want) {
 			t.Errorf("the %s notice's reason %q does not say %q", name, reason, want)

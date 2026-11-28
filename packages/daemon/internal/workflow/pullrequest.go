@@ -499,9 +499,9 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
 // move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
-// table's row to done (transition), which leaves: a child's close retires five of its claims and
-// opens its production check in the live session of the role the project's `production_check`
-// names, and retires all six and opens no check where that setting is off; a root's close lingers
+// table's row to done (transition), which leaves: a child's close retires every claim of it but
+// that of the role the project's `production_check` names, and opens its production check in that
+// role's live session, and retires every claim and opens no check where that setting is off; a root's close lingers
 // its tree and opens its check behind the linger's rows (leave). A merge is the one fact GitHub
 // never sends again, so one that lands while the tree lingers, where no transition runs, still
 // closes the issue: it writes what leave would that a lingering tree allows — the phase done, the
@@ -546,13 +546,13 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
@@ -562,10 +562,10 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
 	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
-	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
+	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, placeNamed(row.ToPlace, row.To), record.PhaseRow{}); err != nil {
 		return nil, err
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, row.ToPlace, record.TaskDone); err != nil {
 		return nil, err
 	}
 	issue.Hold = nil

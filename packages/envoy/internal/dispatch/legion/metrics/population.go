@@ -55,6 +55,18 @@ type Handoff struct {
 	At      time.Time
 }
 
+// StepRun is one run of a step of a role the deployment defines, as Dispatch holds it
+// (workflowstore's step node): its role, its start and its end, nil while it runs, and whether it
+// failed and returned its task to an earlier step. The fallback timeline reads it as that role's
+// time at `step` (fallbackMarks), since the event log holds no handoff of such a role and the
+// `in_progress` the workflow writes as the step starts reads as a send-back.
+type StepRun struct {
+	Role     string
+	Start    time.Time
+	End      *time.Time
+	Returned bool
+}
+
 // RunPlan is one version of the plan a run of the issue ran from, as Dispatch holds it
 // (workflowstore's plan node): when that version was written, and the roles of its one
 // task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
@@ -92,6 +104,9 @@ type Issue struct {
 
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
+
+	// Runs are the runs of the steps of roles the deployment defines, oldest first (readRuns).
+	Runs []StepRun
 
 	// Plans is each version of the plan of each run of the issue, oldest first: what the fallback timeline reads
 	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
@@ -260,8 +275,8 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 	}
 	population.fillReportedTrees()
 	keys := scope(population)
-	// The eight reads below write disjoint fields — seven take the keys above and write fields of
-	// those issues, the eighth the population's phase work — so they run together rather than
+	// The nine reads below write disjoint fields — eight take the keys above and write fields of
+	// those issues, the ninth the population's phase work — so they run together rather than
 	// one after another, as the delivery population's independent reads do (api/delivery.go).
 	// store.ReadSideBySide answers the first error recorded, so which of two failing reads names
 	// the failure is no longer fixed.
@@ -270,6 +285,7 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time,
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readRuns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readPlans(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, tx, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
@@ -786,6 +802,31 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the handoffs: %w", err)
+	}
+	return nil
+}
+
+// readRuns reads the runs of the steps of the issues (workflowstore.IssuesSteps), keeping the
+// runs of a step of a role the deployment defines that started: a role that is not one of
+// Legion's own (ownRole), whose time the fallback timeline reads from its runs. A run of Legion's
+// own roles is left out: their phases come from their own events, handoffs and statuses.
+func (p *Population) readRuns(ctx context.Context, pool *store.Pool, keys []string) error {
+	runs, err := workflowstore.IssuesSteps(ctx, pool, keys)
+	if err != nil {
+		return err
+	}
+	for key, held := range runs {
+		issue := p.Issues[key]
+		if issue == nil {
+			continue
+		}
+		for _, run := range held {
+			if run.Kind != workflowstore.StepKindStep || run.StartedAt == nil || ownRole(run.Role) {
+				continue
+			}
+			issue.Runs = append(issue.Runs, StepRun{Role: run.Role, Start: run.StartedAt.UTC(), End: run.EndedAt,
+				Returned: run.Result == workflowstore.ResultFailed && run.ReturnedTo != nil})
+		}
 	}
 	return nil
 }

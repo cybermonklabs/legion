@@ -1014,8 +1014,9 @@ type stepClaimant struct {
 	bootToken string
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
-	// model is the model the agent's answers name, `<provider>/<model>`: stepRecordsModel until
-	// its test gives the agent another.
+	// model is the model the agent's answers name, as Oh My Pi's message_end names it: the model
+	// its launch's spec named (runtime.SpawnSpec.Model, a role of the deployment's own model), and
+	// stepRecordsModel for a launch that named none, until its test gives the agent another.
 	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
@@ -1072,8 +1073,12 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
-		setModel: stepRecordsModel, bootToken: launch.BootToken, sh: dialCountingShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+	model := launch.Model
+	if model == "" {
+		model = stepRecordsModel
+	}
+	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: model,
+		setModel: model, bootToken: launch.BootToken, sh: dialCountingShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	c.secret = c.register(launch.BootToken)
 	sh, d := c.sh, r.d
 	sh.serve(func() { c.serve(sh, d) })
@@ -1371,13 +1376,18 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	}
 }
 
-// answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
-// message_end names as message.provider and message.model. It counts the call first, as the shim
-// counts each frame before the daemon reads it.
+// answer is the agent's model answering, as Oh My Pi's message_end names it: c.model, the model its
+// launch's spec named, as message.provider and message.model. A model that names no provider, as a
+// role's `model` setting may (checker-model), is message.model alone, which the daemon records as
+// it is (superviseEvent).
+// It counts the call first, as the shim counts each frame before the daemon reads it.
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
-	provider, model, _ := strings.Cut(c.model, "/")
+	provider, model, named := strings.Cut(c.model, "/")
+	if !named {
+		provider, model = "", c.model
+	}
 	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": model}})
 	if err != nil {
 		t.Fatal(err)

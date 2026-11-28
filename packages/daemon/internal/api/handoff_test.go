@@ -1320,7 +1320,7 @@ func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *t
 // The commit is a phase completion's field, read once the grant is redeemed and the record says
 // the call is one: an expired grant is refused before the missing commit is, a phase completion
 // without a commit is still refused for it, and an implementer's verdict on a phase completion is
-// still a tester's field.
+// still a field of the tester's and of a role of the deployment's alone.
 func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *testing.T) {
 	now := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), credential.New(func() time.Time { return now }), nil)
@@ -2091,8 +2091,9 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 }
 
 // The fallback is only as wide as the state it was written for: the task the claim holds has to
-// be the issue's own current generation and its own current phase. A claim holding no task, one
-// of a run the issue has left, or one of another phase is still refused HANDOFF_NO_RUN with
+// be the issue's own current generation and its own current phase, and at step the running step's
+// role's (record.Issue.StepIsOf). A claim holding no task, one of a run the issue has left, one of
+// another phase, or one of a step its role does not run is still refused HANDOFF_NO_RUN with
 // nothing recorded, and the refusal says what the claim holds — naming the run or the phase of
 // the task when it holds one — that nothing was recorded, and what the worker does next, which is
 // what skills/legion-worker/SKILL.md tells it for this code: never the work again, never a second

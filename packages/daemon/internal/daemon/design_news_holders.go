@@ -31,11 +31,12 @@ type newsHolder struct {
 }
 
 // phaseHolder is the holder of member's phase where a phase worker holds it: the claim, in the
-// project whose token is project, of the role the phase names. A phase no role holds, accepting,
-// which the owning architect holds (newsClaims.holderOf), and a token that cannot be built name
-// none.
+// project whose token is project, of the role that works the member there (record.Issue.RoleAt:
+// at step the role of the running step, a role the deployment defines). A phase no role holds,
+// accepting, which the owning architect holds (newsClaims.holderOf), and a token that cannot be
+// built name none.
 func phaseHolder(project string, member record.Issue) (newsHolder, bool) {
-	role := phase.RoleFor(member.Phase)
+	role := member.RoleAt(member.Phase)
 	if role == "" || role == claim.RoleArchitect {
 		return newsHolder{}, false
 	}

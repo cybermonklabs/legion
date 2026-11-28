@@ -103,7 +103,7 @@ func staleTesterCompletionAfterTheReturn(t *testing.T) {
 	// at the head the record holds. Refused, with nothing moved and nothing recorded.
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, staleEntryCode)
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, intake.StaleEntryCode)
 	for _, want := range []string{
 		"the move that handed the phase out again moved the issue back",
 		"nothing was recorded",

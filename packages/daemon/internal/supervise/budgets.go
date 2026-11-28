@@ -197,7 +197,7 @@ var FailureCauses = []FailureCause{
 // takes a place afresh.
 func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, place *wakepace.Place) error {
 	if !Charges(o) {
-		return m.launchAfter(ctx, false, false, false, place, ending)
+		return m.launchAfter(ctx, false, false, false, place, ending, StartWork{})
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, m.pluginRelaunch.waitsUnder(), func(ctx context.Context) error {
@@ -217,7 +217,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, place, ending)
+	return m.launchAfter(ctx, true, false, false, place, ending, StartWork{})
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

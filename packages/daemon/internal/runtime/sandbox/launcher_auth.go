@@ -126,14 +126,14 @@ var (
 	errTurnHeld        = fmt.Errorf("its pod's launch turn is held: %w", errDeclined)
 )
 
-// LauncherResolver rejects unknown pods from informer state before consulting credentials: a
-// launcher's role must be one of the roles of the kind its pod's labels name (podKindOf), a
-// workflow role of an issue pod or the controller of the project controller's, and its claim is the
-// one that kind derives (podKind.claimToken). Tokens minted here are cached as hashes; after a
-// restart a known role's Secret is read once however often its launcher says hello
-// (launcherCredential), so a restart's reconnecting launchers cost one read each and
-// unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello waits
-// for that read up to apiTimeout.
+// LauncherResolver rejects unknown pods from informer state before consulting credentials. An
+// issue pod's launcher must name a configured role or one in the pod's template. A role removed
+// from the deployment can still authenticate to let a pending stop reach its child. The project
+// controller pod accepts only the controller. The pod kind derives the claim (podKind.claimToken).
+// Tokens minted here are cached as hashes. After a restart, a known role's Secret is read once
+// however often its launcher says hello (launcherCredential), so unauthenticated hellos cannot
+// turn into an unbounded stream of Kubernetes requests. A hello waits for that read up to
+// apiTimeout.
 //
 // A launcher holding its role's current token from the Sandbox's current pod, which no Secret
 // binds, is of a pod no launch made: the Agent Sandbox controller recreated it after an eviction or
@@ -153,7 +153,11 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil || !slices.Contains(kind.roles(), role) {
+		if err != nil {
+			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
+		}
+		if _, issue := kind.(issuePod); !slices.Contains(kind.roles(r), role) &&
+			(!issue || !slices.Contains(templateRoles(view.sandbox), role)) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
@@ -351,9 +355,9 @@ func (r *Runtime) bindAtHello(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 // token (errTokenNotCurrent): the credential the runtime held may be one a launch left behind when
 // it rewrote the Secret's token and then failed to bind its pod (writeLauncherSecrets,
 // bindLauncherSecrets). The read is held in its place, so that token's next hello is refused from
-// memory. The binding then writes the Secret of each role of the pod that no held credential binds
-// to it yet, and holds what it wrote (bindLauncherSecrets), so the next hello is accepted without a
-// request.
+// memory. The binding then writes the Secret of each role the pod was built with (templateRoles)
+// that no held credential binds to it yet, and holds what it wrote (bindLauncherSecrets), so the
+// next hello is accepted without a request.
 //
 // Its requests share one deadline, helloBindBound after it took the turn: apiTimeout, the longest
 // a hello waits for a binding (LauncherResolver). A binding still running past it would keep the
@@ -382,8 +386,7 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 	if v.sandbox == nil || v.sandbox.UID != sandboxUID || v.pod == nil || v.pod.UID != podUID || !bindable(v.sandbox, v.pod) {
 		return errNotBindable
 	}
-	kind, err := podKindOf(v.sandbox.Labels)
-	if err != nil {
+	if _, err := podKindOf(v.sandbox.Labels); err != nil {
 		return failed(fmt.Errorf("sandbox %s's pod: %w", name, err))
 	}
 	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(name, role), metav1.GetOptions{})
@@ -398,8 +401,11 @@ func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID, role
 	if subtle.ConstantTimeCompare(current.hash[:], hash[:]) != 1 {
 		return errTokenNotCurrent
 	}
+	// The roles the pod was built with (templateRoles), the roles launcherBound holds a pod to: a
+	// pod recreated from a template built before a role of the deployment has no Secret of that
+	// role, and a binding that asked for one would fail at every hello of the pod.
 	var unbound []claim.Role
-	for _, each := range kind.roles() {
+	for _, each := range templateRoles(v.sandbox) {
 		if credential, held := r.launcherAuth.lookup(roleSecretName(name, each), sandboxUID); !held || credential.podUID != string(podUID) {
 			unbound = append(unbound, each)
 		}
@@ -472,10 +478,10 @@ func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 }
 
 // forgetLauncherCredentials drops what is held of every launcher role's Secret of the Sandbox named
-// name, once that Sandbox is deleted: whichever roles its pod ran, no other Sandbox's Secret has a
-// name of its.
+// name (launcherRoles: a role the deployment defines among them), once that Sandbox is deleted:
+// whichever roles its pod ran, no other Sandbox's Secret has a name of its.
 func (r *Runtime) forgetLauncherCredentials(name string) {
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		r.launcherAuth.forget(roleSecretName(name, role))
 	}
 }

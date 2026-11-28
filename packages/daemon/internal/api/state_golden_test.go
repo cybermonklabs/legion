@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -40,13 +41,16 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // TestTheStateFixturesAreTheDaemonsCompositionOfTheirSeeds reads it from this file's source
 // (apiSettings) for state.json and the other fixtures whose seeds load it, and
 // state-narrowed-repositories.json (TestStateNarrowedRepositoriesGolden) is written from
-// populatedState, which reads state.json back. Every key the loader models is set, and every value
-// a credential, its source or its file could be is a planted fixture a test can look for in the
-// wire bytes (a PEM that is no key, a DSN password that opens nothing, `*_file` paths, the
-// kubeconfig, the session DSN secret's key, each provider key's store key, the pod's env values,
-// volume, Secret and ServiceAccount names, userinfo on `envoy_url` and the first `nats_urls` entry,
-// which the settings mask, and userinfo and a query on `plugins.pi_envoy`'s tarball URL, which the
-// settings mask and drop while `pi_legion` pins the version form). Every path the settings emit
+// populatedState, which reads state.json back. Every key the loader models is set but `roles` and
+// `role_types`, which `internal/api/settings_test.go` pins with a prompt file of its own (the
+// populated seed adds its checker to `roles` after it loads this file, internal/daemon's
+// populatedDeployment), and every value a credential, its source or its file could be is a
+// planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN password that
+// opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each provider key's
+// store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo on `envoy_url`
+// and the first `nats_urls` entry, which the settings mask, and userinfo and a query on
+// `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
+// version form). Every path the settings emit
 // (`state_dir`, `instructions`, `private_name_rules_file`, the hook's `prompt_file`) is a fixed
 // absolute literal, so the fixtures do not churn with the temporary directory the file is written
 // under.
@@ -57,7 +61,7 @@ bind: 0.0.0.0
 advertise_host: legion-daemon.internal.example
 postgres_dsn: postgres://legion:fixture-dsn-password@postgres.internal.example:5432/legion
 state_dir: /var/lib/legion
-admission_cap: 6
+admission_cap: 7
 admission_p0_bound: 4
 daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
@@ -196,6 +200,27 @@ postgres_dsn: postgres://legion:fixture-dsn-password@127.0.0.1:5432/legion
 state_dir: /var/lib/legion
 `
 
+// loadSettingsFileWith is apifixture.LoadSettings with each of files, by name, written first in
+// the directory of the legion.yaml, where a relative path the file names resolves.
+func loadSettingsFileWith(t *testing.T, body string, files map[string]string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	path := filepath.Join(dir, "legion.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write legion.yaml: %v", err)
+	}
+	cfg, err := config.Load(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	return cfg
+}
+
 // settingsFixtureConfig is settingsFixtureFile loaded.
 func settingsFixtureConfig(t *testing.T) config.Config {
 	t.Helper()
@@ -310,7 +335,9 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
 // no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
 // other key as a caller at shapedAnswersContract is served it, since no other row of
-// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract; the rows of
+// deploymentRolesContract and claimLeftContract, entries above them all, hold back only the roles
+// of the deployment and the issues' claimLeft, which this caller is served without too.
 // shapedAnswersContract's row stands at or below the contract it is served at, which is why the
 // golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
 // holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,

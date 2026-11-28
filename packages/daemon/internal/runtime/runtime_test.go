@@ -30,6 +30,12 @@ func TestRoleIdentitiesReadBackAndPassOverAnUnknownField(t *testing.T) {
 	if read, why := runtime.ReadRoleIdentities(later); why != "" || !maps.Equal(read, want) {
 		t.Fatalf("ReadRoleIdentities(%s) = %v, %q; want %v: a field it does not know is passed over", later, read, why, want)
 	}
+	// A role the deployment defines is a role of the table, since a launch writes it beside Legion's
+	// six (the daemon's specs.roleIdentities): the read takes every name of the role grammar.
+	deployed := `{"checker":{"name":"a","email":"b"}}`
+	if read, why := runtime.ReadRoleIdentities(deployed); why != "" || read["checker"] != (runtime.GitIdentity{Name: "a", Email: "b"}) {
+		t.Fatalf("ReadRoleIdentities(%s) = %v, %q; want the checker's identity", deployed, read, why)
+	}
 
 	const notTable = "not a JSON object of each role's name and email"
 	for _, tc := range []struct{ value, want string }{
@@ -39,7 +45,8 @@ func TestRoleIdentitiesReadBackAndPassOverAnUnknownField(t *testing.T) {
 		{`["implementer"]`, notTable},
 		{`{"implementer":{"name":"secret-name","email":"secret@x"}} {}`, notTable},
 		{`{"implementer":"secret-name"}`, notTable},
-		{`{"wizard":{"name":"secret-name","email":"secret@x"}}`, `a table with "wizard", which is no role`},
+		{`{"Wizard":{"name":"secret-name","email":"secret@x"}}`, `a table with "Wizard", which is no role`},
+		{`{"controller":{"name":"secret-name","email":"secret@x"}}`, `a table with "controller", which is no role`},
 		{`{"implementer":null}`, "a table with an empty name for implementer"},
 		{`{"implementer":{"name":"","email":"secret@x"}}`, "a table with an empty name for implementer"},
 		{`{"implementer":{"name":"secret-name","email":""}}`, "a table with an empty email for implementer"},

@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -1460,6 +1461,78 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 	}
 	if c := d.claim(token); c.Budgets.LaunchFailures != 0 {
 		t.Errorf("the stale address was charged: %+v", c.Budgets)
+	}
+}
+
+// Every architect is told, in its addressing, each role the deployment defines with the type of
+// its step and, where the settings give one, the model its agent starts with. An architect under
+// another deployment is told that deployment's roles and none of these, one under a deployment
+// that defines no role is told none of them, and no other launch is told the deployment's roles.
+// A root architect's addressing still ends with its design gate's line, then the project's
+// production check (ProductionCheckFragment), which every architect is told last. The test holds
+// the values the settings give, not the words that carry them.
+func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployed := []config.Role{
+		{Name: "checker", Type: "testing", PromptFile: "/etc/legion/checker.md", Model: "checker-model"},
+		{Name: "audit", Type: "security", PromptFile: "/etc/legion/audit.md"},
+	}
+	other := []config.Role{{Name: "critic", Type: "review", PromptFile: "/etc/legion/critic.md", Model: "critic-model"}}
+	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
+	addressing := func(roles []config.Role, issue string, role claim.Role) string {
+		t.Helper()
+		token, err := claim.NewToken("s1", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, roles: roles,
+			designSteps: config.DesignGateRootIssues.Steps()}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: issue, Tree: "S1-1", Role: role})
+		if err != nil {
+			t.Fatalf("the %s's spawn spec on %s: %v", role, issue, err)
+		}
+		return spec.Prompt.Addressing
+	}
+	pair := func(role config.Role) string { return string(role.Name) + " (" + string(role.Type) + ")" }
+	every := slices.Concat(deployed, other)
+
+	for _, tc := range []struct {
+		name  string
+		roles []config.Role
+		issue string
+	}{
+		{"the root architect", deployed, "S1-1"},
+		{"a sub-architect", deployed, "S1-2"},
+		{"a sub-architect under another deployment", other, "S1-2"},
+		{"a sub-architect under a deployment that defines no role", nil, "S1-2"},
+	} {
+		got := addressing(tc.roles, tc.issue, claim.RoleArchitect)
+		for _, role := range every {
+			defined := slices.ContainsFunc(tc.roles, func(r config.Role) bool { return r.Name == role.Name })
+			if named := strings.Contains(got, pair(role)); named != defined {
+				t.Errorf("%s's addressing = %q: names %q %v, want %v", tc.name, got, pair(role), named, defined)
+			}
+			if role.Model == "" {
+				continue
+			}
+			if named := strings.Contains(got, role.Model); named != defined {
+				t.Errorf("%s's addressing = %q: names the model %q %v, want %v", tc.name, got, role.Model, named, defined)
+			}
+		}
+	}
+	root := addressing(deployed, "S1-1", claim.RoleArchitect)
+	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
+		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
+	}
+	tester := addressing(deployed, "S1-2", claim.RoleTester)
+	for _, role := range deployed {
+		if strings.Contains(tester, pair(role)) {
+			t.Errorf("a tester's addressing = %q, want no role of the deployment named, %q among them", tester, pair(role))
+		}
 	}
 }
 

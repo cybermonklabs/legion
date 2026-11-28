@@ -629,7 +629,7 @@ func (r *Runtime) roleLog(ctx context.Context, pod, container string, role claim
 	if quote == "" {
 		quote = fmt.Sprintf("(none of the container's last %d lines is %s's)", tail, role)
 	}
-	if own := containerLines(text, logTailLines); own != "" {
+	if own := containerLines(text, logTailLines, r.issueRoles); own != "" {
 		quote += "\n" + containerLinesHeader + "\n" + own
 	}
 	if bounded {
@@ -732,22 +732,23 @@ func roleLines(log string, role claim.Role, n int) string {
 	return strings.Join(own[max(0, len(own)-n):], "\n")
 }
 
-// containerLines is the last n lines of an issue pod's one container's log that no role wrote:
-// every role's output reaches the log behind its `<role>: ` prefix, so a line with none of them is
-// the launcher's own, PID 1's.
-func containerLines(log string, n int) string {
+// containerLines is the last n lines of an issue pod's one container's log that no role of roles
+// wrote (the runtime's issue roles, Legion's six and each role the deployment defines): every
+// role's output reaches the log behind its `<role>: ` prefix, so a line with none of them is the
+// launcher's own, PID 1's.
+func containerLines(log string, n int, roles []claim.Role) string {
 	var own []string
 	for line := range strings.Lines(log) {
-		if line = strings.TrimRight(line, "\n"); !rolePrefixed(line) {
+		if line = strings.TrimRight(line, "\n"); !rolePrefixed(line, roles) {
 			own = append(own, line)
 		}
 	}
 	return strings.Join(own[max(0, len(own)-n):], "\n")
 }
 
-// rolePrefixed is whether line begins with a workflow role's `<role>: ` prefix.
-func rolePrefixed(line string) bool {
-	return slices.ContainsFunc(claim.Roles, func(role claim.Role) bool { return strings.HasPrefix(line, string(role)+": ") })
+// rolePrefixed is whether line begins with the `<role>: ` prefix of a role of roles.
+func rolePrefixed(line string, roles []claim.Role) bool {
+	return slices.ContainsFunc(roles, func(role claim.Role) bool { return strings.HasPrefix(line, string(role)+": ") })
 }
 
 // events are the pod's events, "<type> <reason>: <message>" joined by " | ", or why they could

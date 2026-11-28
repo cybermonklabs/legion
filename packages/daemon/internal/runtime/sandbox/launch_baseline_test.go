@@ -97,7 +97,7 @@ func systemPromptOf(t *testing.T, role claim.Role, start shimwire.LauncherStart)
 }
 
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
-// today, for every role Legion launches: the golden pins three values per role — the role's
+// today, for every role Legion launches where the deployment defines no role of its own: the golden pins three values per role — the role's
 // PI_CONFIG_FILES, the operator's own overlays first and then the role's own; the path of the one
 // --append-system-prompt word its Oh My Pi is started with; and the text of the system prompt
 // file at that path, which its start command carries. Each is kept non-empty for all seven roles

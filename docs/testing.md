@@ -310,18 +310,21 @@ itself, whose tests import its sources by relative path.
   disk, `link(2)` fails with `EXDEV` and both sides' `linkTree` puts a symlink to the cached file in
   the HOME instead: the pin loads its native through it and writes nothing there, so the result of a
   test does not depend on where the machine puts the two. The Go build and
-  module caches of the `go run` in `runDaemonPane`
+  module caches of the `go run` and `go test` in `goInDaemonModule`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
   `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
   (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
   there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
   suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in
-  `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
-  directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
-  it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
-  own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
-  `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+  `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root. A directory
+  rename under `$HOME` panicked the gVisor sandbox of a Legion pod and killed every role in it.
+  Since legion-v19.18.1 each role's home overlay is mounted with `userxattr`, and the rename no
+  longer does (`homeOverlayOptions` in `packages/daemon/internal/launcher/roleinit_linux.go`). So
+  under an earlier release the permission holds only while `XDG_CACHE_HOME` is honoured and the
+  pod points it at its own volume. Legion's runtime does that for every role
+  (`/legion/scratch/cache`). With `XDG_CACHE_HOME` unset in a pod of such a release, that cache is
+  no longer a tool's cache but the pod's death.
 
 - The real-binary harness's stand-in server (`serveStandin` in
   `packages/pi-shared/test/omp-harness.ts`, and claude-envoy's copy of it) takes two pieces of

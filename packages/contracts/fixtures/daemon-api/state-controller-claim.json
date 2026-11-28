@@ -10,7 +10,7 @@
     "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
   },
   "admission": {
-    "cap": 6,
+    "cap": 7,
     "p0Holders": 0,
     "p0Bound": {
       "bound": 4,
@@ -472,7 +472,7 @@
         }
       }
     },
-    "admission_cap": 6,
+    "admission_cap": 7,
     "admission_p0_bound": 4,
     "daemon_url": "http://legion-daemon.internal.example:13370",
     "worker_stream_port": 13371,

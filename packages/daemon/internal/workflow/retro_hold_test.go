@@ -99,8 +99,8 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if child {
 			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 		}
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 		return pool, engine, logged
 	}
@@ -257,10 +257,10 @@ func TestAParentMovedBackOutOfMergingIsToldTheMoveThatHeldIt(t *testing.T) {
 	engine, _ := loggedEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	approveReview(t, pool, engine)
-	move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Merging, record.TaskPlace{Kind: record.PlaceMerge})
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 
@@ -314,9 +314,9 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
 			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
 		}
@@ -366,9 +366,9 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "acceptance:owner", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		reportsHandoff(t, pool, engine, root.Key, claim.RoleImplementer, 3)
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		if result := signsOff(t, pool, engine, root.Key); result.Refusal != nil {
 			t.Fatalf("the sign-off was refused: %+v", result.Refusal)
 		}
@@ -393,8 +393,8 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "acceptance:owner")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		approveReview(t, pool, engine)
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 
@@ -415,6 +415,43 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 	})
 }
 
+// A parent whose last step is of a role the deployment defines, `implementer checker`, passes it
+// while a child is in the workflow beneath it and is held before its retro. The child's leave starts
+// the implementer's retro once, with the report of the checker's step, the role of the task's last
+// step, as the pass into the retro would have given it: its commit and its verdict, under the
+// checker's own name, not the tester's.
+func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Step)
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: "checker-claim", HandoffCommit: sha, Verdict: "pass",
+		StepTask: "a", StepPlace: 2})
+
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+	if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || held.Hold.Reason != record.HoldForChildren {
+		t.Fatalf("%s after the checker's pass stands in %s with hold %+v, want held before its retro for its children", root.Key, held.Phase, held.Hold)
+	}
+
+	childLeavesDone(t, pool, engine)
+
+	starts := startsIn(t, pool, root.Key, claim.RoleImplementer, phase.Retro)
+	if len(starts) != 1 {
+		t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
+	}
+	for _, says := range []string{" Handoff commit: " + sha + ".", " Step 2 (checker) reported: pass."} {
+		if !strings.Contains(starts[0].Task, says) {
+			t.Fatalf("the retro's task = %q, want it to say %q", starts[0].Task, says)
+		}
+	}
+	if strings.Contains(starts[0].Task, testerVerdictLabel) {
+		t.Fatalf("the retro's task = %q, want no %s: the report is the checker's", starts[0].Task, testerVerdictLabel)
+	}
+}
+
 // The reviewer's own report can land after its approval moved a parent with no acceptance step
 // into its hold before the retro. It is the first report of the run the approval ended, so it is
 // taken as such a report is wherever else the issue stands (leftItsPhase): on the reviewer's own
@@ -430,11 +467,11 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
 	// The review event approves the round before the reviewer reports: its row has no report yet.
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))
 	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
 		t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
 	}

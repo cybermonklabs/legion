@@ -746,12 +746,12 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 // wait began that did not answer it, which no notice told (tellChangesOnce); what is still with the
 // person (withHuman) and what waits on the architect (a tree question, or the closed gate's
 // approval request, on the agent's turn). Handing back is advice only while the gate is not open,
-// since an open gate moves the root to planning, where a hand-back starts no wait; the request's
-// own thread is named only while the request is open. armed says whether the design gate is armed:
-// with it off, no approval is asked for, register_gate is never the advice, and an open gate is no
-// person's approval. A wait the gates.design: off rule answered (gateOffAnswer) is never said to
-// be approved, nor asked about as a person's approval: under an armed gate it is said as answered
-// while the gate was off.
+// since an open gate moves the root to its task's first step, where a hand-back starts no wait;
+// the request's own thread is named only while the request is open. armed says whether the design
+// gate is armed: with it off, no approval is asked for, register_gate is never the advice, and an
+// open gate is no person's approval. A wait the gates.design: off rule answered (gateOffAnswer) is
+// never said to be approved, nor asked about as a person's approval: under an armed gate it is said
+// as answered while the gate was off.
 //
 // A step on an ancestor's approval (dispatch://INFRA-3320, R1 and R2) is never said to be approved
 // by a person. A wait an ancestor's approval answered (basisOpenedAnswer) names that approval and

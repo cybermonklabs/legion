@@ -1,4 +1,10 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import {
+  GATED_STEPS,
+  isLegionRole,
+  isStepRole,
+  LEGION_ROLES,
+  type LegionStepRole,
+} from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -168,7 +174,7 @@ const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
 async function agentAction(
   client: LegionDaemonClient,
   operation: AgentAction,
-  request: { readonly grantId: string; readonly issue: string; readonly role: LegionRole }
+  request: { readonly grantId: string; readonly issue: string; readonly role: LegionStepRole }
 ): Promise<ToolResult> {
   switch (operation) {
     case "compact":
@@ -460,7 +466,10 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    for (const role of LEGION_ROLES) {
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each
+    // role of the deployment (the deployment roles' contract entry) in the map's order.
+    const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
+    for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim]);
     }
@@ -556,7 +565,7 @@ function toolSchema(pi: PiApi): unknown {
     step: z
       .enum(GATED_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes a registration of that step's document without it"
       )
       .optional(),
     // A basis (dispatch://INFRA-3320, R1): the ancestor's document for the same step, which the
@@ -603,7 +612,13 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    role: z.enum(LEGION_ROLES).optional(),
+    // A claim's role, one of Legion's six or a role of the deployment (the deployment roles'
+    // contract entry): the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
+    role: z
+      .string()
+      .regex(/^[a-z][a-z0-9-]{0,31}$/)
+      .optional(),
     // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
     // open records through a stream sequence, checked whole before a grant is minted
     // (`giveUpSelection`), as `version` is.
@@ -844,7 +859,7 @@ export function createLegionTool(deps: {
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
    * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
@@ -904,8 +919,9 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
-        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
+        "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
+        "step and after each other step of the type implementation; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
         "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
@@ -929,7 +945,8 @@ export function createLegionTool(deps: {
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
-        "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
+        "gate and its line, as any task does before its first step), unless a step of it names a role the deployment no longer " +
+        "defines, whose stop stands; retry_or_escalate does not start it again (TASK_STOPPED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
@@ -987,7 +1004,8 @@ export function createLegionTool(deps: {
         "stop that work mid-turn or leave it undone. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
+        "under it now. Unless the ancestor's pull request has merged, ask the role that works its phase to take it back with " +
+        "request_backward_move. Or, where the ancestor is not the tree's root, call the same operation again once it has closed. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, how " +
         "many give-ups each intake consumer has open and the newest stream sequence among them, each " +
@@ -1205,9 +1223,11 @@ export function createLegionTool(deps: {
             // Validated whole before its grant is minted with the registration's secret. The
             // daemon decides which agents it reaches.
             const issue = requiredString(parameters, operation, "issue");
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            const role = parameters.role;
+            if (typeof role !== "string" || !isStepRole(role)) {
+              throw new Error(
+                `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
+              );
             }
             const { grantId } = await controllerGrant(active.sessionID);
             return await agentAction(client, operation, { grantId, issue, role });

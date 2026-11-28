@@ -28,7 +28,7 @@ func TestARunningTaskWithAStoredParentTakesALaterText(t *testing.T) {
 	first := givenTask(t, "Build the widget.", "implementer", "tester", "reviewer")
 	first.ParentRef = requirementOne
 	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, first)))
-	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 
 	before := planStandingOf(t, pool, engine, key, gen)
 	if task := before.task(t); task.State != record.TaskRunning || task.ParentRef != requirementOne {

@@ -54,10 +54,11 @@ type Kubernetes struct {
 	// image probe run in gVisor whatever it says.
 	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
-	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
-	// controller's, whose pod a daemon under `controller: daemon` launches
-	// (runtime.kubernetes.resources.controller). After load both are filled field by field: the
-	// file's value where it sets one, the daemon's default (DefaultResources) otherwise. CPU and
+	// one container runs Legion's six workflow roles and each role of the deployment
+	// (runtime.kubernetes.resources.issue), and the controller's, whose pod a daemon under
+	// `controller: daemon` launches (runtime.kubernetes.resources.controller). After load both are
+	// filled field by field: the file's value where it sets one, the daemon's default
+	// (DefaultResources) otherwise. CPU and
 	// Memory are the container's limits; CPURequest and MemoryRequest its requests, each equal to
 	// its limit unless the file sets a lower one. With every request equal to its limit, as the
 	// defaults are, every Legion pod is Guaranteed and bursts past nothing; a request below its limit
@@ -516,6 +517,8 @@ const (
 )
 
 // readAgentSecrets reads `runtime.kubernetes.agent_secrets`: nil when absent, every member checked.
+// An exchange_audience that is the audience itself is refused naming the value only where it has
+// an audience's shape (audienceShape), and the two keys alone otherwise.
 func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if value == nil {
 		return nil, nil
@@ -543,8 +546,10 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if err := refuseNonASCIIHost(agentSecretsKey+".url host", u); err != nil {
 		return nil, err
 	}
+	// Not echoed either: the URL refused here fits no grammar of the key, and what stands as its
+	// host can be a token pasted after the scheme.
 	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())) {
-		return nil, fmt.Errorf("%s.url must use https unless the host is a loopback address; got %q", agentSecretsKey, block.URL)
+		return nil, fmt.Errorf("%s.url must use https unless the host is a loopback address", agentSecretsKey)
 	}
 	block.URL = strings.TrimSuffix(block.URL, "/")
 	if block.TokenFile, err = requiredString(fields["token_file"], agentSecretsKey+".token_file", ""); err != nil {
@@ -576,11 +581,45 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if exchange == block.Audience {
 		// The cluster admits one projected volume per audience, and the broker verifies the
 		// enrollment's token and the exchange's at different routes, each against its own audience.
+		if !audienceShape(exchange) {
+			return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (the two are one value)", agentSecretsKey, agentSecretsKey)
+		}
 		return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (both %s)", agentSecretsKey, agentSecretsKey, exchange)
 	}
 	block.ExchangeAudience = exchange
 	return block, nil
 }
+
+// audienceShape reports whether a refusal may name audience, a token audience the file writes
+// where the reader holds it to no grammar (agent_secrets' audience and exchange_audience), as
+// written: one of a key's shape (keyShape, as the default audience `cipher` has), a Workload
+// Identity pool whose project, the part before `.svc.id.goog`, is a project id
+// (gcpProjectID) holding no token's run (tokenShaped), or a session database writer audience
+// whose pool id and provider id hold none (writerAudienceNamed). Any other audience can be a token
+// pasted where the audience goes; that includes one the pool's grammar (workloadPool) still takes,
+// since that grammar takes any character but `/`, `?`, `#` and white space before the suffix, a
+// token of mixed case among them. Only the choice to print narrows: workloadPool stays the grammar
+// the block's metadata.workload_pool is held to.
+func audienceShape(audience string) bool {
+	project, pool := strings.CutSuffix(audience, ".svc.id.goog")
+	return keyShape(audience) || (pool && gcpProjectID.MatchString(project) && !tokenShaped(project)) || writerAudienceNamed(audience)
+}
+
+// writerAudienceNamed reports whether a refusal may name audience as written where it is a
+// session database writer audience (ompsessions.WriterAudienceIDs): its pool id and its provider
+// id, the two parts a deployment names, hold no token's run (tokenShaped). Each id's grammar,
+// 4 to 32 characters of [a-z0-9-], takes a lower-case token, so the grammar alone
+// (ompsessions.ValidWriterAudience) is no reason to print it. The project number is left out of
+// the check: it is Google's, a run of digits in every real audience. Only the choice to print
+// narrows: ValidWriterAudience stays the rule a writer audience is held to.
+func writerAudienceNamed(audience string) bool {
+	pool, provider, writer := ompsessions.WriterAudienceIDs(audience)
+	return writer && !tokenShaped(pool) && !tokenShaped(provider)
+}
+
+// gcpProjectID is a Google Cloud project's id: a lower-case letter, then lower-case letters,
+// digits and "-", 6 to 30 characters in all, not ending in "-".
+var gcpProjectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 // pluginsKey is `runtime.kubernetes.plugins`'s own key.
 const pluginsKey = kubernetesKey + ".plugins"
@@ -972,7 +1011,8 @@ const defaultServiceAccount = "default"
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
 // workspace.ValidBucketName holds it to, the one rule a provision holds a /packs manifest's bucket
-// to as well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
+// to as well; one it refuses is named as written only where it has a key's shape (wordNamed). The
+// account must not be the one the issue pods run as: pod.ServiceAccount, the file's
 // runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
 // the bucket's grant to that account would reach every issue pod of the deployment. Nor may it be
 // pod.ControllerServiceAccount, the controller's own account where the file names one, since the
@@ -1002,7 +1042,7 @@ func readCacheBucket(fields map[string]*yaml.Node, key string, pod PodConfig) (b
 	case bucket == "":
 		return "", "", fmt.Errorf("%s.service_account needs %s.bucket: the cache pods run as a ServiceAccount of their own only to write the bucket", key, key)
 	case !workspace.ValidBucketName(bucket):
-		return "", "", fmt.Errorf("%s.bucket %q must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", key, bucket)
+		return "", "", fmt.Errorf("%s must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots", wordNamed(key+".bucket", bucket))
 	case podAccount != "" && account == podAccount:
 		return "", "", fmt.Errorf("%s.service_account %q must differ from %s.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod", key, account, podKey)
 	case podAccount == "" && account == defaultServiceAccount:
@@ -1091,8 +1131,9 @@ var (
 )
 
 // readSandbox reads `runtime.kubernetes.sandbox`, settled: gVisor, no canary and no microvm block
-// when absent. type is one of the two words; each canary_issues entry is an issue key, named once;
-// the microvm block is read whether or not an issue pod uses it, and is required with its
+// when absent. type is one of the two words; each canary_issues entry is an issue key, named once,
+// and an entry that is none is named as written only where it has a key's shape (entryNamed); the
+// microvm block is read whether or not an issue pod uses it, and is required with its
 // compute_class while one does. storageClass is `runtime.kubernetes.storage_class`, a microVM
 // issue pod's storage class when the block names none.
 func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
@@ -1125,10 +1166,10 @@ func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 		if err != nil {
 			return SandboxConfig{}, err
 		}
-		for _, issue := range named {
+		for index, issue := range named {
 			switch {
 			case !claim.IsIssueKey(issue):
-				return SandboxConfig{}, fmt.Errorf("%s entry %q is not an issue key, such as LEGION-208", key, issue)
+				return SandboxConfig{}, fmt.Errorf("%s is not an issue key, such as LEGION-208", entryNamed(key, index, issue))
 			case slices.Contains(settled.CanaryIssues, issue):
 				return SandboxConfig{}, fmt.Errorf("%s names %s twice", key, issue)
 			}
@@ -1179,7 +1220,8 @@ func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) 
 }
 
 // readMetadata reads `runtime.kubernetes.sandbox.microvm.metadata`, nil when absent: both members
-// are required, each in the one form GKE gives it.
+// are required, each in the one form GKE gives it. A member of another form is named as written
+// only where it has a key's shape (wordNamed), which neither form has.
 func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 	if value == nil {
 		return nil, nil
@@ -1205,7 +1247,7 @@ func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
 			return nil, err
 		}
 		if !member.pattern.MatchString(*member.into) {
-			return nil, fmt.Errorf("%s %q must be %s, %s", key, *member.into, member.what, member.form)
+			return nil, fmt.Errorf("%s must be %s, %s", wordNamed(key, *member.into), member.what, member.form)
 		}
 	}
 	return block, nil
@@ -1273,7 +1315,8 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 // audience's https: form is refused too: a provider whose allowed audiences are left empty takes a
 // token whose audience is its full resource name "with or without the HTTPS prefix" (gcloud iam
 // workload-identity-pools providers create-oidc, --allowed-audiences). The broker's tokens are
-// checked first, then the volumes in order, and each refusal names both keys and the audience.
+// checked first, then the volumes in order, and each refusal names both keys, and the audience
+// only where a refusal may name it (writerAudienceNamed).
 func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	writer := block.SessionStore.Database.WriterAudience
 	if writer == "" {
@@ -1283,12 +1326,21 @@ func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	// prefix leaves the writer audience exactly when the audience is it or its https: form.
 	carries := func(audience string) bool { return strings.TrimPrefix(audience, "https:") == writer }
 	refusal := func(key, audience, reason string) error {
-		if audience == writer {
+		named := writerAudienceNamed(writer)
+		switch {
+		case audience == writer && named:
 			return fmt.Errorf("%s.writer_audience must differ from %s (both %s): %s, and the writer token is the launcher's alone",
 				sessionDatabaseKey, key, writer, reason)
+		case audience == writer:
+			return fmt.Errorf("%s.writer_audience must differ from %s (the two are one value): %s, and the writer token is the launcher's alone",
+				sessionDatabaseKey, key, reason)
+		}
+		form := "its https: form"
+		if named {
+			form = audience
 		}
 		return fmt.Errorf("%s.writer_audience must differ from %s (%s), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: %s, and the writer token is the launcher's alone",
-			sessionDatabaseKey, key, audience, reason)
+			sessionDatabaseKey, key, form, reason)
 	}
 	if secrets := block.AgentSecrets; secrets != nil {
 		for _, member := range []struct{ key, audience string }{
@@ -1574,25 +1626,28 @@ func readPod(value *yaml.Node) (PodConfig, error) {
 // has, an audience no service issues a token for — and whatever uses it would refuse it far from
 // the configuration that wrote it, in a message naming neither. key is the key as the operator
 // wrote it and put what belongs in its place, so the one refusal still reads as the key's own
-// sentence. A value holding no placeholder, an unset key's "" included, is no error.
+// sentence. The value is never quoted: one holding a placeholder fits no grammar of the key, and
+// what stands around the placeholder need not be a name at all. A value holding no placeholder, an
+// unset key's "" included, is no error.
 func unfilledPlaceholder(key, value, put string) error {
 	if !strings.Contains(value, "${") {
 		return nil
 	}
-	return fmt.Errorf("%s %q is an unfilled placeholder: put %s in its place", key, value, put)
+	return fmt.Errorf("%s is an unfilled placeholder: put %s in its place", key, put)
 }
 
 // serviceAccountName refuses value, key's, where it is set and is no ServiceAccount's name: the API
 // server names a ServiceAccount by a DNS-1123 subdomain, as it does a claim (readClaimSource), and
 // refuses a pod that names any other, so a name such as `Legion_Cache` or `a/b` would show only
-// when the first pod that runs as it was refused, far from the key that wrote it. Its caller
-// refuses a placeholder first (unfilledPlaceholder), whose own sentence says what to put there.
-// An unset key's "" is no error.
+// when the first pod that runs as it was refused, far from the key that wrote it. The value is
+// named as written only where it has a key's shape (wordNamed). Its caller refuses a placeholder
+// first (unfilledPlaceholder), whose own sentence says what to put there. An unset key's "" is no
+// error.
 func serviceAccountName(key, value string) error {
 	if value == "" || len(validation.IsDNS1123Subdomain(value)) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", key, value)
+	return fmt.Errorf("%s is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", wordNamed(key, value))
 }
 
 // readPodEnv is `pod.env`: a mapping of variable to value, refusing a variable shaped like a
@@ -1665,7 +1720,9 @@ func readOnlyShares(volumes []corev1.Volume, mounts []corev1.VolumeMount) {
 	}
 }
 
-// readPodVolumes is `pod.volumes`: each named once, with exactly one source.
+// readPodVolumes is `pod.volumes`: each named once, with exactly one source. A name two volumes
+// carry is named as written only where it has a key's shape, and by the two volumes' places
+// otherwise, since the reader holds a volume's name to no grammar of its own.
 func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 	const key = podKey + ".volumes"
 	if value == nil {
@@ -1674,7 +1731,7 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be an array", key)
 	}
-	named := map[string]bool{}
+	named := map[string]int{}
 	volumes := make([]corev1.Volume, 0, len(value.Content))
 	for index, entry := range value.Content {
 		field := fmt.Sprintf("%s[%d]", key, index)
@@ -1689,13 +1746,16 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 		if volume.Name, err = requiredString(fields["name"], field+".name", ""); err != nil {
 			return nil, err
 		}
+		earlier, twice := named[volume.Name]
 		switch {
-		case named[volume.Name]:
+		case twice && !keyShape(volume.Name):
+			return nil, fmt.Errorf("%s.name is the name %s[%d] carries too: each volume is named once", field, key, earlier)
+		case twice:
 			return nil, fmt.Errorf("%s names %s twice", key, volume.Name)
 		case setCount(fields, volumeSources...) != 1:
 			return nil, fmt.Errorf("%s must set exactly one of %s", field, strings.Join(volumeSources, ", "))
 		}
-		named[volume.Name] = true
+		named[volume.Name] = index
 		var source objectSource
 		switch {
 		case fields["secret"] != nil:
@@ -1741,9 +1801,9 @@ func readPodVolumes(value *yaml.Node) ([]corev1.Volume, error) {
 var volumeSources = []string{"secret", "config_map", "projected", "persistent_volume_claim", "nfs"}
 
 // readClaimSource is a PersistentVolumeClaim source: the name of a claim the operator made in the
-// daemon's namespace, a DNS-1123 subdomain as the API server requires of a claim's name. Whether a
-// pod mounts it read-only is its `volume_mounts` entry's (read_only); the source sets nothing of
-// its own.
+// daemon's namespace, a DNS-1123 subdomain as the API server requires of a claim's name, a name of
+// another shape named as written only where it has a key's shape (wordNamed). Whether a pod mounts
+// it read-only is its `volume_mounts` entry's (read_only); the source sets nothing of its own.
 func readClaimSource(value *yaml.Node, key string) (*corev1.PersistentVolumeClaimVolumeSource, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
@@ -1757,7 +1817,7 @@ func readClaimSource(value *yaml.Node, key string) (*corev1.PersistentVolumeClai
 		return nil, err
 	}
 	if len(validation.IsDNS1123Subdomain(name)) != 0 {
-		return nil, fmt.Errorf("%s.name %q is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", key, name)
+		return nil, fmt.Errorf("%s is no PersistentVolumeClaim's name: a claim is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters", wordNamed(key+".name", name))
 	}
 	return &corev1.PersistentVolumeClaimVolumeSource{ClaimName: name}, nil
 }
@@ -1797,7 +1857,8 @@ func readNFSSource(value *yaml.Node, key string) (*corev1.NFSVolumeSource, error
 		return nil, err
 	}
 	if !path.IsAbs(exportPath) || path.Clean(exportPath) != exportPath {
-		return nil, fmt.Errorf("%s.path %s must be a clean absolute path", key, exportPath)
+		// The path is not quoted: one that is no clean absolute path need not be a path at all.
+		return nil, fmt.Errorf("%s.path must be a clean absolute path", key)
 	}
 	return &corev1.NFSVolumeSource{Server: server, Path: exportPath}, nil
 }
@@ -1910,11 +1971,18 @@ func projectedConfigMapMembers(value *yaml.Node, key string) (map[string]*yaml.N
 	return describedMembers(value, key, podKey+".volumes[].projected.sources[].config_map")
 }
 
+// modeWord is a default_mode a refusal may name as written: a short number as an operator writes
+// one, a sign, then a digit and at most six letters, digits or "_" (`440`, `0o448`, `0x120`,
+// `-0440`). A value of any other shape need not be a number at all, so its refusal names it by
+// the key alone.
+var modeWord = regexp.MustCompile(`^[-+]?[0-9][0-9A-Za-z_]{0,6}$`)
+
 // readFileMode is a volume's default_mode: octal digits after YAML 1.1's leading 0 (kubectl's
 // spelling) or YAML 1.2's 0o, from 0 to 0777, the bits the API server admits, written as a YAML
 // integer or as a string ("0440", the one octal spelling a block written as JSON can carry). A
 // mode written in decimal is refused rather than read, quoted or not: `440` is 0670, which would
-// let the file's group write it.
+// let the file's group write it. The refusal quotes the value only where it has a number's shape
+// (modeWord).
 func readFileMode(value *yaml.Node, key string) (*int32, error) {
 	digits, octal := strings.CutPrefix(value.Value, "0o")
 	if !octal {
@@ -1924,12 +1992,14 @@ func readFileMode(value *yaml.Node, key string) (*int32, error) {
 	}
 	mode, err := strconv.ParseUint(digits, 8, 32)
 	if value.Kind != yaml.ScalarNode || (value.Tag != "!!int" && value.Tag != "!!str") || !octal || err != nil || mode > 0o777 {
-		got := strconv.Quote(value.Value)
-		switch value.Kind {
-		case yaml.MappingNode:
+		got := "a value that is no number"
+		switch {
+		case value.Kind == yaml.MappingNode:
 			got = "a mapping"
-		case yaml.SequenceNode:
+		case value.Kind == yaml.SequenceNode:
 			got = "a sequence"
+		case modeWord.MatchString(value.Value):
+			got = strconv.Quote(value.Value)
 		}
 		return nil, fmt.Errorf(`%s must be a file mode in octal digits with a leading 0 or 0o, from 0 to 0777, such as 0440 or "0440"; got %s`, key, got)
 	}
@@ -2032,7 +2102,9 @@ func readTokenProjection(value *yaml.Node, key string) (*corev1.ServiceAccountTo
 }
 
 // readPodMounts is `pod.volume_mounts`: each a volume of `pod.volumes` at a clean absolute path no
-// other mount of the operator's takes.
+// other mount of the operator's takes. A `volume` that names no volume is named as written only
+// where it has a key's shape, and a `mount_path` that is no clean absolute path never, since
+// neither then fits a grammar of its key.
 func readPodMounts(value *yaml.Node, volumes []corev1.Volume) ([]corev1.VolumeMount, error) {
 	const key = podKey + ".volume_mounts"
 	if value == nil {
@@ -2060,14 +2132,17 @@ func readPodMounts(value *yaml.Node, volumes []corev1.Volume) ([]corev1.VolumeMo
 		if mount.Name, err = requiredString(fields["volume"], field+".volume", ""); err != nil {
 			return nil, err
 		}
-		if !declared[mount.Name] {
+		switch {
+		case !declared[mount.Name] && !keyShape(mount.Name):
+			return nil, fmt.Errorf("%s.volume names no volume of %s.volumes", field, podKey)
+		case !declared[mount.Name]:
 			return nil, fmt.Errorf("%s.volume %s names no volume of %s.volumes", field, mount.Name, podKey)
 		}
 		if mount.MountPath, err = requiredString(fields["mount_path"], field+".mount_path", ""); err != nil {
 			return nil, err
 		}
 		if !path.IsAbs(mount.MountPath) || path.Clean(mount.MountPath) != mount.MountPath {
-			return nil, fmt.Errorf("%s.mount_path %s must be a clean absolute path", field, mount.MountPath)
+			return nil, fmt.Errorf("%s.mount_path must be a clean absolute path", field)
 		}
 		if earlier, taken := mountedBy[mount.MountPath]; taken {
 			return nil, fmt.Errorf("%s.mount_path %s is also %s's", field, mount.MountPath, earlier)
@@ -2351,7 +2426,9 @@ func readScheduling(value *yaml.Node) (Scheduling, error) {
 
 // readNodeSelector is a mapping of label to value, which the runtime gives every pod as written (a
 // microVM pod its own ComputeClass in place of any class this names), and which may not name the
-// Legion pool's label: Legion's pods share the cluster's general nodes.
+// Legion pool's label: Legion's pods share the cluster's general nodes. A label named twice is
+// named as written only where it has a key's shape, and by its line otherwise, since the reader
+// holds a label to no grammar of its own.
 func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 	if value == nil {
 		return nil, nil
@@ -2371,6 +2448,9 @@ func readNodeSelector(value *yaml.Node, key string) (map[string]string, error) {
 			return nil, fmt.Errorf("%s must not set %s: Legion's pods share the cluster's general nodes, and the retired Legion pool's label would set them apart on nodes of their own", key, poolLabel)
 		}
 		if _, exists := selector[label]; exists {
+			if !keyShape(label) {
+				return nil, fmt.Errorf("%s names the label at line %d twice", key, value.Content[i].Line)
+			}
 			return nil, fmt.Errorf("%s names %s twice", key, label)
 		}
 		if selector == nil {
@@ -2460,7 +2540,7 @@ func readResources(value *yaml.Node) (PodResources, bool, error) {
 			into = &resources.Issue
 		case name == string(claim.RoleController):
 			into = &resources.Controller
-		case claim.IsRole(claim.Role(name)):
+		case claim.IsBuiltin(claim.Role(name)):
 			return resources, false, fmt.Errorf("%s.%s is gone: an issue pod has one reservation, %s.issue", key, name, key)
 		case !keyShape(name):
 			return resources, false, fmt.Errorf("%s: it must be issue or controller", unknownKeyAt(value.Content[i], key))

@@ -61,10 +61,10 @@ func finishedBy(issue record.Issue, pr *record.PullRequest) bool {
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
-// caller of phase.RoleFor, since that is the one definition and this forwards to it.
+// Until then this name has callers of its own: in this package one test (checks_red_test.go),
+// since every reader of the engine reads the role with the issue (record.Issue.RoleAt) or with
+// the walk (Walk.RoleAt); and outside it test code. Each reads the same table as a caller of
+// phase.RoleFor, since that is the one definition and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -156,7 +156,7 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 }
 
 // unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
-// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
+// of the worker of issue's open phase (OpenRoleOf), on an issue at work in a tree that does
 // not linger, up and between turns, in no update round, holding no task it still works, with no
 // acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last three
@@ -170,7 +170,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if run.Claim == nil {
 		return false
 	}
-	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+	if working := OpenRoleOf(issue); working == "" || working != role {
 		return false
 	}
 	if !record.AtWork(issue, gate) || root.Lingers() {
@@ -236,12 +236,13 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // builds comes through) and a root architect's start that claims the decisions it names
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the
 // daemon's two sentences of the reviewer's review round (namingTheReviewRound), always the last
-// two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
+// two of each task of the reviewer, in each phase, and the one sentence of the commit a review
+// step of a role of the deployment read last, so a kind of task added later cannot be queued
 // without them.
 //
-// Only a start of the reviewer that carries a task and does not hold the sentences already is
+// Only a start of the reviewer or of a role of the deployment (NamesTheRound) that carries a task and does not hold the sentences already is
 // named, so no other row reads the record for them. Such a start reads the phase its issue stands
-// in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
+// in and the starting role's row as tx holds them, which is the row's commit and entry at the moment
 // the task is queued, and it then carries the typed fact that its task ends with the daemon's
 // sentences (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
 // A start whose task is the stored task of its entry - the start of the transition that raised
@@ -251,10 +252,10 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // reading of the task's text, which can quote either sentence, a retry's reason among it.
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
-	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
+	if !ok || start.Op != "start" || start.Task == "" || !NamesTheRound(start.Role) || start.RoundNamed {
 		return record.NewOutboxRow(issue, payload, at)
 	}
-	named, err := ReviewerTask(ctx, tx, store, issue, start.Task)
+	named, err := RoundTask(ctx, tx, store, issue, start.Role, start.Task)
 	if err != nil {
 		return record.OutboxRow{}, err
 	}
@@ -262,19 +263,19 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	return record.NewOutboxRow(issue, start, at)
 }
 
-// ReviewerTask is task as the reviewer of issue is given it now: task followed by the daemon's two
-// sentences of its review round (namingTheReviewRound), read from the phase the issue stands in and
-// the reviewer's phases row as tx holds them. The queue names each reviewer's start it queues
-// through it (queuedRow), and the daemon's start executor names a start of the reviewer queued for
-// news alone through it, which carries no task for the queue to name and is composed only when it
-// runs (the daemon's newsForStart).
-func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, task string) (string, error) {
+// RoundTask is task as role, the reviewer or a role of the deployment (NamesTheRound), is given
+// it now on issue: task followed by the daemon's sentences of its review round
+// (namingTheReviewRound), read from the phase the issue stands in and role's own phases row as tx
+// holds them. The queue names each such start it queues through it (queuedRow), and the daemon's
+// start executor names such a start queued for news alone through it, which carries no task for
+// the queue to name and is composed only when it runs (the daemon's newsForStart).
+func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, task string) (string, error) {
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
-	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
-	// task names neither a commit nor an entry.
+	// An issue the record does not hold stands in no phase and holds no row, so the task names
+	// neither a commit nor an entry.
 	var standsIn phase.Phase
 	var row record.PhaseRow
 	if standing != nil {
@@ -282,9 +283,9 @@ func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, tas
 		if err != nil {
 			return "", err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, claim.RoleReviewer)
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, role)
 	}
-	return namingTheReviewRound(task, claim.RoleReviewer, standsIn, row), nil
+	return namingTheReviewRound(task, role, standsIn, row), nil
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
@@ -319,19 +320,20 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 // Envoy. Every other move is recorded on Dispatch by the act that makes it, a tester's or a
 // reviewer's hand-off, so it posts nothing: transition also carries a review's whole body, which
 // does not go on the issue a second time. A person reads this text on the issue, so a backward
-// move's names the role that asked and gives its words.
-func moveReason(trigger TriggerKind, from, to phase.Phase, reason string) string {
+// move's names the role that asked, by, and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, by claim.Role, reason string) string {
 	if trigger != TriggerBackward {
 		return ""
 	}
-	return backwardMoveReason(from, to, reason)
+	return backwardMoveReason(from, to, by, reason)
 }
 
 // backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
-// it went to, the role that asked (the role running the phase left, which backward holds the
-// requester to) and that role's own words, or that it gave none.
-func backwardMoveReason(from, to phase.Phase, reason string) string {
-	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+// it went to, the role that asked, by (the role running the step left, which backward holds the
+// requester to: at step the role the deployment defines) and that role's own words, or that it
+// gave none.
+func backwardMoveReason(from, to phase.Phase, by claim.Role, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, by)
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return asked + ", which gave no reason."
@@ -350,8 +352,8 @@ func backwardMoveReason(from, to phase.Phase, reason string) string {
 // close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
 // sentence under its marker (record.LongestPost), read by the server's own reader
 // (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
-func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
-	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+func backwardReasonRefusal(from, to phase.Phase, by claim.Role, reason string) (string, string) {
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, by, reason)))
 	if over == nil {
 		return "", ""
 	}
@@ -867,8 +869,9 @@ type startMarks struct {
 	// transition's start and the promotion's start of a mid-phase worker, each sending what enter
 	// answers (start, StartPromotedWorker), and the send of an owed entry whose row stores a task
 	// (sendOwedEntry). A task composed for the start is given the sentences whatever its text holds.
-	// Only the reviewer's task holds them, so only a start of the reviewer carries the fact the
-	// mark makes (started): the stored task of any other role names no review round.
+	// Only the tasks of the reviewer and of a role of the deployment hold them (NamesTheRound), so
+	// only their starts carry the fact the mark makes (started): the stored task of any other role
+	// names no review round.
 	stored bool
 	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
 	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
@@ -933,7 +936,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
-		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
+		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume,
 		FreshSession: marks.freshSession}, e.now(), move)
 }
 
@@ -1217,7 +1220,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	raised.EntryTask = sent
 	row.EntryTask = namingTheReviewRound(sent, role, issue.Phase, raised)
 	if worker {
-		if place, _, _, ok := placeOnWalk(*w, record.StandsAt(issue)); w.Stored && ok {
+		if place, _, _, ok := placeOnWalk(*w, standingIn(record.StandsAt(issue))); w.Stored && ok {
 			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 	}
@@ -1303,10 +1306,13 @@ const (
 // later version names. A commit is named, as `Handoff commit:`, whenever the completion reported
 // one: the head the planner's, the implementer's, the tester's or the reviewer's record names, and
 // the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
+// A verdict of one of Legion's roles is always the tester's, since the daemon accepts one from no
+// other of them on a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's
+// check report is no phase completion and starts nobody), so the line names the tester: the
+// reviewer it starts on a pass reads it as the tester's report, never as a field of its own
+// completion. A role the deployment defines reports a verdict and writes no handoff record, so its
+// report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
+// summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
 //
 // A merger started in merging at the head a merge forward landed on where the task's reviewer step
 // already ran (mergeForwardLanded), while the
@@ -1335,7 +1341,14 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 			text += " Where a later version names another head, the head this task names is still " + handoff.HandoffCommit + "."
 		}
 	}
-	if handoff.Verdict != "" {
+	switch {
+	case handoff.Verdict == "":
+	case claim.IsDeploymentRole(handoff.Role):
+		text += fmt.Sprintf(" Step %d (%s) %s: %s.", handoff.StepPlace, handoff.Role, reportedLabel, handoff.Verdict)
+		if summary := strings.TrimSpace(handoff.Summary); summary != "" {
+			text += " " + sentence(summary)
+		}
+	default:
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
 	}
 	if pr != nil && pr.Number != 0 {
@@ -1530,7 +1543,7 @@ func (e *Engine) withBaseMergeRun(ctx context.Context, tx pgx.Tx, issue record.I
 // tree the root was handed over from, where it reached an architect above the root unless the
 // root's own architect held its role then.
 func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+	return record.Notice{Kind: "held", Role: issue.RoleAt(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
 // ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path

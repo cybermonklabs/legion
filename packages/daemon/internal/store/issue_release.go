@@ -341,7 +341,9 @@ func claimWorkedSince(since string) string {
 //
 //   - at the boundary, where no role process of the pod has been stopped yet, a task, notice,
 //     message or start of the issue addressed to a role of the pod that the release did not
-//     queue itself. One below the release's own rows was queued by a transaction already in
+//     queue itself, a start that waits for its pod excepted (pods.StartWaitsForPodPrefix), since
+//     the next pod is the one that serves it.
+//     One below the release's own rows was queued by a transaction already in
 //     flight when the mark was written; one above them was queued once the mark stood, while
 //     every role still ran. Either way the pod is the one that must answer it, so the release
 //     goes rather than the pod. A start queued for news alone, and a worker start that waits for
@@ -374,9 +376,12 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 			return err
 		}
 		if !overtaken && row == mark.boundary {
+			// A start queued for news alone, and a start that waits because the pod was built
+			// before its role, are no work the pod was given (idleWaitingRow): the idle rule's
+			// Waiting leaves them out too.
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $3 or id > $4))`,
-				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
+				select 1 from outbox where issue = $1 and `+idleWaitingRow("$5")+` and (id < $3 or id > $4))`,
+				issue, idleWaitingKinds, mark.first, mark.last, pods.StartWaitsForPodPrefix).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -590,12 +595,13 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 		// news alone nor a worker start that still waits for an admission slot its issue does not
 		// hold cancels the teardown: each wakes the claim this release suspended when it runs, as
 		// any start wakes one, and the role comes back with its news or its task in the pod that
-		// replaces this one. The release reads every other queued start row where IssueSuspension
-		// reads only a production check's look, and needs no other narrowing: the read above has
-		// already returned a cancel for an issue that is not pods.InWorkflowNotLingering, so this
-		// predicate runs only for an issue still in the workflow under a live tree, where the
-		// outbox's start fence declines nothing and a queued start row really is a start. The cause
-		// is the one a role stop reads for it.
+		// replaces this one. Nor does a start that waits because the pod was built before its role:
+		// it starts in that pod. The release reads every other queued start row where
+		// IssueSuspension reads only a production check's look, and needs no other narrowing: the
+		// read above has already returned a cancel for an issue that is not
+		// pods.InWorkflowNotLingering, so this predicate runs only for an issue still in the
+		// workflow under a live tree, where the outbox's start fence declines nothing and a queued
+		// start row really is a start. The cause is the one a role stop reads for it.
 		//
 		// The one start passed over is a wake's own: a start that names no phase, waits for no
 		// slot and carries the wake's kind (wakeStartRow), of a role in the mark's suspended set
@@ -611,12 +617,12 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 		}
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
-				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $4 or id > $3)
+				select 1 from outbox where issue = $1 and `+idleWaitingRow("$5")+` and (id < $4 or id > $3)
 					and kind = 'supervise' and payload->>'op' = 'start'
-					and not (`+wakeStartRow+` and payload->>'role' = any(coalesce($5::text[], '{}'))
-						and exists (select 1 from pod_resumes woken where woken.project = $6 and woken.issue = $1
-							and woken.id > $7 and woken.role = outbox.payload->>'role')))`,
-				release.Issue, idleWaitingKinds, mark.last, mark.first, mark.suspended, project, mark.wake).Scan(&overtaken); err != nil {
+					and not (`+wakeStartRow+` and payload->>'role' = any(coalesce($6::text[], '{}'))
+						and exists (select 1 from pod_resumes woken where woken.project = $7 and woken.issue = $1
+							and woken.id > $8 and woken.role = outbox.payload->>'role')))`,
+				release.Issue, idleWaitingKinds, mark.last, mark.first, pods.StartWaitsForPodPrefix, mark.suspended, project, mark.wake).Scan(&overtaken); err != nil {
 				return err
 			}
 		}

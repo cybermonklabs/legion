@@ -38,7 +38,9 @@ const computeClassRequired = "runtime.kubernetes.sandbox.microvm.compute_class i
 
 // Each shape of `runtime.kubernetes.sandbox` the loader refuses, read the way
 // `legion config check` reads a whole file (LoadForValidation, cmd/legion's checkConfig), so each
-// refusal is what the operator reads there. Every message names the whole dotted key at fault.
+// refusal is what the operator reads there. Every message names the whole dotted key at fault, and
+// a value it refuses only where the value has a key's shape, which no canary entry and no metadata
+// member here has: a canary entry is named by its number, a metadata member by its key.
 // The rules that read scheduling, pod and the broker's block too fire only while an issue pod runs
 // in a microVM.
 func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
@@ -47,13 +49,9 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 	inert := func(pool, provider string) string {
 		return "    sandbox:\n      microvm:\n" + metadataLines(pool, provider)
 	}
-	poolRefusal := func(pool string) string {
-		return `runtime.kubernetes.sandbox.microvm.metadata.workload_pool "` + pool + `" must be the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog`
-	}
-	providerRefusal := func(provider string) string {
-		return `runtime.kubernetes.sandbox.microvm.metadata.identity_provider "` + provider + `" must be the cluster's identity provider,` +
-			" https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>"
-	}
+	const poolRefusal = "runtime.kubernetes.sandbox.microvm.metadata.workload_pool must be the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog"
+	const providerRefusal = "runtime.kubernetes.sandbox.microvm.metadata.identity_provider must be the cluster's identity provider," +
+		" https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>"
 	// audienceRefusal is the refusal of a broker audience that is the Workload Identity pool.
 	audienceRefusal := func(member string) string {
 		return "runtime.kubernetes.agent_secrets." + member + " must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both " + testWorkloadPool + ")" +
@@ -88,11 +86,11 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 		},
 		{
 			name: "a canary entry that is no issue key", block: "    sandbox: {canary_issues: [legsmoke-7], microvm: {compute_class: example-microvm}}\n",
-			key: "runtime.kubernetes.sandbox.canary_issues", want: `runtime.kubernetes.sandbox.canary_issues entry "legsmoke-7" is not an issue key, such as LEGION-208`,
+			key: "runtime.kubernetes.sandbox.canary_issues", want: `runtime.kubernetes.sandbox.canary_issues entry 1 is not an issue key, such as LEGION-208`,
 		},
 		{
-			name: "a canary entry that is a project", block: "    sandbox: {canary_issues: [LEGSMOKE], microvm: {compute_class: example-microvm}}\n",
-			key: "runtime.kubernetes.sandbox.canary_issues", want: `runtime.kubernetes.sandbox.canary_issues entry "LEGSMOKE" is not an issue key, such as LEGION-208`,
+			name: "a canary entry that is a project", block: "    sandbox: {canary_issues: [LEGSMOKE-7, LEGSMOKE], microvm: {compute_class: example-microvm}}\n",
+			key: "runtime.kubernetes.sandbox.canary_issues", want: `runtime.kubernetes.sandbox.canary_issues entry 2 is not an issue key, such as LEGION-208`,
 		},
 		{
 			name: "a canary entry named twice", block: "    sandbox: {canary_issues: [LEGSMOKE-7, LEGSMOKE-8, LEGSMOKE-7], microvm: {compute_class: example-microvm}}\n",
@@ -136,39 +134,39 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 		},
 		{
 			name: "a workload pool that is a service account", block: inert("legion@example-project.iam.gserviceaccount.com", testIdentityProvider),
-			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal("legion@example-project.iam.gserviceaccount.com"),
+			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal,
 		},
 		{
 			name: "a workload pool with no project", block: inert(".svc.id.goog", testIdentityProvider),
-			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal(".svc.id.goog"),
+			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal,
 		},
 		{
 			name: "a workload pool that is a project alone", block: inert("example-project", testIdentityProvider),
-			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal("example-project"),
+			key: "runtime.kubernetes.sandbox.microvm.metadata.workload_pool", want: poolRefusal,
 		},
 		{
 			name: "an identity provider on another host", block: inert(testWorkloadPool, "https://iam.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"),
 			key:  "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
-			want: providerRefusal("https://iam.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"),
+			want: providerRefusal,
 		},
 		{
 			name: "an identity provider over http", block: inert(testWorkloadPool, "http://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"),
 			key:  "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
-			want: providerRefusal("http://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"),
+			want: providerRefusal,
 		},
 		{
 			name: "an identity provider with an empty location", block: inert(testWorkloadPool, "https://container.googleapis.com/v1/projects/example-project/locations//clusters/example-cluster"),
 			key:  "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
-			want: providerRefusal("https://container.googleapis.com/v1/projects/example-project/locations//clusters/example-cluster"),
+			want: providerRefusal,
 		},
 		{
 			name: "an identity provider with a segment past the cluster", block: inert(testWorkloadPool, testIdentityProvider+"/nodePools/default"),
-			key: "runtime.kubernetes.sandbox.microvm.metadata.identity_provider", want: providerRefusal(testIdentityProvider + "/nodePools/default"),
+			key: "runtime.kubernetes.sandbox.microvm.metadata.identity_provider", want: providerRefusal,
 		},
 		{
 			name: "an identity provider with no cluster", block: inert(testWorkloadPool, "https://container.googleapis.com/v1/projects/example-project/locations/us-central1"),
 			key:  "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
-			want: providerRefusal("https://container.googleapis.com/v1/projects/example-project/locations/us-central1"),
+			want: providerRefusal,
 		},
 		{
 			name:  "the operator's node selector on sandbox.gke.io/runtime with a microVM project",

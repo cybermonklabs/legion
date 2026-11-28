@@ -1502,70 +1502,79 @@ const (
 	MergeStateFactBasePush
 )
 
-// MergeForwardStands says whether a merge forward is asked, and stands, where issue stands, on
-// line, the phases its task walks (the workflow's Walk.Line: one for each step, then retro and
-// merging; phase.Order for an issue with no plan rows): implementing, where the work already is,
-// or any phase after implementing on that line (dispatch://INFRA-4374 R1). On the default steps
-// that is testing, reviewing, accepting, retro and merging. Where the task places a planner step
-// after the implementer, its planning is one too, since it works on a branch whose pull request is
-// open. The issue keeps that phase while the role asked (record.MergeForwardAsker) merges. An
-// issue that stands anywhere else - admitted, awaiting_person, a planning before the implementer,
-// or out of the workflow - has no pull request work to merge forward and is asked for none. A hold
-// counts as standing in the phase it is held from (record.StandsAt). Where the merge comes next
-// before merging - retro, or accepting where no step of the task follows the acceptance
-// (MergeComesNext) - nothing is asked (ConflictNeedsMerge): the merger merges the base forward once
-// the issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until
-// it lands.
-func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
-	at := record.StandsAt(issue)
-	implementing, here := -1, -1
-	for i, p := range line {
-		switch p {
-		case phase.Implementing:
-			implementing = i
-		case at:
-			here = i
+// MergeForwardStands says whether a merge forward is asked, and stands, at place, where a task
+// that walks line stands (the workflow's Walk.Line: one phase for each step, then retro and merging;
+// phase.Order for an issue with no plan rows): the implementer's place, where the work already is,
+// or any place after it on that line (dispatch://INFRA-4374 R1). On the default steps that is
+// testing, reviewing, accepting, retro and merging. Where the task places a planner step after the
+// implementer, its planning is one too, since it works on a branch whose pull request is open. The
+// issue keeps that phase while the role asked (record.MergeForwardAsker) merges.
+//
+// It reads the place and never the phase, because every step of a role the deployment defines
+// runs as step: `checker implementer linter` reads step at place 1 and at place 3, and only the
+// place says that the checker's comes before the implementer's and the linter's after it. The
+// caller hands it the place the task stands at while its issue stands where it does (the
+// workflow's Walk.placeIn of record.StandsAt, so a hold counts as standing at the place it is held
+// from), which is no place for an issue that stands anywhere else - admitted, awaiting_person, or
+// out of the workflow - and such an issue, and one at a planner's step before the implementer, has
+// no pull request work to merge forward and is asked for none. Where the merge comes next before
+// merging - retro, or accepting where no step of the task follows the acceptance (MergeComesNext) -
+// nothing is asked (ConflictNeedsMerge): the merger merges the base forward once the issue reaches
+// merging (cybermonklabs/legion#4979), and an ask made before stands there until it lands.
+func MergeForwardStands(line []phase.Phase, place record.TaskPlace) bool {
+	implementer, held := implementerPlace(line)
+	return held && place.Started() && place.Rank() >= implementer.Rank()
+}
+
+// implementerPlace is the place of the implementer's step on line, and whether line holds one: a
+// line holds each step first, at its place from 1, and the implementer runs one step at most.
+func implementerPlace(line []phase.Phase) (record.TaskPlace, bool) {
+	for at, p := range line {
+		if p == phase.Implementing {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
 		}
 	}
-	return at == phase.Implementing && implementing >= 0 || implementing >= 0 && here > implementing
+	return record.TaskPlace{}, false
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
 // request (workflow's mergeStateOwed, which both a fact of one pull request reads by, to queue the
 // ladder behind daemon's readMergeState, and a base push reads by for each pull request on the
 // base, to queue that base's batch of reads, daemon's queueBaseMergeStates): whether a fact of
-// kind fact asks for it, for an issue whose task walks line. Each of two reasons asks, and one is
+// kind fact asks for it, for an issue whose task walks line and stands at place
+// (MergeForwardStands says which place the caller hands it). Each of two reasons asks, and one is
 // enough:
 //
-//   - The fact moves the head, and a merge forward stands where the issue stands
-//     (MergeForwardStands, dispatch://INFRA-4374 R0): implementing, or a phase after it on the
-//     task's line. GitHub runs no checks on a head that conflicts with its base, so without a read
-//     a conflicting push stands with no CI and nobody is told; the read that finds the head
+//   - The fact moves the head, and a merge forward stands where the task stands
+//     (MergeForwardStands, dispatch://INFRA-4374 R0): the implementer's place, or a place after it
+//     on the task's line. GitHub runs no checks on a head that conflicts with its base, so without
+//     a read a conflicting push stands with no CI and nobody is told; the read that finds the head
 //     CONFLICTING is the first of the two reads that confirm a conflict (R2).
-//   - The fact is a push to the base, and the issue stands in a phase after implementing on the
-//     task's line. GitHub sends no event of the pull request while it computes whether the head
+//   - The fact is a push to the base, and the task stands at a place after the implementer's on
+//     its line. GitHub sends no event of the pull request while it computes whether the head
 //     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
 //     so a conflict there is acted on at once (R0). Where the merge comes next before merging
 //     (MergeComesNext: retro, or accepting where no step of the task follows the acceptance) it
 //     is recorded for the move into merging (cybermonklabs/legion#4979). Elsewhere, without a
 //     read, the record would keep the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
-//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
-//     before it: there the head the implementer pushes next is read, by the reason above.
+//     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for a task at the implementer's
+//     place or before it: there the head the implementer pushes next is read, by the reason above.
 //
-// Every other fact asks nothing here, and so does a head move or a base push of an issue outside
-// those phases. The third reason a read is owed is not the gate's: the issue's review round
-// waiting on GitHub's answer about the head, whatever the fact - an approval that stands on a head
-// GitHub has answered nothing for, or a state that does not end its round (RoundWaitsOnMergeState),
-// or a head whose first conflicting read waits for its second (workflow's reviewRound,
+// Every other fact asks nothing here, and so does a head move or a base push of a task at no such
+// place. The third reason a read is owed is not the gate's: the issue's review round waiting on
+// GitHub's answer about the head, whatever the fact - an approval that stands on a head GitHub has
+// answered nothing for, or a state that does not end its round (RoundWaitsOnMergeState), or a head
+// whose first conflicting read waits for its second (workflow's reviewRound,
 // round.waitsOnMergeState). Only the engine works out the round, so workflow's mergeStateOwed adds
 // that reason, and works the round out only for a fact the gate owes no read for.
-func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateFact) bool {
+func MergeStateReadOwed(line []phase.Phase, place record.TaskPlace, fact MergeStateFact) bool {
 	switch fact {
 	case MergeStateFactHeadMove:
-		return MergeForwardStands(issue, line)
+		return MergeForwardStands(line, place)
 	case MergeStateFactBasePush:
-		return phase.MovesBackOn(line, record.StandsAt(issue), phase.Implementing)
+		implementer, _ := implementerPlace(line)
+		return MergeForwardStands(line, place) && place != implementer
 	}
 	return false
 }

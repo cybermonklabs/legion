@@ -91,7 +91,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // container on another image, the kind's reservation, an operator volume or mount, the disk size,
 // the ServiceAccount it runs as, the role's overlays, the secrets broker's enrollment, the session
 // store or the GitHub owners its gh volume projects a directory for (PodDrift) — is kept,
-// and this role is started in it.
+// and this role is started in it. A live pod built before this role, a role the deployment
+// defined since, is kept too, and this role is not started in it: the launch writes nothing and
+// waits for that pod's update round or its release (runtime.ErrAwaitsPodUpdate).
 // Such a pod is replaced by an update round, which first asks every role in it to do the steps
 // of its update message (supervise.UpdateTask) and answer, and then ends the pod (ReplacePod):
 // replacing it at a launch would end every role's turn in it and delete the issue's disk with
@@ -263,8 +265,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("ensure its sandbox", err)
 	}
 	pod := r.storedPod(s.Name)
-	_, initExit := failedInit(pod)
-	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+	live := livePod(s, pod)
 	// A pod its node never started (neverStarted) is not live either: no launcher connects from it,
 	// so a launch that kept it would wait out its start bound on it, be charged a launch failure,
 	// and leave it for the next try to find again. It is replaced as a pod whose init failed is,
@@ -346,7 +347,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// (launcherBound), so the bindings are read before the update round is asked of the pod: a
 	// round's reading that keeps the pod, and tells the issue it stays, would be followed at once
 	// by this launch's replacement of it (the Legion reviewer's point 10).
-	if !replace {
+	//
+	// A pod this launch would keep that was built before the deployment defined the launching role
+	// (lacksRole) has no launcher, Secret or volume of that role, so its bindings are not read for
+	// a replacement: replacing it would end every role in it and delete the issue's disk with
+	// whatever they did not push. An update round that is over still replaces it below, and
+	// otherwise the launch waits for the pod's round or its release (runtime.ErrAwaitsPodUpdate).
+	held := templateRoles(s)
+	lacksRole := !replace && len(held) > 0 && !slices.Contains(held, spec.Role)
+	if !replace && !lacksRole {
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
 			return fail("read its pod's launcher bindings", err)
@@ -358,6 +367,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// GPT-6.1 Sol's point 4 on #5285 at 0259f8af), and no read is made only where none
 			// can make it.
 			took = "the pod's launchers are not bound to it"
+			if len(held) == 0 {
+				// A stored template that names no role's launcher is judged by no role
+				// (launcherBound), so the launch cannot tell what the pod carries, as where the
+				// template cannot be read (keptBy, below).
+				took = "the pod's stored template names no role's launcher, so the launch cannot tell what the pod carries"
+			}
 		}
 	}
 	// A live pod a round covers that this launch would keep may be the pod of an update round
@@ -385,6 +400,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		}
 	}
 	if !replace {
+		// A pod it would keep that was built before the deployment defined this role has no
+		// launcher, Secret or volume of the role (lacksRole, above), so the launch writes nothing and
+		// waits for the pod's update round or its release (runtime.ErrAwaitsPodUpdate, PodLacksRole,
+		// rolesDrift). A launch of a role the template holds goes on as before.
+		if lacksRole {
+			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without the role %s: %w",
+				spec.Claim, pod.UID, spec.Issue, spec.Role, runtime.ErrAwaitsPodUpdate)
+		}
 		// The pod is kept, so this role is started as that pod was built rather than as the
 		// configuration now reads (keptBy): a drifted pod the update round has not replaced yet
 		// carries neither an enrollment nor an overlay the configuration gained after it was
@@ -602,6 +625,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	return loc, nil
 }
 
+// livePod is whether pod is the live pod of the Sandbox read as s: the Sandbox running, the pod
+// its own, not ended, its init containers passed. A launch replaces only such a pod by ending the
+// roles in it (suspendDisplacing), and PodLacksRole answers only for one.
+func livePod(s *sandbox, pod *corev1.Pod) bool {
+	_, initExit := failedInit(pod)
+	return s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+}
+
 // launchTaken is what a launch's own replacement of an issue pod a round covers takes (R7 of
 // #5285), for the daemon's record and word of it (Options.LaunchTakes,
 // LaunchTook), or nil where the launch takes no disk the daemon is to be told of: took is "" (the
@@ -811,10 +842,11 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
 // deleted. It thus spends 15 calls at the most, the cache's ensure apart, under the 18.
-// Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
-// has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
-// Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
-var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
+// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
+// (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
+func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
 
 const (
 	relaunchPodCalls  = 18 + cacheEnsureCalls
@@ -833,10 +865,10 @@ const (
 // ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and awaitNewPod, the boot timeout
 // each; provision's waits on its repository's cache (cacheWaits); awaitRoleLauncher's backstop;
 // the termination grace the start frame has past the launcher deadline — and of its relaunchCalls
-// calls at apiTimeout each.
-func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration) time.Duration {
+// calls, for a pod of roles roles, at apiTimeout each.
+func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(startBound, bootTimeout, provisionBound) + terminationGrace
-	return waits + time.Duration(relaunchCalls)*apiTimeout
+	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's
@@ -1248,7 +1280,7 @@ func sameAccessModes(a, b []corev1.PersistentVolumeAccessMode) bool {
 // old uid, the claim of the issue's volume (IssueClaimName) and reason.
 //
 // The one piece of the predecessor's metadata that travels is the pod it names as displaced
-// (displacedAnnotation): the five roles of the pod this launch just replaced are read as ended by
+// (displacedAnnotation): the other roles of the pod this launch just replaced are read as ended by
 // the daemon rather than dead only while their Sandbox names that pod (observe's names), and at
 // the cutover from the release before the pod-owned disk every running issue's launch comes
 // through here. Once the foreground delete's garbage collection is done and the object is gone,
@@ -1509,7 +1541,7 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // and its gh directory an empty one (volumes).
 //
 // The pod projects the directories every role's bundle holds, and no more (ghDirsShared): a
-// projection item naming a key the role's Secret lacks stops the pod from starting, and the six
+// projection item naming a key the role's Secret lacks stops the pod from starting, and the
 // roles of an issue pod run as two Apps whose installations answer for themselves, so one App's
 // installation not reaching `acme/x` leaves acme out of that App's bundles alone (appauth's
 // mintBundle). A role whose bundle holds a directory outside that set simply does not project

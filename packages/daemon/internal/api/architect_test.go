@@ -991,7 +991,7 @@ func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) 
 	}
 }
 
-// The design gate is the only human checkpoint before planning, so it opens only on the tree
+// The design gate is the only human checkpoint before the tree's first step, so it opens only on the tree
 // root's own document. A document another issue carries is refused naming both, as the shipped
 // daemon refuses it (routes/issues.ts seedGateFromDispatch), and so is a gate on a child, whose
 // gate would advance the whole tree; neither reaches the workflow.

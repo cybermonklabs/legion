@@ -294,8 +294,11 @@ func TestEveryInvalidEntryIsRefusedByBothWrites(t *testing.T) {
 		{"a session id outside the key alphabet", func(e *legionagents.Entry) { e.SessionID = "ses:tester" }, "session_id"},
 		{"a session id holding a slash", func(e *legionagents.Entry) { e.SessionID = "ses/tester" }, "session_id"},
 		{"a session id too long", func(e *legionagents.Entry) { e.SessionID = strings.Repeat("s", 129) }, "session_id"},
-		{"a role outside the six", func(e *legionagents.Entry) {
+		{"the controller's role", func(e *legionagents.Entry) {
 			e.Role, e.RoleToken = "controller", "legion-infra-infra-448-controller"
+		}, "role"},
+		{"a role outside the grammar", func(e *legionagents.Entry) {
+			e.Role, e.RoleToken = "Checker", "legion-infra-infra-448-Checker"
 		}, "role"},
 		{"a legion_project that is not a project token", func(e *legionagents.Entry) {
 			e.LegionProject, e.RoleToken = "Sjawhar/Legion", "legion-Sjawhar/Legion-infra-448-tester"
@@ -432,7 +435,7 @@ func TestEachReadDerivesWhoReplacedASession(t *testing.T) {
 }
 
 // Each listing reads only its own issue's or role token's keys, and an issue lists its agents by
-// role in workflow order, then newest first.
+// role in the order of the default steps, then newest first.
 func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 	r := openRegistry(t)
 	_, err := r.store.PutAll(ctx(t), []legionagents.Entry{
@@ -463,6 +466,48 @@ func TestListingsFilterByIssueAndRoleToken(t *testing.T) {
 	other, err := r.store.ByIssue(ctx(t), "INFRA-4480")
 	if err != nil || !slices.Equal(sessionIDs(other), []string{"ses-other-issue"}) {
 		t.Fatalf("by issue INFRA-4480 = %v, %v", sessionIDs(other), err)
+	}
+}
+
+// A role the deployment defines in its settings is stored as the six are: its entry is valid and
+// read back by its role token, and an issue lists its agents after the six, by role name. A token
+// is bounded by the longest role the grammar takes, 32 bytes, not by the longest of the six.
+func TestAnEntryOfADeploymentRoleIsValidAndListedAfterTheSix(t *testing.T) {
+	r := openRegistry(t)
+	if _, err := r.store.Put(ctx(t), agent("infra", "INFRA-448", "checker", "ses-checker", "2026-10-26T01:00:00Z")); err != nil {
+		t.Fatalf("put a checker: %v", err)
+	}
+	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-checker")
+	if err != nil || !slices.Equal(sessionIDs(byRole), []string{"ses-checker"}) {
+		t.Fatalf("by role token legion-infra-infra-448-checker = %v, %v; want the checker", sessionIDs(byRole), err)
+	}
+	_, err = r.store.PutAll(ctx(t), []legionagents.Entry{
+		agent("infra", "INFRA-448", "merger", "ses-merger", "2026-10-26T04:00:00Z"),
+		agent("infra", "INFRA-448", "linter", "ses-linter", "2026-10-26T02:00:00Z"),
+		agent("infra", "INFRA-448", "tester", "ses-tester", "2026-10-26T03:00:00Z"),
+	})
+	if err != nil {
+		t.Fatalf("put all: %v", err)
+	}
+	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
+	if err != nil {
+		t.Fatalf("by issue: %v", err)
+	}
+	if got := sessionIDs(byIssue); !slices.Equal(got, []string{"ses-tester", "ses-merger", "ses-checker", "ses-linter"}) {
+		t.Fatalf("by issue = %v, want the tester and the merger in the order of the default steps, then the checker and the linter by name", got)
+	}
+
+	project, issue := strings.Repeat("p", 64), strings.Repeat("A", 27)+"-1234"
+	longest := legionagents.RoleToken(project, issue, strings.Repeat("r", 32))
+	if len(longest) != 137 {
+		t.Fatalf("the longest token is %d bytes, want 137", len(longest))
+	}
+	if err := legionagents.ValidateRoleToken(longest); err != nil {
+		t.Fatalf("the token of a 32-byte role: %v", err)
+	}
+	err = legionagents.ValidateRoleToken(legionagents.RoleToken(project, issue, strings.Repeat("r", 33)))
+	if !errors.Is(err, legionagents.ErrInvalid) || !strings.Contains(err.Error(), "role_token is 138 bytes, past 137") {
+		t.Fatalf("the token of a 33-byte role: %v, want role_token is 138 bytes, past 137", err)
 	}
 }
 

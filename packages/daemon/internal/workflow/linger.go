@@ -29,8 +29,8 @@ import (
 // closed (issue_close: retired, its session kept for a later todo). Its pod goes either way, and
 // the disk it ran on with it, so its Sandbox is deleted either way (record.IssueSuspend), while
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
-// production check, where the project opens one (Engine.checkRole): five of its claims are
-// closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
+// production check, where the project opens one (Engine.checkRole): every claim of it but the
+// checking role's is closed, a role of the deployment's among them, no IssueSuspend is written, and the check opens in that
 // role's live session; the check's close writes the suspension (closeCheck). A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
@@ -228,7 +228,7 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, leaveState(w, status)); err != nil {
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
 		return err
 	}
 	issue.Hold, issue.Awaiting, issue.ChildrenWait = nil, nil, nil
@@ -362,8 +362,8 @@ func awaitsMerge(issue record.Issue) bool {
 
 // InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
 // its phase short of done. One still admitted counts, since it will run — a root reopened inside
-// its linger (admit's readmit) stands in `admitted` with no role's phase until its architect
-// reaches planning, and is running again from the reopen. It is the production check's "runs
+// its linger (admit's readmit) stands in `admitted` with no role's phase until its gate opens its
+// task's first step, and is running again from the reopen. It is the production check's "runs
 // again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue that runs
 // again would resume the implementer and relaunch its Sandbox under the run, so none starts.
 //
@@ -495,8 +495,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where phase.RoleFor(issue.WorkingPhase()) is the
-// role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
+// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
+// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
 // the issue held from merging with its claim failed rather than held from a phase nobody works.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"
@@ -566,7 +566,11 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	// Each row names the root generation whose linger it expires: a member keeps its own generation
 	// across re-admission, so only that tells this linger's rows from a later one's.
 	for _, member := range members {
-		for _, role := range claim.Roles {
+		roles, err := record.IssueRoles(ctx, tx, e.store, member.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		for _, role := range roles {
 			closeRow := record.SuperviseRequest{Op: "tree_close", Tree: member.Tree, Role: role, Generation: member.Generation, Linger: issue.Generation}
 			if err := e.enqueue(ctx, tx, member.Key, closeRow); err != nil {
 				return intake.Result{}, err

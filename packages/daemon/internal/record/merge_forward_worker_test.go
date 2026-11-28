@@ -48,7 +48,7 @@ func TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames(t *testing.T) {
 	// The architect works accepting, and no hold or landed reaches it: the ask's checks-red notice
 	// tells it.
 	for _, step := range []MergeForwardStep{MergeForwardHold, MergeForwardLanded} {
-		if worker, told := MergeForwardWorker(step, phase.Accepting); told || worker != claim.RoleArchitect {
+		if worker, told := MergeForwardWorker(step, Issue{}, phase.Accepting); told || worker != claim.RoleArchitect {
 			t.Errorf("MergeForwardWorker(%s, accepting) = %q, %t; want the architect, told nothing", step, worker, told)
 		}
 	}

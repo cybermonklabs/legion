@@ -17,7 +17,9 @@ import (
 // file's own.
 
 // The phases the daemon reports, written out here rather than taken from another package, so
-// this reading stands on the words and not on another reader's constants.
+// this reading stands on the words and not on another reader's constants. `step` is "Runs each
+// step of a role the deployment defines (`roles` in `legion.yaml`)", whatever the type its
+// settings give that step (the Legion concepts' table of phases).
 const (
 	phaseAdmitted         = "admitted"
 	phaseAwaitingPerson   = "awaiting_person"
@@ -26,6 +28,7 @@ const (
 	phaseImplementing     = "implementing"
 	phaseTesting          = "testing"
 	phaseReviewing        = "reviewing"
+	phaseStep             = "step"
 	phaseAccepting        = "accepting"
 	phaseRetro            = "retro"
 	phaseMerging          = "merging"
@@ -74,9 +77,13 @@ const (
 // parts is "hours by phase": one part per column of the board, each holding the daemon's phases
 // that fall in it, and `other` for an hour of the work time in a phase no column names. Retro has
 // a column of its own, merging holds merging and awaiting merge alone (dispatch://INFRA-1077's
-// b74df7a79b), and `awaiting_children` has a column of its own for a parent waiting on its open
-// children (dispatch://INFRA-3320), giving the board twelve columns. Any hour of that phase while
-// a child is working is already removed with the root's child wait, so this part holds the rest.
+// b74df7a79b), `awaiting_children` has a column of its own for a parent waiting on its open
+// children (dispatch://INFRA-3320), and `step` has a column of its own between reviewing and
+// accepting for an issue at a step of a role the deployment defines, giving the board thirteen
+// columns. Such a step is a phase the daemon reports, so an hour at it is the step's and never
+// `other`, of whichever type the deployment gave the step: neither testing nor reviewing holds it.
+// Any hour of `awaiting_children` while a child is working is already removed with the root's
+// child wait, so that part holds the rest.
 var parts = []struct {
 	id     string
 	phases []string
@@ -86,6 +93,7 @@ var parts = []struct {
 	{"implementing", []string{phaseImplementing}},
 	{"testing", []string{phaseTesting}},
 	{"reviewing", []string{phaseReviewing}},
+	{"step", []string{phaseStep}},
 	{"accepting", []string{phaseAccepting}},
 	{"retro", []string{phaseRetro}},
 	{"merging", []string{phaseMerging, phaseAwaitingMerge}},
@@ -95,10 +103,12 @@ var parts = []struct {
 }
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in
-// one of them is waiting on that child. `awaiting_children` is one of them too: a child enters it
-// while waiting on children of its own that are still at work, so its root waits on it.
+// one of them is waiting on that child. `step` is one of them: a role the deployment defines
+// works the child there, at a place among its task's steps. `awaiting_children` is one of them
+// too: a child enters it while waiting on children of its own that are still at work, so its root
+// waits on it.
 var childWorkingPhases = []string{
-	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseAccepting,
+	phasePlanning, phaseImplementing, phaseTesting, phaseReviewing, phaseStep, phaseAccepting,
 	phaseRetro, phaseMerging, phaseAwaitingMerge, phaseAwaitingChildren,
 }
 

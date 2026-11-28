@@ -141,6 +141,9 @@ func (r *observedRig) seedObserved(t *testing.T) {
 	waitingParent := observedIssue("LEGION-186", "LEGION-185", "LEGION-185", "in_progress", phase.AwaitingChildren)
 	waitingParent.ChildrenWait = &record.ChildrenWait{Start: phase.Implementing, Task: "Continue LEGION-186. Issue: LEGION-186. Phase: implementing.",
 		Reason: "a review asked for changes, while these Dispatch children of LEGION-186 were open: LEGION-187 (todo)", Since: releasedAt}
+	// A child at the step of a role the deployment defines: its task's plan, `implementer
+	// checker`, stands at step 2, so the issue's record reads the checker as its step's role.
+	atStep := observedIssue("LEGION-307", "LEGION-300", "LEGION-300", "in_progress", phase.Step)
 	issues := []record.Issue{
 		observedIssue("LEGION-100", "LEGION-100", "", "done", phase.Done),
 		observedIssue("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted),
@@ -174,6 +177,7 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		observedIssue("LEGION-304", "LEGION-300", "LEGION-300", "needs_review", phase.Accepting),
 		observedIssue("LEGION-305", "LEGION-300", "LEGION-300", "in_progress", phase.Retro),
 		held,
+		atStep,
 	}
 	approved := 1
 	openGate := func(root string) record.DesignGate {
@@ -199,6 +203,17 @@ func (r *observedRig) seedObserved(t *testing.T) {
 		{Issue: "LEGION-306", Role: claim.RoleImplementer, Claim: "legion-legion-legion-306-implementer"},
 	}
 	r.seed(t, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+		version := record.PlanVersion{Issue: atStep.Key, Generation: atStep.Generation, Version: 1, ArtifactID: "artifact-plan-307",
+			Source: record.PlanSourceOwner, GivenBy: "legion-legion-legion-300-architect", GivenAt: opened}
+		task := record.PlanTask{Issue: atStep.Key, Generation: atStep.Generation, Task: "a", PlanVersion: 1, BlockText: "Check the widget.",
+			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
+		steps := []record.PlanStep{
+			{Issue: atStep.Key, Generation: atStep.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+			{Issue: atStep.Key, Generation: atStep.Generation, Task: "a", Position: 2, Role: "checker", Type: "testing"},
+		}
+		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
+			return err
+		}
 		for _, issue := range issues {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err

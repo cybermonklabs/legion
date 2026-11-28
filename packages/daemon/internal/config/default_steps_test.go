@@ -53,7 +53,8 @@ func TestDefaultStepsDefaultToTodaysLine(t *testing.T) {
 
 // `default_steps` is read with the plan's grammar and held to the checks a plan of one task with
 // those steps passes, so the steps a task with none runs are steps Legion carries out. Each
-// refusal names the key, then gives each reason of each check, in the plan's own words.
+// refusal names the key, then gives each reason of each check, in the plan's own words; an entry
+// outside the role grammar is refused by its place, never as written, since it can be a token.
 func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 	cfg, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer]}")), noEnv)
 	if err != nil {
@@ -88,17 +89,19 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "a step that reads a pull request before the implementer", value: "[reviewer, implementer]",
-			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
+			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		{name: "a cause of each check", value: "[checker, reviewer]",
 			refusal: "projects.ACME.default_steps: task default has no step implementer." + yet +
-				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet +
+				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet +
 				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "a key", value: "[implementer, reviewer:r]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
-			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
+			refusal: "projects.ACME.default_steps entry 2 is outside the role grammar: an entry is one step, a role or role:key, each " + roleGrammarWords},
+		{name: "a key outside the grammar", value: "[implementer, acceptance:Owner]",
+			refusal: "projects.ACME.default_steps entry 2 is outside the role grammar: an entry is one step, a role or role:key, each " + roleGrammarWords},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,
-			refusal: `projects.ACME.default_steps names "implementer reviewer", which is not one step: each entry of the list is one step`},
+			refusal: "projects.ACME.default_steps entry 1 is outside the role grammar: an entry is one step, a role or role:key, each " + roleGrammarWords},
 		{name: "a word, not a list", value: "implementer",
 			refusal: "projects.ACME.default_steps must be an array of non-empty strings"},
 	} {

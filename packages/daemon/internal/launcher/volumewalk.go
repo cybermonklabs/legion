@@ -37,7 +37,7 @@ const (
 	// The two age splits each size carries. They come out of the same walk, which stats every
 	// file anyway, and they are what tell a reader a working set from cold bytes: a hundred
 	// gigabytes nothing has touched for a day is a cache to delete, the same bytes written in
-	// the last hour are six roles at work.
+	// the last hour are the pod's roles at work.
 	volumeSizeHour = time.Hour
 	volumeSizeDay  = 24 * time.Hour
 )

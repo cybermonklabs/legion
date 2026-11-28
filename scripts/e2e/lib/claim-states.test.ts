@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { scriptFunctions } from "./script-functions";
 
 // claim_states_are ISSUE ROLE STATES OTHERS (lib/workflow.sh), the predicate Stage 4b's done,
-// production-check and production-check-bound checkpoints wait on: the issue's six claims, ROLE's
+// production-check and production-check-bound checkpoints wait on: the issue's six claims (the
+// run's deployment defines no role of its own), ROLE's
 // in one of the states STATES names and every other in one of OTHERS, as a close leaves an issue
 // whose production check keeps the role the project's `production_check` names apart from the
 // rest. An empty ROLE spares none, which is how the close of a project whose `production_check`
