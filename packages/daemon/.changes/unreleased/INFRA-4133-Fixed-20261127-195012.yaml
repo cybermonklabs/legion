@@ -9,10 +9,11 @@ body: |-
   `Provision` removes every entry of the workspace directory except `.jj` and `.git` without
   following a link before running `jj sparse reset` again (`workspace-init` logs this as step
   `checkout-clear`). That retry also finishes a registration that failed after `jj workspace add`:
-  it records the workspace's creation where no record is there, or replaces, and logs, a record it
-  cannot read (such as the empty one a provision killed mid-write leaves), and sets the issue's
-  bookmark `legion/<KEY>` on the workspace's working-copy commit where neither the shared clone
-  nor origin has it, rather than reporting the workspace on a bookmark it never set. Where origin
+  it records the workspace's creation where no record is there, or replaces, and logs, a regular
+  creation record it cannot parse (such as the empty one a provision killed mid-write leaves),
+  while refusing a symlink, FIFO or other non-regular entry at `.jj/legion-created`, and sets the
+  issue's bookmark `legion/<KEY>` on the workspace's working-copy commit where neither the shared
+  clone nor origin has it, rather than reporting the workspace on a bookmark it never set. Where origin
   has the branch and the shared clone does not, it refuses the workspace by name, with the way out
   for origin's row: provision again where concurrent fetches conflicted it; restore the bookmark
   or cancel its deletion, either one followed by deleting the workspace's directory, or delete the
