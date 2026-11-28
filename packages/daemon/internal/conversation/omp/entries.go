@@ -75,6 +75,9 @@ type message struct {
 	Provider        string          `json:"provider"`
 	Model           string          `json:"model"`
 	StopReason      string          `json:"stopReason"`
+	ErrorID         float64         `json:"errorId"`
+	ErrorMessage    string          `json:"errorMessage"`
+	RequestControls json.RawMessage `json:"requestControls"`
 	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
 	Continued       json.RawMessage `json:"continued"`
 	ProviderPayload json.RawMessage `json:"providerPayload"`

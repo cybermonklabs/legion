@@ -225,6 +225,9 @@ func TestReadResolvesCapturedLeafAndAppendsAfterIt(t *testing.T) {
 			want := []conversation.Message{user("first"), claude(text("one")), user("second"), claude(text("two"))}
 			if tc.empty {
 				wantLeaf, wantParent, want = "", nil, nil
+				if s.Model != "" || s.API != "" || s.ThinkingLevel != "off" {
+					t.Errorf("cleared session: model %q, API %q, thinking level %q; want empty model and API and thinking off", s.Model, s.API, s.ThinkingLevel)
+				}
 			}
 			if s.Leaf != wantLeaf {
 				t.Errorf("Leaf = %q, want %q", s.Leaf, wantLeaf)
@@ -392,11 +395,15 @@ func TestReadRestoresCustomRolloverRequests(t *testing.T) {
 // A model that cannot read it resumes from the previous readable compaction.
 func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
 	const providerBound = `{"provider":"openai","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}`
-	for _, tc := range []struct{ name, provider, api, preserve string }{
-		{"different provider", "other", conversation.OpenAIResponses, providerBound},
-		{"different API", "openai", conversation.AnthropicMessages, providerBound},
-		{"missing provider on classic compaction", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}],"compactionItem":{"type":"compaction","encrypted_content":"encoded"}}`},
-		{"missing provider on compaction summary", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction_summary"}],"compactionItem":{"type":"compaction_summary"}}`},
+	for _, tc := range []struct {
+		name, provider, api, preserve string
+		placeholder                   bool
+	}{
+		{"different provider", "other", conversation.OpenAIResponses, providerBound, false},
+		{"different API", "openai", conversation.AnthropicMessages, providerBound, false},
+		{"missing provider on classic compaction", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}],"compactionItem":{"type":"compaction","encrypted_content":"encoded"}}`, false},
+		{"missing provider on compaction summary", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction_summary"}],"compactionItem":{"type":"compaction_summary"}}`, false},
+		{"classic item without encrypted content", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction"}],"compactionItem":{"type":"compaction"}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
@@ -406,6 +413,14 @@ func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
 			f.add(`{"type":"compaction","summary":"Replacement placeholder.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":` + tc.preserve + `}}`)
 			f.add(assistantEntry(tc.provider, tc.api, "model", "stop", `[{"type":"text","text":"answer"}]`))
 			s := read(t, f.bytes())
+			if tc.placeholder {
+				if len(s.Messages) != 2 || s.Messages[0].Native != nil ||
+					!strings.Contains(s.Messages[0].Content[0].Text, "Replacement placeholder.") ||
+					s.Messages[1].Content[0].Text != "answer" {
+					t.Fatalf("messages = %+v, want the placeholder compaction and later answer", s.Messages)
+				}
+				return
+			}
 			if len(s.Messages) != 3 || s.Messages[0].Native != nil ||
 				!strings.Contains(s.Messages[0].Content[0].Text, "Readable summary.") {
 				t.Fatalf("messages = %+v, want the readable summary, kept request, and later answer", s.Messages)
@@ -879,6 +894,9 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 		{"a mistyped field", fixtureHeader + "\n" + `{"type":"compaction","id":"a","parentId":null,"summary":7,"firstKeptEntryId":"x"}` + "\n"},
 		{"a snapcompact archive", fixtureHeader + "\n" + `{"type":"compaction","id":"a","parentId":null,"summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}` + "\n"},
 		{"a bash execution", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"bashExecution","command":"ls","output":""}}` + "\n"},
+		{"a python execution", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"pythonExecution","code":"print(1)","output":"1","cancelled":false,"truncated":false,"timestamp":1}}` + "\n"},
+		{"a file mention message", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":1}}` + "\n"},
+		{"a legacy hook message", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"hookMessage","customType":"note","content":"a note","display":false,"timestamp":1}}` + "\n"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, err := Read([]byte(testCase.content), Options{})

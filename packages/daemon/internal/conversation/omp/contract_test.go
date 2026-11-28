@@ -787,6 +787,18 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			return aborted + fmt.Sprintf(`{"type":"custom_message","customType":"interrupted-thinking","content":%s,"display":false,"details":{"interruptedAt":%d,"provider":%q,"model":%q,"blockCount":1},"attribution":"agent","id":"d3000004","parentId":"d3000003","timestamp":%q,"runtime":%s}`+"\n",
 				quote(note), at.UnixMilli(), standInProvider, standInModel, conversation.ISOTime(at), entries["runtime"])
 		}},
+		{"a continued user interrupt with no continuity note", func(entries map[string]string, leaf string) string {
+			// agent-session.ts:5548–5555,14193–14196 and turn-recovery.ts:1636–1683.
+			now := time.Now()
+			aborted := fmt.Sprintf(`{"type":"message","id":"d3000006","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The note says"},{"type":"thinking","thinking":"check"}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"aborted","errorMessage":"Interrupted by user","errorId":67108864,"timestamp":%d}}`+"\n",
+				leaf, conversation.ISOTime(now), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+			doneAt := now.Add(time.Millisecond)
+			answer := fmt.Sprintf(`{"type":"message","id":"d3000007","parentId":"d3000006","timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"plum."}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n",
+				conversation.ISOTime(doneAt), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, doneAt.UnixMilli())
+			patch := fmt.Sprintf(`{"type":"custom","customType":"entry_patch","data":{"patches":[{"entryId":"d3000006","message":{"continued":true}}]},"id":"d3000008","parentId":"d3000007","timestamp":%q,"runtime":%s}`+"\n",
+				conversation.ISOTime(doneAt), entries["runtime"])
+			return aborted + answer + patch
+		}},
 		{"a terminal error with only a fallback boundary", func(entries map[string]string, leaf string) string {
 			// anthropic.ts:1416–1421,2971–2996 and turn-recovery.ts:1505–1509.
 			now := time.Now()

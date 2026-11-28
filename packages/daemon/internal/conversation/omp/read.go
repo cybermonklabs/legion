@@ -39,6 +39,7 @@ type Session struct {
 	ParentSession string
 	// Leaf is the resolved active entry's ID. An append uses it as its parent. If no branch is
 	// active, Leaf is empty and the first appended entry has no parent.
+	// Model and API are empty when the session has no active branch.
 	Leaf string
 	// Size is the session length in bytes when read. The appenders check this length.
 	Size int64
@@ -60,6 +61,22 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // classifier and thinking-prefix rules to the resumed model ID. It does not load models.yml,
 // provider discovery, or request overrides. An override makes no difference if it leaves the
 // inferred model and replay policy unchanged.
+//
+// Read uses the effective thinking level recorded in the session. Resolving the configured
+// selector (including auto), a model fallback, or an unrecorded API requires the active model
+// registry and settings. This changes nothing when the first recorded model is available on the
+// recorded API and its resolved level matches the last effective level. Read also does not
+// restore service-tier routing, mode prompts, or trigger suppression from TTSR rule names.
+// These omissions make no difference when the tier is the default, no mode prompt applies, and
+// no session rule would trigger differently. Read is for stopped sessions: it has no in-flight
+// tool call IDs. This makes no difference after all tool execution has stopped.
+//
+// Read always uses the journal's active leaf. It does not accept a temporary leaf override.
+// It reads rollover requests from inline journal data, so it needs no cold-store classification.
+// It does not repeat persistence-time filtering on entries the journal never recorded.
+//
+// Read does not reproduce Anthropic request controls such as tool declarations or effort. This
+// changes nothing when no recorded controls apply or when the caller supplies the same controls.
 //
 // The reader does not apply these request-time branches of transform-messages.ts:
 //

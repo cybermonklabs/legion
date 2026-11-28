@@ -19,9 +19,10 @@ type llmMessage struct {
 	blocks               []block
 	timestamp, rewriteAt *float64
 	// assistant
-	api, provider, model, stopReason string
-	payload                          json.RawMessage
-	continued                        bool
+	api, provider, model, stopReason    string
+	payload                             json.RawMessage
+	continued                           bool
+	userInterrupted, hasRequestControls bool
 	// toolResult
 	toolCallID, toolName string
 	isError              bool
@@ -251,8 +252,7 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 	}
 	messages = stripDanglingToolCalls(messages)
 	messages = dropFailedTurns(messages)
-	ctx.messages = dropOrphanedSyntheticResults(messages)
-	stripInterruptedThinking(ctx.messages)
+	ctx.messages = stripInterruptedThinking(dropOrphanedSyntheticResults(messages))
 	return ctx, nil
 }
 
@@ -585,7 +585,14 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 				blocks[i].Name = stripXdPrefix(blocks[i].Name)
 			}
 		}
-		return []llmMessage{{role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model, stopReason: m.StopReason, payload: m.ProviderPayload, continued: continued, timestamp: m.Timestamp}}, nil
+		const userInterruptFlag = 0x0400_0000 // ai/src/error/flags.ts: UserInterrupt
+		return []llmMessage{{
+			role: "assistant", blocks: blocks, api: m.API, provider: m.Provider, model: m.Model,
+			stopReason: m.StopReason, payload: m.ProviderPayload, continued: continued, timestamp: m.Timestamp,
+			userInterrupted: m.StopReason == "aborted" &&
+				(int64(m.ErrorID)&userInterruptFlag != 0 || m.ErrorMessage == "Interrupted by user"),
+			hasRequestControls: m.RequestControls != nil,
+		}}, nil
 	case "toolResult":
 		blocks, err := parseBlocks(m.Content, inputBlocks, where)
 		if err != nil {
@@ -856,12 +863,17 @@ func dropOrphanedSyntheticResults(messages []llmMessage) []llmMessage {
 	})
 }
 
-// stripInterruptedThinking matches convertToLlm's treatment of an assistant turn followed by
-// its interrupted-thinking continuity message.
-func stripInterruptedThinking(messages []llmMessage) {
-	for i := range messages[:max(0, len(messages)-1)] {
+// stripInterruptedThinking removes unfinished thinking before the continuity note or on a user
+// interrupt without a note. An otherwise empty interrupted turn stays only if it carried controls.
+func stripInterruptedThinking(messages []llmMessage) []llmMessage {
+	hasEmptyInterrupt := false
+	for i := range messages {
 		m := &messages[i]
-		if m.role != "assistant" || messages[i+1].customType != interruptedThinkingType {
+		if m.role != "assistant" {
+			continue
+		}
+		hasNote := i+1 < len(messages) && messages[i+1].customType == interruptedThinkingType
+		if !hasNote && !m.userInterrupted {
 			continue
 		}
 		end := len(m.blocks)
@@ -879,5 +891,13 @@ func stripInterruptedThinking(messages []llmMessage) {
 		if start < end {
 			m.blocks = m.blocks[:start]
 		}
+		if m.userInterrupted && !hasNote && len(m.blocks) == 0 && !m.hasRequestControls {
+			m.role = ""
+			hasEmptyInterrupt = true
+		}
 	}
+	if hasEmptyInterrupt {
+		return slices.DeleteFunc(messages, func(m llmMessage) bool { return m.role == "" })
+	}
+	return messages
 }
