@@ -54,6 +54,7 @@ export function useDecisionWrites({
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${DECISION_ACT_WORDS.keep} ${name}`,
     method: "POST",

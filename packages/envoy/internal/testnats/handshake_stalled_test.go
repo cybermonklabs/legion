@@ -18,6 +18,7 @@ import (
 // row. The row has a file of its own, and its dialer with it, so the control overlays it on a tree
 // without it.
 func TestHoldStalledWriteReturnsWithAWriteStillInTheSocket(t *testing.T) {
+	t.Parallel()
 	RequireSocketQueues(t)
 	hold := StartHandshakeHold(t, URL(t))
 	dialer := &writeCountingDialer{}
