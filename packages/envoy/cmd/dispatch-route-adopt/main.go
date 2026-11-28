@@ -1,13 +1,15 @@
 // Command dispatch-route-adopt carries a branch made before Dispatch's routes moved into a file
-// each across main's change, which leaves a merge of main into such a branch with routes_table.go
-// and routes_shapes.go in conflict.
+// each across main's change. A merge of main into such a branch leaves routes_table.go in
+// conflict, and routes_shapes.go only where the branch changed it too.
 //
-// Before the change every route of internal/dispatch/api was one row of routes() in
-// routes_table.go, and what else was known of it stood in four maps beside the table, keyed
-// "<method> <pattern>" (writeClasses, idRoutes, routeScopes, readScopeRoutes), and in a fifth in
-// routes_shapes.go (routeShapes). Now each route is one file of its own, route_<path>+<method>.go
-// (routeFileName says how a pattern is written), whose one declaration states every one of those
-// facts, so two branches that add different routes touch no file in common.
+// Before the change (main at 80bccafa8c18) every route of internal/dispatch/api was one row of
+// routes() in routes_table.go, and what else was known of it stood beside the table, keyed
+// "<method> <pattern>": the maps writeClasses, idRoutes and routeScopes and the list
+// approveScopeRoutes in routes_table.go, the map readClasses in read_classes.go, and the map
+// routeShapes in routes_shapes.go. Now each route is one file of its own,
+// route_<path>+<method>.go (routeFileName says how a pattern is written), whose one declaration
+// states every one of those facts, so two branches that add different routes touch no file in
+// common.
 //
 // Usage, from packages/envoy of a checkout that holds this command, with the branch to adopt on a
 // clean tree:
@@ -22,11 +24,16 @@
 //
 // It works in three steps, in this order:
 //
-//  1. It refuses a tree that is mid-merge, naming the commands that return it and what they cost:
-//     `git merge --abort`; under jj, where the merge is the working-copy commit, `jj abandon @`
-//     and then `jj edit` (or `jj new`) of the merge's first parent, since `jj abandon @` alone
-//     leaves a new working copy on the same two parents. It refuses a tree that holds changes,
-//     saying to commit or stash them under git, or to describe them and run `jj new` under jj.
+//  1. It refuses a tree that is mid-merge, naming the commands that return it and what they cost
+//     (any resolution already made in that merge is lost): `git -C <tree> merge --abort`; under
+//     jj, where the merge is the working-copy commit, `jj -R <tree> abandon @`, then
+//     `jj -R <tree> edit` of the merge's first parent where that parent is empty, or
+//     `jj -R <tree> new` on it where it holds work, since `jj abandon @` alone leaves a new
+//     working copy on the same two parents. It refuses a tree that holds changes, saying to
+//     commit them or stash them with `git -C <tree> stash -u` (-u, because
+//     `git status --porcelain` counts an untracked file, which a plain `git stash` leaves), or
+//     under jj to describe them and run `jj -R <tree> new`. <tree> is the tree it adopts, written
+//     into every command it names, since the person runs it with -C from another checkout.
 //  2. It reads both sides, the merge base and both splits, and settles every file it will write
 //     and every three-way merge, so a branch it cannot adopt is refused with the tree as it was.
 //  3. It makes the merge (`git merge --no-commit --no-ff`; `jj new <branch side> <revision>`),
@@ -37,30 +44,35 @@
 // empty `@` (`jj new <branch>` first), commits are read from jj's git store (`jj git root`),
 // nothing is staged, and the conflicts left are the ones `jj file list` reports.
 //
-// One side of the merge holds the old layout and the other the new one, in either order: a branch
-// made before the move merging main, or the move's own branch merging a main that still had the
-// old table (how the move itself was carried across main). The tool splits the old layout at the
-// merge base and at the old-layout side into one file per route, with the splitter that wrote
-// main's route files, and compares the two splits route by route:
+// One side of the merge holds the old layout and the other side the new one, in either order: a
+// branch made before the move merging main, or the move's own branch merging a main that still
+// had the old table (how the move itself was carried across main). The tool splits the old layout
+// at the merge base and at the old-layout side into one file per route, with the splitter that
+// wrote main's route files, and compares the two splits route by route:
 //
-//   - a route the branch added is written;
-//   - a route the branch changed is merged into the file the new side holds (git merge-file, HEAD's
-//     side first and MERGE_HEAD's last), and a file the merge leaves in conflict carries git's
-//     markers, is written into git's index in conflict (stage 1 the merge base, 2 HEAD's side, 3
-//     MERGE_HEAD's, each that side's own bytes) and is named among what is left;
-//   - a route the branch removed is deleted, where the new side's file is still the one the
-//     merge base held, and is named among what is left where main has changed it since.
+//   - a route the old-layout side added is written;
+//   - a route the old-layout side changed is merged into the file the other side holds (git
+//     merge-file, HEAD's side first and MERGE_HEAD's last), and a file the merge leaves in
+//     conflict carries git's markers and is named among what is left. Under git it is also
+//     written into the index in conflict (stage 1 the merge base, 2 HEAD's side, 3 MERGE_HEAD's,
+//     each that side's own bytes); under jj it is plain content, not a jj conflict, and only the
+//     report names it;
+//   - a route the old-layout side removed is deleted, where the other side's file is still the
+//     one the merge base held, and is named among what is left where the other side has changed
+//     it since.
 //
 // routes_table.go and routes_shapes.go are then taken whole from the new side. An edit the
-// branch made to either outside the moved entries - a type, a helper, a comment, routes() itself -
-// is printed as a diff for the person to carry by hand, since nothing can place it mechanically.
-// testdata/routes.txt, which the new layout no longer commits, is removed. Every file it writes or
-// removes is staged; it changes no other file. It ends by listing what is left: route files merged
-// with conflicts, edits to carry by hand, the other paths git still holds in conflict, and every
-// line of package api's other files that still names one of the old maps.
+// old-layout side made to either outside the moved entries - a type, a helper, a comment,
+// routes() itself - is printed as a diff for the person to carry by hand, since nothing can place
+// it mechanically. testdata/routes.txt, which the new layout no longer commits, is removed. Every
+// file it writes or removes is staged; it changes no other file. It ends by listing what is left:
+// route files merged with conflicts, edits to carry by hand, the other paths git still holds in
+// conflict, and every line of package api's other files that still names a declaration the old
+// layout had.
 //
-// It exits 0 when nothing is left, 2 when it resolved what it could and something is left for the
-// person, and 1 when it could not run.
+// The built binary exits 0 when nothing is left, 2 when it resolved what it could and something
+// is left for the person, and 1 when it could not run. Through `go run`, as the usage above runs
+// it, the shell gets 1 in the second case too: go prints `exit status 2` and exits 1.
 //
 //	go run ./cmd/dispatch-route-adopt split -rev <commit> -out <dir>
 //
