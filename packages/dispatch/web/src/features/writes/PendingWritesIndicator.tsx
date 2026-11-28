@@ -110,23 +110,26 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
 }
 
 /**
- * Hands on the focus a press of the reader's in the panel takes away. A press here can take the
- * control it was made on off the page - Stop trying once its write is refused, Retry or Discard
- * once their row goes, any of them as the panel goes once nothing is pending - and the browser
- * then leaves the focus on the page's body, which loses a keyboard reader's place. So the panel
- * arms the hand-off at its root for each press made in it (`armOnPress`), notes the row the focus
- * is in and where the focus came from as it entered the panel, and once the element that held the
- * focus in the panel has left the page while the focus is on the body, it reads who caused the
- * loss. A loss the reader caused (`causedByReader`), of a control they had not scrolled out of
- * their sight (`outOfSight`), moves the focus, with no scroll, to the first control the reader can
- * see now (`inSightNow`): while the panel is still drawn, one in that element's row (the Retry a
- * stopped write's row offers once Stop trying has gone), else one of the panel's, passing over a
- * row scrolled out of the panel's list; only once none of the panel's is in sight, the element the
- * focus came from, where it is in sight, else the page's main region (`app.tsx`'s
- * `main-content`), which the shell focuses on a page change too. A loss the reader did not cause -
- * a write that lands by itself, a refusal that comes in, with nothing armed - leaves the focus
- * where the browser puts it, on the body, and scrolls nothing: a control they did not choose, and
- * may not see, never takes it.
+ * Hands on the focus the panel loses as the control that holds it leaves the page. A press here
+ * can take the control it was made on off the page - Stop trying once its write is refused, Retry
+ * or Discard once their row goes, any of them as the panel goes once nothing is pending - and so
+ * can a write that ends by itself, as a late write lands or is refused while its Stop trying holds
+ * the focus; the browser then leaves the focus on the page's body, which loses a keyboard reader's
+ * place. So the panel arms the hand-off at its root for each press made in it (`armOnPress`),
+ * notes the row the focus is in and where the focus came from as it entered the panel, and once
+ * the element that held the focus in the panel has left the page while the focus is on the body,
+ * it reads who caused the loss. A loss the reader caused (`causedByReader`), of a control they had
+ * not scrolled out of their sight (`outOfSight`), moves the focus, with no scroll, to the first
+ * control the reader can see now (`inSightNow`): while the panel is still drawn, one in that
+ * element's row (the Retry a stopped write's row offers once Stop trying has gone), else one of
+ * the panel's, passing over a row scrolled out of the panel's list; only once none of the panel's
+ * is in sight, the element the focus came from, where it is in sight, else the page's main region
+ * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A loss the reader
+ * did not cause - a write that lands by itself, a refusal that comes in, with nothing armed -
+ * moves the focus, with no scroll, in the same order with nothing read of what the reader can
+ * see: to the first control that takes it in that element's row (the Retry a refused write's row
+ * offers), else the panel's first, else the element the focus came from, else the page's main
+ * region.
  * A focus the reader takes out of the panel, by a Tab or by a press that leaves the focus outside
  * it, is forgotten, so nothing moves a focus the reader put somewhere else; a press elsewhere that
  * leaves the focus in the panel, as on a control whose `mousedown` is prevented or on a scrollbar,
@@ -208,7 +211,9 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   }, [forget]);
   // React sends no blur for an element it takes off the page, and the browser moves the focus
   // with no event, so each commit looks: a layout effect, so the focus moves in the commit that
-  // takes the element away.
+  // takes the element away. A loss the reader's press caused lands only on a control they can see
+  // now, and nowhere once they had scrolled the lost control out of their sight; any other loss
+  // lands in the same order with nothing read of what they can see.
   useLayoutEffect(() => {
     const left = held.current;
     if (left === null || left.isConnected) return;
@@ -218,13 +223,15 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     const row = rowSelector === null ? null : box?.querySelector(rowSelector);
     const back = from.current;
     forget();
-    if (!focusOnDocument() || outOfSight(left) || !causedByReader(left)) return;
+    if (!focusOnDocument()) return;
+    const pressed = causedByReader(left);
+    if (pressed && outOfSight(left)) return;
     // One read of each box's style for the whole hand-off (`inSightNow`).
     const clips = new Map<Element, boolean>();
     const controls = [
       ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
       ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
-    ].filter((control) => inSightNow(control, clips));
+    ].filter((control) => !pressed || inSightNow(control, clips));
     if (focusFirst(controls)) {
       // The focus listener took that move for the focus entering the panel afresh; it came in
       // from where it did before.
@@ -232,7 +239,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
       return;
     }
     focusFirst([
-      back !== null && inSightNow(back, clips) ? back : null,
+      back !== null && (!pressed || inSightNow(back, clips)) ? back : null,
       document.getElementById("main-content"),
     ]);
   });
