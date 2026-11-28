@@ -517,12 +517,15 @@ func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supe
 // settlement already applied wakes nobody either, since it applies nothing (dispatch://INFRA-4135
 // R4; dispatch://INFRA-945 R3 item 2 wakes on a settlement the daemon records for the head of the
 // issue's pull request). Nor does a settlement that applies and whose only change is runs of
-// checks it names skipped, each new to the head or a newer run of its name
-// (settledView.changesOnlySkippedRuns, dispatch://INFRA-6293 R6): every review, each reply to a
-// review thread among them, starts a Large PR lanes run whose jobs skip on all but a trusted
-// approval of a large pull request, checks tells no role of such a settlement (tellChecks), and a
-// wake whose task named it would be that CI message by another road, bringing a pod back for
-// checks that ran nothing. A newer settlement in which no run changed still wakes, as before.
+// checks it names skipped, each new to the head or a newer run of its name, beside newer runs of
+// checks that keep their word (settledView.changesOnlySkippedRuns, dispatch://INFRA-6293 R6):
+// every review, each reply to a review thread among them, starts a Large PR lanes run whose jobs
+// skip on all but a trusted approval of a large pull request, and every title or body edit runs
+// pr-title again, a newer run that keeps its word, beside the skipped run of the Large PR label
+// job; checks tells no role of such a settlement (tellChecks), and a wake whose task named it
+// would be that CI message by another road, bringing a pod back for checks that ran nothing. A
+// newer settlement in which no run changed still wakes, as before, and so does one whose only
+// change is newer runs that keep their word, with no skipped run among them.
 //
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each

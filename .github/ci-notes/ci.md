@@ -2147,7 +2147,11 @@ Two workflows make it:
   since the concurrency group is on the job, not the run: a group on the run would let such an
   edit cancel a push's label run and then write no label. The job is named `label` only where
   its `if:` holds, so such an edit's skipped run posts its name expression's text, a check name
-  other than `label`, and never replaces the push's `label`. The script reads the size from the
+  other than `label`, and never replaces the push's `label`. The edit also starts a newer
+  `pr-title` run, which keeps its word, in the same settlement of the head; the Legion daemon
+  tells no role and wakes no pod of a settlement whose only change is skipped runs beside such
+  newer runs (`packages/daemon/internal/workflow/review.go#changesOnlySkippedRuns`,
+  dispatch://INFRA-6293). The script reads the size from the
   event's payload and puts the label `large-pr` on a large pull request, or takes it off
   one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
   need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
@@ -2295,7 +2299,8 @@ What it leaves as it was:
 
 - Main's ruleset keeps an approval across a push (`dismiss_stale_reviews_on_push` is false), so a
   head pushed after the approval and not approved again reaches the queue with its fast lane
-  alone, as before this rule. Legion's review step approves each new head, which runs it again.
+  alone, as before this rule. Approve each new head again: that approval runs the slow suites at
+  the new head. Legion's review step does so, since it approves each head it reviews.
 - An approval sent before the `Large PR label` run has put `large-pr` on a head that has just
   become large runs nothing, because the review's event carries no size, so its run reads no
   label (#5944: review 6095318330 at 03:02:51Z, Large PR lanes run 46100963090 skipped every
