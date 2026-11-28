@@ -290,11 +290,6 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 				return err
 			}
 		}
-		if err := e.closeMerged(ctx, tx, *issue, pr); err != nil {
-			return err
-		}
-		e.logOnCommit(ctx, "workflow: the boot takes the merge of an issue whose pull request merged before the upgrade", "issue", issue.Key,
-			"tree", issue.Tree, "pullRequest", pr.Number, "phase", issue.Phase)
 	}
 	issues, err = e.store.Issues(ctx, tx)
 	if err != nil {
