@@ -153,7 +153,7 @@ func TestAttributionStopsAtTheFirstSourceThatNamesAnIssue(t *testing.T) {
 			number: 301,
 			pull: firstSourcePull{
 				title: "feat: the work", body: "Dispatch: " + own, branch: "topic",
-				commits: []string{"Keep the " + bystander + " rows", "Dispatch: " + own},
+				commits: []string{"Keep the " + bystander + " rows", "Do the work\n\nDispatch: " + own},
 			},
 			want: own, from: sourceTitleBody,
 		},
@@ -162,7 +162,7 @@ func TestAttributionStopsAtTheFirstSourceThatNamesAnIssue(t *testing.T) {
 			number: 302,
 			pull: firstSourcePull{
 				title: "feat: the work", body: "Dispatch: " + other, branch: "topic",
-				commits: []string{"Keep the " + bystander + " rows", "Dispatch: " + other},
+				commits: []string{"Keep the " + bystander + " rows", "Do the work\n\nDispatch: " + other},
 			},
 			want: "", from: sourceNone,
 		},
@@ -183,7 +183,7 @@ func TestAttributionStopsAtTheFirstSourceThatNamesAnIssue(t *testing.T) {
 			number: 305,
 			pull: firstSourcePull{
 				title: "Handle UTF-8 and SHA-256 for GDGT-9999", body: "See HEAD-9999.", branch: "legion/gdgt-9998",
-				commits: []string{"wip", "Dispatch: " + own},
+				commits: []string{"wip", "Do the work\n\nDispatch: " + own},
 			},
 			want: own, from: sourceCommitMessage, readsCommits: true,
 		},
@@ -277,7 +277,7 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 			number: 407,
 			pull: firstSourcePull{
 				title: "feat: the work", branch: "topic",
-				commits: []string{"Merge main\n\nKeep the " + bystander + " rows.", "Dispatch: " + own},
+				commits: []string{"Merge main\n\nKeep the " + bystander + " rows.", "Do the work\n\nDispatch: " + own},
 			},
 			want: own, from: sourceCommitMessage, readsCommits: true,
 		},
@@ -286,7 +286,7 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 			number: 408,
 			pull: firstSourcePull{
 				title: "feat: UTF-8", body: "See GDGT-9999.", branch: "topic",
-				commits: []string{"Keep the " + bystander + " rows.", "Dispatch: " + other},
+				commits: []string{"Keep the " + bystander + " rows.", "Do the work\n\nDispatch: " + other},
 			},
 			want: "", from: sourceNone, readsCommits: true,
 		},
@@ -507,7 +507,7 @@ func TestTheReconcileTakesAStoredPullRequestFromAnIssueOnlyItsMergeCommitMention
 			pull := firstSourcePull{
 				title: "gadgets: one scan exception row", body: "Dispatch: " + declared,
 				branch:  "agent/licence-rows",
-				commits: []string{"Merge main\n\nKeep every main exception row, including the " + bystander + " rows.", "Dispatch: " + declared},
+				commits: []string{"Merge main\n\nKeep every main exception row, including the " + bystander + " rows.", "Do the work\n\nDispatch: " + declared},
 			}
 			fake := newFakeGitHub(t)
 			fake.handle("GET /repos/acme/gadgets/pulls/4028", func(w http.ResponseWriter, _ *http.Request) {

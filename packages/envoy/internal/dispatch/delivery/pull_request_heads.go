@@ -1767,14 +1767,25 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	if err != nil {
 		return nil, err
 	}
-	attributed, err := in.attributor.attributeHead(ctx, in.tuning.log, in.pool, in.github,
-		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
-		attributionFacts{
-			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],
-			HeadRef: payload["head_ref"],
-		}, payload["head_repo"], number)
-	if err != nil {
-		return nil, markHeadNotStored(err)
+	// An envelope carries at most 2048 runes of the body and says so in body_truncated: a trailer
+	// or a key past the cut is not in it, and a mention before the cut would decide the issue for
+	// good, the row stamped read at this build's rule. So a cut body attributes nothing here: the
+	// write is incomplete, which adds no issue to a new row, takes none from a stored one and
+	// leaves the row unread, and the reconcile's read of the whole pull request decides
+	// (dispatch://INFRA-2181). The cost is that a pull request with a long body is credited at the
+	// reconcile's next pass, within PullRequestHeadStaleAfter, rather than at its event; reading the
+	// pull request here instead would spend a GitHub call on every such envelope.
+	attributed := headAttributionResult{source: string(sourceNone)}
+	if payload["body_truncated"] != "true" {
+		attributed, err = in.attributor.attributeHead(ctx, in.tuning.log, in.pool, in.github,
+			func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
+			attributionFacts{
+				Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],
+				HeadRef: payload["head_ref"],
+			}, payload["head_repo"], number)
+		if err != nil {
+			return nil, markHeadNotStored(err)
+		}
 	}
 	// The envelope is itself a fresh read of the head, so the row is stamped read and the
 	// reconcile does not spend three GitHub calls re-reading what the event just delivered —

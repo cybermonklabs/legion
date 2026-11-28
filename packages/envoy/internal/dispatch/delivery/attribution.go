@@ -140,6 +140,18 @@ func trailerKeys(text string) []string {
 	return keys
 }
 
+// commitTrailerKeys is trailerKeys over each commit message below its subject line, in commit
+// order: a subject is no trailer, whatever word it begins with, so a commit titled "dispatch: …"
+// does not declare the issue its subject mentions.
+func commitTrailerKeys(messages []string) []string {
+	keys := []string{}
+	for _, message := range messages {
+		_, below, _ := strings.Cut(message, "\n")
+		keys = appendUnique(keys, trailerKeys(below)...)
+	}
+	return keys
+}
+
 // attributionFacts is what GitHub says about one pull request that the attribution reads.
 type attributionFacts struct {
 	Repo           string
@@ -249,7 +261,7 @@ func (a *Attributor) attributionInputsFrom(facts attributionFacts) AttributionIn
 		BranchKeys:        uniqueKeys(strings.ToUpper(facts.HeadRef)),
 		CommitKeys:        uniqueKeys(commits),
 		BodyTrailerKeys:   trailerKeys(facts.Body),
-		CommitTrailerKeys: trailerKeys(commits),
+		CommitTrailerKeys: commitTrailerKeys(facts.CommitMessages),
 	}
 }
 
