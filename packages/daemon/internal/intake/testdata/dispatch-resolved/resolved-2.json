@@ -1,48 +1,63 @@
 [
   {
-    "id": 900021,
+    "id": 82,
     "issue_key": "ACME-12",
     "artifact_id": null,
     "project": "ACME",
     "seq": 1,
     "type": "issue.created",
-    "actor": { "kind": "user", "id": "human" },
+    "actor": {
+      "kind": "user",
+      "id": "alice"
+    },
     "notify": true,
-    "created_at": "2026-11-25T09:00:00Z",
+    "created_at": "2026-11-27T19:11:30.655347Z",
     "payload": {
       "key": "ACME-12",
-      "rank": "UUUk",
+      "rank": "f",
       "claim": null,
       "labels": [],
       "number": 12,
       "parent": "ACME-7",
       "status": "triage",
-      "changed": ["title", "status", "rank", "parent"],
+      "changed": [
+        "title",
+        "status",
+        "rank",
+        "resolved_priority",
+        "priority_from",
+        "assignee",
+        "parent",
+        "repo"
+      ],
       "project": "ACME",
       "last_seq": 1,
       "priority": null,
-      "resolved_priority": 2,
-      "priority_from": "OTHER-5",
       "ancestors": ["ACME-7", "OTHER-5"],
       "closed_at": null,
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T09:00:00Z"
+      "created_at": "2026-11-27T19:11:30.655347Z",
+      "updated_at": "2026-11-27T19:11:30.655347Z",
+      "priority_from": "OTHER-5",
+      "resolved_priority": 2
     }
   },
   {
-    "id": 900022,
+    "id": 83,
     "issue_key": "ACME-12",
     "artifact_id": null,
     "project": "ACME",
     "seq": 2,
     "type": "issue.updated",
-    "actor": { "kind": "user", "id": "human" },
+    "actor": {
+      "kind": "user",
+      "id": "alice"
+    },
     "notify": true,
-    "created_at": "2026-11-25T09:01:00Z",
+    "created_at": "2026-11-27T19:11:30.711306Z",
     "payload": {
       "key": "ACME-12",
-      "rank": "UUUk",
+      "rank": "f",
       "claim": null,
       "labels": [],
       "number": 12,
@@ -52,28 +67,31 @@
       "project": "ACME",
       "last_seq": 2,
       "priority": null,
-      "resolved_priority": 2,
-      "priority_from": "OTHER-5",
       "ancestors": ["ACME-7", "OTHER-5"],
       "closed_at": null,
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T09:01:00Z"
+      "created_at": "2026-11-27T19:11:30.655347Z",
+      "updated_at": "2026-11-27T19:11:30.714161Z",
+      "priority_from": "OTHER-5",
+      "resolved_priority": 2
     }
   },
   {
-    "id": 900023,
+    "id": 85,
     "issue_key": "ACME-12",
     "artifact_id": null,
     "project": "ACME",
     "seq": 3,
     "type": "issue.updated",
-    "actor": { "kind": "session", "id": "legion-daemon:ACME" },
+    "actor": {
+      "kind": "session",
+      "id": "legion-daemon:ACME"
+    },
     "notify": false,
-    "created_at": "2026-11-25T09:02:00Z",
+    "created_at": "2026-11-27T19:11:30.84031Z",
     "payload": {
       "key": "ACME-12",
-      "rank": "UUUk",
+      "rank": "f",
       "claim": null,
       "labels": [],
       "number": 12,
@@ -83,28 +101,31 @@
       "project": "ACME",
       "last_seq": 3,
       "priority": null,
-      "resolved_priority": 2,
-      "priority_from": "OTHER-5",
       "ancestors": ["ACME-7", "OTHER-5"],
       "closed_at": null,
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T09:02:00Z"
+      "created_at": "2026-11-27T19:11:30.655347Z",
+      "updated_at": "2026-11-27T19:11:30.846108Z",
+      "priority_from": "OTHER-5",
+      "resolved_priority": 2
     }
   },
   {
-    "id": 900024,
+    "id": 87,
     "issue_key": "ACME-12",
     "artifact_id": null,
     "project": "ACME",
     "seq": 4,
     "type": "issue.closed",
-    "actor": { "kind": "session", "id": "00000000-0000-7000-8000-000000000003" },
+    "actor": {
+      "kind": "session",
+      "id": "00000000-0000-7000-8000-000000000003"
+    },
     "notify": false,
-    "created_at": "2026-11-25T09:03:00Z",
+    "created_at": "2026-11-27T19:11:30.882905Z",
     "payload": {
       "key": "ACME-12",
-      "rank": "UUUk",
+      "rank": "f",
       "claim": null,
       "labels": [],
       "number": 12,
@@ -114,13 +135,13 @@
       "project": "ACME",
       "last_seq": 4,
       "priority": null,
-      "resolved_priority": 2,
-      "priority_from": "OTHER-5",
       "ancestors": ["ACME-7", "OTHER-5"],
-      "closed_at": "2026-11-25T09:03:00Z",
+      "closed_at": "2026-11-27T19:11:30.882905Z",
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T09:03:00Z"
+      "created_at": "2026-11-27T19:11:30.655347Z",
+      "updated_at": "2026-11-27T19:11:30.890933Z",
+      "priority_from": "OTHER-5",
+      "resolved_priority": 2
     }
   }
 ]

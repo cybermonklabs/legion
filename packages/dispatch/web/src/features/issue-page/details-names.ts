@@ -21,7 +21,11 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
   return `${verb} issues ${issueKey} waits on`;
 }
 
-/** The text and name of Referenced by's count: its label and how many reference the issue. */
-export function referencedByControlName(count: number): string {
-  return `${PROPERTY_LABELS.referenced_by} (${count})`;
+/** The text and name of Referenced by's control: its label, and how many rows the list it opens
+ *  shows (`listedEdges`) once that list has been read; undefined before then, when the control
+ *  reads its label alone. A count of zero is the fact Details draws in place of a control. */
+export function referencedByControlName(count: number | undefined): string {
+  return count === undefined
+    ? PROPERTY_LABELS.referenced_by
+    : `${PROPERTY_LABELS.referenced_by} (${count})`;
 }

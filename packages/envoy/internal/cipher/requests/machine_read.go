@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // MintFailedMessage is logged, at ERROR, each time a type secret's minter fails a release,
@@ -520,7 +521,7 @@ func grantLocations(granted []requestedSecret) []string {
 // a refused scope and handed back as it is, and any other failure named with the secret.
 func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
 	minted, from, err := m.release(ctx, g, served)
-	if errors.Is(err, secrets.ErrNotFound) {
+	if errors.Is(err, secretstore.ErrNotFound) {
 		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
@@ -576,15 +577,16 @@ func sourceMoved(name string) error {
 // for a name (requestedSecret.source), counts as the source the policy serves that name from now
 // (policy.Secret.Source). Every compare of the two calls counts: the re-check of a release and of
 // Create's reuse of a live grant (stillAllowed), the re-check after a release's reads
-// (recheckStoredSources), and the release's read itself (readSource). prefix is
-// BROKER_SECRETS_PREFIX and second BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and
-// Machine.SecondPrefix); with second empty the rule counts equal sources alone, which is every
-// broker that does not set it.
+// (recheckStoredSources), and the release's read itself (readSource). prefix and second are the
+// prefixes every source of the store begins with under BROKER_SECRETS_PREFIX and under
+// BROKER_SECRETS_SECOND_PREFIX (Machine.SourcePrefix and Machine.SecondSourcePrefix, which the
+// store answers: secretstore.Config.SourcePrefixes); with second empty the rule counts equal
+// sources alone, which is every broker that does not set it.
 type sourceRule struct{ prefix, second string }
 
 // sourceRule is the rule this machine holds a frozen source to.
 func (m *Machine) sourceRule() sourceRule {
-	return sourceRule{prefix: m.SecretsPrefix, second: m.SecondPrefix}
+	return sourceRule{prefix: m.SourcePrefix, second: m.SecondSourcePrefix}
 }
 
 // counts reports whether frozen counts as served. Equal sources count. With a second prefix set,
@@ -597,6 +599,10 @@ func (m *Machine) sourceRule() sourceRule {
 // a stored source against a minted one or the reverse, and one under the configured prefix where
 // the policy serves the second's, since the policy lists under the configured prefix alone. Such a
 // source no longer names the secret the policy decides about, so its grant ends (sourceMoved).
+//
+// The two prefixes are the store's source prefixes, so a store whose sources carry a lead of their
+// own before the secret's name (the memory store's memory:<name>) is compared from where its name
+// begins, whatever the prefix spells: the rule never looks for a prefix inside a source.
 func (r sourceRule) counts(frozen, served string) bool {
 	if frozen == served {
 		return true
@@ -1698,7 +1704,8 @@ type Session struct {
 
 // PendingSummary is one credential-request record for GET /v1/pending: its id, kind, the plain
 // identifiers its request object names (secret names for agent_secret, the single host for
-// launcher_credential), when it was requested, the session it names, its state and its deadline.
+// launcher_credential), when it was requested, the session it names, its state and its deadline,
+// the Dispatch scopes a Dispatch sign-in asks for, and the reason its request object signed.
 type PendingSummary struct {
 	RecordID    string
 	Kind        string
@@ -1712,6 +1719,12 @@ type PendingSummary struct {
 	// requests.pending_expires_at, the column its decision reads, and a machine login's
 	// credential_requests.expires_at.
 	ExpiresAt time.Time
+	// DispatchScopes is the record's own dispatch_scopes column (machine.Service.LoginDevice):
+	// nil for a machine login and for a secret request, and for a Dispatch sign-in the scopes it
+	// asks for, {} for one that asks none.
+	DispatchScopes *[]string
+	// Reason is the reason the record's request object signed, verbatim, "" where it signed none.
+	Reason string
 }
 
 // PendingStates is which records PendingForApprover lists. Its zero value asks for no state and
@@ -1819,9 +1832,10 @@ const recordDeadlineSQL = `coalesce(req.pending_expires_at, cr.expires_at)`
 // is listed for each of the groups $3 names, the fresh groups the group reader lists the person in
 // (Machine.Groups' GroupsOf), in the group form. Each row carries the approver it waits on, so the
 // list tells a person's own machine login from a row that waits on them only as one of its
-// approvers (approverRow).
+// approvers (approverRow), and its own dispatch_scopes column, which says whether a machine login
+// is a Dispatch sign-in and the scopes it asks for (machine.Service.LoginDevice).
 const pendingListFrom = `select cr.id, cr.kind, cr.approver, cr.body, cr.created_at, coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
-		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), ` + credentialColumns + `, ` + currentCredentialColumns + `
+		s.state, ` + recordDeadlineSQL + `, coalesce(cr.notify, ''), cr.dispatch_scopes, ` + credentialColumns + `, ` + currentCredentialColumns + `
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
@@ -1967,8 +1981,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	for rows.Next() {
 		var id, kind, approverOf, canonical, requestSession, enrollmentSession, state, notify string
 		var createdAt, expiresAt time.Time
+		var dispatchScopes *[]string
 		var asked, current enrollmentRow
-		if err := rows.Scan(&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify,
+		if err := rows.Scan(&id, &kind, &approverOf, &canonical, &createdAt, &requestSession, &enrollmentSession, &state, &expiresAt, &notify, &dispatchScopes,
 			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
 			&current.Kind, &current.Operator, &current.Subject, &current.Projects); err != nil {
 			return nil, err
@@ -1983,7 +1998,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		out = append(out, PendingSummary{
 			RecordID: id, Kind: kind, Identifiers: identifiers, RequestedAt: createdAt,
 			Session: Session{Request: requestSession, Enrollment: enrollmentSession},
-			State:   state, ExpiresAt: expiresAt,
+			State:   state, ExpiresAt: expiresAt, DispatchScopes: dispatchScopes, Reason: reason,
 		})
 		reads = append(reads, seen{sessionProjects: m.credentialsProjects(asked, current), reason: reason, notify: notify, approverRow: approverRow(kind, approverOf, login, service == "")})
 	}

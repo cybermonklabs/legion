@@ -20,20 +20,20 @@ export type LegionRoleClaim = (
 ) => Promise<void>;
 
 /**
- * `whileHolding` names a role this session holds: the subscription then lasts as long as the
- * session holds that role and closes when it stops holding it: another live session takes it, a
- * `new` or `resume` switch leaves it behind, a `/fork`, `/branch`, `/handoff` or tree navigation
- * reclaims the role its transcript records when that is another one, or a claim through this
- * bridge moves the session to another role. The model's `envoy_role_set`
- * refuses to move the session off such a role, and its `envoy_unsubscribe` keeps such a
- * subscription open and reports it kept. It is never registered with the listener, so a resumed
- * process gets it back only by claiming the role again.
+ * `whileHolding` names a role this session holds, and every subscription through the bridge names
+ * one: the subscription lasts as long as the session holds that role and closes when it stops
+ * holding it: another live session takes it, a `new` or `resume` switch leaves it behind, a
+ * `/fork`, `/branch`, `/handoff` or tree navigation reclaims the role its transcript records when
+ * that is another one, or a claim through this bridge moves the session to another role. The
+ * model's `envoy_role_set` refuses to move the session off such a role, and its
+ * `envoy_unsubscribe` keeps such a subscription open and reports it kept. It is never registered
+ * with the listener, so a resumed process gets it back only by claiming the role again.
  */
 export type LegionNoticeSubscription = (
   sessionID: string,
   topic: string,
-  context?: SessionContext,
-  whileHolding?: string
+  context: SessionContext | undefined,
+  whileHolding: string
 ) => Promise<void>;
 
 /**
@@ -98,7 +98,45 @@ export type LegionRoleClaimBridge = {
    * its listed channels only through the subscriptions its role owns, which it never registers.
    */
   slackRoleOwned: boolean;
+  /**
+   * Whether this process is a Legion controller, of either launch form, whose watched workflows'
+   * default-branch topics (`isGithubDefaultBranchWorkflowSubject` of `@legion/contracts`) belong
+   * to the controller role: the Legion entry's factory sets it from its environment, in that
+   * process alone, so it is the same in every instance; false in any other process. While it is
+   * true, the Envoy entry restores a resumed session's registered interests after unsubscribing
+   * every such topic among them from the listener and dropping it, in the same removal as the
+   * Slack topics `slackRoleOwned` drops: an edge listener judges the GitHub topics of the
+   * session's stored row at each registration, so a restored one would refuse the role claim and
+   * every other topic while the edge cannot read the project's repositories, and the controller
+   * hears its watched workflows only through the subscriptions its role owns, which it never
+   * registers.
+   */
+  watchedWorkflowsRoleOwned: boolean;
 };
+
+/**
+ * Why a notice subscription (`LegionNoticeSubscription`) is refused when the session does not hold
+ * the role its `whileHolding` names: the Envoy entry throws it, and the Legion controller reads it
+ * (`refusedForRoleNotHeld`) to stop subscribing its role's topics with one log line rather than
+ * giving each of them up.
+ */
+export class RoleNotHeldError extends Error {
+  override readonly name = "RoleNotHeldError";
+
+  constructor(sessionID: string, role: string) {
+    super(`Envoy session ${sessionID} does not hold role ${role} for a notice subscription`);
+  }
+}
+
+/**
+ * Whether `error` is a subscription refused because the session does not hold the role it names
+ * (`RoleNotHeldError`). It is read by its name, not by class, because it crosses plugin bundles:
+ * the Envoy entry throws it from its own copy of this module, and the Legion entry reads it from
+ * another (`listenerAskedToClaimAgain` in `./legion-claim-core`).
+ */
+export function refusedForRoleNotHeld(error: unknown): boolean {
+  return error instanceof Error && error.name === "RoleNotHeldError";
+}
 
 /** The bridge, read from the interface at each call: a consumer never keeps the object, so the
  * publish order of the two plugins is irrelevant. */
@@ -107,18 +145,29 @@ export function legionRoleClaimBridge(): LegionRoleClaimBridge {
 }
 
 /**
- * Claims `role` for `sessionID` through the envoy instance currently serving that session — the
- * instance whose live `SessionManager` reports `sessionID` — so its heartbeat is the one that
- * re-asserts the claim afterwards. While the pane is live the key is the manager's id, not the
- * instance's own module state, so a claim made from legion.ts's `session_switch` handler routes
- * correctly whether OMP dispatched envoy.ts's rebind for the same event before or after it. With
- * several instances on the same id (a fixture that binds one per test) the one later in the list
- * wins. A target no instance serves yet falls back to the last instance in the list, which
- * establishes the session itself; a stopped instance moves to the front, so the fallback is a
- * live one where there is one.
- * A session whose stop has begun keeps its instance on the bridge, which refuses the claim naming
- * the stop, so no other instance gets it. `replaces` is the session this one replaces, which the
- * claim names as its `previous_session_id` (`LegionRoleClaim`).
+ * The envoy instance currently serving `sessionID`: the instance whose live `SessionManager`
+ * reports `sessionID`. While the pane is live the key is the manager's id, not the instance's own
+ * module state, so a call made from legion.ts's `session_switch` handler routes correctly whether
+ * OMP dispatched envoy.ts's rebind for the same event before or after it. With several instances
+ * on the same id (a fixture that binds one per test) the one later in the list wins. A target no
+ * instance serves yet falls back to the last instance in the list, which establishes the session
+ * itself; a stopped instance moves to the front, so the fallback is a live one where there is
+ * one. A session whose stop has begun keeps its instance on the bridge, which refuses the call
+ * naming the stop, so no other instance gets it. With no instance bound, it throws naming `what`.
+ */
+function boundInstance(sessionID: string, what: string): LegionRoleClaimInstance {
+  const { instances } = legionRoleClaimBridge();
+  const instance =
+    instances.findLast((candidate) => candidate.sessionID() === sessionID) ?? instances.at(-1);
+  if (instance === undefined) throw new Error(`Envoy has no bound instance for ${what}`);
+  return instance;
+}
+
+/**
+ * Claims `role` for `sessionID` through the envoy instance currently serving that session
+ * (`boundInstance`), so its heartbeat is the one that re-asserts the claim afterwards. `replaces`
+ * is the session this one replaces, which the claim names as its `previous_session_id`
+ * (`LegionRoleClaim`).
  */
 export async function claimEnvoyRole(
   sessionID: string,
@@ -126,32 +175,27 @@ export async function claimEnvoyRole(
   context?: SessionContext,
   replaces?: string
 ): Promise<void> {
-  const bridge = legionRoleClaimBridge();
-  bridge.managedSessions.add(sessionID);
-  const instance =
-    bridge.instances.findLast((candidate) => candidate.sessionID() === sessionID) ??
-    bridge.instances.at(-1);
-  if (instance === undefined) throw new Error("Envoy has no bound instance for a role claim");
-  await instance.claim(sessionID, role, context, replaces);
+  legionRoleClaimBridge().managedSessions.add(sessionID);
+  await boundInstance(sessionID, "a role claim").claim(sessionID, role, context, replaces);
 }
 
 /**
- * Adds a persisted direct subscription through the Envoy adapter that owns delivery and recovery;
- * with `whileHolding`, only for as long as this session holds that role.
+ * Adds a direct subscription through the Envoy adapter that owns delivery and recovery, the
+ * instance serving that session (`boundInstance`), for as long as this session holds the role
+ * `whileHolding` names (`LegionNoticeSubscription`).
  */
 export async function subscribeLegionNotice(
   sessionID: string,
   topic: string,
-  context?: SessionContext,
-  whileHolding?: string
+  context: SessionContext | undefined,
+  whileHolding: string
 ): Promise<void> {
-  const bridge = legionRoleClaimBridge();
-  const instance =
-    bridge.instances.findLast((candidate) => candidate.sessionID() === sessionID) ??
-    bridge.instances.at(-1);
-  if (instance === undefined)
-    throw new Error("Envoy has no bound instance for a notice subscription");
-  await instance.subscribe(sessionID, topic, context, whileHolding);
+  await boundInstance(sessionID, "a notice subscription").subscribe(
+    sessionID,
+    topic,
+    context,
+    whileHolding
+  );
 }
 
 /**

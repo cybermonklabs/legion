@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // tagJudge gives the judge seconds of name, and guidance unless it is "", on the server d builds:
@@ -22,10 +22,9 @@ import (
 // policy read again (policytest.JudgeTags).
 func tagJudge(t *testing.T, d *api.Deps, name string, seconds int, guidance string) {
 	t.Helper()
-	store, isAWS := d.Machine.Secrets.(secrets.AWS)
-	local, isLocal := store.Client.(*secrets.Local)
-	if !isAWS || !isLocal {
-		t.Fatalf("the test server's store is %T, not the secrets.Local its fixture holds", d.Machine.Secrets)
+	local, isMemory := d.Machine.Secrets.(*memory.Store)
+	if !isMemory {
+		t.Fatalf("the test server's store is %T, not the memory store its fixture holds", d.Machine.Secrets)
 	}
 	policytest.JudgeTags(t, local, d.Policy, name, seconds, guidance)
 }
@@ -218,7 +217,7 @@ func TestTheSettingsNameTheSourceOfAJudgedProfile(t *testing.T) {
 	ts := newProfiledTestServer(t, policytest.KindsFile(
 		`{"name": "DEEL_READ", "source": "DEEL_API_KEY", "proxy": "example"}`,
 	), func(d *api.Deps) {
-		store := d.Machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+		store := d.Machine.Secrets.(*memory.Store)
 		judged := policytest.Judged(policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"), 900, "grant for the payroll export job")
 		store.Put(judged)
 		store.Put(policytest.Judged(policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"), 300, ""))

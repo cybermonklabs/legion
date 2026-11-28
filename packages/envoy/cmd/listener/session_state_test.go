@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -155,7 +156,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
-	if refusal.Error != "no live session ses_stalled" {
+	if refusal.Error != contracts.NoLiveSession+" ses_stalled" {
 		t.Fatalf("the refusal reads %q, want the kept prefix and nothing after it", refusal.Error)
 	}
 	if refusal.State != session.Unresponsive || refusal.LastSeen != stalledAt {
@@ -281,7 +282,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
-	if refusal.Error != "no live session "+sessionID {
+	if refusal.Error != contracts.NoLiveSession+" "+sessionID {
 		t.Fatalf("the refusal reads %q, want the kept prefix naming the session", refusal.Error)
 	}
 	if refusal.State != session.Gone || refusal.LastSeen != registeredAt {
@@ -311,7 +312,7 @@ func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
-	if !strings.HasPrefix(refusal.Error, "no live session "+sessionID) {
+	if !strings.HasPrefix(refusal.Error, contracts.NoLiveSession+" "+sessionID) {
 		t.Fatalf("the refusal reads %q, want the kept prefix naming the session", refusal.Error)
 	}
 	if refusal.LastSeen != 0 {

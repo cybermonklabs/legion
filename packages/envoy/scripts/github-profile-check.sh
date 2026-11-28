@@ -285,7 +285,7 @@ AGENT_SECRETS_BIN="$DEV_BROKER_DIR/bin/agent-secrets"
 STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 BROKER_BIN="$DEV_BROKER_DIR/bin/broker"
 BROKER_LOG="$DEV_BROKER_DIR/broker.log"
-FAKE_SECRETS_FILE="$DEV_BROKER_DIR/fake-secrets.json"
+MEMORY_SECRETS_FILE="$DEV_BROKER_DIR/memory-secrets.json"
 OWNER="$DEV_BROKER_GITHUB_OWNER"
 echo "github-profile-check: the stack is up (broker $AGENT_SECRETS_URL, proxy $DEV_BROKER_PROXY_URL, GitHub stand $DEV_BROKER_GITHUB_URL and $DEV_BROKER_GITHUB_PROXIED_URL)" >&2
 
@@ -459,8 +459,8 @@ judge "p1 profiles check of the stack's file exits 0 and reports each of its pro
 jq --arg prefix "example/agent-secrets/" '
 	(.secrets[] | select(.name == ($prefix + "demo-github-app"))) as $app
 	| .secrets += [$app | .name = ($prefix + "demo-github-app-unprofiled")]' \
-	"$FAKE_SECRETS_FILE" >"$WORK_DIR/fake-secrets.json"
-cat "$WORK_DIR/fake-secrets.json" >"$FAKE_SECRETS_FILE"
+	"$MEMORY_SECRETS_FILE" >"$WORK_DIR/memory-secrets.json"
+cat "$WORK_DIR/memory-secrets.json" >"$MEMORY_SECRETS_FILE"
 p1_reread_url="$AGENT_SECRETS_URL/v1/secrets/DEMO_GITHUB_APP_UNPROFILED/reread"
 p1_reread="$(curl -sS -o /dev/null -w '%{http_code}' -X POST -H "Proof: $("$AGENT_SECRETS_BIN" sign --method POST --url "$p1_reread_url")" "$p1_reread_url")"
 run_agent_secrets DEMO_GITHUB_APP_UNPROFILED -- sh -c 'echo ran'

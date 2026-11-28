@@ -112,6 +112,21 @@ projects:
   #                                    # The daemon compares the list with nothing at boot, so a
   #                                    # misspelled name stamps no commit and no line says so; a
   #                                    # pane of any other repository stamps nothing
+  #   watched_workflows:
+  #     - acme/widgets/release.yml     # optional: the workflows whose completed runs on their
+  #     - acme/widgets/nightly.yaml@schedule,workflow_dispatch # repository's default branch
+  #                                    # reach this project's controller. An entry is
+  #                                    # <owner>/<repo>/<file>, the file one of the repository's
+  #                                    # .github/workflows/, then optionally @ and the trigger
+  #                                    # events whose runs count, comma-separated, as a workflow's
+  #                                    # on: names them; an entry with no @ watches schedule runs
+  #                                    # alone. Write one entry a line, as here: in a [...] list a
+  #                                    # comma ends the entry. Write the owner and the repository
+  #                                    # as GitHub spells them (gh api repos/<owner>/<repo> --jq
+  #                                    # .full_name): a topic is case-sensitive, so an entry
+  #                                    # spelled otherwise hears nothing. A run a pull request
+  #                                    # names never reaches the controller. It needs no
+  #                                    # controller setting, runtime or secrets broker
   #   memory:                          # optional: what each tree this project opens runs with. The
   #                                    # block is the experiment named memory (experiments below),
   #                                    # so write the block or experiments.memory, never both; the

@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { App } from "./app";
+import { KeepNewIssuePage } from "./features/issue-page/new-page-parameter";
 import {
   DeploymentResilience,
   installChunkFailureRecovery,
@@ -13,7 +14,8 @@ import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import "./styles.css";
 
 // Never two requests in flight for one read: an invalidation during a fetch fetches again once it
-// settles (`api/query-client.ts`).
+// settles; and a search that ran past the server's bound is sent again only when the reader asks,
+// never on the focus below, a reconnect or a refresh of the live feed (`api/query-client.ts`).
 const queryClient = new DispatchQueryClient({
   defaultOptions: {
     queries: {
@@ -44,7 +46,9 @@ createRoot(root).render(
       <BrowserRouter>
         <DeploymentResilience />
         <ErrorBoundary region="Dispatch">
-          <App />
+          <KeepNewIssuePage>
+            <App />
+          </KeepNewIssuePage>
         </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>

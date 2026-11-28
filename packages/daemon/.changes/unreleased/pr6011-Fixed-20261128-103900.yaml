@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The implementer's role prompt no longer says that CI runs a suite the repository holds back for
+    its merge queue there. It says that, where a repository holds a slow suite back from pull
+    requests for its merge queue, the queue runs it when the queue's own selection, against the
+    queue's base, picks it, and that the implementer adds the label that runs such a suite on the
+    pull request only when a check of the issue names its job, because the label acts on the pull
+    request's runs alone and changes nothing the queue runs.
+time: 2026-11-28T10:39:00.000000000Z
+custom:
+    Issue: pr6011

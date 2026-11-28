@@ -1303,13 +1303,19 @@ wait_for_topic_count "notifications.github.example-org.example-repo.pr.42.checks
 post_github pull_request "${fixture_dir}/pull-request-closed-merged.json"
 post_github workflow_run "${fixture_dir}/workflow-run-with-pr.json"
 post_github workflow_run "${fixture_dir}/workflow-run-without-pr.json"
+# Three real runs of a repository, named here as the placeholder one: a scheduled run and a push
+# run on its default branch, of its own head, and a workflow_dispatch run on another branch.
+post_github workflow_run "${fixture_dir}/e2e-workflow-run-default-branch-schedule.json"
+post_github workflow_run "${fixture_dir}/e2e-workflow-run-default-branch-push.json"
+post_github workflow_run "${fixture_dir}/e2e-workflow-run-other-branch-dispatch.json"
 post_github check_run "${fixture_dir}/check-run-actions-job-without-pr.json"
 post_github check_run "${fixture_dir}/check-run-actions-job-merge-queue.json"
 post_github push "${fixture_dir}/push.json"
-# Nineteen frames: the five before window (ii) (three direct messages, two reviewer-role forwards),
-# the escalation role's kept copy its claim was handed after the relaunch, and the thirteen GitHub
-# deliveries the tally below names.
-wait_for_consumer_frame_count 19
+# Twenty-four frames: the five before window (ii) (three direct messages, two reviewer-role
+# forwards), the escalation role's kept copy its claim was handed after the relaunch, and the
+# eighteen GitHub frames the tally below names - one for each of sixteen deliveries, and one more
+# for each of the two default-branch runs, whose default-branch copy is a message of its own.
+wait_for_consumer_frame_count 24
 
 # The keep-false control, read now the consumer's frame count has settled: its claim went in
 # before the lapsed window, so a drain of the unkept role would have run by now. The session was
@@ -1324,9 +1330,10 @@ if jq -e 'select(.payload_summary == "Unkept role delivery.")' "$envelopes_file"
 fi
 printf 'keep-false control: the unheld role answered 404, nothing was stored and its claimant was handed nothing\n'
 
-# What the session itself took, which is the whole point of a consumer: every GitHub delivery, the
-# three direct messages and the three role forwards reached it as frames of its own consumer, each
-# exactly once, with no connection opened to it from anywhere. Two of the role forwards are the
+# What the session itself took, which is the whole point of a consumer: every message the stream
+# stored of a GitHub delivery, the three direct messages and the three role forwards reached it as
+# frames of its own consumer, each exactly once, with no connection opened to it from anywhere. A
+# default-branch run's copy is a stored message of its own (below). Two of the role forwards are the
 # reviewer role's - the copy kept while nobody held it and the publish its live holder took - and
 # one is the escalation role's: the copy kept while its holder's claim stood with the holder gone,
 # handed to that session when it claimed the role again. The unkept role has no frame, since its
@@ -1346,9 +1353,32 @@ jq -es --arg session_id "$session_id" --arg role_topic "notifications.role.${rol
   and (map(select(.topic == $role_topic)) | length) == 2
   and (map(select(.topic == $lapsed_role_topic)) | length) == 1
   and (map(select(.topic == $unkept_role_topic)) | length) == 0
-  and (map(select(.topic | startswith("notifications.github.example-org.example-repo."))) | length) == 13
+  and (map(select(.topic | startswith("notifications.github.example-org.example-repo."))) | length) == 18
 ' "$session_frames_file" >/dev/null || {
   printf 'ERR: the session did not take its GitHub deliveries, its three direct messages carrying one expects_reply vocabulary, its two reviewer-role forwards and the one copy kept for the lapsed role from its consumer, with nothing for the unkept one.\n' >&2
+  exit 1
+}
+
+# A run of the default branch, of the repository's own head, is stored twice: its default-branch
+# copy, on a topic that names the run's event, and then its workflow envelope, under one event id
+# and one dedupe key. The session's consumer relays each message the stream stores, so the session
+# took both, the copy first; a real client writes the second as one it holds already, since its
+# ledger keys by event id and dedupe key (alreadyWritten in
+# packages/envoy-client/src/consumer-delivery.ts), which this stand-in does not. A run on another
+# branch is stored, and taken, once, on its workflow topic.
+jq -es --arg prefix "notifications.github.example-org.example-repo." '
+  def taken($delivery): map(select(.dedupe_key == "github.e2e-workflow_run-" + $delivery));
+  (taken("e2e-workflow-run-default-branch-schedule")
+    | map(.topic) == [$prefix + "default_branch.workflow.e2e_yaml.completed.schedule", $prefix + "workflow.e2e_yaml.completed"]
+      and (map(.event_id) | unique | length) == 1)
+  and (taken("e2e-workflow-run-default-branch-push")
+    | map(.topic) == [$prefix + "default_branch.workflow.release-envoy-listener_yaml.completed.push", $prefix + "workflow.release-envoy-listener_yaml.completed"]
+      and (map(.event_id) | unique | length) == 1)
+  and (taken("e2e-workflow-run-other-branch-dispatch")
+    | map(.topic) == [$prefix + "workflow.dispatch-browser-nightly_yaml.completed"])
+' "$session_frames_file" >/dev/null || {
+  printf 'ERR: the session did not take each default-branch run as its copy and then its workflow envelope under one event id, and the other-branch run once on its workflow topic; the workflow runs it took:\n' >&2
+  jq -c 'select(.dedupe_key | startswith("github.e2e-workflow_run-e2e-")) | {topic, dedupe_key, event_id}' "$session_frames_file" >&2
   exit 1
 }
 

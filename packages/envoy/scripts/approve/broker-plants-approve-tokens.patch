@@ -17,10 +17,10 @@
  	sum := sha256.Sum256([]byte(token))
  	slog.Info("broker: minted a grant's token", "grant", grant.ID, "session", grant.Session,
  		"token_sha256", hex.EncodeToString(sum[:]), "jkt", jkt, "expires_at", grant.ExpiresAt.UTC().Format(time.RFC3339))
-+	// approve-check's control build: every minted token written beside the fake secrets file, in
++	// approve-check's control build: every minted token written beside the memory secrets file, in
 +	// files the session reads, one form a file: on a line of its own, in a token endpoint's answer
 +	// naming it, and as a variable's NAME=value, the form a shell or an env file writes.
-+	dir := filepath.Dir(os.Getenv("BROKER_FAKE_SECRETS_FILE"))
++	dir := filepath.Dir(os.Getenv("BROKER_MEMORY_SECRETS_FILE"))
 +	answer, _ := json.Marshal(map[string]any{"access_token": token, "token_type": "DPoP", "expires_in": int64(time.Until(grant.ExpiresAt) / time.Second)})
 +	for name, line := range map[string]string{
 +		"planted-approve-tokens":  token,
@@ -54,9 +54,9 @@
  }
  
 +// plantBindingKey is approve-check's control build: the pod's DPoP key, which every minted token
-+// is bound to, written once as PEM beside the fake secrets file, a file the session reads.
++// is bound to, written once as PEM beside the memory secrets file, a file the session reads.
 +func plantBindingKey(key *ecdsa.PrivateKey) {
-+	path := filepath.Join(filepath.Dir(os.Getenv("BROKER_FAKE_SECRETS_FILE")), "planted-binding-key.pem")
++	path := filepath.Join(filepath.Dir(os.Getenv("BROKER_MEMORY_SECRETS_FILE")), "planted-binding-key.pem")
 +	if _, err := os.Stat(path); err == nil || key == nil {
 +		return
 +	}

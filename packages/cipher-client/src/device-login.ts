@@ -39,6 +39,11 @@
 // rotate the login's refresh token at every command.
 
 import { generateKeyPairSync, type KeyObject, randomUUID } from "node:crypto";
+import {
+  BROKER_REQUEST_REASON_MAX,
+  DISPATCH_SIGN_IN_SCOPES,
+  type DispatchSignInScope,
+} from "@legion/contracts";
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { outage } from "@legion/contracts/http-status";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -88,10 +93,12 @@ import {
   waitMillisecondsOf,
   wholeMillisecondsOf,
 } from "./device-login-reach";
+import { signInScopes, signInScopesOf } from "./device-login-scopes";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
 import { LOOPBACK_HOST } from "./loopback";
 import { endsGrant, refusalCode } from "./oauth-refusal";
+import { REFUSAL_TEXT_WITHHELD } from "./refusal-text";
 import type { SubjectToken, TokenSource } from "./source";
 import { sleep, TRADE_ATTEMPT_MS } from "./token-client";
 import {
@@ -99,9 +106,12 @@ import {
   BrokerTradeFailedError,
   DEVICE_LOGIN_COMMAND,
   DeviceLoginEndedError,
+  DeviceLoginReplacedError,
+  deviceLoginCommand,
 } from "./token-errors";
 import {
   DEVICE_AUTHORIZATION_PATH,
+  DISPATCH_LOGIN_SCOPE,
   GRANT_TYPE_DEVICE_CODE,
   GRANT_TYPE_REFRESH,
   LAUNCHER_CREDENTIAL_DETAIL,
@@ -117,6 +127,14 @@ import {
 /** The variable that names the broker, as `environment.ts` holds it (`BROKER_URL_VAR`); that
  *  module builds on this one, so naming it here keeps the import one way. */
 const BROKER_SETTING = "AGENT_SECRETS_URL";
+
+/** What `dispatch login` says where the broker answers a Dispatch sign-in's device request
+ *  `400 invalid_scope` in words this client does not know: a broker that predates Dispatch
+ *  sign-ins registers its device client for the scope `machine` alone, so its OAuth library refuses
+ *  the scope `dispatch` in a sentence of its own. A refusal this client knows, such as
+ *  `DISPATCH_SIGNIN_OFF` or `SCOPE_NOT_CONSENTABLE`, prints in the broker's own words instead. */
+const NO_DISPATCH_SIGN_IN =
+  "this broker serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is off";
 
 /** The least life an access token kept in the file must have left to be traded without a
  *  refresh: two trade attempts' worth, so it cannot lapse at the broker while the trade that
@@ -294,7 +312,7 @@ function loginOf(
   broker: string,
   answered: TokenEndpointResponse,
   now: number
-): DeviceLogin {
+): Omit<DeviceLogin, "dispatchScopes"> {
   const endpoint = broker + TOKEN_PATH;
   const credentialId =
     typeof answered["credential_id"] === "string" ? answered["credential_id"] : "";
@@ -349,6 +367,12 @@ export interface DeviceAuthorization {
   readonly deviceCode: string;
   /** The key the login is bound to. */
   readonly key: KeyObject;
+  /** The Dispatch scopes this device login asked for, sorted and distinct, or null where it is a
+   *  machine login. */
+  readonly dispatchScopes: readonly DispatchSignInScope[] | null;
+  /** The login as each refusal of it names it: "this machine's device login", or "this Dispatch
+   *  sign-in". */
+  readonly describe: string;
 }
 
 /**
@@ -374,16 +398,41 @@ export interface DeviceAuthorization {
  * refusal of an answer this machine will not use names the broker as `urlForText` does, as
  * {@link printable}'s does, and prints of the answer at most its interval and lifetime, numbers
  * oauth4webapi checked finite, in digits.
+ *
+ * With `dispatchScopes`, the login is a Dispatch sign-in ({@link DeviceAuthorization.describe}):
+ * the authorization asks for the scope `dispatch`, records those scopes, sorted and distinct, in
+ * the launcher detail's `actions`, and carries `reason` where one names the session or tool. A
+ * scope no sign-in may ask for (contracts' `DISPATCH_SIGN_IN_SCOPES`) and a reason of more than
+ * `BROKER_REQUEST_REASON_MAX` characters, counted as code points as the broker counts them, are
+ * refused with a `RangeError` before any request; nothing else this throws is one, so a caller
+ * reads it as a usage error. A `400 invalid_scope` answer to a Dispatch sign-in's request whose
+ * text this client does not know (`isKnownBrokerRefusal`) is refused with
+ * {@link NO_DISPATCH_SIGN_IN}, which names the two brokers that can answer so; one it knows prints
+ * in the broker's words, as every broker refusal does.
  */
 export async function startDeviceLogin(options: {
   readonly brokerUrl: string;
   readonly person: string;
   readonly host: string;
+  readonly dispatchScopes?: readonly string[] | undefined;
+  readonly reason?: string | undefined;
   readonly fetch?: typeof fetch | undefined;
 }): Promise<DeviceAuthorization> {
   const brokerUrl = deviceLoginBroker(options.brokerUrl);
   const endpoint = brokerUrl + DEVICE_AUTHORIZATION_PATH;
   const person = options.person.trim();
+  const dispatchScopes =
+    options.dispatchScopes === undefined ? null : signInScopes(options.dispatchScopes);
+  if (
+    options.reason !== undefined &&
+    Array.from(options.reason).length > BROKER_REQUEST_REASON_MAX
+  ) {
+    throw new RangeError(
+      `a device login's reason has at most ${BROKER_REQUEST_REASON_MAX} characters`
+    );
+  }
+  const describe =
+    dispatchScopes === null ? "this machine's device login" : "this Dispatch sign-in";
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   // The public half as every proof of the login embeds it: `kty`, `crv`, `x` and `y` alone.
   const jwk = loginDpopKey(privateKey).publicJwk;
@@ -395,8 +444,15 @@ export async function startDeviceLogin(options: {
     jti: randomUUID(),
     iat,
     exp: iat + REQUEST_OBJECT_LIFETIME_SECONDS,
-    authorization_details: [{ type: LAUNCHER_CREDENTIAL_DETAIL, identifier: options.host }],
+    authorization_details: [
+      {
+        type: LAUNCHER_CREDENTIAL_DETAIL,
+        identifier: options.host,
+        ...(dispatchScopes === null ? {} : { actions: dispatchScopes }),
+      },
+    ],
     login_hint: person,
+    ...(options.reason === undefined ? {} : { reason: options.reason }),
   };
   const request = await new CompactSign(new TextEncoder().encode(JSON.stringify(claims)))
     .setProtectedHeader({ alg: "ES256", typ: REQUEST_OBJECT_TYPE, jwk })
@@ -405,12 +461,24 @@ export async function startDeviceLogin(options: {
   let answered: DeviceAuthorizationResponse;
   try {
     answered = await initiateDeviceAuthorization(config, {
-      scope: MACHINE_LOGIN_SCOPE,
+      scope: dispatchScopes === null ? MACHINE_LOGIN_SCOPE : DISPATCH_LOGIN_SCOPE,
       dpop_jkt: thumbprint,
       request,
     });
   } catch (error) {
-    throw brokerRefusal("ask for a code for", "this machine's device login", endpoint, error);
+    const refusal = brokerRefusal("ask for a code for", describe, endpoint, error);
+    if (
+      dispatchScopes !== null &&
+      refusal instanceof BrokerRefusedError &&
+      refusal.status === 400 &&
+      refusal.code === "invalid_scope" &&
+      (refusal.said === "" || refusal.said === REFUSAL_TEXT_WITHHELD)
+    ) {
+      throw new Error(
+        `the secrets broker refused ${describe}: HTTP 400 invalid_scope: ${NO_DISPATCH_SIGN_IN}`
+      );
+    }
+    throw refusal;
   }
   const intervalSeconds = Math.max(answered.interval ?? DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS);
   const lifetimeSeconds = Math.min(answered.expires_in, MOST_LIFETIME_SECONDS);
@@ -439,6 +507,8 @@ export async function startDeviceLogin(options: {
     intervalSeconds,
     deviceCode: holdSecret(answered.device_code, expiresAt),
     key: privateKey,
+    dispatchScopes,
+    describe,
   };
 }
 
@@ -509,7 +579,8 @@ function retryAfterMs(error: unknown): number {
  * where a person waits on this poll. They also read apart some answers no conforming broker gives,
  * where their libraries or their own checks differ; the one list of them is `pollLogin`'s doc
  * (`packages/envoy/internal/cipher/helper/broker.go`). Each refusal of the code or of a poll's
- * answer before an approval names {@link DEVICE_LOGIN_COMMAND}, and none writes a file; a
+ * answer before an approval names the command that asks for the same login again
+ * ({@link deviceLoginCommand}), and none writes a file; a
  * `started` a caller made is also refused with no such name: by that `TypeError`, by
  * `loginDpopKey` where its key is not P-256, and by `new URL` where its `brokerUrl` is no URL. An
  * approved login that cannot be kept is refused naming its credential, which the broker holds
@@ -517,6 +588,12 @@ function retryAfterMs(error: unknown): number {
  * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the lock
  * included. One kept whose lock is then not let go is answered as kept: the machine uses that
  * login, so it is not one to revoke.
+ *
+ * A refusal names the login as {@link DeviceAuthorization.describe} does. A Dispatch sign-in's
+ * answer must name the scope `dispatch` and some of the scopes it asked for, each once
+ * ({@link signInScopesOf}), since its person may tick fewer: one that does not is refused naming
+ * where to revoke the sign-in, which the broker may hold live, as a broker too old for sign-ins
+ * answers the approval of an earlier replica.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -545,6 +622,9 @@ export async function finishDeviceLogin(
     nonce: { value: "" },
   });
   const endpoint = started.brokerUrl + TOKEN_PATH;
+  // The command that asks for the same login again, and where its person revokes it.
+  const again = deviceLoginCommand(started.dispatchScopes);
+  const revoke = `Machine logins on ${started.verificationUri}`;
   // The code's lapse, naming the polls in a row just before it that the broker did not answer or
   // answered with an outage: why nobody's approval reached this machine, where there were any.
   const expired = (outages: number): Error => {
@@ -553,7 +633,7 @@ export async function finishDeviceLogin(
         ? ""
         : `; the broker was unreachable or busy for the last ${outages === 1 ? "poll" : `${outages} polls`}`;
     return new Error(
-      `the code ${started.userCode} expired before ${started.person} approved this machine${unreached}; ask again with: ${DEVICE_LOGIN_COMMAND}`
+      `the code ${started.userCode} expired before ${started.person} approved ${started.describe}${unreached}; ask again with: ${again}`
     );
   };
   let interval = started.intervalSeconds;
@@ -579,7 +659,7 @@ export async function finishDeviceLogin(
           ? `would lapse here before ${first}, as this machine polls a device code for an hour at most`
           : `lapses in ${seconds(leftAtStart / 1000)} s, no later than ${first}`;
     throw new Error(
-      `the code ${started.userCode} ${lapse}, so no poll could reach it; ask again with: ${DEVICE_LOGIN_COMMAND}`
+      `the code ${started.userCode} ${lapse}, so no poll could reach it; ask again with: ${again}`
     );
   }
   const endsAt = clock() + leftAtStart;
@@ -603,7 +683,7 @@ export async function finishDeviceLogin(
       const code = refusalCode(error);
       if (code === "access_denied") {
         throw new Error(
-          `this machine's device login was denied, not approved as ${started.person}; ask again with: ${DEVICE_LOGIN_COMMAND}`
+          `${started.describe} was denied, not approved as ${started.person}; ask again with: ${again}`
         );
       }
       if (code === "expired_token" || code === "invalid_grant") throw expired(0);
@@ -613,20 +693,26 @@ export async function finishDeviceLogin(
       if (code === "slow_down" || unanswered) interval += 5;
       const pollAgain = code === "authorization_pending" || code === "slow_down" || unanswered;
       if (!pollAgain) {
-        const refusal = brokerRefusal(
-          "poll the code of",
-          "this machine's device login",
-          endpoint,
-          error
-        );
-        throw new Error(`${refusal.message}; ask again with: ${DEVICE_LOGIN_COMMAND}`);
+        const refusal = brokerRefusal("poll the code of", started.describe, endpoint, error);
+        throw new Error(`${refusal.message}; ask again with: ${again}`);
       }
       const asked = unanswered ? retryAfterMs(error) : 0;
       // The wait before the next poll is capped at the code's lifetime where it is waited.
       waitMs = Math.max(waitMillisecondsOf(interval), asked);
       continue;
     }
-    const login = loginOf(started.key, started.brokerUrl, answered, Date.now());
+    const issued = loginOf(started.key, started.brokerUrl, answered, Date.now());
+    let dispatchScopes: readonly DispatchSignInScope[] | null = null;
+    if (started.dispatchScopes !== null) {
+      const approved = signInScopesOf(answered, started.dispatchScopes, false);
+      if (approved === undefined) {
+        throw new BrokerTradeFailedError(
+          `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered ${started.describe} with no scope dispatch, or with dispatch_scopes that are not distinct scopes it asked for, as a broker too old for Dispatch sign-ins does. It may hold the sign-in live as launcher credential ${issued.credentialId}; revoke it in ${revoke}, then log in again with: ${again}`
+        );
+      }
+      dispatchScopes = approved;
+    }
+    const login: DeviceLogin = { ...issued, dispatchScopes };
     let replaced = "";
     // Whether the save returned: an error after it is one of letting go of the lock.
     let saved = false;
@@ -644,11 +730,10 @@ export async function finishDeviceLogin(
         const lockLeft = `this process could not let go of the lock beside ${DEVICE_LOGIN_FILE_NAMED} (${messageOf(error)}); another process takes it over once it is ${DEVICE_LOGIN_STALE_LOCK_MS / 1000} s old`;
         return { ...login, replaced, lockLeft };
       }
-      const revoke = `Machine logins on ${started.verificationUri}`;
       throw new Error(
         error instanceof KeptCopyError
-          ? `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it in its place: ${messageOf(error)}, which then needs no revoke. Where the copy is not used, delete it, since it holds the login's key and refresh token, and revoke the credential in ${revoke}: it stays live until it lapses or is revoked`
-          : `${started.person} approved this machine's launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: revoke it in ${revoke}, and log in again with: ${DEVICE_LOGIN_COMMAND}`,
+          ? `${started.person} approved ${started.describe}, launcher credential ${login.credentialId}, but this machine could not keep it in its place: ${messageOf(error)}, which then needs no revoke. Where the copy is not used, delete it, since it holds the login's key and refresh token, and revoke the credential in ${revoke}: it stays live until it lapses or is revoked`
+          : `${started.person} approved ${started.describe}, launcher credential ${login.credentialId}, but this machine could not keep it: ${messageOf(error)}. The credential stays live until it lapses or is revoked: revoke it in ${revoke}, and log in again with: ${again}`,
         { cause: error }
       );
     }
@@ -726,7 +811,14 @@ export class DeviceLoginIdentity implements TokenSource {
    * spend the refresh token this one is about to — while `trade` presents it. Under the lock it
    * reads the file again, since another process may have refreshed since, and refuses a login made
    * at another broker than this identity's, or a login of another key than the one this process
-   * proves (a `dispatch login --device` since it started), each naming what cures it.
+   * proves (a `dispatch login --device` since it started), each naming what cures it. The second
+   * is {@link DeviceLoginReplacedError}, final, since no later read finds this process's key
+   * again: the token client trades it no more. Its one cure is a new session, under a new session
+   * id: the broker refuses a session name to any principal but the one that wrote under it in the
+   * last 90 days (`invalid_grant`), each Dispatch sign-in is a principal of its own, and so is
+   * each person's machine login. The file keeps no person (`device-login-file.ts`), so this
+   * process cannot tell whether a machine login replaced its own person's, the one case where
+   * this session started again would trade the new one.
    *
    * An access token with less left than {@link leastAccessLifeMs} answers is refreshed first
    * ({@link refreshDeviceLogin}), and the login it answers is kept before `trade` runs. That is a
@@ -745,7 +837,8 @@ export class DeviceLoginIdentity implements TokenSource {
    * A kept access token the broker refuses as one it no longer honours
    * (`BrokerRefusedError.subjectNotHonoured`) is refreshed at once and traded once more: a revoke
    * ends a login before its token's expiry, and only the refresh tells that, as
-   * `DeviceLoginEndedError`, which names {@link DEVICE_LOGIN_COMMAND}. A refresh is made only while
+   * `DeviceLoginEndedError`, which names the command that makes the same login again
+   * ({@link deviceLoginCommand}). A refresh is made only while
    * the lock is still this process's (`refreshDeviceLogin`'s `held`).
    *
    * A trade made under a lock another caller took from this one while it was stopped may be
@@ -769,13 +862,11 @@ export class DeviceLoginIdentity implements TokenSource {
         let login = await readDeviceLogin(this.#path);
         if (withoutTrailingSlashes(login.broker) !== this.#brokerUrl) {
           throw new Error(
-            `${DEVICE_LOGIN_FILE_NAMED} was made at another secrets broker than ${BROKER_SETTING} names; log this machine in at this one with: ${DEVICE_LOGIN_COMMAND}`
+            `${DEVICE_LOGIN_FILE_NAMED} was made at another secrets broker than ${BROKER_SETTING} names; log in at this one again with: ${deviceLoginCommand(login.dispatchScopes)}`
           );
         }
         if ((await calculateJwkThumbprint(loginDpopKey(login.key).publicJwk)) !== thumbprint) {
-          throw new Error(
-            `${DEVICE_LOGIN_FILE_NAMED} holds another login than the one this process started with, since ${DEVICE_LOGIN_COMMAND} ran again; start this session again to trade the new one`
-          );
+          throw new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND);
         }
         const refresh = (): Promise<DeviceLogin> =>
           refreshDeviceLogin(this.#path, login, { describe: this.describe(), held });
@@ -827,6 +918,20 @@ export class DeviceLoginIdentity implements TokenSource {
  * the credential revoked or run out, or the refresh token already rotated away — is
  * {@link DeviceLoginEndedError}, final. Any other refusal, an `invalid_grant` at a 403 or a 429
  * among them, is worded as every broker refusal is (`brokerRefusal`).
+ *
+ * A Dispatch sign-in's refresh keeps its approved scopes: the answer must name the scope
+ * `dispatch` and the very scopes the file holds ({@link signInScopesOf}), else it is refused
+ * ({@link BrokerTradeFailedError}) naming where to revoke the sign-in, which stays live, and the
+ * file is left as it was. A machine login's refresh is unchanged. Each refusal that a new login
+ * cures names the command that makes the same kind of login again ({@link deviceLoginCommand}).
+ *
+ * A file that names no `dispatch_scopes` and whose refresh is answered under the scope `dispatch`
+ * is a sign-in whose scopes an earlier build's refresh dropped from the file (its `saveDeviceLogin`
+ * wrote only the members it knew, and both plugins' clients keep one file): the answer's scopes
+ * are kept and saved, checked as a first login's are, so the login reads as the sign-in it is
+ * rather than as a machine login, whose command its holder must never be given
+ * (`token-errors.ts`). An answer under that scope naming no scopes a sign-in may hold is refused
+ * as the branch above refuses one, since this build can hold no sign-in of other scopes.
  */
 export async function refreshDeviceLogin(
   path: string,
@@ -846,12 +951,33 @@ export async function refreshDeviceLogin(
         refresh_token: login.refreshToken,
       });
     } catch (error) {
-      if (endsGrant(error)) throw new DeviceLoginEndedError(options.describe);
+      if (endsGrant(error)) {
+        throw new DeviceLoginEndedError(options.describe, deviceLoginCommand(login.dispatchScopes));
+      }
       if (sent === 0 && statusOf(error) === 0) continue;
       throw brokerRefusal("refresh", options.describe, endpoint, error);
     }
   }
-  const next = loginOf(login.key, login.broker, answered, Date.now());
+  const issued = loginOf(login.key, login.broker, answered, Date.now());
+  let dispatchScopes: readonly DispatchSignInScope[] | null = null;
+  if (login.dispatchScopes !== null) {
+    const kept = signInScopesOf(answered, login.dispatchScopes, true);
+    if (kept === undefined) {
+      throw new BrokerTradeFailedError(
+        `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered the refresh of a Dispatch sign-in without the scope dispatch and the scopes its person approved (${login.dispatchScopes.join(", ") || "none"}). The sign-in stays live; revoke it in Dispatch's Machine logins page, then log in again with: ${deviceLoginCommand(login.dispatchScopes)}`
+      );
+    }
+    dispatchScopes = kept;
+  } else if (answered.scope === DISPATCH_LOGIN_SCOPE) {
+    const kept = signInScopesOf(answered, DISPATCH_SIGN_IN_SCOPES, false);
+    if (kept === undefined) {
+      throw new BrokerTradeFailedError(
+        `the secrets broker at ${urlForText(endpoint, BROKER_URL_SETTING)} answered the refresh under the scope dispatch, so this is a Dispatch sign-in, with dispatch_scopes that are not distinct scopes a sign-in may hold, and ${DEVICE_LOGIN_FILE_NAMED} names none its person approved. The sign-in stays live; revoke it in Dispatch's Machine logins page, then log in again with: ${DEVICE_LOGIN_COMMAND} --scope <the scopes to approve>`
+      );
+    }
+    dispatchScopes = kept;
+  }
+  const next: DeviceLogin = { ...issued, dispatchScopes };
   await saveDeviceLogin(path, next, options.held);
   return next;
 }

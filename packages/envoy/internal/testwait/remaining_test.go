@@ -36,13 +36,14 @@ func TestRemainingIsTheDeadlineLessTheSpare(t *testing.T) {
 // so: how long the binary ran its tests under which -timeout, and that what ran before used it up.
 // It does not call the run misconfigured or ask for a larger -timeout, since the -timeout was
 // longer than the wait's spare. The child's -timeout is what this test's own deadline leaves less
-// the margin (childTimeout), and its wait asks for all but a second of it, so the wait finds the
-// deadline spent a second after the child began its tests, whenever that is. The child ran under
-// -timeout 60s with a spare of 59 s before, so a child stalled 59 s after its wait failed ran into
-// its alarm on a loaded machine (INFRA-3904).
+// the margin (childTimeout), and its wait asks for all but a millisecond of it, so the wait finds
+// the deadline spent as soon as the child begins its tests, whenever that is, and a deadline that
+// only grows nearer stays spent. The child ran under -timeout 60s with a spare of 59 s before, so
+// a child stalled 59 s after its wait failed ran into its alarm on a loaded machine (INFRA-3904);
+// it then asked for all but a second, which held the row a second for no fact it reads.
 func TestASpentDeadlineNamesWhatRanBeforeTheWait(t *testing.T) {
 	timeout := childTimeout(t)
-	spare := timeout - time.Second
+	spare := timeout - time.Millisecond
 	failure := spentChild(t, timeout, spare)
 	for _, part := range []string{
 		"testwait: TestSpentDeadlineChild/waits: the test binary's deadline leaves ",
@@ -126,9 +127,9 @@ func spentChild(t *testing.T, timeout, spare time.Duration) string {
 
 // TestSpentDeadlineChild is the child of the spent-deadline rows above. Its first row runs until
 // the binary's deadline is the spare its parent names (spareEnv) away or nearer, which with a spare
-// of all but a second of its -timeout is about a second and with a spare longer than its -timeout is
-// at once: a fact of the deadline, not a span. Its second row then asks Remaining for that spare and
-// fails. It runs only when a parent re-executes this binary.
+// of all but a millisecond of its -timeout, or one longer than its -timeout, is at once: a fact of
+// the deadline, not a span. Its second row then asks Remaining for that spare and fails. It runs
+// only when a parent re-executes this binary.
 func TestSpentDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of the spent-deadline rows")

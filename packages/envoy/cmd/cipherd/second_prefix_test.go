@@ -1,9 +1,9 @@
 // cmd/cipherd/second_prefix_test.go
 // Rows against REAL compiled brokers on one Postgres, behind one public URL as the pods of one
-// Deployment are, while a deployment moves its Secret Manager store to another prefix: grants made
-// by a broker on the old prefix are released, reused and connected through a broker on the new one
-// whose BROKER_SECRETS_SECOND_PREFIX is the old one, which reads each value from the new store
-// alone; with the setting empty, the same grants end, as they did before it.
+// Deployment are, while a deployment moves its store to another prefix: grants made by a broker
+// on the old prefix are released, reused and connected through a broker on the new one whose
+// BROKER_SECRETS_SECOND_PREFIX is the old one, which reads each value from the new store alone;
+// with the setting empty, the same grants end, as they did before it.
 package main
 
 import (
@@ -30,16 +30,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// The two Secret Manager prefixes a move goes between, in one placeholder project, and the Cloud
-// KMS key every secret of both is on.
+// The two prefixes a move goes between, of Secret Manager's shape, in one placeholder project.
 const (
-	moveOldPrefix  = "projects/000000000000/secrets/move-old-"
-	moveNewPrefix  = "projects/000000000000/secrets/move-new-"
-	moveKMSKeyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	moveOldPrefix = "projects/000000000000/secrets/move-old-"
+	moveNewPrefix = "projects/000000000000/secrets/move-new-"
 )
 
 // The rows' service, its accounts, the pod audience their brokers verify, the host the profile's
@@ -79,14 +78,19 @@ const (
 // MOVE_ONLY_OLD, which its store holds under the old prefix alone, answers it not served, an ask
 // for it is refused UNKNOWN_SECRET, GET /v1/settings names the configured prefix alone, and a new
 // request freezes a source under the configured prefix. It changes no request_secrets row's name or
-// source. Every source a row freezes is a Secret Manager resource name, which the fake secrets
-// file answers under gcp-secret-manager as Secret Manager does.
+// source. The brokers run on the memory store, the development store, which reads a second prefix
+// so that this move can be rehearsed: every source a row freezes is a memory source,
+// memory:<name> (memory.Source), whose name opens with the prefix behind the store's own lead, as
+// a Secret Manager source is the resource name the prefix opens; the broker hands the rule both
+// prefixes in that form (secretstore.Config.SourcePrefixes).
+// TestSourceRuleOnSecretManagerSources, in internal/cipher/requests, holds the rule's
+// answers on Secret Manager's own names.
 //
 // The named reverts: compare a frozen source with the policy's by string alone, and step 1's
 // second broker ends both grants; release the frozen source, and its releases are refused
 // SECRET_NOT_IN_STORE; count a source under any prefix with the same remainder, and step 2's
-// grants go on; and a fake secrets file that answers local ARNs fails each step's first read of
-// the frozen sources.
+// grants go on; and hand the rule the prefixes as configured, without the store's lead, and step
+// 1's second broker ends both grants, since a memory source opens with memory:.
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestSecondPrefixCarriesGrantsAcrossAStoreMove(t *testing.T) {
@@ -154,7 +158,7 @@ func newStoreMove(t *testing.T, binary, databaseURL string) *storeMove {
 // store it read.
 func moveValue(prefix string) string { return "move-token-under-" + prefix }
 
-// moveSecrets writes a fake secrets file of the step's own holding MOVE_TOKEN and MOVE_APP under
+// moveSecrets writes a memory secrets file of the step's own holding MOVE_TOKEN and MOVE_APP under
 // prefix, and each of extra, one entry's JSON, and answers its path.
 func (m *storeMove) moveSecrets(prefix string, extra ...string) string {
 	m.t.Helper()
@@ -164,37 +168,35 @@ func (m *storeMove) moveSecrets(prefix string, extra ...string) string {
 	}
 	entries := append([]string{
 		moveStored(prefix, "move-token", moveValue(prefix)),
-		`{"name": "` + prefix + `move-app", "kms_key_id": "` + moveKMSKeyName + `",
+		`{"name": "` + prefix + `move-app",
 		 "tags": {"owner": "` + ada + `", "tier": "human", "` + policy.TagType + `": "` + policy.TypeGitHubApp + `", "` + policy.TagGitHubOwners + `": "acme-org"},
 		 "value": ` + string(appValue) + `}`,
 	}, extra...)
-	path := filepath.Join(m.t.TempDir(), "fake-secrets.json")
+	path := filepath.Join(m.t.TempDir(), "memory-secrets.json")
 	writeWhole(m.t, path, `{"secrets": [`+strings.Join(entries, ",\n")+`]}`)
 	return path
 }
 
-// moveStored is the fake store's entry of the service's agent-tier stored secret slug under
+// moveStored is the memory store's entry of the service's agent-tier stored secret slug under
 // prefix, holding value.
 func moveStored(prefix, slug, value string) string {
-	return `{"name": "` + prefix + slug + `", "kms_key_id": "` + moveKMSKeyName + `",
+	return `{"name": "` + prefix + slug + `",
 		 "tags": {"owner": "` + moveService + `", "tier": "agent"}, "value": "` + value + `"}`
 }
 
-// start starts a broker of the step's on its database and public URL, on the Secret Manager
-// store under prefix with second as BROKER_SECRETS_SECOND_PREFIX ("" for none), reading the fake
-// secrets file secretsFile.
+// start starts a broker of the step's on its database and public URL, on the memory store under
+// prefix with second as BROKER_SECRETS_SECOND_PREFIX ("" for none), reading the memory secrets
+// file secretsFile.
 func (m *storeMove) start(prefix, second, secretsFile string) *brokerProcess {
 	m.t.Helper()
 	broker := startBroker(m.t, brokerOptions{Binary: m.binary, Env: []string{
 		"BROKER_DATABASE_URL=" + m.databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=" + m.front.URL,
-		"BROKER_FAKE_SECRETS_FILE=" + secretsFile,
-		"BROKER_SECRETS_STORE=gcp-secret-manager",
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + secretsFile,
 		"BROKER_SECRETS_PREFIX=" + prefix,
 		"BROKER_SECRETS_SECOND_PREFIX=" + second,
-		"BROKER_SECRETS_KMS_KEY_ARN=",
-		"BROKER_SECRETS_KMS_KEY_NAME=" + moveKMSKeyName,
 		"BROKER_K8S_OIDC_ISSUER=" + m.issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + movePodAudience,
 		"BROKER_SERVICE_LOGINS=" + moveService + "=" + moveLoginAccount,
@@ -247,11 +249,11 @@ func (m *storeMove) move(from, to, second string, carries bool) {
 	m.airlockRelease(pod, appGrant)
 	before := m.readRows()
 	for key, want := range map[string]string{
-		token.RequestID + " " + moveToken:   from + "move-token",
-		asked.RequestID + " " + moveAppRead: policy.TypeSource(policy.TypeGitHubApp, from+"move-app"),
+		token.RequestID + " " + moveToken:   memory.Source(from + "move-token"),
+		asked.RequestID + " " + moveAppRead: policy.TypeSource(policy.TypeGitHubApp, memory.Source(from+"move-app")),
 	} {
 		if got := before.sources[key]; got != want {
-			t.Fatalf("the request_secrets row %s froze %q; want %q, a Secret Manager resource name under %s", key, got, want, from)
+			t.Fatalf("the request_secrets row %s froze %q; want %q, the memory store's source under %s", key, got, want, from)
 		}
 	}
 	for _, grant := range []string{tokenGrant, appGrant} {
@@ -350,7 +352,7 @@ func (m *storeMove) requireNothingElseOf(pod podclient.Pod, old, configured stri
 	if fresh.State != "granted" {
 		t.Fatalf("a new request for %s = %+v; want granted at once", moveFresh, fresh)
 	}
-	if got, want := m.readRows().sources[fresh.RequestID+" "+moveFresh], configured+"move-fresh"; got != want {
+	if got, want := m.readRows().sources[fresh.RequestID+" "+moveFresh], memory.Source(configured+"move-fresh"); got != want {
 		t.Fatalf("the new request for %s froze %q; want %q, under the configured prefix", moveFresh, got, want)
 	}
 }

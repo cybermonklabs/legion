@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -169,7 +170,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 	var running string
 	if err := holder.QueryRow(context.Background(), `
 		select query from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 		order by query_start limit 1
 	`).Scan(&running); err != nil {
 		t.Fatalf("read the statement a waiting pass is running: %v", err)
@@ -569,7 +570,7 @@ var indexPasses = map[string]string{
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
 	"docs/ask_blocks.go#createAskBlock":          "the ask block the settlement opens and the document that holds it",
-	"api/artifacts.go#queueNewArtifact":          "the document the upload creates, the node the store holds at its address, and the event the upload appends",
+	"docs/new_document.go#QueueNewArtifact":      "the document the write creates, the node the store holds at its address, and the event its caller appends",
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
