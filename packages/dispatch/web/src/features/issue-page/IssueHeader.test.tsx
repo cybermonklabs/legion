@@ -3757,7 +3757,7 @@ test("with 20 labels the line draws no chip it hides and the count names every c
 });
 
 /** Sends the box's size as a browser would in a ResizeObserver entry. */
-function installLabelResizeObserver() {
+function installLabelResizeObserver(reportFreshInFrame = false) {
   const original = globalThis.ResizeObserver;
   const live = new Set<ObserverStub>();
 
@@ -3781,26 +3781,57 @@ function installLabelResizeObserver() {
     }
   }
 
+  function depth(target: Element): number {
+    let level = 0;
+    for (let parent = target.parentElement; parent !== null; parent = parent.parentElement) {
+      level += 1;
+    }
+    return level;
+  }
+
+  function entryFor(target: Element): ResizeObserverEntry {
+    const contentRect = target.getBoundingClientRect();
+    const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }];
+    return {
+      target,
+      borderBoxSize: size,
+      contentBoxSize: size,
+      devicePixelContentBoxSize: [],
+      contentRect,
+    };
+  }
+
   globalThis.ResizeObserver = ObserverStub;
   return {
     newlyObserved(target: Element) {
       return [...live].some((observer) => observer.targets.get(target) === true);
     },
     resize(target: Element) {
-      const contentRect = target.getBoundingClientRect();
-      const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }];
-      const entry: ResizeObserverEntry = {
-        target,
-        borderBoxSize: size,
-        contentBoxSize: size,
-        devicePixelContentBoxSize: [],
-        contentRect,
-      };
+      const root = document.documentElement;
+      const first = new Set([target]);
+      if (reportFreshInFrame && [...live].some((observer) => observer.targets.get(root) === true)) {
+        first.add(root);
+      }
       act(() => {
-        for (const observer of [...live]) {
-          if (!observer.targets.has(target)) continue;
-          observer.targets.set(target, false);
-          observer.callback([entry], observer);
+        let targets = first;
+        while (targets.size > 0) {
+          const entries = [...targets].map(entryFor);
+          for (const observer of [...live]) {
+            const observed = entries.filter((entry) => observer.targets.has(entry.target));
+            if (observed.length === 0) continue;
+            for (const entry of observed) observer.targets.set(entry.target, false);
+            observer.callback(observed, observer);
+          }
+          if (!reportFreshInFrame) break;
+          // The browser reports fresh observations of deeper targets in this frame's next
+          // gather round. A newly observed root waits for the next frame.
+          const shallowest = Math.min(...entries.map((entry) => depth(entry.target)));
+          targets = new Set<Element>();
+          for (const observer of live) {
+            for (const [element, fresh] of observer.targets) {
+              if (fresh && depth(element) > shallowest) targets.add(element);
+            }
+          }
         }
       });
     },
@@ -3816,7 +3847,168 @@ function labelMeasureDetails(): unknown[] {
     .map((entry) => (entry as PerformanceMeasure).detail);
 }
 
-test("a box that narrows in the frame of a reading draws no chip it hides, and its count names every chip left out", async () => {
+interface LabelGridLine extends DrawnLabels {
+  readonly place: "none" | "below" | "beside";
+  readonly boxRow: number;
+  readonly boxInvisible: boolean;
+  readonly countInvisible: boolean;
+}
+
+function labelGridLine(room: number, box: HTMLElement): LabelGridLine {
+  const drawn = labelsDrawn(room);
+  const laid = labelsLaidOut(room);
+  const count = screen.queryByTestId("issue-labels-left");
+  const outer = laid.get(box) ?? new DOMRect();
+  const counter = count === null ? undefined : laid.get(count);
+  const place = counter === undefined ? "none" : counter.top > outer.bottom ? "below" : "beside";
+  return {
+    ...drawn,
+    place,
+    boxRow: outer.top > LINE.row ? 1 : 0,
+    boxInvisible: box.classList.contains("invisible"),
+    countInvisible: count?.classList.contains("invisible") === true,
+  };
+}
+
+async function driveLabelGrid(
+  labels: readonly string[],
+  before: number,
+  after: number,
+  ownMove: boolean,
+  measureCount: () => number
+) {
+  performance.clearMeasures(LABELS_MEASURE);
+  const sizes = installLabelResizeObserver(true);
+  const room = { width: before };
+  const layout = layOutLabels(room);
+  const nextIssue = { ...issue, labels: [...labels] };
+  const restore = stubHeader(nextIssue);
+  const client = headerClient();
+  client.setQueryData(["issue", "CORE-1"], nextIssue);
+  const view = renderHeader("/issues/CORE-1", client);
+  try {
+    const box = view.getByTestId("issue-header-labels");
+    const line = () => labelGridLine(room.width, box);
+    const frame = async () => {
+      await act(nextFrame);
+      sizes.resize(box);
+    };
+    sizes.resize(box);
+    const read = line();
+    const afterReading = measureCount();
+    if (ownMove) sizes.resize(box);
+
+    room.width = after;
+    // Inspect the old fit in the new room before the observer can hide or replace it.
+    const atNewWidth = line();
+    const breaksRule = atNewWidth.hidden.length > 0 || atNewWidth.place !== read.place;
+    if (before !== after) sizes.resize(box);
+    const changed = line();
+    await frame();
+    const between = line();
+    await frame();
+    const settled = line();
+    const settledAt = measureCount();
+    await frame();
+    await frame();
+    return {
+      read,
+      changed,
+      between,
+      settled,
+      breaksRule,
+      afterReading,
+      settledAt,
+      final: measureCount(),
+    };
+  } finally {
+    view.unmount();
+    view.container.remove();
+    client.clear();
+    restore();
+    layout.restore();
+    sizes.restore();
+    performance.clearMeasures(LABELS_MEASURE);
+  }
+}
+
+function labelGridBrief(line: LabelGridLine): string {
+  const cut = line.hidden.length > 0 ? ` (${line.hidden.length} cut)` : "";
+  const visibility = `${line.boxInvisible ? ", box hidden" : ""}${line.countInvisible ? ", count hidden" : ""}`;
+  return `${line.shown.length} shown${cut}, count ${line.count ?? "none"} ${line.place}, box row ${line.boxRow}${visibility}`;
+}
+
+async function expectLabelGrid(measureCount: () => number) {
+  const sets = { one: ["api"], three: ["api", "web", "docs"], twenty: TWENTY_LABELS };
+  const rooms = [30, 45, 60, 75, 90, 115, 150, 200, 260, 330, 430, 480, 600];
+  const countWords = (left: number) =>
+    left === 0 ? null : `+${left} label${left === 1 ? "" : "s"}`;
+  const emptyBelow = (line: LabelGridLine) => line.shown.length === 0 && line.place === "below";
+  const fit = ({ shown, count, place, boxRow }: LabelGridLine) =>
+    JSON.stringify([shown, count, place, boxRow]);
+  const failures: string[] = [];
+  const kinds = new Map<string, number>();
+  let states = 0;
+  for (const [name, labels] of Object.entries(sets)) {
+    const freshFits = new Map<number, LabelGridLine>();
+    for (const room of rooms) {
+      freshFits.set(room, (await driveLabelGrid(labels, room, room, true, measureCount)).settled);
+    }
+    for (const before of rooms) {
+      for (const [after, fresh] of freshFits) {
+        if (before === after) continue;
+        for (const ownMove of [true, false]) {
+          states += 1;
+          const { read, changed, between, settled, breaksRule, afterReading, settledAt, final } =
+            await driveLabelGrid(labels, before, after, ownMove, measureCount);
+          const fail = (kind: string) => {
+            kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+            const variant = ownMove ? "" : " (no own-move notification)";
+            failures.push(
+              `${kind} | ${name} ${before}->${after}${variant} | read ${labelGridBrief(read)}; changed ${labelGridBrief(changed)}; settled ${labelGridBrief(settled)}; fresh ${labelGridBrief(fresh)}`
+            );
+          };
+          for (const [line, phase] of [
+            [changed, "before paint"],
+            [between, "in the next frame"],
+            [settled, "once settled"],
+          ] as const) {
+            if (!line.boxInvisible && line.hidden.length > 0) {
+              fail(phase === "once settled" ? "settled cut" : `cut ${phase}`);
+            }
+            if (!line.countInvisible) {
+              const visible = line.boxInvisible ? 0 : line.shown.length - line.hidden.length;
+              if (line.count !== countWords(labels.length - visible)) fail(`count wrong ${phase}`);
+            }
+            if (line.boxInvisible !== line.countInvisible) fail(`partly hidden ${phase}`);
+          }
+          if (breaksRule && !changed.boxInvisible) fail("visible while a reading is owed");
+          if (settled.boxInvisible) fail("still hidden once settled");
+          if (emptyBelow(settled) && !emptyBelow(fresh)) {
+            fail(
+              changed.shown.length < read.shown.length
+                ? "empty box, count below"
+                : "empty box, count below, no chip taken out"
+            );
+          }
+          if (breaksRule && fit(settled) !== fit(fresh)) fail("differs from a fresh reading");
+          if (breaksRule && settledAt === afterReading) fail("missing reading after a broken fit");
+          if (final - afterReading > 1) fail("more than one reading after the fit's own");
+          if (final !== settledAt) fail("a reading after the line settled");
+        }
+      }
+    }
+  }
+  console.log(
+    `GRID ${states} states, ${failures.length} failures: ${JSON.stringify(Object.fromEntries(kinds))}`
+  );
+  expect(
+    failures.length,
+    `${failures.length} grid failures\n${failures.slice(0, 20).join("\n")}`
+  ).toBe(0);
+}
+
+async function expectLabelsFitAfterInFrameChange() {
   // The older code used by the controls did not tag its measures. Those were all readings.
   const measureCount = () => labelMeasureDetails().filter((detail) => detail !== "check").length;
   performance.clearMeasures(LABELS_MEASURE);
@@ -4012,7 +4204,14 @@ test("a box that narrows in the frame of a reading draws no chip it hides, and i
     sizes.restore();
     performance.clearMeasures(LABELS_MEASURE);
   }
-});
+  await expectLabelGrid(measureCount);
+}
+
+test(
+  "a box that narrows in the frame of a reading draws no chip it hides, and its count names every chip left out",
+  expectLabelsFitAfterInFrameChange,
+  180_000
+);
 
 // Each full reading has one measure and reads each chip once. A notification in that frame can
 // check the count's place in its own measure without taking another full reading.
