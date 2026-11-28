@@ -569,7 +569,7 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	msgID := first
 	for {
 		published := cfg.now()
-		ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return publish(ctx, subject, item, msgID) })
+		ack, err := publishPastInProcess(ctx, cfg.clk(), func() (bus.StoredAck, error) { return publish(ctx, subject, item, msgID) })
 		if err != nil {
 			return keptRoleCopy{}, fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err)
 		}

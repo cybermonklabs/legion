@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -230,7 +231,8 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
 // sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
 // so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
-// one way, as one forward, and none counts it a forward that failed.
+// one way, as one forward, and none counts it a forward that failed. The pause between those sends
+// is waited on the real clock (clock.Real), on which the forward's own window already runs.
 func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		deadline := time.Now().Add(timeout)
@@ -241,7 +243,7 @@ func startRoleForward(client *bus.Client) func(subject string, item contracts.En
 		return func() (bus.StoredAck, error) {
 			ctx, cancel := context.WithDeadline(context.Background(), deadline)
 			defer cancel()
-			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+			return publishPastInProcess(ctx, clock.Real(), func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
 					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {

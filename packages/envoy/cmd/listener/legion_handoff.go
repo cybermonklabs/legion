@@ -195,7 +195,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	}
 	subject := listenerwire.LegionHandoffSubject(agent.LegionProject, agent.SessionID)
 	msgID := "legion.handoff." + handoff.Envelope.DedupeKey + ":" + subject
-	ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	ack, err := publishPastInProcess(ctx, h.clk(), func() (bus.StoredAck, error) {
 		return h.client.PublishRetained(ctx, subject, data, msgID)
 	})
 	if err != nil {

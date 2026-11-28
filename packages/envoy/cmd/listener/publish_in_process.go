@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // inProcessPause is how long a publish waits before it is made again under a message id a
@@ -38,7 +39,8 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // send marked with a role and an agent subject's give-up (offerAgentDeliveryToLegion) hand off
 // through - and for a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a
 // resend that meets its own earlier attempt still being stored, as a hub failover leaves one, is
-// answered with that attempt's copy rather than as a bus that did not answer.
+// answered with that attempt's copy rather than as a bus that did not answer. The pause is waited
+// on clk, the caller's clock.
 //
 // The listener's other publishes under a message id do not take it, and the earlier publish the
 // refusal names stores the one copy all the same. The webhook routes (webhookRoutes:
@@ -64,7 +66,7 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // after such a send says so as the bus's own resend does: a duplicate comes back Resent, which may
 // name this call's own copy (bus.StoredAck.Resent), and a failure wraps bus.ErrUnacknowledged
 // (mayHaveStored), also when ctx's end replaces the last send's own error.
-func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, error)) (bus.StoredAck, error) {
+func publishPastInProcess(ctx context.Context, clk clock.Clock, publish func() (bus.StoredAck, error)) (bus.StoredAck, error) {
 	// refusal is the stream's last refusal of a send of this call as in process, and ownSend
 	// whether a send of this call went out unanswered (its error wraps bus.ErrUnacknowledged).
 	var refusal error
@@ -74,7 +76,7 @@ func publishPastInProcess(ctx context.Context, publish func() (bus.StoredAck, er
 		if errors.Is(err, bus.ErrDuplicateInProcess) {
 			refusal = err
 			ownSend = ownSend || mayHaveStored(err)
-			if err = waitUnlessDone(ctx, inProcessPause); err == nil {
+			if err = clk.Sleep(ctx, inProcessPause); err == nil {
 				continue
 			}
 		}

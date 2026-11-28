@@ -333,7 +333,8 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 // copy is a keep that kept it, under KeptMsgID each time, with its hour counted from the copy's
 // store time. A stream that refuses until the window has run out is a keep that failed, and the
 // lane holds nothing. No cluster gives the refusal on demand, so the keep is passed a publish that
-// answers it, which the keep takes in the stream's place.
+// answers it, which the keep takes in the stream's place. The pause is waited on the keep's clock
+// (cfg.clock), which the row that counts the pauses moves itself.
 func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 	t.Parallel()
 	const role = "kept-in-process"
@@ -345,25 +346,52 @@ func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
 		harness := newListenerDeliveryHarness(t)
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-in-process-stored")
 		var ids []string
+		refused := make(chan int, 2)
 		publish := func(ctx context.Context, subject string, envelope contracts.Envelope, msgID string) (bus.StoredAck, error) {
 			ids = append(ids, msgID)
 			if len(ids) <= 2 {
+				refused <- len(ids)
 				return bus.StoredAck{}, inProcess
 			}
 			return harness.client.PublishStoredAck(ctx, subject, envelope, msgID)
 		}
-		started := time.Now()
-		kept, err := storeKeptRoleCopy(testwait.Context(t), harness.config, role, item, publish)
-		elapsed := time.Since(started)
+		clk := clocktest.New(time.Now())
+		cfg := harness.config
+		cfg.clock = clk
+		type keepResult struct {
+			kept keptRoleCopy
+			err  error
+		}
+		done := make(chan keepResult, 1)
+		go func() {
+			kept, err := storeKeptRoleCopy(testwait.Context(t), cfg, role, item, publish)
+			done <- keepResult{kept: kept, err: err}
+		}()
+		// After each refusal the keep pauses inProcessPause on its clock before it publishes again:
+		// the pause is armed there, the keep publishes nothing more until the test moves the clock
+		// past it, and a keep that published again with no pause is seen doing so.
+		for refusal := 1; refusal <= 2; refusal++ {
+			testwait.Receive(t, fmt.Sprintf("refusal %d of the keep's publish as in process", refusal), refused)
+			at := clk.Now().Add(inProcessPause)
+			paused := testwait.Until(t, fmt.Sprintf("the keep to arm its pause of %s after refusal %d, or to publish again", inProcessPause, refusal), func() (bool, bool) {
+				if len(refused) > 0 || len(done) > 0 {
+					return false, true
+				}
+				return true, slices.Contains(clk.Armed(), at)
+			})
+			if !paused {
+				t.Fatalf("the keep published again after refusal %d with no pause of %s armed on its clock (armed: %v)", refusal, inProcessPause, clk.Armed())
+			}
+			clk.Advance(inProcessPause)
+		}
+		result := testwait.Receive(t, "the keep to end after its third publish", done)
+		kept, err := result.kept, result.err
 		if err != nil {
 			t.Fatalf("a keep whose first two publishes were refused as in process: %v; want it kept by the third", err)
 		}
 		msgID := bus.KeptMsgID(item.DedupeKey, role)
 		if !slices.Equal(ids, []string{msgID, msgID, msgID}) {
 			t.Fatalf("the keep published under %v, want %s three times: the in-process refusal is retried under the id it refused", ids, msgID)
-		}
-		if elapsed < 2*inProcessPause {
-			t.Fatalf("the keep took %s over two refusals, want at least two pauses of %s between its publishes", elapsed, inProcessPause)
 		}
 		stored, at, ok := readKeptRoleCopy(t, harness.client, role)
 		if !ok || stored.EventID != item.EventID || kept.item.EventID != item.EventID {

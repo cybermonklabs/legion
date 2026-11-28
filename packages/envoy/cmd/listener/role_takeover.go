@@ -904,7 +904,7 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	kept := item
 	kept.DedupeKey = takenFrameDedupeKey(key, seq)
 	msgID := takenFrameMsgID(key, role, seq)
-	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	if _, err := publishPastInProcess(ctx, cfg.clk(), func() (bus.StoredAck, error) {
 		return cfg.keepPublish(ctx, bus.KeptRoleSubject(role), kept, msgID)
 	}); err != nil {
 		return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
@@ -1003,7 +1003,7 @@ func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	var failed error
 	for attempt := range 2 {
 		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), roleForwardTimeout)
-		ack, err := publishPastInProcess(publishCtx, func() (bus.StoredAck, error) {
+		ack, err := publishPastInProcess(publishCtx, cfg.clk(), func() (bus.StoredAck, error) {
 			if faults.withdrawPublish != nil {
 				if err := faults.withdrawPublish(role); err != nil {
 					return bus.StoredAck{}, err

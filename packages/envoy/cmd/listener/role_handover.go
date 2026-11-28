@@ -471,7 +471,7 @@ func handOverDirectFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 		handed.EventID = handedOverEventID(previous, seq)
 	}
 	msgID := handedOverMsgID(successor, handed.EventID)
-	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	if _, err := publishPastInProcess(ctx, cfg.clk(), func() (bus.StoredAck, error) {
 		return cfg.keepPublish(ctx, handed.Topic, handed, msgID)
 	}); err != nil {
 		return fmt.Errorf("hand %s's message %s over to %s: %w", previous, handed.EventID, successor, err)
