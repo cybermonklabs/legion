@@ -159,7 +159,6 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	drift.report(t)
 	requireTypeNodeValuesAreTheirTuples(t, ctx, pool)
 	requireEveryBlockTypeCarriesTheFilesVersion(t, ctx, pool, file)
-	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
 	requireAPointerReadsItsTargetsTypeAtEachRead(t, ctx, pool)
@@ -845,7 +844,7 @@ func (d *schemaDrift) report(t *testing.T) {
 		what, versions, typeMigrationShape)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration written before
+// TestASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration written before
 // the store's backfill again, in order, over the store as they left it (openAtTheBackfill), and
 // holds every node row and every tuple to being the one the first run left, and each type node's
 // values to its tuples. A type migration written after the backfill runs once: it writes only
@@ -854,8 +853,13 @@ func (d *schemaDrift) report(t *testing.T) {
 // unchanged, and the runner applies each file once anyway. Only typeMigrations runs here, and a
 // later change adds no migration to it. The store is not the fully migrated one: over a store a
 // later type migration moved, the earlier ones run again would put back the version they set.
-func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context) {
-	t.Helper()
+//
+// This test takes the second-run check from TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt.
+// A parallel subtest would still hold that serial test open while the backfill template is built.
+// A parallel top-level test lets the template be built in the parallel phase.
+func TestASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
 	pool := openAtTheBackfill(t).Pool
 	before, beforeTuples := schemaRows(t, ctx, pool)
 	for _, migration := range typeMigrations {
