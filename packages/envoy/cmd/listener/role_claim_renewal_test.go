@@ -399,6 +399,8 @@ const reduceAllocsPerTopic = 3
 // parallel: it measures nothing and only waits. The run alone is not, because
 // testing.AllocsPerRun refuses to measure in a parallel test.
 func TestReducingTheLargestShapeInProductionAllocatesPerSubjectNotPerPair(t *testing.T) {
+	// Not parallel: its run alone counts allocations with testing.AllocsPerRun, which panics
+	// during a parallel test; only the run that starts it (alonetest.Run) calls t.Parallel.
 	if !alonetest.Child(reduceAllocsChildEnv) {
 		t.Parallel()
 		alonetest.Run(t, reduceAllocsChildEnv, 2)

@@ -7,6 +7,13 @@
 // wire, `envoySettings`' resolution and the real nats-server rows are nats-credential.test.ts's.
 
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { DEVICE_LOGIN_FILE_NAMED } from "@legion/cipher-client/device-login-file";
+import {
+  DEVICE_LOGIN_COMMAND,
+  DeviceLoginEndedError,
+  DeviceLoginReplacedError,
+  TradeRetryingError,
+} from "@legion/cipher-client/token-errors";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import type { Status } from "nats";
 import { brokerCredential } from "../broker-credential";
@@ -188,7 +195,7 @@ describe("keepNatsCredential", () => {
     await turn();
     expect(asked.length).toBe(1);
     expect(fake.reconnects.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a token that lives one second is renewed before it lapses", async () => {
     // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
@@ -210,7 +217,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a renewal that lands no new token is warned about, never naming the token", async () => {
     // The token client answers the token in hand through a transient exchange failure, so the
@@ -233,7 +240,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a closed connection ends the keeper, its status reader too", async () => {
     const broker = stubBroker(2);
@@ -253,7 +260,7 @@ describe("keepNatsCredential", () => {
     expect(asked).toEqual([]);
     expect(fake.reconnects).toEqual([]);
     expect(broker.state.minted.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a connection marked closed before closed() ends trades nothing at the renewal due", async () => {
     // nats.js marks a connection closed before its closed() promise settles: a renewal falling
@@ -277,7 +284,204 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
+
+  /** A keeper over a stand-in credential whose two-second token falls due for renewal at once,
+   *  and whose renewals each wait on `failed`, counted in `renewals()`; its warnings go to
+   *  `warnings`. With `outcomes`, each renewal in turn comes to the next of them instead, the last
+   *  one again once they run out: an error it throws, or the life in milliseconds of a token it
+   *  lands. */
+  function failingRenewal(outcomes?: readonly (Error | number)[]) {
+    let lapses = Date.now() + 2_000;
+    const failed = Promise.withResolvers<void>();
+    let renewals = 0;
+    const credential = standIn({
+      ready: async () => {},
+      renew: async () => {
+        renewals += 1;
+        if (outcomes === undefined) return await failed.promise;
+        const outcome = outcomes[Math.min(renewals, outcomes.length) - 1];
+        if (outcome instanceof Error) throw outcome;
+        if (outcome !== undefined) lapses = Date.now() + outcome;
+      },
+      authenticator: () => undefined,
+      expiresAt: () => new Date(lapses),
+      needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => "ses_stand_in",
+    });
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fakeConnection(() => {}).connection, credential, (text) =>
+      warnings.push(text)
+    );
+    return { failed, renewals: () => renewals, warnings, stop };
+  }
+
+  test("a renewal in flight when the keeper is stopped warns nothing when it fails, and arms no retry", async () => {
+    // pi-envoy's stop stops the keeper before its connection drains (`stopInboundKeeper`), and
+    // shows what the keeper warns in the stopping session's pane. A renewal already away when the
+    // keeper stops then fails, and the session is told nothing of it. The control row below is
+    // the same failure with the keeper running.
+    const keeper = failingRenewal();
+    // The renewal due before the two-second token lapses goes away, and then the keeper stops.
+    jest.advanceTimersByTime(2_000);
+    expect(keeper.renewals()).toBe(1);
+    keeper.stop();
+    keeper.failed.reject(new Error("the broker is unreachable"));
+    await turn();
+    // Nothing renews again, at the first retry's time nor a minute on.
+    jest.advanceTimersByTime(60_000);
+    await turn();
+    expect(keeper.warnings).toEqual([]);
+    expect(keeper.renewals()).toBe(1);
+  });
+
+  test("control: a renewal that fails while the keeper runs is warned of and renewed again at the retry", async () => {
+    const keeper = failingRenewal();
+    try {
+      jest.advanceTimersByTime(2_000);
+      expect(keeper.renewals()).toBe(1);
+      keeper.failed.reject(new Error("the broker is unreachable"));
+      await turn();
+      // The first retry comes two seconds after the failure.
+      jest.advanceTimersByTime(60_000);
+      await turn();
+      expect(keeper.warnings).toEqual([
+        expect.stringContaining("the NATS connection's broker token could not be renewed ("),
+      ]);
+      // A transient failure still promises the token a later renewal lands.
+      expect(keeper.warnings[0]).toEndWith(
+        "; it is tried again, and the connection reconnects once a token is live"
+      );
+      expect(keeper.renewals()).toBe(2);
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  // A transient failure's words change at every retry (its counts and its seconds), so its warning
+  // waits out the half hour whatever its words: a warner that compared them would warn at every
+  // retry through a broker outage, and pi-envoy shows each warning as a notice.
+  test("two transient failures with different words are warned of once in the half hour", async () => {
+    const keeper = failingRenewal([
+      new TradeRetryingError("trading again in 2 s (1 failed)"),
+      new TradeRetryingError("trading again in 4 s (2 failed)"),
+    ]);
+    try {
+      jest.advanceTimersByTime(2_000);
+      await turn();
+      jest.advanceTimersByTime(60_000);
+      await turn();
+      expect(keeper.renewals()).toBe(2);
+      expect(keeper.warnings).toHaveLength(1);
+      expect(keeper.warnings[0]).toContain("trading again in 2 s (1 failed)");
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  // A refusal no trade cures (`isFinalRefusal`) brings no token to this process: the token client
+  // answers every retry with it. Its warning names the cure and says no renewal cures it, never
+  // that the connection reconnects once a token is live. The retry schedule is kept, and a repeat
+  // of the same text is held back for the half hour however many retries meet it.
+  test("a renewal refused for good warns once that no renewal cures it, and keeps its schedule", async () => {
+    const keeper = failingRenewal();
+    try {
+      jest.advanceTimersByTime(2_000);
+      expect(keeper.renewals()).toBe(1);
+      keeper.failed.reject(
+        new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND)
+      );
+      await turn();
+      for (let minute = 0; minute < 3; minute += 1) {
+        jest.advanceTimersByTime(60_000);
+        await turn();
+      }
+      expect(keeper.warnings).toHaveLength(1);
+      expect(keeper.warnings[0]).toContain("start a new session to trade the new one");
+      expect(keeper.warnings[0]).toEndWith(
+        "; no renewal cures it, so once the token in hand lapses the NATS server refuses each redial of the connection while the refusal lasts"
+      );
+      expect(keeper.warnings[0]).not.toContain("reconnects once a token is live");
+      expect(keeper.renewals()).toBe(4);
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  // A transient failure warned of just before does not hold the refusal's cure back for the half
+  // hour: the refusal no trade cures is warned of on a cadence of its own.
+  test("a renewal refused for good right after a transient failure is warned of at once", async () => {
+    const keeper = failingRenewal([
+      new Error("the broker is unreachable"),
+      new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND),
+    ]);
+    try {
+      jest.advanceTimersByTime(2_000);
+      await turn();
+      jest.advanceTimersByTime(60_000);
+      await turn();
+      expect(keeper.renewals()).toBe(2);
+      expect(keeper.warnings).toHaveLength(2);
+      expect(keeper.warnings[0]).toEndWith("the connection reconnects once a token is live");
+      expect(keeper.warnings[1]).toEndWith("each redial of the connection while the refusal lasts");
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  // One cure can bring another: the person runs the command an ended device login names, which
+  // writes a new key, and this process, which still proves the key it started with, then refuses
+  // the login as replaced. That second cure is warned of at once, not held back for the half hour
+  // behind the command already run; a repeat of it is held back.
+  test("a refusal for good whose words differ from the last one warned is warned of at once", async () => {
+    const keeper = failingRenewal([
+      new DeviceLoginEndedError(
+        `this machine's device login (${DEVICE_LOGIN_FILE_NAMED})`,
+        DEVICE_LOGIN_COMMAND
+      ),
+      new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND),
+    ]);
+    try {
+      jest.advanceTimersByTime(2_000);
+      await turn();
+      for (let minute = 0; minute < 2; minute += 1) {
+        jest.advanceTimersByTime(60_000);
+        await turn();
+      }
+      expect(keeper.renewals()).toBe(3);
+      expect(keeper.warnings).toHaveLength(2);
+      expect(keeper.warnings[0]).toContain(
+        `it was revoked or ran out; run: ${DEVICE_LOGIN_COMMAND}`
+      );
+      expect(keeper.warnings[1]).toContain("start a new session to trade the new one");
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  // A renewal that lands ends the refusal: the same refusal coming back within the half hour, a
+  // Dispatch sign-in turned off and on again, say, is a new one and is warned of.
+  test("the same refusal for good after a renewal that landed is warned of again", async () => {
+    const replaced = new DeviceLoginReplacedError(DEVICE_LOGIN_FILE_NAMED, DEVICE_LOGIN_COMMAND);
+    const keeper = failingRenewal([replaced, 4_000, replaced]);
+    try {
+      jest.advanceTimersByTime(2_000);
+      await turn();
+      for (let minute = 0; minute < 3; minute += 1) {
+        jest.advanceTimersByTime(60_000);
+        await turn();
+      }
+      expect(keeper.renewals()).toBe(4);
+      expect(keeper.warnings).toHaveLength(2);
+      for (const warning of keeper.warnings) {
+        expect(warning).toContain("start a new session to trade the new one");
+      }
+    } finally {
+      keeper.stop();
+    }
+  });
 });
 
 // On the fake clock too: a refusal is read as the status reader takes it (`readerAtRest`), and
@@ -358,7 +562,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 20_000);
+  });
 
   test("the warning repeated after a drop says no token is dropped again until the connection is back", async () => {
     // The deep review of dfa2ea1f59, m1: the repeat, 30 minutes on, still promised a drop the
@@ -408,7 +612,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a refusal of a lapsed token, of one the connection is moving off, or of another kind drops nothing", async () => {
     // A stand-in credential, so each condition is set alone.
@@ -466,7 +670,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   /** A stand-in credential whose renewals the row lands by hand, each with a token that lives
    *  ten minutes; `expiresAt` is when the token in hand lapses. */
@@ -526,7 +730,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a drop's renewal replaces the renewal that was due, rather than adding one", async () => {
     // The token in hand lapses in 2 s, so a renewal is due at 1 s; the drop renews at once and
@@ -549,7 +753,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a token dropped while the broker is away is presented no more", async () => {
     // The renewal after the drop fails, so the connection holds no token: each CONNECT presents
@@ -572,7 +776,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   // The review of c19c0722bf, R1: a count kept across tokens, and a drop allowed once until the
   // connection was back whatever its session, left a revoked token of a session switched to after
@@ -614,7 +818,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   test("one refusal of a token and one of the token after it drop neither", async () => {
     const { state, credential, land } = heldRenewals(Date.now() + 600_000);
@@ -638,7 +842,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("an auth service that refuses every token costs each session one trade for the outage", async () => {
     // The hub's auth service is away and the broker is up: every CONNECT is refused whatever its
@@ -678,7 +882,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 30_000);
+  });
 });
 
 // The review of 2fa6fbf7cf, m3: a session switch's follow inside a pass whose deadline is shorter
@@ -743,7 +947,7 @@ describe("followNatsCredential within a bound", () => {
     } finally {
       warn.mockRestore();
     }
-  }, 15_000);
+  });
 
   test("a connection that never comes back fails at what is left of the bound", async () => {
     const broker = stubBroker(600);
@@ -769,7 +973,7 @@ describe("followNatsCredential within a bound", () => {
     );
     expect(fake.reconnects.length).toBe(1);
     expect(fake.readerStopped()).toBe(true);
-  }, 15_000);
+  });
 });
 
 // The credential owns its one count, which its keeper and every dial that opens its connection

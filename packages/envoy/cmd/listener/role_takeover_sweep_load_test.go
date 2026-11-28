@@ -160,6 +160,7 @@ func (rig *crashRig) burstRecords(prefix string, n, roles int, age time.Duration
 // message past Next: the pass reads each subject - the forward, then the end - and copies every
 // message to its role's kept lane, so the wire reading sees a pass's reads when it makes them.
 func TestASweepPassReadsNoPreviousHolderOfARecordPastItsLife(t *testing.T) {
+	t.Parallel()
 	const records, roles = 600, 60
 	t.Run("600 records past their copy window: once a pass ended them, the passes read no previous holder", func(t *testing.T) {
 		rig := newCrashRig(t)
@@ -215,6 +216,7 @@ func TestASweepPassReadsNoPreviousHolderOfARecordPastItsLife(t *testing.T) {
 // claim and is stored inside the fence (roles.ForwardFenceAge) is still copied to the new holder,
 // which is what the record's hour is for.
 func TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning(t *testing.T) {
+	t.Parallel()
 	rig := newCrashRig(t)
 	const a, b, role = "ses_life_a", "ses_life_b", "life"
 	// bound is the record's life and one sweep interval; lateAt, when the row stores its late

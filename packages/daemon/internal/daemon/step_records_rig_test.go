@@ -309,7 +309,7 @@ func (r *stepRecordsRig) boot() {
 	o.taskConfirmedApplied = r.confirmations.add
 	o.totalsClock = r.readClock
 	logger := slog.New(slog.NewMultiHandler(r.log().Handler(), slog.NewJSONHandler(r.logs, nil)))
-	r.d = startDaemonWithin(r.t, r.cfg, o, logger, stepRecordsWait)
+	r.d = startDaemonLogging(r.t, r.cfg, o, logger)
 }
 
 // onRead sets f as the hook of each read of an agent's calls (overrides.totalsRead). A nil f

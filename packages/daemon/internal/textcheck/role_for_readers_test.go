@@ -54,7 +54,9 @@ type roleForReader struct {
 // took the issue's phase while RoleFor named no role (phase.Of), or reads only the phases of a
 // plan's steps, which admitted never is (reportsBefore, and Engine.restartTask, which reads its
 // task's first step: a planner's or an implementer's, as plan.Supported holds every task to an
-// implementer step with each tester, reviewer and acceptance step after it), or reads the retro's
+// implementer step with each tester, reviewer and acceptance step after it, and
+// record.StoredPlan.Running, which reads the phase of the step, the retro or the merge a running
+// task stands at, and answers an error for a task that stands at no act), or reads the retro's
 // own phase and the phase of the last step of a parent's task, neither of which is admitted
 // (retroHeldNotice and Engine.StartHeldRetro, which run only for a parent held before its retro for
 // the issues beneath it), or never reads admitted at all because a check before it refuses that
@@ -86,6 +88,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}:                                       {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                           {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                            {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
+	{file: "internal/record/plan.go", fn: "StoredPlan.Running"}:                       {calls: 1, test: "TestALaterVersionChangesTheTextOfARunningTaskAlone"},
+	{file: "internal/record/outbox.go", fn: "MergeForwardWorker"}:                     {calls: 1, test: "TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames"},
+	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}:              {calls: 1, test: "TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:           {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/awaiting_children.go", fn: "heldCause"}:                 {calls: 1, test: "TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting"},
 	{file: "internal/workflow/awaiting_children.go", fn: "Engine.StopForChildren"}:    {calls: 1, test: "TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"},
@@ -108,8 +113,6 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:                {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:                {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:                   {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}:           {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward"},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}:     {calls: 1, test: "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:                    {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:          {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:                  {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},

@@ -15,22 +15,26 @@ import { MachineLoginsSection } from "./MachineLoginsSection";
 const devbox: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-devbox",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-10-10T12:00:00Z",
   host: "devbox.example.com",
   issued_at: "2026-10-03T12:00:00Z",
   person: null,
+  reason: "",
   service: null,
   subject: null,
 };
 const laptop: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-laptop",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-10-09T08:00:00Z",
   host: "laptop.example.com",
   issued_at: "2026-10-02T08:00:00Z",
   person: null,
+  reason: "",
   service: null,
   subject: null,
 };
@@ -39,11 +43,13 @@ const laptop: LauncherCredentialResp = {
 const daemon: LauncherCredentialResp = {
   approved_by: "bob@example.com",
   credential_id: "cred-daemon",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-10-10T09:00:00Z",
   host: "cluster.example.com",
   issued_at: "2026-10-03T09:00:00Z",
   person: null,
+  reason: "",
   service: "legion-daemon",
   subject: null,
 };
@@ -51,11 +57,13 @@ const daemon: LauncherCredentialResp = {
 const stale: LauncherCredentialResp = {
   approved_by: "ada@example.com",
   credential_id: "cred-stale",
+  dispatch_scopes: null,
   expired: true,
   expires_at: "2026-10-03T11:00:00Z",
   host: "devbox.example.com",
   issued_at: "2026-09-26T11:00:00Z",
   person: null,
+  reason: "",
   service: null,
   subject: null,
 };
@@ -66,11 +74,13 @@ const stale: LauncherCredentialResp = {
 const adaPod: LauncherCredentialResp = {
   approved_by: "",
   credential_id: "cred-ada-pod",
+  dispatch_scopes: null,
   expired: false,
   expires_at: "2026-10-03T13:00:00Z",
   host: "people/ada",
   issued_at: "2026-10-03T12:00:00Z",
   person: "ada@example.com",
+  reason: "",
   service: "person-ada",
   subject: "system:serviceaccount:people:ada",
 };
@@ -451,6 +461,7 @@ test("a machine login approved on the page joins the list", async () => {
     credentials: live,
   }));
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue({
+    dispatch_scopes: null,
     approver: "ada@example.com",
     decided: null,
     enrollment: null,
@@ -490,5 +501,98 @@ test("a machine login approved on the page joins the list", async () => {
     getMachineLogins.mockRestore();
     lookupMachineCredential.mockRestore();
     approveCredentialRecord.mockRestore();
+  }
+});
+
+// A sign-in's approved scopes name it in the list: a scope this build knows by its Settings words,
+// one it does not know as the word itself, and a sign-in that holds none as holding no scope.
+test("a Dispatch sign-in is marked with its approved scopes, an unknown one as its word", async () => {
+  const signIns: LauncherCredentialResp[] = [
+    { ...devbox, credential_id: "cred-dispatch", dispatch_scopes: ["person"] },
+    { ...laptop, credential_id: "cred-newer", dispatch_scopes: ["person", "triage"] },
+    { ...daemon, credential_id: "cred-none", dispatch_scopes: [], service: null },
+  ];
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: signIns,
+  });
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Machine logins" }));
+    const row = (await section.findByText("Dispatch sign-in: Act as you")).closest("tr");
+    expect(within(row as HTMLElement).getByText("devbox.example.com")).toBeDefined();
+    const newer = section.getByText("Dispatch sign-in: Act as you, triage").closest("tr");
+    expect(within(newer as HTMLElement).getByText("laptop.example.com")).toBeDefined();
+    const none = section.getByText("Dispatch sign-in: no scope").closest("tr");
+    expect(within(none as HTMLElement).getByText("cluster.example.com")).toBeDefined();
+  } finally {
+    cleanup();
+    getMachineLogins.mockRestore();
+  }
+});
+
+// The list's own words keep who may revoke which login, how a pod comes to be logged in as the
+// viewer, and that a revoked login's sessions lose their secrets, beside what a sign-in is.
+test("the list says who may revoke a login and what a revoke ends, beside what a sign-in is", async () => {
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [devbox],
+  });
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Machine logins" }));
+    for (const words of [
+      "A pod logs in as you when the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to you.",
+      "Only you may revoke the logins of your machines and your pods, and your Dispatch sign-ins.",
+      "Anyone signed in may revoke a service's login.",
+      "every session it started loses its secrets.",
+      "A Dispatch sign-in writes in Dispatch and works on Envoy as its own session within your projects",
+    ]) {
+      expect(
+        section.getByText(
+          (_, node) => node?.tagName === "P" && (node.textContent ?? "").includes(words)
+        ),
+        words
+      ).toBeDefined();
+    }
+  } finally {
+    cleanup();
+    getMachineLogins.mockRestore();
+  }
+});
+
+// A sign-in's reason tells it from another sign-in of the same host, and its Revoke asks about the
+// sign-in, not a machine login.
+test("a Dispatch sign-in's row names its reason, and its Revoke asks about the sign-in", async () => {
+  const user = userEvent.setup();
+  const signIn: LauncherCredentialResp = {
+    ...devbox,
+    credential_id: "cred-dispatch",
+    dispatch_scopes: ["person"],
+    reason: "the release tool",
+  };
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [signIn],
+  });
+  const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
+  const confirm = spyOn(window, "confirm").mockReturnValue(false);
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Machine logins" }));
+    const row = (await section.findByText("the release tool")).closest("tr") as HTMLElement;
+    expect(within(row).getByText("Dispatch sign-in: Act as you")).toBeDefined();
+    await user.click(within(row).getByRole("button", { name: "Revoke" }));
+    expect(confirm.mock.calls).toEqual([
+      [
+        "Revoke the Dispatch sign-in for devbox.example.com? Its Dispatch sign-in ends at once. The session or tool needs a new approval.",
+      ],
+    ]);
+    expect(revokeMachineLogin).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    confirm.mockRestore();
+    getMachineLogins.mockRestore();
+    revokeMachineLogin.mockRestore();
   }
 });

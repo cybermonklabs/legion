@@ -18,9 +18,8 @@ export const FailedLineLeaves = createContext<(() => void) | undefined>(undefine
 
 export interface FailedReadLineProps {
   /** Which failure the line says, which keys its alert: a read's `errorUpdateCount`, as the
-   *  outline gives it for a read its rows come from (`outline-reads.ts`); for the names, the
-   *  count of their reads' failures since every one of them last answered
-   *  (`NamesFailure.failure`); or for an address's item whose read failed, the failures of that
+   *  outline gives it for a read its rows come from (`outline-reads.ts`); for the names,
+   *  `NamesFailure.failure`; or for an address's item whose read failed, the failures of that
    *  read since the address was followed (`address-target.ts`'s landing `failure`, through
    *  `slots/body.tsx`'s `ItemReadFailed`). The last two are no read's own count. Where it is not
    *  given, the line counts the failures it sees itself: each run it saw end while it stayed
@@ -32,6 +31,8 @@ export interface FailedReadLineProps {
   onRetry: () => void;
   /** Whether the read runs again (TanStack Query's `isFetching`). */
   retrying: boolean;
+  /** Where false, the message carries no live role, so a screen reader does not say it. */
+  speaks?: boolean;
 }
 
 /**
@@ -59,6 +60,7 @@ export function FailedReadLine({
   message,
   onRetry,
   retrying,
+  speaks = true,
 }: FailedReadLineProps): ReactNode {
   const leaves = useContext(FailedLineLeaves);
   // The failures the line has seen while drawn, for a view that names none: a run it saw end left
@@ -82,7 +84,11 @@ export function FailedReadLine({
   );
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm" data-failed-read="" ref={line}>
-      <p className={pageFailedText} key={failure ?? next.failures} role="alert">
+      <p
+        className={pageFailedText}
+        key={failure ?? next.failures}
+        role={speaks ? "alert" : undefined}
+      >
         {message}
       </p>
       <button

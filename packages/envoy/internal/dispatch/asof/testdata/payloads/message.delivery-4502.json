@@ -1,0 +1,24 @@
+{
+  "id": 4502,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "",
+  "seq": 0,
+  "type": "message.delivery",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-19T04:12:55.41326Z",
+  "payload": {
+    "error": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor ",
+    "state": "failed",
+    "title": "",
+    "target": "session:10483ba1-2434-4e2c-9b0c-f79f186768fa",
+    "attempt": 1,
+    "delivery": "aside",
+    "message_id": "4f89dd3c-03c6-4d97-8938-17f26bd8ddc0",
+    "session_id": "10483ba1-2434-4e2c-9b0c-f79f186768fa"
+  }
+}

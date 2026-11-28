@@ -61,7 +61,7 @@ func TestServiceKeeperReconnectsBeforeExpiry(t *testing.T) {
 	later := platformToken(daemonAccount, time.Now().Add(50*time.Minute))
 	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
 
-	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	var disconnected, reconnected, laterAtCut atomic.Int64
 	nc, err := nats.Connect(rig.url, option, nats.Timeout(10*time.Second),
 		nats.DisconnectErrHandler(func(*nats.Conn, error) {
@@ -103,7 +103,7 @@ func TestServiceKeeperHoldsTheConnectionWhileTheAuthServiceIsDown(t *testing.T) 
 	later := platformToken(daemonAccount, time.Now().Add(50*time.Minute))
 	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
 
-	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	var disconnected, reconnected atomic.Int64
 	nc, err := nats.Connect(rig.url, option, nats.Name("daemon"), nats.Timeout(10*time.Second),
 		nats.DisconnectErrHandler(func(*nats.Conn, error) { disconnected.Add(1) }),
@@ -154,7 +154,7 @@ func TestTheOperatorsRenewalIsDecidedAsTheOperator(t *testing.T) {
 	later := platformToken(operatorAccount, time.Now().Add(15*time.Minute))
 	require.NoError(t, os.WriteFile(file, []byte(first+"\n"), 0o600))
 
-	option, keeper := natscred.Service(natscred.ServiceFile(file))
+	option, keeper := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	var reconnected atomic.Int64
 	nc, err := nats.Connect(rig.url, option, nats.Name("operator"), nats.CustomInboxPrefix(natsgrant.OperatorInbox),
 		nats.Timeout(10*time.Second), nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
@@ -276,7 +276,7 @@ func TestServiceCredentialRetriesAfterRefusals(t *testing.T) {
 	require.NoError(t, os.WriteFile(file, []byte(platformToken(daemonAccount, time.Now().Add(time.Hour))), 0o600))
 	retrying := []nats.Option{nats.RetryOnFailedConnect(true), nats.MaxReconnects(-1), nats.ReconnectWait(50 * time.Millisecond), nats.Timeout(5 * time.Second)}
 
-	option, _ := natscred.Service(natscred.ServiceFile(file))
+	option, _ := natscred.Service(natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE"))
 	nc, err := nats.Connect(rig.url, append(retrying, option)...)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -285,7 +285,7 @@ func TestServiceCredentialRetriesAfterRefusals(t *testing.T) {
 
 	t.Run("control: without IgnoreAuthErrorAbort", func(t *testing.T) {
 		asked.Store(0)
-		reader := natscred.ServiceFile(file)
+		reader := natscred.ServiceFile(file, "NATS_SERVICE_TOKEN_FILE")
 		closed := make(chan struct{})
 		control, err := nats.Connect(rig.url, append(retrying,
 			nats.UserInfoHandler(func() (string, string) { token, _ := reader.Read(); return natscred.ServiceUser, token }),

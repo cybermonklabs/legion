@@ -298,6 +298,27 @@ const MaxIssueComponents = 50
 const MaxIssuePageLimit = 250
 const DefaultIssuePageLimit = 50
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// `dispatch result --project` sends are cut by one rule.
+const SpecCheckObservedMax = 2000
+const SpecCheckObservedStart = 500
+const SpecCheckObservedCutNote = "\n[The middle of the text is cut here. A result keeps 2000 characters of what the job observed: its start and its end.]\n"
+const SpecCheckObservedEnd = 1381
+
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = 100
+const DefaultThreadPageLimit = 20
+
 // PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
 // GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
 // in packages/contracts so the page the server reads and the full page on which the
@@ -368,6 +389,7 @@ var DispatchEventTypes = []string{
 	"comment.reopened",
 	"comment.resolved",
 	"decision.kept",
+	"deploy.recorded",
 	"handoff.recorded",
 	"issue.claimed",
 	"issue.closed",
@@ -375,6 +397,7 @@ var DispatchEventTypes = []string{
 	"issue.deployed",
 	"issue.pull_request_attribution_changed",
 	"issue.released",
+	"issue.role_holders_changed",
 	"issue.updated",
 	"message.accepted",
 	"message.answered",
@@ -388,6 +411,7 @@ var DispatchEventTypes = []string{
 	"project.updated",
 	"result.recorded",
 	"result.retracted",
+	"role.undelivered",
 	"settings.architecture_source.updated",
 	"settings.project_default_assignee.updated",
 	"settings.repo_project.updated",
@@ -399,6 +423,21 @@ var DispatchEventTypes = []string{
 	"user_state.updated",
 	"user_thread_state.updated",
 }
+
+// DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. Generated from DISPATCH_SIGN_IN_SCOPES in packages/contracts, so the
+// broker that takes a sign-in's scopes, the verifier that reads its tokens and the clients and
+// page that ask for them hold one list.
+var DispatchSignInScopes = []string{
+	"person",
+	"p0",
+}
+
+// BrokerRequestReasonMax is the most characters, counted as Unicode code points, the reason of a
+// request to the secrets broker may carry. Generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so the broker's refusal (record.MaxReasonRunes) and each client's check
+// before it asks hold one bound.
+const BrokerRequestReasonMax = 400
 
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
@@ -459,6 +498,14 @@ const (
 	StepOtherIssueCode = "STEP_OTHER_ISSUE"
 )
 
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = "not started"
+	PlannedStepRunning    = "running"
+)
+
 // The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
 // whose plan is the plan of another issue (a writer that is not the daemon's session is refused
 // StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
@@ -483,6 +530,17 @@ const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characte
 // Generated from STEP_ANSWERS_MAX in packages/contracts: Dispatch's step write refuses more, and the
 // Legion daemon, through github.com/sjawhar/envoy/steprecord, writes no more.
 const StepAnswersMax = 16
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = "^[a-z0-9][a-z0-9-]{0,63}$"
+const StepTaskMax = 64
+const StepTaskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64 bytes"
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -558,6 +616,46 @@ const IdempotencyAnswerNotKept = "ANSWER_NOT_KEPT"
 const IdempotencyKeyTTL = 86400000 * time.Millisecond
 const IdempotencyLease = 60000 * time.Millisecond
 
+// DispatchAsOfNotServed is the code of the 400 for an as_of that a route cannot answer. A route
+// that holds no history answers only the present, and it refuses every as_of with this code. A
+// route that answers as_of refuses with this code a filter parameter that it cannot evaluate at
+// that time. The message names that parameter. Generated from DISPATCH_AS_OF_NOT_SERVED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfNotServed = "AS_OF_NOT_SERVED"
+
+// DispatchInvalidAsOf is the code of the 400 for an as_of that Dispatch cannot read: a value that
+// is not an RFC 3339 time, a time later than the server's present time, or an as_of that the
+// request sends more than once. Generated from DISPATCH_INVALID_AS_OF in packages/contracts so the
+// server's refusal and every client's reading of it cannot drift apart.
+const DispatchInvalidAsOf = "INVALID_AS_OF"
+
+// DispatchAsOfSearchNotFilled is the code of the 409 for a search at a past time that the fill of
+// the keyword table has not reached. Where the fill has reached a time, the message and
+// DispatchAsOfFilledThroughHeader name that time; where it has reached no time yet, the message
+// says so and the answer has no such header. Generated from DISPATCH_AS_OF_SEARCH_NOT_FILLED in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchAsOfSearchNotFilled = "AS_OF_SEARCH_NOT_FILLED"
+
+// DispatchAsOfHeader is the response header on every answer that Dispatch gives as of a past time
+// (the cut), for an as_of in the request or for a token that carries a cut. The value is the cut
+// in RFC 3339, with six fractional digits, in UTC. Generated from DISPATCH_AS_OF_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfHeader = "Dispatch-As-Of"
+
+// DispatchAsOfAbsentHeader is the response header that names each member that a past-time answer
+// omits because the records at the cut cannot give it. The value is a comma-separated list of
+// RFC 6901 JSON Pointers, in which a segment * stands for every member of an array, such as
+// /open_asks/*/referenced_by_count. Generated from DISPATCH_AS_OF_ABSENT_HEADER in
+// packages/contracts so the server and every client name the header once.
+const DispatchAsOfAbsentHeader = "Dispatch-As-Of-Absent"
+
+// DispatchAsOfFilledThroughHeader is the response header on a 409 DispatchAsOfSearchNotFilled when
+// the fill of the keyword table has reached a time. The value is that time, in RFC 3339; a refusal
+// whose fill has reached no time yet has no such header. Generated from
+// DISPATCH_AS_OF_FILLED_THROUGH_HEADER in packages/contracts so the server and every client name
+// the header once.
+const DispatchAsOfFilledThroughHeader = "Dispatch-As-Of-Filled-Through"
+
 // SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
 // SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
 // heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
@@ -582,6 +680,12 @@ const SessionClaimStale = 300000 * time.Millisecond
 const ListenerCallTimeout = 5000 * time.Millisecond
 const ListenerCallRetryDelay = 250 * time.Millisecond
 const ListenerCallAttempts = 2
+
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = "envoy: the message bus did not answer"
 
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
@@ -620,10 +724,11 @@ const DispatchReadOnlyToken = "READ_ONLY_TOKEN"
 const DispatchApproveOnlyToken = "APPROVE_ONLY_TOKEN"
 
 // DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
-// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
-// a past time yet, so the route ran nothing rather than answer with the present. Generated from
-// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
-// client's reading of it cannot drift apart.
+// carries a cut (as_of) to a read that holds no past answer: GET /ws/live, and each read route
+// that does not answer as_of except GET /api/v1/whoami. A route that answers as_of answers such a
+// token as of its cut, and GET /api/v1/whoami names the cut. The route ran nothing rather than
+// answer with the present. Generated from DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so
+// the server's refusal and every client's reading of it cannot drift apart.
 const DispatchAsOfTokenNotServed = "AS_OF_TOKEN_NOT_SERVED"
 
 func NowMillis() int64 {
@@ -660,6 +765,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return "notifications.legion." + token + ".wake"
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ".state"
+
+func LegionStateSubject(token string) string {
+	return "notifications.legion." + token + ".state"
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

@@ -12,10 +12,20 @@
 // launcher's lookup), seeds it once from the files sessions were kept in before (Import,
 // `legion sessions import`), and keeps a Claude Code session's files in it as Oh My Pi's own writes
 // would (Append and Replace, the role launcher's, which no Oh My Pi runs beside).
+//
+// Every statement runs in a transaction that one message opens and pins, OpenRead or OpenWrite
+// (open.go), which sets back for the transaction each setting of LeftSettings that another client
+// could have left on a pooled server connection, and names each statement legion-session-client in
+// the server's log (inTransaction). A transaction whose server connection the client cannot repair,
+// one that refused the opening, answered a statement with 25006 or 42501, or ended before the client
+// sent COMMIT, closes that connection, so a pool closes the server connection too, and runs again
+// from its start on a new one, at most four times in all; once COMMIT was sent, a lost connection is
+// returned and nothing runs again.
 package ompsessions
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,7 +39,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/envoy/fileerr"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Oh My Pi's two session-storage variables (session-storage-config.ts): StorageVariable set to
@@ -45,8 +56,9 @@ const (
 // release (buildQueries' createTable and createPartsTable), each table named public.<table> as
 // Oh My Pi names it (PG_SCHEMA, sql-session-storage.ts at the pinned tag), as every statement of
 // this package names its tables: under the search_path every transaction of the package pins
-// (pinSearchPath) a bare name would be pg_catalog's, where no table can be made. Each is IF NOT
-// EXISTS, so they change nothing Oh My Pi already made, which it migrates itself when it starts.
+// (OpenRead and OpenWrite) a bare name would be pg_catalog's, where no table can be made. Each is
+// IF NOT EXISTS, so they change nothing Oh My Pi already made, which it migrates itself when it
+// starts.
 // The pinned release makes three more tables, its lease table omp_session_leases and its blob and
 // reference tables omp_session_files_blobs and omp_session_files_refs, which Legion writes nothing
 // to and leaves to Oh My Pi and the database's owner.
@@ -57,51 +69,76 @@ var createTables = []string{
 		"PRIMARY KEY (path, start_offset))",
 }
 
-// pinSearchPath is the first statement of every transaction the package runs (inTransaction),
-// the search_path Oh My Pi runs its own statements under (the search_path entry of
-// sql-session-postgres-settings.ts at the pinned tag). The session database is shared: each
-// pod's Oh My Pi writes it, and any login that can create in its public schema, or in the
-// database, can plant objects there.
-// Postgres resolves a function or an operator to an exact argument match in any schema of the
-// search_path over an inexact one in pg_catalog, wherever pg_catalog stands on it, and the
-// default path, "$user", public, searches first a schema that a login able to create in the
-// database may name for this one; so under that path a statement runs what such a login planted,
-// as the login that runs the statement. This path holds no schema another login can create in:
-// every function, operator and type a statement names resolves in pg_catalog, and each table is
-// named public.<table>. It is SET LOCAL, and no startup parameter of the connection, because
-// pods reach the database through a PgBouncer pool in transaction mode, which refuses
-// search_path at startup and carries no setting of a session from one transaction to the next.
+// tries is how many times inTransaction runs one transaction at most: one try and 3 more, each on
+// a new connection in place of one it could not repair, the bound Oh My Pi's store keeps for its
+// own. So one transaction closes at most 4 server connections, and none closes a login's whole
+// pool; where more hold what another client left, the caller's own retry takes over (the
+// launcher's lookups ask again until resumeLookupTimeout).
+const tries = 4
+
+// closeBound bounds the Terminate inTransaction sends as it closes a connection it cannot repair.
+// Terminate is one short message, so a socket that takes longer has a peer that stopped reading,
+// and pgx closes the socket all the same once the bound ends.
+const closeBound = 5 * time.Second
+
+// The SQLSTATEs with which a server connection the client cannot repair answers a statement: a
+// read-only session, which Cloud SQL's cloudsql_session_read_only = locked leaves and no statement
+// undoes, and a role, or a session authorization, another client left that lacks a right the
+// statement needs.
+const (
+	readOnlySQLTransaction = "25006"
+	insufficientPrivilege  = "42501"
+)
+
+// readOnlyCheck is the first statement of a write's work (inTransaction): the value
+// default_transaction_read_only takes when the session resets it, which is the login's or the
+// database's default where one is set, and never a session-level SET another client left, which
+// the opening's READ WRITE overrides as it overrides those defaults.
+const readOnlyCheck = "SELECT reset_val FROM pg_catalog.pg_settings WHERE name = 'default_transaction_read_only'"
+
+// ReadOnlyDefaultError is a write's refusal where the login or the database defaults each
+// transaction to read-only: the opening's BEGIN … READ WRITE would override that default, and the
+// client keeps it as a refusal instead. The write rolls back, writes nothing and keeps its
+// connection (readOnlyCheck); a read still answers.
+type ReadOnlyDefaultError struct{}
+
+func (*ReadOnlyDefaultError) Error() string {
+	return "default_transaction_read_only = on is a default of the login or the database, and the client writes no session there"
+}
+
+// errHolderClosed is inTransaction's refusal of a Conn its holder closed: a holder's Close is
+// final, so the helper opens no new connection in its place.
+var errHolderClosed = errors.New("the session database connection was closed by its holder, and the client opens no new one in its place")
+
+// pinned is a transaction inTransaction opened with OpenRead or OpenWrite, and the only thing in
+// the package that runs a statement: inTransaction builds the one each try hands its function, and
+// every statement of the package is a call of one of its methods (TestNoStatementRunsOutsideTheHelper
+// holds the package to both).
 //
-// The pin covers name lookup alone. What the tables' owner attaches to the tables themselves, a
-// trigger, a rule, a row-security policy, a column default, a CHECK constraint, a domain or an
-// expression index, runs as whoever writes, whatever the search_path, and this package does not
-// check for it; only the reads refuse a policy (refuseRowSecurity), and every transaction refuses
-// a view or a foreign table at a table's name (restrictRelationKinds).
-const pinSearchPath = "SET LOCAL search_path = pg_catalog, pg_temp"
-
-// refuseRowSecurity is the second statement of every read-only transaction (inTransaction). A
-// row-security policy's expression runs in each reader's session, as that reader, so the tables'
-// owner could make Written, FindByID and Read run its code. With row_security off, a query that
-// a policy would affect fails instead (`query would be affected by row-level security policy`),
-// and no policy runs. Oh My Pi's tables carry no policy, so a read of them is unchanged.
-const refuseRowSecurity = "SET LOCAL row_security = off"
-
-// restrictRelationKinds is a statement of every transaction (inTransaction), after the search_path
-// pin and, in a read, after refuseRowSecurity. A login with CREATE on public can make a view at a
-// table's own name before Oh My Pi makes the table, and the view's query, fixed when it was made,
-// runs in each statement that names the table, as whoever runs the statement: no search_path
-// reaches it, and a view carries no row-security policy. With restrict_nonsystem_relation_kind
-// naming views and foreign tables, a statement that would read or write one fails instead
-// (`access to non-system view "…" is restricted`), and none of its code runs. Any login may set
-// it, and PostgreSQL has it from the minor releases of August 2024 on: 16.4, 15.8, 14.13, 13.16
-// and 12.20, and every 17 and later. On an older server every transaction of the package fails
-// with `unrecognized configuration parameter`, and no session is read or written.
-const restrictRelationKinds = "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'"
-
-// pinned is a transaction inTransaction opened and pinned, and the only thing in the package that
-// runs a statement: inTransaction builds the one each call hands its function, and every statement
-// of the package is a call of one of its methods (TestNoStatementRunsOutsideTheHelper holds the
-// package to both).
+// The session database is shared: each pod's Oh My Pi writes it, and any login that can create in
+// its public schema, or in the database, can plant objects there. Postgres resolves a function or an
+// operator to an exact argument match in any schema of the search_path over an inexact one in
+// pg_catalog, wherever pg_catalog stands on it, and the default path, "$user", public, searches first
+// a schema that such a login may name for this one; so under that path a statement runs what such a
+// login planted, as the login that runs it. The openings' search_path, pg_catalog, pg_temp, holds no
+// schema another login can create in: every function, operator and type a statement names resolves
+// in pg_catalog, and each table is named public.<table>. A view at a table's own name, which a login
+// with CREATE on public can make before Oh My Pi makes the table, runs a query fixed when it was
+// made, which no search_path reaches: restrict_nonsystem_relation_kind refuses it (`access to
+// non-system view "…" is restricted`). A row-security policy the tables' owner attaches runs in
+// each reader's session, as that reader: a read's row_security off makes a query a policy would
+// affect fail instead (`query would be affected by row-level security policy`). Each is SET LOCAL
+// in the opening, and no startup parameter of the connection, because pods reach the database
+// through a PgBouncer pool in transaction mode, which refuses search_path as a startup parameter
+// and gives a server connection, with the session settings another client left on it, to the next
+// client (TestNoStatementRunsAnObjectAnotherLoginPlanted holds each). PostgreSQL has
+// restrict_nonsystem_relation_kind from 16.4 on: an older server refuses every opening
+// (`unrecognized configuration parameter`), so each call closes its 4 connections and fails, and no
+// session is read or written.
+//
+// That covers name lookup alone. What the tables' owner attaches to the tables themselves, a
+// trigger, a rule, a column default, a CHECK constraint, a domain or an expression index, runs as
+// whoever writes, whatever the search_path, and this package does not check for it.
 type pinned struct{ tx pgx.Tx }
 
 // exec runs a statement that answers no rows.
@@ -119,40 +156,314 @@ func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Ro
 	return p.tx.Query(ctx, sql, arguments...)
 }
 
-// inTransaction runs fn in one transaction on conn, read-only where readOnly, whose statements
-// before fn's are pinSearchPath, then, in a read-only one, refuseRowSecurity, then
-// restrictRelationKinds (TestEveryTransactionPinsBeforeItsWork holds that order). It is the one
-// place the package opens a transaction, and it hands fn the pinned that runs fn's statements. The
-// transaction commits when fn returns nil and rolls back otherwise, and fn's error is returned as
-// it is. It refuses a live connection already in a transaction, a call of the package made inside
-// another's fn on the same connection: pgx would send a second begin, which the server ignores
-// there, and its commit would end the outer transaction and every SET LOCAL of it, so the outer
-// fn's next statement would run alone under the login's own search_path. A closed connection
-// keeps the last status the server sent, 'T' when its transaction died with it, so it is not
-// refused here, and fails as pgx fails any call on a closed connection.
+// inTransaction runs fn in one transaction on conn, read-only where readOnly, and is the one place
+// the package opens a transaction. Each try sends OpenRead or OpenWrite whole as the transaction's
+// first message, one simple-protocol Query (BeginTx with TxOptions.BeginQuery, which pgx sends
+// through Exec with no arguments), and nothing else to open it; a write then runs readOnlyCheck,
+// and where the login or the database defaults to read-only it rolls back and returns
+// *ReadOnlyDefaultError, keeping its connection; then fn runs its statements on the pinned it is
+// handed, and the try is marked past its commit before the helper sends COMMIT itself
+// (TestEveryTransactionPinsBeforeItsWork holds that order). decide says what each outcome of a try
+// leads to (TestEachFailureOfATransactionIsClosedRetriedOrReturned holds it row by row):
+//
+//   - A server connection the client cannot repair, one that refused the opening, answered the
+//     read-only check or fn with 25006 or 42501, or ended before COMMIT was sent, is closed with no
+//     ROLLBACK, so that a pool in transaction mode closes the server connection, which still holds
+//     what another client left on it, rather than hand it to the next client. The next try opens a
+//     new connection in conn from the closed one's configuration (pgx's Config) and runs the whole
+//     transaction again from its start, and each function's fn keeps nothing from a failed try. The
+//     fourth such failure is closed and returned, naming the tries and the last SQLSTATE (bounded).
+//   - Once COMMIT was sent, a connection lost then, or any error of COMMIT, closes the connection
+//     and is returned, and nothing runs again. Where the connection ended, or the server ended it
+//     with a FATAL or PANIC error, nobody knows whether the transaction committed, and a retry
+//     would answer a write that landed as a *MovedError, which the keeper reads as another writer
+//     and stops saving the file, where it keeps any other error as a save that may have landed, and
+//     an Import that landed as Identical in place of Copied. Where the server refused COMMIT on a
+//     connection pgx kept, the transaction did not commit, and the error says so (commitFailed).
+//   - A context that ended closes the connection and is returned, wrapping the context's error.
+//   - Any other error, fn's own among them, rolls back and is returned as it is, so a caller reads
+//     42P01 as "no table" only from a statement of its own: each error of the helper's own steps is
+//     a *stepError (failed), which names the SQLSTATE and never unwraps to the server's error.
+//
+// It refuses a Conn its holder closed, and opens nothing for it. It refuses a live connection
+// already in a transaction, a call of the package made inside another's fn on the same connection:
+// pgx would send a second opening, whose BEGIN the server ignores there, and its commit would end
+// the outer transaction and every SET LOCAL of it, so the outer fn's next statement would run alone
+// under the login's own search_path. A connection pgx closed keeps the last status the server sent,
+// 'T' when its transaction died with it, so it is not refused here: the try opens a new one in its
+// place, and a refusal of that open, which names the database's address and never the URL's password
+// (pgdsn.ConnectError), ends the call, for the caller's own retry. Every driver call of the repair is
+// in this body, which TestNoStatementRunsOutsideTheHelper counts as the helper's.
 func inTransaction(ctx context.Context, conn *Conn, readOnly bool, fn func(pinned) error) error {
-	if status := conn.c.PgConn().TxStatus(); !conn.c.IsClosed() && status != 'I' {
-		return fmt.Errorf("open a transaction on a connection already in a transaction (status %q): "+
-			"a call of the package runs on a connection of its own", status)
-	}
-	access := pgx.ReadWrite
+	opening := OpenWrite
 	if readOnly {
-		access = pgx.ReadOnly
+		opening = OpenRead
 	}
-	return pgx.BeginTxFunc(ctx, conn.c, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
-			return fmt.Errorf("pin the transaction's search_path: %w", err)
-		}
-		if readOnly {
-			if _, err := tx.Exec(ctx, refuseRowSecurity); err != nil {
-				return fmt.Errorf("turn the read's row security off: %w", err)
+	// drop closes the connection with no ROLLBACK: pgx sends Terminate and closes the socket. Its
+	// context is not the caller's, which may have ended, and under which pgx would skip the Terminate.
+	drop := func() {
+		closing, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeBound)
+		defer cancel()
+		_ = conn.c.Close(closing)
+	}
+	for try := 1; ; try++ {
+		start := step{at: atStart, try: try, held: conn.closed, closed: conn.c.IsClosed(), ended: ctx.Err()}
+		start.busy = !start.closed && conn.c.PgConn().TxStatus() != 'I'
+		switch decide(start) {
+		case refuse:
+			if start.held {
+				return errHolderClosed
 			}
+			return fmt.Errorf("open a transaction on a connection already in a transaction (status %q): "+
+				"a call of the package runs on a connection of its own", conn.c.PgConn().TxStatus())
+		case closeAndReturn:
+			drop()
+			return failed("the call's context ended "+stageNames[atStart], start.ended, start.ended)
+		case reopen:
+			config := conn.c.Config()
+			// pgx put the closed connection's own notification buffer here when it opened it, which would
+			// keep that connection, and each one before it, reachable from the new one.
+			config.OnNotification = nil
+			reopened, err := pgx.ConnectConfig(ctx, config)
+			s := step{at: atReopen, try: try, err: err, ended: ctx.Err()}
+			switch decide(s) {
+			case closeAndReturn:
+				return failed("the call's context ended "+stageNames[atReopen], err, s.ended)
+			case refuse:
+				return failed("open a new connection in place of the one that ended",
+					pgdsn.ConnectError(dsnFileSetting, config.ConnString(), err), nil)
+			}
+			conn.c = reopened
 		}
-		if _, err := tx.Exec(ctx, restrictRelationKinds); err != nil {
-			return fmt.Errorf("refuse views and foreign tables in the transaction: %w", err)
+		s := step{at: atOpening, try: try}
+		tx, err := conn.c.BeginTx(ctx, pgx.TxOptions{BeginQuery: opening})
+		if err == nil && !readOnly {
+			s.at = atCheck
+			var reset string
+			err = tx.QueryRow(ctx, readOnlyCheck).Scan(&reset)
+			s.readOnlyDefault = err == nil && reset == "on"
 		}
-		return fn(pinned{tx})
-	})
+		if err == nil && !s.readOnlyDefault {
+			s.at = atWork
+			err = fn(pinned{tx})
+		}
+		if err == nil && !s.readOnlyDefault {
+			// The mark: from here on a lost connection may have committed, and nothing runs again.
+			s.at = atCommit
+			err = tx.Commit(ctx)
+		}
+		s.err, s.closed, s.ended = err, conn.c.IsClosed(), ctx.Err()
+		switch decide(s) {
+		case goOn:
+			return nil
+		case rollBack:
+			_ = tx.Rollback(ctx)
+			switch {
+			case s.readOnlyDefault:
+				return &ReadOnlyDefaultError{}
+			case s.at == atCheck:
+				return failed("read whether the login or the database defaults to read-only", err, nil)
+			}
+			return err
+		case closeAndReturn:
+			drop()
+			if s.ended != nil {
+				return failed("the call's context ended "+stageNames[s.at], err, s.ended)
+			}
+			return commitFailed(err, s.closed)
+		case giveUp:
+			drop()
+			return bounded(err)
+		}
+		// tryAgain: the next try opens a new connection in place of this one.
+		drop()
+	}
+}
+
+// stage is a step of one try of a transaction (inTransaction), in the order a try takes them.
+type stage int
+
+const (
+	// atStart is the Conn as the try finds it, before the try sends anything.
+	atStart stage = iota
+	// atReopen is the open of a new connection in place of one pgx closed.
+	atReopen
+	// atOpening is OpenRead or OpenWrite.
+	atOpening
+	// atCheck is a write's readOnlyCheck.
+	atCheck
+	// atWork is fn's statements.
+	atWork
+	// atCommit is COMMIT, which the helper sends once it marked the try past its commit.
+	atCommit
+)
+
+// stageNames is where a try was at each stage, as an error that the context ended says it.
+var stageNames = [...]string{
+	atStart: "before the transaction opened", atReopen: "while a new connection opened", atOpening: "at the opening",
+	atCheck: "at the read-only check", atWork: "in the transaction's work", atCommit: "at COMMIT",
+}
+
+// step is what one stage of a try met: its error, nil for none, and the state the stage left.
+type step struct {
+	at stage
+	// try is the try's number, 1 for the first, up to tries.
+	try int
+	err error
+	// ended is the error of the call's context where it ended, nil while it runs.
+	ended error
+	// held is whether the Conn's holder closed it, and busy whether its live connection is already
+	// in a transaction, both read at the start.
+	held, busy bool
+	// closed is whether pgx's connection is closed: at the start, by an earlier failure; after a
+	// stage, by that stage, as pgx closes a connection on an error of the network and on a server's
+	// FATAL one.
+	closed bool
+	// readOnlyDefault is whether readOnlyCheck read on.
+	readOnlyDefault bool
+}
+
+// verdict is what inTransaction does after a stage.
+type verdict int
+
+const (
+	// goOn is the next stage, or, after COMMIT, the answer nil.
+	goOn verdict = iota
+	// reopen opens a new connection from the closed one's configuration before the opening.
+	reopen
+	// refuse returns an error, closing nothing and rolling nothing back.
+	refuse
+	// rollBack sends ROLLBACK and returns the error.
+	rollBack
+	// tryAgain closes the connection with no ROLLBACK and runs the transaction again from its start.
+	tryAgain
+	// giveUp closes the connection with no ROLLBACK and returns the bound (bounded).
+	giveUp
+	// closeAndReturn closes the connection and returns the error; nothing runs again.
+	closeAndReturn
+)
+
+// decide is what inTransaction does after the stage s, read from s alone: it runs no statement and
+// reads nothing of the driver but the fields of the server's error, so
+// TestEachFailureOfATransactionIsClosedRetriedOrReturned holds it to the state table row by row. At
+// the start, a Conn its holder closed and a live connection already in a transaction are refused,
+// a context that ended closes the connection, and a connection pgx closed is opened again. After a
+// stage that met no error the try goes on, but for the read-only default, which rolls back. After
+// one that failed: a context that ended closes the connection; a refused reopen is returned; an
+// error once COMMIT was sent closes the connection and is returned; a failure on a connection the
+// client cannot repair (repairless) is tried again, and on the last try given up; and any other
+// error rolls back.
+func decide(s step) verdict {
+	if s.at == atStart {
+		switch {
+		case s.held, s.busy:
+			return refuse
+		case s.ended != nil:
+			return closeAndReturn
+		case s.closed:
+			return reopen
+		}
+		return goOn
+	}
+	switch {
+	case s.err == nil && s.readOnlyDefault:
+		return rollBack
+	case s.err == nil:
+		return goOn
+	case s.ended != nil:
+		return closeAndReturn
+	case s.at == atReopen:
+		return refuse
+	case s.at == atCommit:
+		return closeAndReturn
+	case !repairless(s):
+		return rollBack
+	case s.try >= tries:
+		return giveUp
+	}
+	return tryAgain
+}
+
+// repairless reports whether s, a stage before COMMIT that failed, met a server connection the
+// client cannot repair: one that refused the opening, with any error; one that ended, which pgx
+// closed, or which the server ended with a FATAL or PANIC error; or one that answered 25006 or
+// 42501. An error on a connection still open with no such server error is fn's own refusal (a
+// *MovedError), a row the statement did not find, or a value it could not read, and is no fault of
+// the connection.
+func repairless(s step) bool {
+	if s.at == atOpening || s.closed {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(s.err, &pgErr) {
+		return false
+	}
+	return fatal(pgErr) || pgErr.Code == readOnlySQLTransaction || pgErr.Code == insufficientPrivilege
+}
+
+// fatal reports whether pgErr is an error with which the server ends the connection: FATAL or
+// PANIC.
+func fatal(pgErr *pgconn.PgError) bool {
+	severity := cmp.Or(pgErr.SeverityUnlocalized, pgErr.Severity)
+	return severity == "FATAL" || severity == "PANIC"
+}
+
+// stepError is an error of one of inTransaction's own steps: the reopen, the opening, the
+// read-only check, COMMIT, the bound, or a context that ended. Its text names the SQLSTATE and
+// keeps the server's message where the server gave one, and it does not unwrap to the server's
+// error, so a caller that reads an SQLSTATE (isUndefinedTable's 42P01) reads it only from a
+// statement of its own fn. It unwraps to the context's error alone, where the context ended, so
+// errors.Is finds that.
+type stepError struct {
+	text  string
+	ended error
+}
+
+func (e *stepError) Error() string { return e.text }
+func (e *stepError) Unwrap() error { return e.ended }
+
+// failed is the stepError of what, a step, meeting err, nil for none, under ended, the error of the
+// call's context where it ended and nil where it runs.
+func failed(what string, err, ended error) error {
+	text := what
+	if err != nil {
+		text += ": " + err.Error()
+	}
+	return &stepError{text: text, ended: ended}
+}
+
+// bounded is the error of a transaction whose every try met a server connection the client could
+// not repair, err the last try's: it names the tries, and the last SQLSTATE with the server's
+// message, or says that the server ended the connection and gave none.
+func bounded(err error) error {
+	what := fmt.Sprintf("the transaction failed on each of its %d tries, each on a connection the client then closed: ", tries)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return failed(what+"the last failed with SQLSTATE "+pgErr.Code, err, nil)
+	}
+	return failed(what+"the server ended the last one's connection and gave no SQLSTATE", err, nil)
+}
+
+// commitFailed is the error of a COMMIT that failed while the call's context ran, err its error and
+// closed whether pgx closed the connection, and it says what is known of the transaction. The
+// server refused COMMIT, so the transaction did not commit, where it answered COMMIT with ROLLBACK
+// (pgx.ErrTxCommitRollback), or with an error that is neither FATAL nor PANIC on a connection pgx
+// kept, which pgx's Commit keeps only where the server says it is out of the transaction (status
+// 'I'). Where the connection ended, which pgx closed, or the server ended it with a FATAL or PANIC
+// error, whether the transaction committed is not known. Either way the client runs it no more
+// (decide).
+func commitFailed(err error, closed bool) error {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrTxCommitRollback):
+		return failed("the server refused COMMIT, answering it with ROLLBACK, so the transaction did not commit, "+
+			"and the client runs it no more", err, nil)
+	case !closed && errors.As(err, &pgErr) && !fatal(pgErr):
+		return failed("the server refused COMMIT with SQLSTATE "+pgErr.Code+", so the transaction did not commit, "+
+			"and the client runs it no more", err, nil)
+	}
+	return failed("COMMIT was sent, and the connection ended or the server refused it, so whether the "+
+		"transaction committed is not known, and the client runs it no more", err, nil)
 }
 
 // notTables names, by name and kind, each relation in public at either of Oh My Pi's two table
@@ -216,15 +527,22 @@ const undefinedTable = "42P01"
 // ReadDSN is the connection URL a DSN file holds, trimmed as Oh My Pi trims it. Every caller reads
 // the session database's: Connect, which opens it, and the launcher's own resume lookup
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
-// under it is picked up. Its refusals name the file, never what it holds.
+// under it is picked up. Its refusals name neither what the file holds nor its path, where a URL
+// pasted in place of the path would be: a file that cannot be read is named by why (fileerr.Err),
+// which still unwraps to the read's error, and a URL holding an unencoded "@" after its user part,
+// where a password holding an "@" or a "/" leaves part of itself (pgdsn.Refusal), is named by the
+// file alone, since every connect error would print that part.
 func ReadDSN(file string) (string, error) {
 	body, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("read the database URL file %s: %w", file, err)
+		return "", fmt.Errorf("read the database URL file: %w", fileerr.Err(err))
 	}
 	dsn := strings.TrimSpace(string(body))
 	if dsn == "" {
-		return "", fmt.Errorf("the database URL file %s is empty", file)
+		return "", errors.New("the database URL file is empty")
+	}
+	if err := pgdsn.Refusal(dsnFileSetting, dsn); err != nil {
+		return "", err
 	}
 	return dsn, nil
 }
@@ -233,17 +551,28 @@ func ReadDSN(file string) (string, error) {
 // closes. It holds its pgx connection unexported, and inTransaction alone runs statements on it,
 // so code outside the package can neither run a statement on it nor hand it to code that would:
 // no other package's interface or function takes a Conn (TestNoStatementRunsOutsideTheHelper
-// holds the package to this).
-type Conn struct{ c *pgx.Conn }
+// holds the package to this). inTransaction puts a new connection, opened from the old one's
+// configuration, in place of one that ended or that it could not repair, so a caller keeps the
+// *Conn it holds across the close. closed is its holder's Close, which is final.
+type Conn struct {
+	c      *pgx.Conn
+	closed bool
+}
 
-// Close closes the connection, its caller's to call once it has done with it.
-func (c *Conn) Close(ctx context.Context) error { return c.c.Close(ctx) }
+// Close closes the connection, its caller's to call once it has done with it. It is final: a call
+// of the package on the Conn is then refused, and opens no new connection.
+func (c *Conn) Close(ctx context.Context) error {
+	c.closed = true
+	return c.c.Close(ctx)
+}
 
-// IsClosed says whether the connection is closed: one that broke, a caller opens again.
-func (c *Conn) IsClosed() bool { return c.c.IsClosed() }
+// IsClosed says whether the connection is closed: by its holder, or one that broke, which a caller
+// opens again (the keeper's connect). A call of the package on one that broke opens a new one
+// itself.
+func (c *Conn) IsClosed() bool { return c.closed || c.c.IsClosed() }
 
 // Connect opens the session database whose URL dsnFile holds. A refusal names the database's
-// address, never the URL's password (store.ConnectError).
+// address, never the URL's password (pgdsn.ConnectError).
 func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 	dsn, err := ReadDSN(dsnFile)
 	if err != nil {
@@ -252,16 +581,39 @@ func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 	return ConnectURL(ctx, dsn)
 }
 
+// execMode is how each statement of the client after the opening is sent: pgx's
+// QueryExecModeDescribeExec, the extended protocol with the statement's arguments bound, through
+// the unnamed prepared statement, described afresh on each run. The client names no prepared
+// statement, because a PgBouncer pool with max_prepared_statements keeps a client's statement name
+// after the server refused its Parse (1.25.2 does, measured in CI's left-setting test: a Written
+// whose Parse met no table, 42P01, left its name, and the next Written of the same text was
+// refused FATAL, "prepared statement name is already in use", 08P01). With pgx's default, a
+// statement cache that names each statement after its text, that refusal ends the client's
+// connection, and the client closes a server connection it could have used. The unnamed statement
+// is the server's own and no pool tracks it. The opening itself is one simple-protocol message
+// whatever the mode (BeginTx sends TxOptions.BeginQuery through Exec with no arguments).
+const execMode = pgx.QueryExecModeDescribeExec
+
 // ConnectURL opens the session database at dsn, a URL ReadDSN read, and is the one place the
-// package opens a connection and builds a Conn. A refusal names the database's address, never the
-// URL's password (store.ConnectError).
+// package builds a Conn: inTransaction opens another connection only in place of one that ended,
+// from this one's configuration, inside the same Conn, so with the same execMode. A refusal names
+// the database's address, never the URL's password (pgdsn.ConnectError).
 func ConnectURL(ctx context.Context, dsn string) (*Conn, error) {
-	conn, err := pgx.Connect(ctx, dsn)
+	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
-		return nil, store.ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
+	}
+	config.DefaultQueryExecMode = execMode
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
 	}
 	return &Conn{c: conn}, nil
 }
+
+// dsnFileSetting is how a refusal names where the session database's URL comes from: the file
+// DSNFileVariable points at, by no path (ReadDSN).
+const dsnFileSetting = "the database URL file"
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false
@@ -270,6 +622,7 @@ func ConnectURL(ctx context.Context, dsn string) (*Conn, error) {
 func Written(ctx context.Context, conn *Conn, path string) (at time.Time, ok bool, err error) {
 	var mtime int64
 	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		mtime = 0
 		return p.queryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", path).Scan(&mtime)
 	})
 	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
@@ -295,6 +648,7 @@ func FindByID(ctx context.Context, conn *Conn, id string) (path string, found bo
 	}
 	suffix := "_" + id + ".jsonl"
 	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		path = ""
 		return p.queryRow(ctx,
 			"SELECT path FROM public.omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
 			utf8.RuneCountInString(suffix), suffix).Scan(&path)
@@ -314,6 +668,8 @@ func FindByID(ctx context.Context, conn *Conn, id string) (path string, found bo
 func Read(ctx context.Context, conn *Conn, path string) (content []byte, ok bool, err error) {
 	var buffer bytes.Buffer
 	err = inTransaction(ctx, conn, true, func(p pinned) error {
+		buffer.Reset()
+		ok = false
 		rows, err := p.query(ctx,
 			"SELECT 0 AS kind, 0::bigint AS start_offset, content FROM public.omp_session_files WHERE path = $1 "+
 				"UNION ALL SELECT 1, start_offset, content FROM public.omp_session_files_parts WHERE path = $1 "+
@@ -398,6 +754,7 @@ func Import(ctx context.Context, conn *Conn, path string, content []byte, mtime 
 	}
 	inserted := false
 	err := inTransaction(ctx, conn, false, func(p pinned) error {
+		inserted = false
 		tag, err := p.exec(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, $2, $3, $4) "+
 			"ON CONFLICT (path) DO NOTHING", path, string(content), mtime.UnixMilli(), len(content))
 		if err != nil {
@@ -523,6 +880,7 @@ func Replace(ctx context.Context, conn *Conn, path string, saved int64, content 
 func write(ctx context.Context, conn *Conn, path string, saved int64, apply func(p pinned) error) error {
 	var moved *MovedError
 	err := inTransaction(ctx, conn, false, func(p pinned) error {
+		moved = nil
 		if saved == Absent {
 			var inserted string
 			err := p.queryRow(ctx, "INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len) VALUES ($1, '', 0, 0) "+

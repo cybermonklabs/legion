@@ -30,7 +30,7 @@ func TestTheControllersPromptIsItsRolePartThenItsLaunchsPart(t *testing.T) {
 			[]string{"`legion controller start`", "operator's terminal", "typed directly into this session"},
 			[]string{"headless"}},
 		{"launched by the daemon", true, "controller-headless.md",
-			[]string{"headless", "`controller: daemon`", "Dispatch", "Envoy", "relaunches",
+			[]string{"headless", "`controller: daemon`", "Dispatch", "Envoy",
 				"A plain user turn in this session other than the start message or a task an operator sent with `legion claims deliver` is a person writing from Dispatch's Agents page: answer it first, in the conversation."},
 			[]string{"legion controller start", "typed directly", "read by no one", "nobody reads"}},
 	} {

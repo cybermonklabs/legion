@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+    The daemon's boot probe of a worker image no longer makes the `pi.agents` probe, the
+    session-storage probe or the Claude lane. The probe Sandbox puts `LEGION_IMAGE_PROBE_RUN=boot`
+    in its container's env, which tells the image's `legion probe-image` that it is the boot run.
+    That run still makes the contract probe and the plugin load probe, with the task agents and
+    skills the role prompts name and each agent's model, then the whole capability table, the reads
+    of Oh My Pi's model fallback, version and help, and the roles' overlays. Its OK line says
+    `session-storage=skipped`. The image build still makes all three probes, fails an image that
+    fails one of them, and prints `session-storage=probed`. The daemon refuses
+    `LEGION_IMAGE_PROBE_RUN` in `runtime.kubernetes.pod.env` and as a `provider_keys` variable, and
+    any other value of it makes `legion probe-image` exit 2. A worker image built before this
+    release ignores the variable, and a daemon built before it sets none: in either case the image
+    makes all three probes and prints `session-storage=probed`. The daemon reads neither state of
+    that mark, so it passes the OK line of either run. The daemon API contract does not change.
+time: 2026-11-27T16:47:54Z
+custom:
+    Issue: image-probe-boot-run

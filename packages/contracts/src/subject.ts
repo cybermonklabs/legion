@@ -20,8 +20,11 @@ export type LegionNoticeSubject<
 > = `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Project}.${Issue}`;
 
 /** The Go daemon's controller topic for `project` (the project token): the notice family's one
- * member that names no issue, since no issue key can be `controller`. What the Go daemon publishes
- * here is listed at `notify.ControllerTopic` (packages/daemon/internal/notify). */
+ * member that names no issue, since no issue key can be `controller`. A Go daemon of an earlier
+ * release publishes its controller notices here; a current one publishes them to the controller's
+ * role topic (`ROLE_TOPIC_PREFIX` and `legion-<project>-controller`, the daemon outbox's
+ * `controllerNotice`, which lists what they are), and the controller follows this one too, so it
+ * still hears a daemon not yet upgraded. */
 export function legionControllerNoticeSubject<Project extends string>(
   project: Project
 ): LegionNoticeSubject<Project, "controller"> {
@@ -37,6 +40,23 @@ export type LegionWakeSubject<Token extends string = string> =
  * every wake goes to the one `notifications.legion.wake` (`bus.LegionWakeTopic`). */
 export function legionWakeSubject<Token extends string>(token: Token): LegionWakeSubject<Token> {
   return `${LEGION_NOTICE_TOPIC_PREFIX}${token}.wake`;
+}
+
+/** What ends the state lane of every Legion deployment (`legionStateSubject`), so that a reader
+ * of every deployment's state lane names them all with one pattern,
+ * `notifications.legion.*.state`. */
+export const LEGION_STATE_SUFFIX = ".state" as const;
+
+export type LegionStateSubject<Token extends string = string> =
+  `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Token}${typeof LEGION_STATE_SUFFIX}`;
+
+/** The state lane of the Legion deployment whose project token is `token`
+ * (`legionProjectToken`), beside its controller and wake lanes: the daemon publishes its state
+ * events here, one message per committed transaction (`legionStateMessage` in `legion-api.ts`),
+ * and Dispatch's durable reads every deployment's lane at once, on
+ * `notifications.legion.*.state`. */
+export function legionStateSubject<Token extends string>(token: Token): LegionStateSubject<Token> {
+  return `${LEGION_NOTICE_TOPIC_PREFIX}${token}${LEGION_STATE_SUFFIX}`;
 }
 
 export const DISPATCH_TOPIC_PREFIX = "notifications.dispatch." as const;
@@ -418,6 +438,7 @@ export function whatsappSubject(phone: string, jid: string, kind: string) {
 export type Subject =
   | LegionNoticeSubject
   | LegionWakeSubject
+  | LegionStateSubject
   | AgentSubject
   | LegacyAgentSubject
   | RoleSubject

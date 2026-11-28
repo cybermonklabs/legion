@@ -1,7 +1,9 @@
 // Package steprecord holds the words and the form of a Dispatch step record, for a caller outside
 // this module: the kinds of a run, the results of a run that ended, the codes of the step write's
 // refusals and the plan write's refusals that no retry changes, the form of the agent, the session
-// and the model a record names (printable ASCII with no space, from 1 to 128 characters), and the
+// and the model a record names (printable ASCII with no space, from 1 to 128 characters), the form
+// of the task a record names, which is the form of a `plan_task` block's id too (lowercase
+// letters, digits and hyphens, the first a letter or a digit, at most TaskIDMax bytes), and the
 // scale and the rule of the rating a retro gives the plan, which Dispatch stores on the retro's
 // record. It also holds the most models a record's answers names, and the rule its answers keep.
 // Each is the one generated from packages/contracts (internal/contracts), which Dispatch's store
@@ -87,6 +89,23 @@ const (
 // entry's model and its calls. Each caller refuses a fault with its own wording.
 func CheckAnswers[E any](answers []E, pair func(E) (model string, calls int64)) (AnswersFault, int) {
 	return contracts.CheckStepAnswers(answers, pair)
+}
+
+// TaskIDMax is the most bytes the id of a task a record names holds, and TaskIDRule the form's
+// rule in words, which a refusal of either side gives (contracts.StepTaskMax,
+// contracts.StepTaskRule).
+const (
+	TaskIDMax  = contracts.StepTaskMax
+	TaskIDRule = contracts.StepTaskRule
+)
+
+var taskID = regexp.MustCompile(contracts.StepTaskPattern)
+
+// TaskIDHolds reports whether id is in the form of the task a step record names, which is the form
+// of the id of a `plan_task` block as well: a plan whose task block has any other id has no step
+// Dispatch could record.
+func TaskIDHolds(id string) bool {
+	return taskID.MatchString(id)
 }
 
 // PlaceHolds reports whether place is a place a run of kind can stand at: from 1 for a step, 0 for

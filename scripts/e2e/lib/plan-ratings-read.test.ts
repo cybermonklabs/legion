@@ -34,7 +34,8 @@ function uuidOf(issue: string, which: number): string {
   return `00000000-0000-5000-8000-${String(number * 100 + which).padStart(12, "0")}`;
 }
 
-/** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. */
+/** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. Each task
+ *  needs none, as this release's daemon writes a plan of one task. */
 function planOf(issue: string, tasks?: string[][]): PlanRecord {
   const id = uuidOf(issue, 1);
   return tasks === undefined
@@ -45,7 +46,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
         source: "default",
         artifact_id: null,
         version: null,
-        tasks: [{ id: "default", steps: defaultSteps }],
+        tasks: [{ id: "default", needs: [], steps: defaultSteps }],
       }
     : {
         id,
@@ -54,7 +55,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
         source: "owner",
         artifact_id: uuidOf(issue, 2),
         version: 2,
-        tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, steps })),
+        tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, needs: [], steps })),
       };
 }
 

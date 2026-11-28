@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The Dispatch event type `role.undelivered` and its payload, `RoleUndeliveredEventPayload`:
+  `event_id`, `event_type`, `role`, `keeps`, `kept_at`, `dropped_at` and `reason` (`expired` or
+  `copy_gone`). Dispatch's outbox appends it, as a system actor, on the issue, document or project
+  of an event whose copy for a role reached no session.
+time: 2026-11-24T20:14:23.365119246Z
+custom:
+    Issue: pr5402

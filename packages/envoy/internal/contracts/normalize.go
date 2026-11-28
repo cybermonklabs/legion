@@ -1042,8 +1042,12 @@ func githubPayload(event string, body map[string]any) string {
 			"base_ref":         nestedString(body, "pull_request", "base", "ref"),
 			"merged":           strconv.FormatBool(boolValue(nested(body, "pull_request", "merged"))),
 			"merge_commit_sha": nestedString(body, "pull_request", "merge_commit_sha"),
-			"merged_by":        nestedString(body, "pull_request", "merged_by", "login"),
-			"updated_at":       nestedString(body, "pull_request", "updated_at"),
+			// merged_at is when GitHub merged the pull request, null and so absent until it has:
+			// Dispatch orders two merges of one issue by it, since updated_at moves with every
+			// later edit (delivery's MergeOfIssue).
+			"merged_at":  nestedString(body, "pull_request", "merged_at"),
+			"merged_by":  nestedString(body, "pull_request", "merged_by", "login"),
+			"updated_at": nestedString(body, "pull_request", "updated_at"),
 		}
 		addCappedBody(data, nestedString(body, "pull_request", "body"))
 	case "issues":

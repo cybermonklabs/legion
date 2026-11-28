@@ -53,6 +53,11 @@ func legacySessionTemplate(t *testing.T, g *rig, name string) {
 	})
 }
 
+// A replacement that would reap a volume whose claim still names a legacy session refuses, names
+// the session and the commands that clear it, and keeps the legacy Sandbox. The refusal comes only
+// after its launch has waited out the superseded pod, which the rig controller ends on a later
+// tick. newRig gives that event wait the test binary's deadline rather than its former two-second
+// default, so a loaded runner cannot turn this reap-guard assertion into a launcher timeout.
 func TestReplacementRefusesToReapAVolumeWithALegacySession(t *testing.T) {
 	t.Parallel()
 	store := &claimsForReap{

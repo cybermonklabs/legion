@@ -48,7 +48,9 @@ const (
 	reconnectCap  = 5 * time.Second
 	// DefaultGrace is how long a SIGTERMed child has to exit before it is killed: the shipped
 	// shim's default, half the daemon's default `worker_stop_timeout_seconds`
-	// (DEFAULT_TERMINATE_STDIN_GRACE_MS, worker-shim.ts).
+	// (DEFAULT_TERMINATE_STDIN_GRACE_MS, worker-shim.ts). pi-legion's HOST_STOP_GRACE_MS
+	// (packages/pi-legion/src/host-stop.ts) copies it as the longest a failed claim's exit waits
+	// for Oh My Pi's own stop: a change of either is made to both.
 	DefaultGrace = 5 * time.Second
 	// DefaultStopGrace is the stop grace a shim assumes when its runtime names none
 	// (Config.StopGrace): the daemon's default `worker_stop_timeout_seconds`, which is also what a

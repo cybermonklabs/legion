@@ -1,0 +1,78 @@
+{
+  "id": 186589,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 2,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "01a17966-eca0-77a7-a3fe-22c8c88de8bf",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor s",
+      "cwd": "lorem ipsum dolor sit amet l",
+      "session_title": "lorem ipsum dolor sit amet l"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-04T16:41:10.957842Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsu",
+    "repo": "lorem ipsum dolor sit am",
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ip",
+    "labels": [],
+    "number": 1188,
+    "parent": "ACME-2",
+    "status": "triage",
+    "changed": [
+      "blocked_by"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 2,
+    "priority": 0,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [
+      "ACME-3"
+    ],
+    "components": {
+      "ids": [
+        "lorem"
+      ],
+      "mode": "explicit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-04T16:40:56.493887Z",
+    "created_by": {
+      "id": "01a17966-eca0-77a7-a3fe-22c8c88de8bf",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet l",
+        "host": "lor",
+        "machine": "lorem ipsum dolor s",
+        "session_title": "lorem ipsum dolor sit amet l"
+      }
+    },
+    "updated_at": "2026-11-04T16:41:10.969227Z",
+    "resolved_repo": "lorem ipsum dolor sit am",
+    "external_links": [],
+    "plan_artifact_id": "",
+    "references_changed": [
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      }
+    ],
+    "primary_artifact_id": "6196c809-2ecd-42b1-8c64-0549fd008782",
+    "verification_artifact_id": ""
+  }
+}

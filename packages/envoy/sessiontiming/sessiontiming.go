@@ -10,10 +10,8 @@
 // packages/contracts. This package is the one public door onto them, so the daemon reads the
 // generated values rather than keeping copies of its own.
 //
-// No package of the envoy module imports this one. packages/envoy/docker/Dockerfile copies only
-// go.mod, go.sum, cmd, internal and listenfd into the listener image's build context, so an
-// internal/... import of this top-level directory would compile here and break that image build.
-// An envoy package that needs one of these numbers reads internal/contracts directly.
+// No package of the envoy module imports this one: an envoy package that needs one of these
+// numbers reads internal/contracts directly.
 package sessiontiming
 
 import "github.com/sjawhar/envoy/internal/contracts"
@@ -24,9 +22,11 @@ import "github.com/sjawhar/envoy/internal/contracts"
 // call attempt waits, CallRetryDelay the pause before the next attempt, and CallAttempts how many
 // attempts one call makes. Each is the generated contracts constant itself, so a caller outside
 // this module weighs the same numbers the listener does. The daemon's own code reads the first
-// three. The three call numbers are exported only for the daemon test that holds the rule -
-// three refreshes and one whole call strictly inside the live window - which sits in another
-// module (packages/daemon/internal/daemon/session_timing_test.go); no production code reads them.
+// three. The three call numbers are read only by tests of that module: the test that holds the
+// rule - three refreshes and one whole call strictly inside the live window
+// (packages/daemon/internal/daemon/session_timing_test.go) - and the idle rig's role process,
+// which pauses CallRetryDelay before it makes a registration call again (postListener in
+// packages/daemon/internal/daemon/idle_rig_agent_test.go); no production code reads them.
 const (
 	Heartbeat      = contracts.SessionHeartbeat
 	LiveWindow     = contracts.SessionLiveWindow

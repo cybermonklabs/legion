@@ -157,13 +157,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: time.Now()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clockNow()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
 	defer func() {
 		f.mu.Lock()
-		f.queries[asked].ended = time.Now()
+		f.queries[asked].ended = f.clockNow()
 		f.inFlight--
 		f.mu.Unlock()
 	}()
@@ -174,6 +174,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
 	stall := f.graphQLStalls[queryKey(repository, at.page)]
+	stalled := f.stalled
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
@@ -185,6 +186,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if limit != nil {
 		f.answerQueryLimit(w, *limit)
 		return
+	}
+	if stall > 0 && stalled != nil {
+		stalled()
+	}
+	if takes > 0 && f.queryWait != nil {
+		f.queryWait(takes)
+		takes = 0
 	}
 	for _, wait := range []time.Duration{stall, takes} {
 		if wait <= 0 {
@@ -671,6 +679,7 @@ func (f *fakeGitHub) answerQueryWith(repository, body string) {
 // client's own errors do (githubapp.StatusText): the status and GitHub's body, and the status
 // alone, with no `: ` after it, when GitHub answered no body.
 func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
+	t.Parallel()
 	for _, answer := range []string{"", `{"message":"Server Error"}`} {
 		name := "no body"
 		if answer != "" {

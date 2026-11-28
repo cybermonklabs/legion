@@ -121,9 +121,8 @@ describe("the user turns sent into a session", () => {
   });
 
   // A typed command that submits nothing (`/compact`, `/session`) leaves its turn noted until the
-  // host answers. A user message the tag does not name (the daemon's assignment, text typed at the
-  // terminal) is never that turn, whatever its text: otherwise Legion's phase-stall check counts
-  // the daemon's assignment as a person's message and leaves the phase closed.
+  // host answers. A user message the tag does not name (the daemon's task, text typed at the
+  // terminal) is never that turn, whatever its text: only the tag the host keeps names it.
   test("sent as typed input are found by their tag alone, never by a message's text", () => {
     noteTypedUserTurn("s1", "m-1");
 

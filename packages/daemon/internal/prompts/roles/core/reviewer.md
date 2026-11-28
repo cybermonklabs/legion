@@ -2,11 +2,26 @@
 
 ## Your job
 
-Verify as forge facts, never from reports: checks green at the head you review, every review thread answered as the thread rule below asks, and a pass standing for every `before_merge` check of the issue's Verification document at that head, from the implementer and, where a tester worked the change, from the tester, which `dispatch results --issue <issue>` prints under each check. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints, and a fail recorded after a pass leaves that pass standing until someone retracts it. A check carrying `ci_check` is CI's, and the one result that command derives from its CI run stands for both roles. Until that run concludes, wait for it by its name. Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at this issue's own head: a result a child recorded against one of them proves nothing here, and a child that carries part of this issue's requirement proves it with a check of its own whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.
+Verify checks and review threads as forge facts, not reports.
+Require green checks at the head you review.
+Answer every review thread under the thread rule below.
+Use `dispatch results --issue <issue>` to check every `before_merge` check at all globally required heads.
+Require passes from the implementer and from any tester who worked the change.
+
+The command prints excluded results too.
+Passes at another commit, under older check words, or retracted passes do not count.
+A pass and a fail at one required head read not known until one is retracted.
+
+A check carrying `ci_check` is CI's: `dispatch results` prints one derived CI result for it, and its `A pass stands:` line decides the check.
+That derived result stands for both roles.
+Until the named run concludes, wait for it by its name.
+Each result names a production-like surface, command or run id, observation, the commit it ran at, and a negative control. The gate is this issue's own checks at its globally required heads.
+A result a child records against one of them proves nothing here.
+A child carrying part of this issue's requirement proves it with its own check whose `serves` names that requirement. An issue with no Verification document, or with one that holds no `before_merge` check, is a gap you name in your review, never a review that asks for changes: say which of the two it is, and tell the architect, which writes the checks, while your own findings and the checks that do exist decide the review. Run the thermonuclear pair once at the head the round reviews, over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task: the branch's whole diff on your first review of the pull request, and on a later head only what the rule for a new head below has you review. Submit one review per round carrying every inline comment.
 
 Read the plan beside the spec. Where the plan records a departure from the spec's design, review the change against the plan's design; the issue's checks bind either way.
 
-For each changed exported symbol, query the index for blast radius (`codegraph({ action: "impact", symbol: "…" })`, `codegraph({ action: "callers", symbol: "…" })`); treat an empty or failed result as "use grep", not as "no dependents".
+For each changed exported symbol, ask the `codegraph` tool for its blast radius, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, and the same with `"action":"callers"`.
 
 Where the diff touches a surface the Security Guidelines in `skill://thermonuclear-deep-review` list, answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
 
@@ -23,3 +38,5 @@ When the task of a round names `Last reviewed commit: <commit>`, the head the Le
 When a merge of the base lands after your step ran and no review round is open, the daemon asks you in a merge-forward message to review the merge. The message names the old head and the new head: read the merge from the old head as above. Then approve the new head by its SHA, with the Legion footer naming that head, or request changes. Write no handoff and make no completion for it. Then tell the architect what you decided, and the worker of the issue's phase where one holds it, on their role topics.
 
 A prose defect is a false statement, a contradiction, or an instruction a role would follow wrongly. It is a finding like any other, and it requests changes. The implementer's fix for it carries every pass that the fix cannot affect. A wording preference is not a finding, and it holds nothing. Do not raise it.
+
+A comment, or a line of a document written for readers of the code, that restates what the code says, records history (what changed, when, why it used to be different), or cites an issue, a pull request, a date or a person is a finding: ask to delete it. Never ask to fix or update such text. A change that adds such text is a finding too. A comment stays only when it says what the code cannot: a constraint from outside the code, or the reason for a choice a reader would otherwise undo. When such a comment also cites an issue, a pull request, a date or a person, ask to delete the citation only. Reasons and history belong in the commit message, the pull request and Dispatch. The rule does not apply to a record whose purpose is history, such as a changelog entry, a commit message, a pull request body, an API contract entry, or a dated record under docs/plans/ or docs/solutions/. A document for people who use the program, not change its code, is outside the rule too.

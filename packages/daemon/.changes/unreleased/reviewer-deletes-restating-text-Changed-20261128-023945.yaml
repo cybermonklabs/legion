@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The reviewer asks to delete a comment, or a line of a document written for readers of the code,
+  that restates what the code says, records history, or cites an issue, a pull request, a date or
+  a person, and never asks to fix or update it. A change that adds such text is a finding too. A
+  comment stays only when it says what the code cannot: a constraint from outside the code, or the
+  reason for a choice a reader would otherwise undo; where such a comment also cites an issue, a
+  pull request, a date or a person, the reviewer asks to delete the citation only. A record whose
+  purpose is history, such as a changelog entry, a commit message, a pull request body, an API
+  contract entry, or a dated record under `docs/plans/` or `docs/solutions/`, is outside the rule,
+  and so is a document for people who use the program rather than change its code.
+time: 2026-11-28T02:39:45Z
+custom:
+    Issue: reviewer-deletes-restating-text

@@ -100,11 +100,11 @@ func TestPutStepExperimentWritesTheVariantOnItsOwnRoute(t *testing.T) {
 
 // The plan of one run of an issue is a PUT on the plan's own id under its issue, as the daemon's
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
-// names the run, the source and every task with its steps in order; a plan of the source default
-// names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out, and a plan of the source owner names both, under the names Dispatch's route reads. The
-// daemon writes no owner's plan yet (the workflow's defaultPlan is its one plan), so that case
-// holds the body of each field such a plan carries.
+// names the run, the source and every task with its steps in order and its needs, [] for a task
+// that needs none; a plan of the source default names no document and no version, which Dispatch
+// refuses on such a plan, so the body leaves both out, and a plan of the source owner names both,
+// under the names Dispatch's route reads. A task whose needs are nil, a row the release before
+// wrote, writes no needs member, which Dispatch reads as needs not recorded.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 	for _, tc := range []struct {
@@ -116,6 +116,14 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "the default plan",
 			plan: PlanWrite{Generation: 2, Source: "default",
+				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}},
+			present: map[string]string{"generation": "2", "source": `"default"`,
+				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"],"needs":[]}]`},
+			absent: []string{"id", "artifact_id", "version"},
+		},
+		{
+			name: "a row of the release before, with no needs recorded",
+			plan: PlanWrite{Generation: 2, Source: "default",
 				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}},
 			present: map[string]string{"generation": "2", "source": `"default"`,
 				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
@@ -124,9 +132,9 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "an owner's plan",
 			plan: PlanWrite{Generation: 3, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}}},
+				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}, Needs: &[]string{}}}},
 			present: map[string]string{"generation": "3", "source": `"owner"`, "artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
-				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"]}]`},
+				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"],"needs":[]}]`},
 			absent: []string{"id"},
 		},
 	} {

@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 // holdNATSAudience is the audience the hold rig's platform tokens are minted for and verified at,
@@ -81,7 +82,7 @@ func newHoldRig(t *testing.T) *holdRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	pool, err := testpool.NewPool(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

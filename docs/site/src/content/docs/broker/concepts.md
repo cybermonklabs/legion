@@ -92,9 +92,10 @@ the narrowed word of the one it would have had: `read-named`, `read-person` or `
 holds `read`, and `person` beside it when it acts for a person, never `approve` and never
 `legion-status`, so a Legion daemon's read token writes no status either. The trade may
 also name a cut (`as_of`), the past time the token reads at: an RFC 3339 time no later than the
-trade. Until Dispatch serves reads at a past time, it refuses a token with a cut on every read but
-`GET /api/v1/whoami`, with `403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the
-token it always got (`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
+trade. Dispatch answers a token with a cut as of its cut on each route that answers `as_of`, and
+`GET /api/v1/whoami` names the cut. Every other read refuses the token with
+`403 AS_OF_TOKEN_NOT_SERVED`. A trade that asks for no scope gets the token it always got
+(`packages/envoy/internal/cipher/oauth/exchange.go`, `decide`).
 
 A read trade makes, moves and extends no launcher credential, and its answer names none. A
 person's read trade still proves the sign-in with the box key. Its token names the launcher
@@ -128,8 +129,10 @@ of either kind, holds no OAuth scope, and Dispatch records its writes under its 
 service and under no person.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
-renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
-a pod. A pod's renewal carries the pod's current projected token, and the broker refuses it
+renews the sessions it registered, `agent-secrets renew` renews a box, Legion's pod shim renews
+a pod, and the commands of a person signed in on a machine keep that sign-in's enrollment renewed
+while the machine needs it ([A sign-in's renewal](#a-sign-ins-renewal)). A pod's renewal carries
+the pod's current projected token, and the broker refuses it
 (`POD_IDENTITY_MISMATCH`) unless the token names the pod UID and service account the enrollment was
 made for. The token is not yet required. The broker ratchets each pod UID instead: once any
 enrollment naming a pod UID, live or ended, has renewed with that pod's token, the broker refuses a
@@ -153,9 +156,10 @@ So a box dropped from its fleet's settings, and one that stops being able to pro
 lose their sessions within one `BROKER_LEASE_SECONDS`: the renewal is refused
 `ENROLLMENT_NOT_LIVE`, the broker logs `broker: machine session renewal refused: its machine login
 has ended`, and the sweep ends the enrollment at its lease. A copy of such a session's key and
-enrollment id taken off the box renews nothing once that box's login has ended. Only a machine's
-own session is held this way: a pod's renewal proves the pod's own projected token, and a person's
-session on such a box runs until they revoke the sign-in, which ends it at once.
+enrollment id taken off the box renews nothing once that box's login has ended. A person's sign-in
+session on such a box is held the same way, to its sign-in's credential
+([A sign-in's renewal](#a-sign-ins-renewal)). A pod's is not: its renewal proves the pod's own
+projected token.
 
 An enrollment has **ended** once its launcher revokes it (the helper does
 as soon as a registered session's process exits), whoever may revoke its machine login revokes that
@@ -203,6 +207,91 @@ records no operator when a service's login enrolled it, since the Legion daemon 
 service with its own Kubernetes token rather than as a person. A pod whose account
 `BROKER_POD_OPERATORS` maps to a person records that person as its operator as well
 ([a person's pod](#a-persons-pod)).
+
+### A sign-in's renewal
+
+A person's sign-in on a machine registers one enrollment, which every session of that person on
+the machine signs as, and which names no session. Nothing launches it, so nothing else renews it:
+each `agent-secrets` command that signs as the sign-in keeps it renewed. The command records that
+it used the sign-in, and a request it leaves waiting for a person, in the sign-in's renewal
+directory beside its record (`<hash>.renewal` in the sign-in store), and starts the sign-in's one
+renewer, `agent-secrets renew --sign-in`, where none runs. The renewer runs in a session of its own
+and holds the flock of that directory's `lock` for its whole life, so two commands at once start
+one renewer between them. It renews the enrollment the sign-in's record names when a third of the
+lease has passed, as `agent-secrets renew` renews a box, while the machine needs it:
+
+- a command used the sign-in less than one lease ago;
+- a request one of those commands left waiting for a person is still pending, which the renewer
+  asks the broker once the first no longer holds; or
+- a grant of the enrollment that has an end is still live, which the renewer reads in
+  `GET /v1/enrollments/self`. A grant with no end, one that lasts until its session ends, keeps the
+  enrollment no longer than use does.
+
+So a grant a person approved lasts to its own end, and a request waits for its person until they
+decide it, it is cancelled or it expires, however long the session waits between commands. The
+renewer stops, and the lease then lapses within one more lease, once none of the three holds;
+once the record names no enrollment or is gone from the machine; once the broker refuses the
+enrollment for good, as after the person revokes the sign-in or its credential lapses (below),
+exiting 76; and once for 30 minutes, or two leases where the lease is longer, no renewal got
+through or no answer of the broker said whether anything needs the enrollment, exiting 1, so a
+renewer whose broker went away does not retry forever. A refused enrollment is recorded in the
+`lock` file, and no later renewer sends it again. A new `agent-secrets login` writes a record
+that names a new enrollment, which the running renewer renews from its next renewal on.
+
+The broker renews a sign-in's session only while the launcher credential its sign-in holds on
+that machine is live: not revoked, not past its expiry, and the machine's account still listed for
+its service in `BROKER_VM_SERVICES`, as a machine's own session is held to its machine login. The
+credential expires with the person's last traded Google identity token, about an hour after the
+trade. So the renewer also trades the person's identity again, as the registration does, after
+its first renewal and each time a third of the credential's remaining life has passed; each trade
+moves the expiry of the same credential, so the same enrollment renews on. A trade that fails is
+tried again once the smaller of a third of the lease and a third of the credential's remaining
+life has passed, and not more often than every ten seconds. A trade whose answer names no expiry
+of the credential, or one already past, is not tried again, since the broker names one beside
+every credential it answers and would answer the same again; the renewer says so in its log.
+Where the person can no longer be traded, as when their Google account is suspended or deleted,
+the credential lapses within its hour, the broker refuses the next renewal (`ENROLLMENT_NOT_LIVE`,
+"the sign-in that enrolled this session has ended", logging `broker: sign-in session renewal
+refused: its sign-in credential has ended`), and the enrollment ends one lease later, or later by
+the length of any broker outage in that time, which the broker gives back to every lease: the
+machine loses the person's access with nobody revoking anything. A machine told of no sign-in
+client cannot trade at all, and its sign-in enrollment ends an hour after the trade that
+registered it. Revoking the sign-in still ends its sessions at once.
+
+`agent-secrets-helper` keeps the same credential live for the sessions it holds under a sign-in
+and for the boxes it enrolled under one, while one of them may still stand under it. It asks for
+the sign-in every five minutes and trades again once the access token it holds is five minutes
+from its end, or the credential fifteen minutes from its, whichever comes first, so a trade that
+fails is tried twice more before the credential lapses; it logs each such failure at WARN. A
+helper that holds no such enrollment trades nothing, so the sign-in's **Last used** on Dispatch
+says whether the box is in use, but for the two cases below. A box renews with its own key and
+tells the helper nothing, so the helper keeps a record of each box it enrolled, with the sign-in
+it enrolled it under, beside its session records. A record counts while its sign-in is the one on
+the box, and goes once that sign-in leaves, since nothing there can trade it again. A box that
+ends without being unenrolled keeps its record, and with it the trades and the **Last used** of
+its sign-in: unenrol it through the helper (`agent-secrets unenroll --helper --enrollment <id>`,
+the id in the record), which removes the record also where the broker answers that the
+enrollment is gone. Where the helper finds no record it can read, as at its first start after a
+release that kept none, it cannot tell which boxes stand under the sign-in on the box: it keeps
+that sign-in traded until the sign-in leaves the box, by a sign-out or a new `agent-secrets
+login`, and logs a WARN naming the person; until then that sign-in's **Last used** moves with the
+helper's trades, not with a box's use. A helper on a new machine, whose identity key it made at
+its start, holds nothing, and one that cannot tell which sign-in is on the box saves no record
+until it can. Where the person can no longer be traded, the broker refuses those sessions' next
+renewal
+and the helper enrols each again under the machine's own credential: the person's access through
+them ends, and the sessions go on as the machine's. A box renews with its own `agent-secrets
+renew`, which exits 76 when refused instead, and is enrolled again only by running `agent-secrets
+enroll --helper` again.
+
+A renewer that is killed, with its machine or its process tree, renews nothing until a command
+starts one: the next command of the sign-in, or within a second a use command still waiting for
+a person, which looks each second. A grant is lost, and a request cancelled, if neither runs
+before the lease lapses. A grant with no end lasts while the sign-in is in use. The renewer
+itself registers no enrollment: a command that finds the enrollment ended registers the next
+one, as before, and keeps that one renewed. Each renewer writes to `renewer.log` in the renewal
+directory why it stopped, each renewal that failed and each trade that failed; one stopped by
+SIGTERM or SIGINT writes no line.
 
 ### When no broker is serving
 
@@ -461,21 +550,21 @@ machine's login can still be ended there, while a service's login is out of reac
 Dispatch answers and what remains is cluster access (delete the service's pods, or remove its
 account from `BROKER_SERVICE_LOGINS` and redeploy the broker), such a dismissal or deny is refused
 `503 MEMBER_KIND_UNCHECKABLE`, and the approval page shows no request (`503`). While Dispatch does
-not answer at all (a timeout, a failed connection, a gateway's `502`, `503` or `504`, Dispatch's
-own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`, or a `500` that names no code or names
-`INTERNAL`, which is how Dispatch answers a read its database failed), only the person a grant
-names as its approver ends it through the broker as an approver, since a revoke only takes access
-away. Every revoke through a group or as anyone is then refused `503 MEMBER_KIND_UNCHECKABLE`,
-whatever session holds the grant. A grant on a person's session can still be ended by that person,
-its operator, asking Dispatch nothing; a grant on a session that acts for no person (a service's
-pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's own session) nobody but
-its named approver ends through the broker until Dispatch answers. What remains for a pod's grant
-meanwhile is cluster access: delete the pod. Its grants then end when its lease lapses unrenewed
-(`BROKER_LEASE_SECONDS`), except that a session that names a session id leaves them dormant, used
-by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS` passes, and a Legion
-claim's pod hands them to the claim's next live pod at once; so where something starts that
-session again (a Legion claim), stop that too. A grant also ends at its own expiry. Every revoke
-while Dispatch answers anything else the broker
+not answer at all (a timeout, a failed connection, a `408` or a `429` whatever its body names, a
+gateway's `502`, `503` or `504`, Dispatch's own `DATABASE_UNAVAILABLE` or `OIDC_ISSUER_UNAVAILABLE`,
+or a `500` that names no code or names `INTERNAL`, which is how Dispatch answers a read its database
+failed), only the person a grant names as its approver ends it through the broker as an approver,
+since a revoke only takes access away. Every revoke through a group or as anyone is then refused
+`503 MEMBER_KIND_UNCHECKABLE`, whatever session holds the grant. A grant on a person's session can
+still be ended by that person, its operator, asking Dispatch nothing; a grant on a session that acts
+for no person (a service's pod, a person's pod `BROKER_POD_OPERATORS` no longer maps, or a machine's
+own session) nobody but its named approver ends through the broker until Dispatch answers. What
+remains for a pod's grant meanwhile is cluster access: delete the pod. Its grants then end when its
+lease lapses unrenewed (`BROKER_LEASE_SECONDS`), except that a session that names a session id
+leaves them dormant, used by nothing, for its next enrollment until `BROKER_SESSION_CARRY_SECONDS`
+passes, and a Legion claim's pod hands them to the claim's next live pod at once; so where something
+starts that session again (a Legion claim), stop that too. A grant also ends at its own expiry.
+Every revoke while Dispatch answers anything else the broker
 cannot read is refused `503 MEMBER_KIND_UNCHECKABLE` too: a refusal of the broker's own account, a
 kind this broker does not know, a `500` naming another code, another code of Dispatch's, a
 certificate that does not verify or a name that does not resolve. A revoke of a grant of one's own
@@ -826,6 +915,15 @@ such as `admin-tier` for an agent-tier profile of an `admin` source. A source a 
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
 (`github-installations-no-profile`), so every GitHub token the broker hands over is a profile's.
+The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
+nothing else, is served by a CI run's result grant and has no stored secret as its source: the
+policy serves it as nothing, as every dpop profile, with or without a stored secret of its name
+(`profile-minted`, no refusal), and a stored secret of its name is never released, as a value or
+as a placeholder: a session's release of an earlier grant is answered `403 GRANT_NOT_LIVE`, and
+a new request for it `400 UNKNOWN_SECRET`. The release's own check of a dpop binding also refuses
+a stored secret's release, `403 MINTED_ONLY`, behind that policy rule. The profiles file is
+refused when that profile has no proxy block, or when a profile of kind `dpop` sets a `source`,
+`tier`, `requesters`, `maxGrant`, `github`, `google` or `allow` of its own.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
@@ -1321,8 +1419,12 @@ The broker evaluates every name
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
   A change reverted before any release finds
   it leaves the grant as it was: it was approved for that secret, type and source, and its next
-  release mints a token of that same type from that same frozen source, never the stored value. To
-  end a grant, revoke it. A type secret the broker stops serving, such as one whose
+  release mints a token of that same type from that same source, never the stored value. A release
+  reads the source the policy serves the name from: the source the request froze, or, while a
+  deployment moves its store to another prefix, the policy's source when the frozen one counts as
+  it under `BROKER_SECRETS_SECOND_PREFIX`, and never that frozen one
+  ([Moving the store to another prefix](/legion/broker/operate/#moving-the-store-to-another-prefix)).
+  To end a grant, revoke it. A type secret the broker stops serving, such as one whose
   `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A
@@ -1755,10 +1857,15 @@ binds. A placeholder is the kind's `placeholder_prefix`, else `agent-secrets-pla
 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
 brokers; `envoy-broker profiles check <file> [--against <old file>] [--secrets-json <file>]
-[--private-upstream '<host>=<url> ...']` says whether a broker would serve a file, and what that
-file adds and removes against the one in force: the kinds, hosts, headers, variables, ways,
-`max_grant` and `allow` rows of the kinds and of the profiles. With `--against` it also lists,
-under `widens`, each served name whose `allow` the change widens, and each host it adds to a name.
+[--private-upstream '<host>=<url> ...' [--cluster-ranges <CIDR prefixes>]]` says whether a broker
+would serve a file, and what that file adds and removes against the one in force: the kinds,
+hosts, headers, variables, ways, `max_grant` and `allow` rows of the kinds and of the profiles.
+Given the broker's values of `BROKER_PROXY_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`,
+it also holds each dpop block to those destinations and each destination's address to the rule the
+broker holds it to at start; without `--cluster-ranges` it says which address it did not judge
+against the ranges.
+With `--against` it also lists, under `widens`, each served name whose `allow` the change widens,
+and each host it adds to a name.
 With `--secrets-json` (the list `gcloud secrets list --format='json(name,annotations)'` prints for
 the agent secrets) it reads each secret's `proxy` and `proxy-narrowed` tags and refuses what the
 policy load would refuse, in the load's words (`profile "<NAME>": <reason>: <detail>`): a secret
@@ -1800,7 +1907,10 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code. This release names one, the approve capability, below.
+itself, for a kind it names in code. This release names two: the results capability,
+`DISPATCH_RESULTS_TOKEN`, whose grant a CI run of a result entry is answered, and the approve
+capability, below. Both are asked for with the one placeholder type,
+`urn:envoy:params:oauth:token-type:proxy-placeholder`, and answered under `proxy`.
 
 The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
 block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it
@@ -1862,11 +1972,23 @@ a fixed phrase in place of the names, so a service that sent the value back ther
 on.
 
 The proxy reads the grant behind the password on every connection, and the name's kind and
-profile decide each request (`packages/envoy/internal/cipher/proxy`). A host that no kind of the
-grant's names binds is tunnelled unread, to a public address alone. A bound host is read with a
-leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the request must
-name that same host in its TLS name and in its `Host` header; then the kind's hosts and headers,
-and the kind's and the profile's methods and paths, decide whether the swap happens. That
+profile decide each request (`packages/envoy/internal/cipher/proxy`). A command can hold
+placeholders of several grants of its session at once: one `agent-secrets` run nested in another,
+or a Legion role's GitHub grant beside a grant that a run inside the role asked for. Its password
+names one of them. A host is bound when a kind of any live grant of the password's enrollment
+binds it. A host no such kind binds is tunnelled unread, to a public address alone. A bound host
+is read with a leaf the broker pod signs for it ([the proxy's chain](#the-proxys-chain)), and the
+request must name that same host in its TLS name and in its `Host` header; then the kind's hosts
+and headers, and the kind's and the profile's methods and paths, decide whether the swap happens.
+A request is handled for one name of one grant: the password's own grant when the request carries
+one of its placeholders, and otherwise the first other live grant of the enrollment, in grant ID
+order, that binds the host and whose placeholder the request carries. A placeholder of another
+grant of the session is therefore swapped on the same connection. A `github-app` or
+`github-installations` name holds one placeholder for each account its App is installed on, and
+the proxy swaps the token of the account the request's path names when the grant holds it:
+`/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
+`/{owner}/{repo}` on `github.com`. GraphQL, search and `/user` get the token of the account whose
+placeholder the request carries. A decrypted
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
@@ -1894,6 +2016,34 @@ each placeholder — `agent-secrets-placeholder-`, in any case, and at most the 
 digits after it, up to where another placeholder starts, or a kind's own `placeholder_prefix` and
 the 32 letters and digits after it, where the character before it is no ASCII letter or digit —
 replaced by `[placeholder]`.
+
+A request that still carries a whole placeholder after the swap is refused `403`
+(`PLACEHOLDER_NOT_SWAPPED`), and nothing of it goes to the service. This includes a placeholder of
+an ended grant, another session, a second grant beside the one the request is handled for, or one
+outside the headers its kind names. The refusal line names the grant the placeholder was minted
+for in `placeholder_grant`, while the broker still holds the release's row or while a minted
+capability's grant lives.
+
+The scan reads the command-written headers, trailers, path and query. It leaves out only the
+placeholder the proxy replaced in a named header, substituting a space so text on either side is
+never joined; a second, ended or unknown placeholder in the same header is refused. On the AWS
+sign path, the three headers the signer writes (`Authorization`, `X-Amz-Date`,
+`X-Amz-Security-Token`) are left out because the signer wrote them; the query is scanned as the
+command wrote it, since the sign path does not rewrite it and presigned URLs are refused earlier.
+A whole placeholder is the default `agent-secrets-placeholder-` prefix, or a kind's
+`placeholder_prefix`, followed by 32 letters and digits; the default prefix also opens a minted
+capability's form (`agent-secrets-placeholder-`, a kind word, a hyphen, and 32 letters and
+digits). The default prefix has no left boundary. A kind prefix must start the text or have a
+character that is not an ASCII letter or digit before it, so `tml-` does not match inside
+`html-`.
+
+A trailer reaches the broker in time for this scan only where the broker has already read the body
+to its end: an AWS call it signs with the body's hash, and a `Limited` name's post it reads to find
+the channel. On every other request the body is streamed to the service, and the proxy copies the
+trailer map before any value has arrived in it. A placeholder in the body goes to the service as
+the command wrote it. The Azure token exchange instead decides its form and refuses `TOKEN_ASSERTION`
+unless the assertion is this grant's own placeholder. In each case a command gives away its own
+placeholder to a service its grant already lets it call.
 
 A path that holds a `.` or `..` segment is refused on every bound host (`path has a dot
 segment`), whatever the kind allows, because a reader that resolves such a path first — which is
@@ -1988,6 +2138,15 @@ What the airlock does not stop is as much of the design as what it does:
   broker whose profiles file declares a kind or a `dpop` block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
+  The one exception is `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound
+  host): the allowed requests of the dpop blocks that bind a host, such as the profile
+  `DISPATCH_RESULTS_TOKEN`, go to that host's URL.
+  The proxy dials it only at an address in a range a destination may be in — private,
+  `100.64.0.0/10`, or inside `BROKER_AIRLOCK_CLUSTER_RANGES` — and never at a loopback,
+  link-local, unspecified, multicast or IPv4 broadcast address, one in `0.0.0.0/8`, a cloud
+  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo,
+  IPv4-compatible, IPv4-translated and ISATAP forms); a tunnel or plain-HTTP request to that
+  address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
@@ -2384,7 +2543,9 @@ answers this row to the accounts that read the grant log),
 `grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, under `withheld_on`, the session's
 other enrollments it wrote them on besides the grant's own, and, on each other grant of the
-session that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's
+session that revoke ended, the withheld secrets that grant held; and carrying
+`member_kind_unchecked: true` where the grant's named approver ended it while Dispatch did not
+answer whether they are a restricted member), `grant.withheld` (an operator's
 revoke of a grant already revoked, naming under `withheld` the secrets it withheld from the
 session, and under `withheld_on` the other enrollments it wrote them on),
 `request.judged` (one row for every judge run that reached a verdict, its hand-overs to a person

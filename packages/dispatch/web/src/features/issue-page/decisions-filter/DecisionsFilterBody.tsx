@@ -28,10 +28,11 @@ import {
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { chipName, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
@@ -59,7 +60,6 @@ import {
   type DecisionsEntry,
   type DecisionsPart,
   type NamedEntry,
-  waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
@@ -149,7 +149,6 @@ export function DecisionsFilterBody({
   reveal,
   root,
   view,
-  waitingPress,
 }: {
   /** Each artifact of the issue by its slug, which is how a decision names the document a Keep
    *  is written against (`issue-artifacts.ts`). */
@@ -198,10 +197,6 @@ export function DecisionsFilterBody({
   root: TreeNode;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
-  /** The press of the header's count of what waits on the reader that turned this filter on
-   *  (`waiting.ts`'s `waitingPressOf`): each press puts the focus on the next thing that waits,
-   *  in the filter's order (R13, the tester's F12). */
-  waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
   const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
@@ -383,25 +378,6 @@ export function DecisionsFilterBody({
     if (request === undefined || !takeRequest(request)) return;
     if (request.id !== undefined) goTo(request.id);
   }, [goTo, request, takeRequest]);
-
-  // The header's count of what waits on the reader puts the focus on a thing that waits, in
-  // this filter's order: each open question whose turn is the reader's, then each decision of
-  // the review list (R13). Each press goes to the next of them after the one the last press
-  // went to, and round to the first again, so a reader works down what waits with the one
-  // control (the tester's F12). The reads that hold it may still be out when the press lands,
-  // so the press is taken once the list holds something that waits.
-  const pressed = useRef<number | undefined>(undefined);
-  const went = useRef<string | undefined>(undefined);
-  const waiting = useMemo(() => waitingOrder(parts), [parts]);
-  useEffect(() => {
-    if (waitingPress === undefined || waitingPress === pressed.current) return;
-    if (waiting.length === 0) return;
-    pressed.current = waitingPress;
-    const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
-    if (next === undefined) return;
-    went.current = next;
-    goTo(next);
-  }, [goTo, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is

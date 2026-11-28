@@ -100,6 +100,7 @@ func createIndexedDocument(t *testing.T, database *store.Store, service *Service
 // drain itself at its latest version, its own edge and its block's mention both, each settled in
 // the transaction that indexed it. The queue is empty after it.
 func TestTheFormsDrainIndexesTextAnOlderBuildStored(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	comment := createRawComment(t, database, "The plan: dispatch://CORE-2/plan.")
@@ -148,6 +149,7 @@ func TestTheFormsDrainIndexesTextAnOlderBuildStored(t *testing.T) {
 // drain then finds the document no longer owed and leaves its row owed, with the enqueued_at it
 // listed; the next pass indexes it and settles the row.
 func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	notes := createIndexedNotes(t, database, service, "The plan: dispatch://CORE-2/plan.\n")
 	listed := formsOwedRows(t, database)
@@ -187,6 +189,7 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 // document itself, which the revision fence admits at that version for the mark, writes the edge
 // and settles the forms row with its own index.
 func TestTheFormsDrainIndexesADocumentAnOlderBuildIndexedFirst(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	notes := createIndexedNotes(t, database, service, "The plan: dispatch://CORE-2/plan.\n")
 	if listed := formsOwedRows(t, database); len(listed) != 1 {
@@ -289,6 +292,7 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 // settlement that writes its next version indexes it (a version of this build) or owes it again
 // (one of an older build).
 func TestTheFormsDrainLeavesALiveAheadDocumentOwed(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	notes := createOwedDocument(t, database, service, "CORE-1", "", "notes", "The plan: dispatch://CORE-2/plan.\n", "Old text.\n")
 	if owed := formsOwedRows(t, database); len(owed) != 1 {
@@ -311,6 +315,7 @@ func TestTheFormsDrainLeavesALiveAheadDocumentOwed(t *testing.T) {
 // A document that is gone owes no text: its row, which an older build's removal leaves behind when
 // its delete of the document's edges owes the forms queue, is settled.
 func TestTheFormsDrainSettlesAGoneDocument(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	var gone string
@@ -340,6 +345,7 @@ func TestTheFormsDrainSettlesAGoneDocument(t *testing.T) {
 // delete from refs: a document this drain indexes once leaves nothing owed, even where its index
 // deletes an edge an older build wrote that the text no longer holds.
 func TestTheFormsDrainsIndexSettlesAfterItsOwnDelete(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	notes := createIndexedNotes(t, database, service, "The plan: dispatch://CORE-2/plan.\n")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -377,6 +383,7 @@ func TestTheFormsDrainsIndexSettlesAfterItsOwnDelete(t *testing.T) {
 // the second starts there, and a pass that reaches the end of the queue starts the next walk at its
 // start, where the stuck documents are listed, and left owed, again.
 func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	stuck := make([]string, blockIndexDocumentBatch+1)
@@ -438,6 +445,7 @@ func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T)
 // once that version holds the live text. A new version has the next pass read it again, index it
 // and settle its row, and the memo forgets it.
 func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	notes := createOwedDocument(t, database, service, "CORE-1", "", "notes", "The plan: dispatch://CORE-2/plan.\n", "Old text.\n")
@@ -495,6 +503,7 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 // stored one: it wins, writes its blocks and settles the row, so what kept the row owed was the
 // fence and not an index that settles nothing.
 func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	const markdown = "# Fenced\n\nThe plan is dispatch://CORE-1/plan.\n"

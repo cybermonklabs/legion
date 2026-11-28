@@ -88,8 +88,10 @@ printf '%s\n' "${planned%%$'\n'*}"
 # The answer is the lines `dispatch steps` prints
 # (packages/envoy-client/src/dispatch-commands/steps.ts): a header; where the records of the
 # issue's newest run name an experiment, the line `Experiment <experiment>: variant <variant>.`,
-# and no such line where they name none; then one run per line:
+# and no such line where they name none; then one run per line, except the line of a task of the
+# issue's plan, which comes before its runs and is no run:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running> set <set model|-> answered <answers>
+#   task <task> needs <[tasks]|[]|->: <place> <step> <state>, …
 # The line `Experiment …` is read only right after the header; anywhere else it is no run. A set
 # model is `-` or a model: printable ASCII with no space, 1 to 128 characters. The answers are
 # `running`, `unknown`, `none`, or each model as `<model>=<calls>(<share>%)`, joined by `,`. A
@@ -109,6 +111,7 @@ awk -v issue="$issue" -v steps="${planned#*$'\n'}" '
   }
   NF == 0 { next }
   NR == 2 && /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/ { next }
+  $1 == "task" && $3 == "needs" { next }
   {
     if (NF != 16 || $6 != "attempt" || $13 != "set" || $15 != "answered") unknown("the line is no run: " $0)
     if ($14 !~ /^[!-~]+$/ || length($14) > 128 || $16 !~ answers) unknown("the line is no run: " $0)

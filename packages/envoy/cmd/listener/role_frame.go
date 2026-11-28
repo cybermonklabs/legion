@@ -1,10 +1,10 @@
 package main
 
 // The one read of a stored message that the session relay (sessionRelays.takeOverFrame), a
-// takeover pass (takenRoleMessage), the kept lane's walk (judgeKeptRoleCopy) and the edge's frame
-// rule (edgeFrameVerdict) share, so the four tell a role message by one rule, and the one reader
-// of a frame's top-level fields (topLevelJSONFields) under it and under the edge's exact-key read
-// of a field (exactJSONString), so the edge and the relay read each field of a frame alike.
+// takeover pass (takenFrame), the kept lane's walk (judgeKeptRoleCopy) and the edge's frame rule
+// (edgeFrameVerdict) share, so the four tell a role message by one rule, and the one reader of a
+// frame's top-level fields (topLevelJSONFields) under it and under the edge's exact-key read of a
+// field (exactJSONString), so the edge and the relay read each field of a frame alike.
 
 import (
 	"bytes"

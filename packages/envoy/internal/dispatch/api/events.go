@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,10 +24,11 @@ const (
 	// maxEventPage is the most events one page of an issue's or a document's event log holds,
 	// and its default.
 	maxEventPage = 200
-	// maxEventReplay is the most events one page of the global event log holds (readEventsAfterID):
-	// the relay's read and GET /api/v1/events/log each page through the log at it, and it is that
-	// route's default. An events subscription's catch-up pages the same read at maxLiveReplay
-	// instead, the bound its resume is replayed within (replayThrough in live_events.go).
+	// maxEventReplay is the most events one page of the global event log holds: the relay's read
+	// (readEventsAfterIDOnLog) and GET /api/v1/events/log (readEventsAfterID) each page through the
+	// log at it, and it is that route's default. An events subscription's catch-up pages
+	// readEventsAfterID at maxLiveReplay instead, the bound its resume is replayed within
+	// (replayThrough in live_events.go).
 	maxEventReplay = 1000
 )
 
@@ -83,6 +85,13 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// A page at a cut is read whole every time. It reads no validator of metadata, since the issue's
+// sequence at the cut does not move for a post deleted after the cut, which the page then reads
+// as deleted, and it reads nothing kept, which holds present answers under keys that name no cut.
+// It goes out under an ETag over the cut and its own bytes, and is kept under no key
+// (writePastListAnswer). It leaves out what the records at the cut do not give
+// (eventPageAtTheCut).
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -93,22 +102,32 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	trees := wantsDisplayTrees(r)
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	issueHeld := false
+	if !atCut {
+		lastSeq, createdAt, held, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		issueHeld = held
+	}
+	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
-		return
-	}
-	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
-	if err != nil {
+	if err := eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -120,6 +139,10 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, issueHeld)
@@ -183,6 +206,10 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // therefore capped at the safe horizon, at or below which every event is final, the same cap and
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
+// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut). The wait
+// for the horizon runs with no cut: it reads no table as it stood at the cut, and where the
+// horizon observes through the shared pool, which binds each statement under a cut, the begin of
+// its observation would be refused.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -199,13 +226,25 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	through, err := s.sinceHorizon(r.Context())
+	through, err := s.sinceHorizon(asof.WithoutCut(r.Context()))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		newest, err := s.newestEventIDAtTheCut(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		through = min(through, newest)
+	}
 	events, err := s.readEventsAfterID(r.Context(), who, after, through, limit)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -303,6 +342,23 @@ func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, 
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
 	`, after, through, limit)
+}
+
+// readEventsAfterIDOnLog is readEventsAfterID for a reader whose cursor after is the id of an event
+// it read with created_at afterAt (0 and the zero time before the first): the page holds rows only
+// while that row still carries that created_at, in the statement's own snapshot. A reset of the log
+// (e2e/seed.ts's delete with the table's sequence restarted, or `truncate events restart
+// identity`) holds an ACCESS EXCLUSIVE lock on events until it commits, and the statement holds its
+// ACCESS SHARE lock until it ends, so the reset lands wholly before or wholly after this read. A
+// page read after a reset is therefore empty, never a page of the new log above the old cursor,
+// which the reader would take for the events after the ones it read (events.EventLogWasReset
+// tells the two cases apart).
+func (s *server) readEventsAfterIDOnLog(ctx context.Context, who model.Actor, after int64, afterAt time.Time, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
+		where e.id > $1 and e.id <= $2
+		  and ($1 = 0 or exists (select 1 from events c where c.id = $1 and c.created_at = $4))
+		order by e.id asc limit $3
+	`, after, through, limit, afterAt)
 }
 
 // eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
@@ -407,6 +463,16 @@ func (s *server) readEventRows(ctx context.Context, who model.Actor, query strin
 	return events, nil
 }
 
+// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
+// fields (attachAskEventFields): the types the asks shadow reads an ask's state from.
+var askEventKinds = func() map[string]bool {
+	kinds := map[string]bool{}
+	for _, kind := range asof.AskStateTypes() {
+		kinds[kind] = true
+	}
+	return kinds
+}()
+
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are
 // what attachPostMarks marks: every other kind of either post carries no body of its own. The
@@ -478,13 +544,15 @@ type postKey struct {
 // reply_block.text of a message reply's message.answered and of its message.edited written
 // before the delete, and the reply_block.text of a comment reply's comment.created or
 // comment.answered and of each later event of that reply written before the delete but its
-// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
-// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
-// the reply written after the delete carries no text of it. Each is part of an event of the post
-// that quoted it, and only the quoted post's own events are marked here. So are the document
-// events of an accepted suggestion, which are no event of the post: the accept's
-// artifact.version, and an artifact.renamed written before the delete, which carries every
-// version, keep the name the accept gave the version.
+// comment.deleted. So do the reply_block.quote and reply_block.occurrence of those events, the
+// words of the post the reply quotes. A reply's own delete event, message.deleted or
+// comment.deleted, carries no text, quote or occurrence of the post it answers whenever it is
+// written (deleteEventReplyBlock), and an event of the reply written after the delete carries none
+// of them (refs.ReplyBlocks). Each is part of an event of the post that quoted it, and only the
+// quoted post's own events are marked here. So are the document events of an accepted
+// suggestion, which are no event of the post: the accept's artifact.version, and an
+// artifact.renamed written before the delete, which carries every version, keep the name the
+// accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.
@@ -649,9 +717,7 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
-		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
-		default:
+		if !askEventKinds[events[index].Type] {
 			continue
 		}
 		raw, ok := events[index].Payload.(json.RawMessage)
@@ -687,7 +753,10 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 	}
 	for index := range payloads {
 		payloads[index].payload["opened_event_id"] = *asks[index].OpenedEventID
-		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
+		// A read at a cut reads no count (queueAskDetails): the payload then carries none.
+		if count := asks[index].ReferencedByCount; count != nil {
+			payloads[index].payload[model.ReferencedByCountKey] = *count
+		}
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
 	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {

@@ -49,8 +49,10 @@ const repliesList = stubbed(async () => {
     {
       approve_url: "https://secrets.internal.example/approve/record-alice",
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: ["LEDGER_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-alice",
       requested_at: new Date().toISOString(),
       session: { enrollment: null, request: null },

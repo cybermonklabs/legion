@@ -1393,7 +1393,7 @@ func (r *stepModelsLive) boot() {
 	t.Helper()
 	jsonLog := slog.NewJSONHandler(evidenceFile(t, r.evidenceFileAt("daemon.jsonl")), &slog.HandlerOptions{Level: slog.LevelDebug})
 	r.daemon = newRecordingLog(slog.New(stepModelsLogs{r.log().Handler(), jsonLog}))
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.note("Dispatch %s (database of its own), project %s with default repository %s, issues %s and %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.issues[0].key, r.issues[1].key, r.cfg.DispatchURL)
 }

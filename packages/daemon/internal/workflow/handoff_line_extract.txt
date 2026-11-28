@@ -1,0 +1,16 @@
+# A copy of the sentence a started worker's task names its predecessor's handoff record in (task,
+# effects.go), with the three values the daemon writes into it as placeholders: {word} is the
+# handoff's phase word (plan, implement, test or review), {version} the version the daemon accepted
+# and {issue} the issue's key. Two scripts hand an agent the task line the daemon would have
+# written, and each reads the sentence from here rather than keeping a copy of its own:
+# packages/pi-legion/scripts/skill-scenarios/rig.sh, whose tester-proof scenario hands the tester
+# the implementer's record, and scripts/e2e/plan-pointer-drive.ts, whose task hands the
+# implementer the planner's.
+#
+# internal/workflow's TestTheHandoffLineExtractIsTheSentenceTheTaskWrites holds this copy, with its
+# placeholders filled, equal to what task writes. So a sentence changed in the daemon and not here
+# fails that test, and neither script hands an agent a sentence the daemon no longer writes.
+#
+# The format: these `#` lines, one blank line, then the sentence on one line.
+
+Handoff: {word} version {version} (dispatch handoff-read --issue {issue} --phase {word} --version {version}); the newest version of that record: dispatch handoff-read --issue {issue} --phase {word}. A version above {version} is a correction its writer recorded after the daemon accepted version {version}, so read it too.

@@ -325,9 +325,16 @@ function stepLine(issue: string, line: string): StepLine {
  *  run name an experiment (steps.ts). step-records-read.sh reads it by the same pattern. */
 const variantLine = /^Experiment [a-z0-9-]+: variant [a-z0-9-]+\.$/;
 
+/** The line `dispatch steps` prints of a task of the issue's plan, before that task's runs
+ *  (steps.ts): its first word `task` and its third `needs`. step-records-read.sh reads it by the
+ *  same words. */
+const taskLine = /^task \S+ needs /;
+
 /** The run lines of one `dispatch steps --issue <issue>` answer, after its header. The Experiment
  *  line is read only at line 2, right after the header, as step-records-read.sh reads it. Anywhere
- *  else it is no run. */
+ *  else it is no run. The line of a task of the issue's plan, `task <task> needs <needs>: …`,
+ *  which steps.ts prints before that task's runs, is no run and is passed over, as
+ *  step-records-read.sh passes over it. */
 function stepLines(issue: string, path: string): StepLine[] {
   const lines = readText(path, `the steps answer of ${issue}`).split("\n");
   const header = /^(.+): ([0-9]+) steps in [0-9]+ tasks$/.exec(lines[0]);
@@ -336,7 +343,7 @@ function stepLines(issue: string, path: string): StepLine[] {
   }
   const steps = lines
     .slice(variantLine.test(lines[1] ?? "") ? 2 : 1)
-    .filter((line) => line.trim() !== "")
+    .filter((line) => line.trim() !== "" && !taskLine.test(line))
     .map((line) => stepLine(issue, line));
   if (steps.length !== Number(header[2])) {
     throw new Unknown([

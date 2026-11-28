@@ -14,6 +14,7 @@ import pkg from "../package.json" with { type: "json" }
 import { configuredValue } from "./claude-session"
 import type { ChannelSession } from "./envoy-channel-server"
 import { paneReminderLog } from "./legion-phase-hook"
+import { logRoleClaimWarnings } from "./role-claim-warnings"
 
 /**
  * A Claude Code phase worker's claim on the Legion daemon, made by the MCP server Claude Code runs
@@ -91,9 +92,19 @@ export function endPane(): void {
   process.kill(process.ppid, "SIGTERM")
 }
 
-/** Logs why the pane cannot run, then ends it (`endPane`). */
-export function stopPane(why: string): void {
-  logLegion(`${why}; stopping the pane so the daemon launches it again`)
+/**
+ * Logs why the pane cannot run, then ends it (`endPane`). `server` is the channel server's stop
+ * and its writer of the pane's log, which passes each line through the server's tell gate
+ * (`logLegionLine` in `./envoy-channel-server`). Once the server's stop has begun this does
+ * nothing (R24 of dispatch://INFRA-3589): the stop ends the pane already, and `endPane` would
+ * SIGTERM the `claude` this server runs under on its way out.
+ */
+export function stopPane(
+  why: string,
+  server: { readonly stopping: () => boolean; readonly log: (line: string) => void },
+): void {
+  if (server.stopping()) return
+  server.log(`${why}; stopping the pane so the daemon launches it again`)
   endPane()
 }
 
@@ -286,10 +297,13 @@ export function startLegionClaim(deps: {
       setCapability: (registered) => {
         capability = registered
       },
-      claimRole: async (role) => {
+      claimRole: async (role, replaces) => {
         // Soft, so a role another live session holds is left with it, and naming this process,
         // so the listener records the claim as this process's: a second `claude` that resumed
         // this session id can then neither be taken for the holder nor release what it holds.
+        // `replaces`, the session the registration says this one replaces, is named as the
+        // claim's predecessor: the listener hands that session's unread direct and role messages
+        // to this one once the claim lands.
         //
         // A refusal naming this very session is that same claim seen from the other side: the
         // process this pane was relaunched from renewed it at its last heartbeat, so it stands
@@ -306,8 +320,12 @@ export function startLegionClaim(deps: {
             role,
             soft: true,
             clientInstanceID: deps.clientInstanceID,
+            ...(replaces ? { previousSessionID: replaces } : {}),
           })
-          if (claimed.claimed) break
+          if (claimed.claimed) {
+            logRoleClaimWarnings(deps.log, role, sessionID, claimed.warnings)
+            break
+          }
           if (claimed.holder !== sessionID) {
             throw new Error(`Envoy role ${role} is held by live session ${claimed.holder}`)
           }

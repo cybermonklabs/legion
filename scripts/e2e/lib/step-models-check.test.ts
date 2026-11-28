@@ -330,6 +330,23 @@ describe("step-models-check.sh", () => {
     }
   });
 
+  // dispatch steps prints the line of each task of the issue's plan, `task <task> needs <needs>:
+  // …`, before that task's runs (steps.ts). It is no run, and the comparator passes over it, as
+  // step-records-read.sh does.
+  test("the line of a task of the plan is no run: the comparison passes", () => {
+    const task = "task default needs []: 1 planner passed, 2 implementer passed";
+    for (const lines of [
+      [task, A1, A0],
+      [variant, task, A1, A0],
+    ]) {
+      const run = check({ [A]: lines }, agentsFile("implementer"), { steps: 2 });
+      expect(run.stdout).toContain(A1Passes);
+      expect(run.stdout).not.toContain("UNKNOWN: a line");
+      expect(run.verdicts).toEqual(["c-real: PASS", "live-at-both-reads: UNKNOWN"]);
+      expect(run.code).toBe(0);
+    }
+  });
+
   test("a dispatch steps that fails exits 2, with both verdicts", () => {
     const err = "dispatch: the Dispatch server answered no route\n";
     const run = check({ [A]: [A1] }, agentsFile("implementer"), { exit: 1, err });
@@ -527,10 +544,10 @@ describe("step-models-check.sh", () => {
       });
       return `${result.text}\n`;
     };
-    expect(await rendered({ issue: A, tasks: [{ task: "default", steps: records }] })).toBe(
+    expect(await rendered({ issue: A, tasks: [{ task: "default", needs: null, steps: records }] })).toBe(
       readFileSync(join(data, "printed-steps-16.txt"), "utf8")
     );
-    expect(await rendered({ issue: B, tasks: [{ task: "default", steps: recordsB }] })).toBe(
+    expect(await rendered({ issue: B, tasks: [{ task: "default", needs: null, steps: recordsB }] })).toBe(
       readFileSync(join(data, "printed-steps-16-b.txt"), "utf8")
     );
   });

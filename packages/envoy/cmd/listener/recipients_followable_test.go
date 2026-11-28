@@ -43,6 +43,7 @@ func countRecipientsOf(t *testing.T, d *listenerDeps, subject string) *int {
 // capturing the subject, that the stream it left as deployed captures it, and that the pair merges
 // into a subject reaching another session.
 func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
+	t.Parallel()
 	const sessionID = "ses_judged_topics"
 	victimOld := contracts.LegacyAgentSubject("ses_judged_victim")
 	const victimNew = "notifications.agent.PRIV.ses_judged_victim"
