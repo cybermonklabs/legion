@@ -324,8 +324,11 @@ func TestAHolderRefusesOnlyWhatWouldHoldTheMigrationPastItsLockTimeout(t *testin
 }
 
 // The census judges a migration's lock holders by every lock_timeout its statements wait under:
-// Exec's LockTimeout until the migration sets its own, then each value it sets, as Postgres would
-// read it. A SET in a comment or a literal sets nothing.
+// the Timeout Exec of the census's Locking sets (LockTimeout for the zero Locking) until the
+// migration sets its own, then each value it sets, as Postgres would read it. A SET in a comment or
+// a literal sets nothing. Under a Locking of 300 ms, a migration that sets no lock_timeout before a
+// statement waits under 300ms, in each of the two places that bound is read: before its first SET,
+// and for a text that holds no statement at all.
 func TestMigrationLockTimeoutsReadsEveryBoundAMigrationWaitsUnder(t *testing.T) {
 	t.Parallel()
 	for sql, want := range map[string][]string{
@@ -338,8 +341,18 @@ func TestMigrationLockTimeoutsReadsEveryBoundAMigrationWaitsUnder(t *testing.T) 
 		"set local statement_timeout = '1s'; alter table a add column b text":                          {lockTimeoutSetting},
 		"": {lockTimeoutSetting},
 	} {
-		if got := migrationLockTimeouts(sql); !slices.Equal(got, want) {
+		if got := (Locking{}).migrationLockTimeouts(sql); !slices.Equal(got, want) {
 			t.Errorf("migrationLockTimeouts(%q) = %q, want %q", sql, got, want)
+		}
+	}
+	short := Locking{Timeout: 300 * time.Millisecond}
+	for sql, want := range map[string][]string{
+		"alter table asks add column note text;":                                                     {"300ms"},
+		"alter table a add column b text; set lock_timeout = '2s'; alter table c add column d text;": {"300ms", "2s"},
+		"": {"300ms"},
+	} {
+		if got := short.migrationLockTimeouts(sql); !slices.Equal(got, want) {
+			t.Errorf("under a Locking of %v, migrationLockTimeouts(%q) = %q, want %q", short.Timeout, sql, got, want)
 		}
 	}
 }

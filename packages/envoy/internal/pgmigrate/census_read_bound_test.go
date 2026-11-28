@@ -3,12 +3,15 @@ package pgmigrate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // spyTx stands in for the census's transaction in censusTable, and in the classifier boundedWrites
@@ -94,9 +97,9 @@ func (s *spySavepoint) Rollback(ctx context.Context) error {
 }
 
 // readBoundTx is a read-only transaction on a database of the test's own (fixtureDatabase),
-// holding a table things with a row, under the settings Census gives its own transaction
-// (censusSettings).
-func readBoundTx(t *testing.T, ctx context.Context) pgx.Tx {
+// holding a table things with a row, under the settings locking's Census gives its own
+// transaction (censusSettings); the zero Locking's are production's.
+func readBoundTx(t *testing.T, ctx context.Context, locking Locking) pgx.Tx {
 	t.Helper()
 	conn := fixtureDatabase(t, ctx, "pgmigrate_read_bound", "read-bound tests", "create table things (id integer); insert into things values (1)")
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -104,7 +107,7 @@ func readBoundTx(t *testing.T, ctx context.Context) pgx.Tx {
 		t.Fatalf("begin: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	set, args := setConfig(true, censusSettings())
+	set, args := setConfig(true, locking.censusSettings())
 	if _, err := tx.Exec(ctx, set, args...); err != nil {
 		t.Fatalf("set the census's settings: %v", err)
 	}
@@ -148,7 +151,7 @@ func TestCensusTableRunsOnlyTheTablesReadsUnderTheReadBound(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			tx := readBoundTx(t, ctx)
+			tx := readBoundTx(t, ctx, Locking{})
 			spy := &spyTx{Tx: tx}
 			writes := &writeReading{}
 			if row.writes != "" {
@@ -159,7 +162,7 @@ func TestCensusTableRunsOnlyTheTablesReadsUnderTheReadBound(t *testing.T) {
 				writes = &writeReading{c: &classifier{ctx: ctx, census: spy, catalog: spy}, statements: classified.statements, changedBy: map[string]string{}, reviewed: reviewedTriggers}
 			}
 			entry := &MigrationCensus{}
-			if err := censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, writes); err != nil {
+			if err := (Locking{}).censusTable(ctx, spy, row.touched, readBoundOptions(row.tableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, writes); err != nil {
 				t.Fatalf("censusTable: %v", err)
 			}
 			if len(spy.savepoints) == 0 {
@@ -185,36 +188,92 @@ func TestCensusTableRunsOnlyTheTablesReadsUnderTheReadBound(t *testing.T) {
 	}
 }
 
+// readBoundPlantKey is the advisory lock the plant of
+// TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound waits for. Postgres keys an
+// advisory lock by its database as well, and each row's database is its own, so no other test's
+// session takes this lock.
+const readBoundPlantKey = 6354
+
 // The rollback that ends the savepoint of reads that answered starts under the reads'
 // TableReadTimeout, and one that outlasts it fails censusTable with its own error, SQLSTATE 57014
 // and the table's name, where a rollback whose error nothing read would leave the savepoint
-// aborted and fail the census's next statement with 25P02 and no name. The plant sends a 10 s
-// sleep where that rollback starts (spySavepoint), under the setting the rollback starts under.
-// Under a TableReadTimeout of 5 s, PostgreSQL cancels it at 5 s; the reads before it take
-// milliseconds, and a read past 5 s would fail the row by another message. The control gives
-// the reads 30 s, and the same plant answers, so the failure comes from the bound in force where
-// the savepoint ends.
+// aborted and fail the census's next statement with 25P02 and no name. The plant, sent where that
+// rollback starts (spySavepoint) and under the setting the rollback starts under, waits for an
+// advisory lock (readBoundPlantKey) that another session of the test holds on the test's own
+// database. Under a TableReadTimeout of 5 s, PostgreSQL cancels that wait at 5 s; the reads before
+// it take milliseconds, and a read past 5 s would fail the row by another message. The bound stays
+// 5 s, because the reads before the plant run under it too, and a shorter one could fail the row
+// on a loaded machine. The census's transaction takes its settings from a Locking whose Timeout is
+// a minute, above both read bounds, so that the read bound ends the plant's lock wait and not a
+// lock_timeout of the same 5 s. The control gives the reads 30 s, and once pg_locks shows the plant
+// waiting, the test releases the lock and the plant answers, so the failure comes from the bound in
+// force where the savepoint ends, and the control's verdict is that release, never a span. A read
+// past 30 s in the control would make censusTable refuse the table and return no error, so the
+// control also finds no refusal. Each row also checks the statement_timeout its savepoint's end
+// started under, which spySavepoint reads before it sends the plant: 5s in the failing row and
+// 30s in the control. The plant waits for a lock the failing row never releases, so any longer
+// bound up to the transaction's one-minute lock_timeout, CensusStatementTimeout among them, would
+// cancel it too, only later, with the same SQLSTATE and the same name; without that check the row
+// would pass and not tell the reads' bound from a longer one. Above that minute, or under no bound
+// at all, the lock_timeout ends the plant with 55P03, which the SQLSTATE check already fails.
 func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testing.T) {
 	t.Parallel()
+	locking := Locking{Timeout: time.Minute}
 	for name, row := range map[string]struct {
 		readTimeout time.Duration
 		fails       bool
+		atEnd       string
 	}{
-		"under the reads' 5 s":           {5 * time.Second, true},
-		"control: under the reads' 30 s": {30 * time.Second, false},
+		"under the reads' 5 s":           {5 * time.Second, true, "5s"},
+		"control: under the reads' 30 s": {30 * time.Second, false, "30s"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
-			spy := &spyTx{Tx: readBoundTx(t, ctx), plant: "select pg_sleep(10)"}
-			err := censusTable(ctx, spy, TouchedTable{Name: "things"}, readBoundOptions(CensusTableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, &MigrationCensus{}, &writeReading{})
+			tx := readBoundTx(t, ctx, locking)
+			// A second session on the test's own database, which holds the lock the plant waits for.
+			holder := connect(t, ctx, tx.Conn().Config().ConnString())
+			if _, err := holder.Exec(ctx, "select pg_advisory_lock($1)", readBoundPlantKey); err != nil {
+				t.Fatalf("take the plant's advisory lock: %v", err)
+			}
+			census := tx.Conn().PgConn().PID()
+			spy := &spyTx{Tx: tx, plant: fmt.Sprintf("select pg_advisory_xact_lock(%d)", readBoundPlantKey)}
+			entry := &MigrationCensus{}
+			done := make(chan error, 1)
+			go func() {
+				done <- locking.censusTable(ctx, spy, TouchedTable{Name: "things"}, readBoundOptions(CensusTableLimit, row.readTimeout), lockBound{setting: lockTimeoutSetting}, entry, &writeReading{})
+			}()
+			if !row.fails {
+				testwait.Until(t, "the plant to wait for the advisory lock the test holds", func() (bool, bool) {
+					select {
+					case err := <-done:
+						t.Fatalf("censusTable returned before the plant waited for the test's advisory lock: %v", err)
+					default:
+					}
+					var waits bool
+					if err := holder.QueryRow(ctx, "select exists(select from pg_locks where pid = $1 and locktype = 'advisory' and not granted)", census).Scan(&waits); err != nil {
+						t.Fatalf("read whether the plant waits for the advisory lock: %v", err)
+					}
+					return waits, waits
+				})
+				var released bool
+				if err := holder.QueryRow(ctx, "select pg_advisory_unlock($1)", readBoundPlantKey).Scan(&released); err != nil || !released {
+					t.Fatalf("release the plant's advisory lock: released %v, %v", released, err)
+				}
+			}
+			err := testwait.Receive(t, "censusTable to return", done)
 			if len(spy.savepoints) == 0 || !spy.savepoints[0].planted {
 				t.Fatalf("the plant did not run where the reads' savepoint ends (%d savepoints)", len(spy.savepoints))
+			}
+			if atEnd := spy.savepoints[0].atEnd; atEnd != row.atEnd {
+				t.Errorf("the reads' savepoint ended under statement_timeout %q, want %q, the reads' TableReadTimeout", atEnd, row.atEnd)
 			}
 			var pgErr *pgconn.PgError
 			switch {
 			case !row.fails && err != nil:
-				t.Fatalf("censusTable: %v, want the plant to answer under 30 s", err)
+				t.Fatalf("censusTable: %v, want the plant to answer once the test released its lock, under 30 s", err)
+			case !row.fails && len(entry.Refusals) != 0:
+				t.Fatalf("the census refused %q, want no refusal of things, whose reads answer within the reads' 30 s", entry.Refusals)
 			case row.fails && (err == nil || !errors.As(err, &pgErr) || pgErr.Code != queryCanceled || !strings.Contains(err.Error(), "census: end the savepoint of the reads of things: ")):
 				t.Fatalf("censusTable: %v, want the savepoint end's own error, naming things, with SQLSTATE 57014", err)
 			}

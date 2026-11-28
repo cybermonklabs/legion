@@ -63,6 +63,16 @@ const (
 	sqlOther                                // {self}, {operator} and anything else one byte wide
 )
 
+// opaque reports whether a token of kind k holds bytes its reading does not read as structure: a
+// string, dollar-quoted or Unicode-escaped literal, or a comment.
+func (k sqlTokenKind) opaque() bool {
+	switch k {
+	case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
+		return true
+	}
+	return false
+}
+
 // sqlToken is one token scanSQL reads, including the decoded name of a quoted identifier.
 type sqlToken struct {
 	kind       sqlTokenKind
@@ -167,28 +177,50 @@ func isIdentStart(c byte) bool {
 // isIdentCont is scan.l's ident_cont, [A-Za-z\200-\377_0-9\$].
 func isIdentCont(c byte) bool { return isIdentStart(c) || isDigit(c) || c == '$' }
 
-// hiddenSpans returns, in order and merged where they overlap, the spans of text that a session
-// with standard_conforming_strings off does not read as structure: a string, dollar-quoted or
-// Unicode-escaped literal, or a comment. That is the reading in which a backslash inside a plain
-// literal escapes the byte after it, so that a backslash before a quote carries that literal on
-// to the next quote and moves where every literal after it starts - and where every comment after
-// it starts with them, since a -- or a /* inside what the other reading is reading as a literal
-// opens a comment here, and a comment's text can hold anything.
+// reading is how scanl.go's transcription reads one text at one standard_conforming_strings:
+// every token lexSQL hands out, in order, and the byte scan.l refused the text on, or -1.
+type reading struct {
+	tokens  []sqlToken
+	failure int
+}
+
+// readingOf is text's reading at standardConformingStrings.
+func readingOf(text string, standardConformingStrings bool) reading {
+	return readingWith(text, standardConformingStrings, nil)
+}
+
+// readingWith is readingOf with hooks told the reading's work (lexHooks), nil but in the lexing
+// tests.
+func readingWith(text string, standardConformingStrings bool, hooks *lexHooks) reading {
+	var r reading
+	r.failure = lexSQL(text, standardConformingStrings, func(token sqlToken) {
+		r.tokens = append(r.tokens, token)
+	}, hooks)
+	return r
+}
+
+// hiddenSpans returns, in order and merged where they overlap, the spans of text that off, its
+// reading with standard_conforming_strings off, does not read as structure: a string,
+// dollar-quoted or Unicode-escaped literal, or a comment. That is the reading in which a
+// backslash inside a plain literal escapes the byte after it, so that a backslash before a quote
+// carries that literal on to the next quote and moves where every literal after it starts - and
+// where every comment after it starts with them, since a -- or a /* inside what the other reading
+// is reading as a literal opens a comment here, and a comment's text can hold anything.
 //
 // The tail of a reading scan.l refuses is a span of its own, of either reading: from the byte
 // scan.l raised its error on to the end of the text. Postgres read no further, so there are no
 // tokens of its there to call structure, and the text that follows is whatever the session was
 // about to have read - which is why it is covered rather than printed. onFailure is where the
-// default reading was refused, or -1. hooks are told the reading's work (lexSQL).
-func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
+// default reading was refused, or -1. The spans are copied into a slice of hiddenSpans' own and
+// merged there, so off's tokens stay as they were for a caller that reads them after.
+func hiddenSpans(text string, onFailure int, off reading) []sqlToken {
 	var spans []sqlToken
-	offFailure := lexSQL(text, false, func(token sqlToken) {
-		switch token.kind {
-		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
+	for _, token := range off.tokens {
+		if token.kind.opaque() {
 			spans = append(spans, token)
 		}
-	}, hooks)
-	for _, failure := range [2]int{onFailure, offFailure} {
+	}
+	for _, failure := range [2]int{onFailure, off.failure} {
 		if failure >= 0 {
 			spans = append(spans, sqlToken{kind: sqlString, start: failure, end: len(text)})
 		}
@@ -228,18 +260,19 @@ func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
 // which moves where the next literal of the statement starts, and with it where a comment opened
 // in the bytes between them starts. A reading chosen literal by literal would therefore resume
 // inside a literal or a comment of the reading Postgres used, and print its bytes. So the whole
-// text is read twice instead: the tokens are the default reading's, as they always were, and
-// hiddenSpans reads the text again as a session with the setting off reads it.
+// text is read twice instead, once at each setting (readingOf): the tokens are the default
+// reading's, as they always were, and the spans held against them are the other reading's
+// (hiddenSpans).
 //
-// The rule this loop holds is that a byte is printed only where both readings read it as
-// structure, which is to say outside every literal and every comment of either. The default
-// reading's own literals and numbers each print one ?, its own comments and space one space; and
-// a token any part of which the other reading holds inside a literal or a comment prints one ?
-// standing for that whole span, after which every token starting before the span's end prints
-// nothing. The one number printed as itself is a parameter's, which {param} reads as one token
-// that holds no value a row could have put there. What is left to print is structure, or a name -
-// a word, a quoted identifier - which is a name under both readings and which this report keeps
-// on purpose.
+// The rule its loop (redactReadings) holds is that a byte is printed only where both readings
+// read it as structure, which is to say outside every literal and every comment of either. The
+// default reading's own literals and numbers each print one ?, its own comments and space one
+// space; and a token any part of which the other reading holds inside a literal or a comment
+// prints one ? standing for that whole span, after which every token starting before the span's
+// end prints nothing. The one number printed as itself is a parameter's, which {param} reads as
+// one token that holds no value a row could have put there. What is left to print is structure,
+// or a name - a word, a quoted identifier - which is a name under both readings and which this
+// report keeps on purpose.
 //
 // Which of ? and one space a disagreement becomes follows from what each reading saw. The other
 // reading holding the bytes inside a literal makes them ?, a literal being where a value is, even
@@ -273,19 +306,27 @@ func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
 // one can lose shape - a comma, a whole literal, or a comment's one space, swallowed into the
 // single ? that covers the other reading's longer literal or the comment that literal's end
 // opens - and loses no value.
-func redactedQuery(text string) string { return redactedQueryWith(text, nil) }
+func redactedQuery(text string) string {
+	return redactReadings(text, readingOf(text, true), readingOf(text, false))
+}
 
 // redactedQueryWith is redactedQuery with hooks told the work of both its readings (lexHooks),
 // nil but in the lexing tests.
 func redactedQueryWith(text string, hooks *lexHooks) string {
-	var tokens []sqlToken
-	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) }, hooks)
-	spans := hiddenSpans(text, onFailure, hooks)
+	return redactReadings(text, readingWith(text, true, hooks), readingWith(text, false, hooks))
+}
+
+// redactReadings is redactedQuery's loop over the two readings of text: on, at
+// standard_conforming_strings on, and off, at off. It changes neither reading, so a caller that
+// reads both for itself as well (the two legs of redaction_differential_test.go) hands the same two
+// here, and lexes the text once at each setting.
+func redactReadings(text string, on, off reading) string {
+	spans := hiddenSpans(text, on.failure, off)
 	var out strings.Builder
 	space := false
 	covered := 0 // the end of the text the ? last written stands for
 	at := 0      // the first span of the other reading that can still reach a token
-	for _, token := range tokens {
+	for _, token := range on.tokens {
 		if token.start < covered {
 			// This token's bytes sit inside a ? already written, so it prints nothing at all.
 			continue
