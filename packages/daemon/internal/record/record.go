@@ -2816,7 +2816,7 @@ type Store interface {
 	// HandedOffWithoutOpenOrMergedPullRequest is every record of the Dispatch project key project in
 	// implementing, named on its repository as GitHub spells it, whose implementer has recorded its
 	// handoff and which has no open or merged pull request of a task recorded (TaskPullRequestRows,
-	// so neither a linked pull request that is no task's own nor one of another repository counts),
+	// so neither a linked pull request on no task's branch nor one of another repository counts),
 	// by key, each with its implementer's handoff commit: an issue whose completion waits for an
 	// open pull request record, which the daemon's start reads GitHub for and tells the architect of
 	// when GitHub lists none on its branch. A merged record waits for none: a completion moves on
@@ -2931,7 +2931,7 @@ type Store interface {
 	// the issue's repository that no task holds and the issue does not link, as a pull request of
 	// an earlier run is, by task (PullRequest.Task), the task's own first among those of one task,
 	// then by branch and number. A pull request of another repository is none of them, nor is a
-	// linked pull request that is no task's own.
+	// linked pull request on no task's branch.
 	TaskPullRequests(ctx context.Context, tx pgx.Tx, issue string) ([]PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
 	// OpenPullRequestsOnBranch is each open pull request of repo on branch, whatever its issue, in

@@ -5,13 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -177,17 +175,7 @@ func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 	t.Run("b5 the close of the pull requests of a task the plan removed", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Testing)
-		seedTasks(t, pool, root.Key, root.Generation,
-			planTask{id: "a", steps: []string{"tester:a"}, agents: []claim.Agent{"test-a"}, state: record.TaskRunning, place: atStep(1)},
-			planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskStopped, place: atStep(1)},
-			planTask{id: "z", steps: []string{"reviewer:z"}, agents: []claim.Agent{"rev-z"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
-		seedTaskBranch(t, pool, root.Key, "a", "legion/LEGION-208")
-		var bBranch string
-		seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-			bBranch, err = record.NewStore().AssignTaskBranch(t.Context(), tx, root.Key, root.Generation, "b")
-			return err
-		})
+		root, bBranch := removedTaskRoot(t, pool)
 		for _, pr := range []struct {
 			number int
 			base   string
@@ -196,8 +184,7 @@ func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 				Branch: bBranch, Base: pr.base, HeadSHA: "head-b", Failing: []string{}})
 		}
 
-		mustTake(t, "version 2", applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
-			keyed(t, "a", "", []string{"tester:a"}), keyed(t, "z", "", []string{"reviewer:z"}, "a"))))
+		mustTake(t, "version 2", applyFacts(t, pool, engine)("version-2", removingB(t, root)))
 		if got, want := closedNumbers(t, pool, root.Key, "Task b was removed from the plan."), []int{2, 3}; !slices.Equal(got, want) {
 			t.Errorf("version 2, which removed b, closed the pull requests %v of %s; want %v, each open pull request on b's branch", got, bBranch, want)
 		}

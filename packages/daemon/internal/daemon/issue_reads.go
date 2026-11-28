@@ -131,7 +131,7 @@ func (w *workflowRuntime) readRecordedPullRequest(ctx context.Context, pr record
 // branch (openPullRequestsOn). Of those it lists, each is applied, oldest first, as the
 // intake.PullRequestOpened its webhook would have carried - naming the repository as that webhook's
 // fact would (heardSpelling), a reopen when the record holds the same pull request closed - so the
-// record holds each open pull request on the branch (dispatch://INFRA-5910 decision 20, b6) and not
+// record holds each open pull request on the branch (dispatch://INFRA-5910 decision 20) and not
 // only the one GitHub lists first, and the task's own is then read back as the workflow recorded it.
 // It is nil for an issue the daemon does not record, one with no task to judge, one with no
 // repository to read, one whose task's branch GitHub holds no open pull request on - which an
@@ -289,10 +289,10 @@ func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named st
 
 // issueRecord is key's records as the reads of its pull requests read them (issueRecords), in one
 // transaction, for the task named (judgedTask; "" for the task the record judges): what the
-// per-issue read and the merge-state ladder read before they read GitHub (issuePullRequest,
-// readMergeState), and what the second read of a conflict reads before it acts (outbox's
-// conflictConfirm). Each caller reads the pull requests' columns to decide what to read of GitHub
-// and builds the facts it applies from them, and none writes the record back.
+// per-issue read reads before it reads GitHub and again after it records what it read
+// (issuePullRequest), and the task's pull request the start's reads read by its branch
+// (startReadPull, startReadFailed). Each caller reads the pull requests' columns to decide what to
+// read of GitHub, or which pull request to hand on, and none writes the record back.
 func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, key, named string) (issueRecords, error) {
 	var read issueRecords
 	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

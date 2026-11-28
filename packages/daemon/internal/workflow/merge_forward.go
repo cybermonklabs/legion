@@ -819,8 +819,9 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, s TaskScope,
 // rule is kept beside mergeForward and mergeForwardLanded, which write the rows, and
 // clearTaskMergeForward and clearMergeForwards, which drop the ask they are about, since it
 // restates their states for a row already queued. It is exported for that executor, which names
-// the pull request's repository and writes nothing of it, so the pull requests are read as rows
-// alone (record.Store.TaskPullRequestRows), with none of what each remembers of its settled heads.
+// the pull request's repository and writes nothing of it, so each pull request is read as a row
+// alone, in the order above (record.Store.PullRequestRowByNumber, TaskPullRequestRows,
+// MergePullRequestRow), with none of what each remembers of its settled heads.
 func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, msg record.MergeForwardMessage) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {

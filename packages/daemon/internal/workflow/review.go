@@ -1784,7 +1784,7 @@ func toldFinding(r round) record.StuckTold {
 // nothing of the record and reads none of what it remembers of its settled heads. A fact that names
 // a number is read by its repository and number, the pull request it is of alone; a push names a
 // branch and no number, so it is read for each open pull request on its branch, and each that owes
-// a read is asked one of its own (dispatch://INFRA-5910 decision 20, b3).
+// a read is asked one of its own (dispatch://INFRA-5910 decision 20).
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if e.cfg.ReadMergeState == nil {
 		return nil

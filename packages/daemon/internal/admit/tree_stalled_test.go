@@ -296,7 +296,7 @@ const (
 // what the controller needs to decide: the root, how long the tree has been quiet, and each
 // issue of it the workflow still runs, with that issue's phase, the role whose turn it is or
 // that the phase has no role, and each pull request of its set with its state, named as
-// owner/name#number (dispatch://INFRA-5910 decision 21, r7): tree A's root links acme/deploy#6990,
+// owner/name#number (dispatch://INFRA-5910 decision 21): tree A's root links acme/deploy#6990,
 // a pull request of a second repository, beside its own acme/widgets#41, and the notice names both.
 // A tree quiet for less than the deployment's bound is told to nobody.
 //

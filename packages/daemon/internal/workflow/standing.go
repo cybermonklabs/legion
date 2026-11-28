@@ -369,7 +369,7 @@ func (e *Engine) pullRequestText(ctx context.Context, tx pgx.Tx, s TaskScope, ow
 }
 
 // acceptancePart is the `Pull request:` line of the phase-finished notice that hands the architect
-// its acceptance of s's task (transition, dispatch://INFRA-5910 decision 21, r1): each open pull
+// its acceptance of s's task (transition, dispatch://INFRA-5910 decision 21): each open pull
 // request of the issue's set (pullRequestSet), each named as owner/name#number at its head, so the
 // architect accepts the code each one stands at; own, the task's own pull request as the move read
 // it, first where it is open, and a pull request the issue links marked so; then each link that
@@ -521,7 +521,7 @@ func standingText(issue record.Issue, dir func(name string, repo ghrepo.Reposito
 // pr being its task's own and pulls the others its step works or that hold the issue's close
 // (scopePullRequests): ` Pull request: <own>.`, each pull request named as owner/name#number, since
 // an issue's pull requests can be of several repositories and a number alone names none of them
-// (dispatch://INFRA-5910 decision 21, r1). After its task's own, or `none of its own` where the
+// (dispatch://INFRA-5910 decision 21). After its task's own, or `none of its own` where the
 // task has none, come each pull request the issue links that the step's scope works, `(linked on
 // the issue)`, and then each other that holds the issue's close, with why it holds it; the merger,
 // in merging, is told of each linked pull request of its scope whether an approval stands at its

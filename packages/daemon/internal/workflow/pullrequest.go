@@ -393,7 +393,7 @@ func (e *Engine) ownOfTask(ctx context.Context, tx pgx.Tx, s TaskScope, pr recor
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing
 // (classify.AdvancePullRequestHead), on the pull request the fact names by its repository and
 // number: a branch can hold several, and the synchronize of one moves its head alone
-// (dispatch://INFRA-5910 decision 20, b1). It reads no CI result: a settlement moves nothing, in any
+// (dispatch://INFRA-5910 decision 20). It reads no CI result: a settlement moves nothing, in any
 // phase, and the roles that work the issue were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1). In reviewing the head's arrival re-asks the round (settleRound):
 // any push may change code, so an approval of the previous head does not approve the new one
@@ -484,7 +484,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 // pushedTo) and re-asks the review round of each (reaskRound): a push names a branch and no
 // number, and a branch can hold several open pull requests, of one task, of two issues or linked
 // in another repository, so it reaches each of them and none takes another's place
-// (dispatch://INFRA-5910 D1, decision 20, b2). It records nothing for a push whose After is
+// (dispatch://INFRA-5910 D1, decision 20). It records nothing for a push whose After is
 // record.NoCommit: that is GitHub's deletion of the branch, which names no code. intake's
 // decodePush makes no fact of a deletion, and this test holds for a Push from any other source too.
 // It records nothing for a pull request recorded merged either, since the merge has landed: a push
@@ -670,7 +670,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // reaches it. The comment says the issue is done, `Issue <KEY> is done; its last merge is #<n>.`,
 // only where the same transaction closes the issue: the last merge, and its close waits neither for
 // an issue beneath it nor for a pull request of its set (closeWaitOf, the wait closeMerged reads
-// next), so a pull request the stack closes while the issue still waits is told `Merged in #<n>.`
+// next), so a pull request this row closes while the issue still waits is told `Merged in #<n>.`
 // (dispatch://INFRA-5910 decision 11). It is called at the two places a task's merge closes it, one
 // place for one merge: the merge landing where the task awaits it (merged), and the task reaching
 // merging on a pull request merged already (transition). So a merge that lands while its task
@@ -680,7 +680,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // task of the plan holds in the issue's own repository (record.StoredPlan.HoldsBranch, the rule the
 // recorder reads, issueForBranch) that the issue does not link (record.PullRequest.Linked): the
 // implement App closes no pull request Legion did not open, and a pull request the issue links is
-// the issue's to merge or to unlink, never the stack's to close (decision 11). The row names that
+// the issue's to merge or to unlink, never this row's to close (decision 11). The row names that
 // repository (record.TaskPullRequestsClose.Repo), the issue's, so no close reaches a pull request
 // of another repository with the same number. No row is queued where there is none to close. The
 // row is written before the close of the merge, in its transaction, so a leave that close makes
@@ -732,16 +732,17 @@ func (e *Engine) closeHeldPullRequests(ctx context.Context, tx pgx.Tx, s TaskSco
 		Numbers: open, Comment: comment})
 }
 
-// queueDoneClose queues, in the transaction that closes issue, the stack's close of each open pull
-// request of a task of its plan that the issue does not link and that no queued close of its
-// generation names yet (record.Store.QueuedPullRequestCloses), by the rule closeHeldPullRequests
-// closes by (a branch a task holds in the issue's own repository, record.StoredPlan.HoldsBranch),
-// with the comment that the issue is done (doneComment), merge naming its last merge
-// (dispatch://INFRA-5910 decision 11): the close of a merge in hand (closeMerged) and the release of
-// an issue held for its pull requests (releaseHeldClose). A merge whose close waited queued no close
-// of a pull request the issue linked then, and a link removed since leaves that pull request a task's
-// to close (linkRemoved), so the close that ends the issue closes it. A pull request the merge's own
-// row names already is left to that row. No row is queued where there is none to close.
+// queueDoneClose queues, in the transaction that closes issue, the close of the task pull requests
+// (record.TaskPullRequestsClose) for each open pull request of a task of its plan that the issue
+// does not link and that no queued close of its generation names yet
+// (record.Store.QueuedPullRequestCloses), by the rule closeHeldPullRequests closes by (a branch a
+// task holds in the issue's own repository, record.StoredPlan.HoldsBranch), with the comment that
+// the issue is done (doneComment), merge naming its last merge (dispatch://INFRA-5910 decision
+// 11): the close of a merge in hand (closeMerged) and the release of an issue held for its pull
+// requests (releaseHeldClose). A merge whose close waited queued no close of a pull request the
+// issue linked then, and a link removed since leaves that pull request a task's to close
+// (linkRemoved), so the close that ends the issue closes it. A pull request the merge's own row
+// names already is left to that row. No row is queued where there is none to close.
 func (e *Engine) queueDoneClose(ctx context.Context, tx pgx.Tx, issue record.Issue, merge string) error {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
@@ -779,10 +780,10 @@ func taskCloseReaches(issue record.Issue, stored *record.StoredPlan, pr record.P
 	return pr.State == record.PullRequestOpen && !pr.Linked && stored.HoldsBranch(issue, pr.Repo, pr.Branch)
 }
 
-// doneComment is the comment the stack's close writes on a pull request of a task where the close
-// ends issue (dispatch://INFRA-5910 decision 11): `Issue <KEY> is done; its last merge is <merge>.`,
-// merge `#<n>` for the merge in hand and owner/name#n for the last merge of a close with none in
-// hand, and `Issue <KEY> is done.` where none merged.
+// doneComment is the comment the close of the task pull requests writes on a pull request of a task
+// where the close ends issue (dispatch://INFRA-5910 decision 11): `Issue <KEY> is done; its last
+// merge is <merge>.`, merge `#<n>` for the merge in hand and owner/name#n for the last merge of a
+// close with none in hand, and `Issue <KEY> is done.` where none merged.
 func doneComment(issue, merge string) string {
 	if merge == "" {
 		return fmt.Sprintf("Issue %s is done.", issue)
@@ -791,7 +792,7 @@ func doneComment(issue, merge string) string {
 }
 
 // waitingForTree is what the architect that owns a merged issue is told when the merge of its pull
-// request merged, named as owner/name#number (prName, dispatch://INFRA-5910 decision 21, r6), finds
+// request merged, named as owner/name#number (prName, dispatch://INFRA-5910 decision 21), finds
 // issues beneath it still in the workflow (for a root, the rest of its tree): the close is waiting,
 // and for whom. It also says how a child leaves without its own merge, which is the architect's
 // status write (record.EndChildRule), and that such a write counts once the daemon has taken it
@@ -835,8 +836,8 @@ func (w closeWait) waits() bool { return len(w.beneath) > 0 || len(w.holds) > 0 
 // hold its close (setHolds, read after openBeneath, so a close that waits for the issues beneath
 // tells no hold of a link yet), in a running tree and in a lingering one alike
 // (dispatch://INFRA-5910 decision 9). It is the one statement of that wait, which the close reads
-// (closeMerged) and the comment of the stack's close in the same transaction reads before it
-// (closeHeldPullRequests).
+// (closeMerged) and the comment of the close of the task pull requests (record.TaskPullRequestsClose)
+// in the same transaction reads before it (closeHeldPullRequests).
 func (e *Engine) closeWaitOf(ctx context.Context, tx pgx.Tx, issue record.Issue, lingers bool) (closeWait, error) {
 	if !lingers {
 		beneath, err := e.openBeneath(ctx, tx, issue)
@@ -873,8 +874,9 @@ func (e *Engine) closeWaitOf(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // since the linger suspended that role. A lingering merge retires nobody and suspends nothing: the
 // linger's own rows already did, and the tree's close retires every member's claims. The boot's
 // sweep closes a migrated issue the same way (booted). Where the last merge closes the issue, the
-// same transaction queues the stack's close of each open pull request of a task left open, with the
-// comment that the issue is done (queueDoneClose), before the close's leave names any of them.
+// same transaction queues the close of the task pull requests (record.TaskPullRequestsClose) for
+// each open pull request of a task left open, with the comment that the issue is done
+// (queueDoneClose), before the close's leave names any of them.
 //
 // The last merge's close waits for the issues beneath the issue, on the one set both acceptance
 // rules read (OpenBeneath): for a tree root that is every other member of the tree still in the
@@ -1466,8 +1468,8 @@ func leftPhase(issue record.Issue, at phase.Phase, lingers bool) string {
 // when the issue has left implementing, its implementer's handoff is another commit, or an open or
 // merged pull request is recorded: the read asked GitHub before the record changed, or the merge
 // told the architect (merged) and a completion moves the issue on it. The fact is of the task whose
-// branch it names, read for that task (viewOfPullRequest), whose own pull request is the one that
-// lets it move (pullRequestOf).
+// branch it names, read for that task (scopeOfPullRequest), whose own pull request is the one that
+// lets it move (taskPullRequestRow).
 func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMissing) (intake.Result, error) {
 	recorded, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || recorded == nil {

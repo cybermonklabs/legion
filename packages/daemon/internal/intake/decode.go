@@ -122,9 +122,10 @@ type envoyEnvelope struct {
 // events the Dispatch durable hears are this project's own (mergeHoldsSubject), so one that does
 // not decode is this daemon's give-up. repositories are its configured repositories: a GitHub
 // event whose payload names another repository is a nil Fact, whatever subject carried it. links
-// is the decoder's index of the pull requests the issues link (linkIndex), nil for none: a pull
-// request event or a push of a branch no issue's name gives is a fact only of a pull request it
-// holds (decodePullRequest, decodePush).
+// is the decoder's index of the pull requests the issues link (linkIndex), nil for none. On a
+// branch no issue's name gives, a pull request event is a fact only of a pull request an issue
+// links (decodePullRequest), and a push is a Push only where it moves the head branch of such a
+// pull request to a commit, else a BasePush (decodePush).
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, links *linkIndex, data []byte) (decodedMessage, error) {
 	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
 		return decodedMessage{LegacyName: legacy}, nil

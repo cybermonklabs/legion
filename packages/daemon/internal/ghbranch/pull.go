@@ -19,7 +19,7 @@ import (
 // request already exists", answers the number of that one: of the pull requests open on head
 // (githubrest.Client.OpenPullRequestsOn, GET /pulls?head=<owner>:<head>&state=open), the one whose
 // base is base, since a branch can hold several, each onto a base of its own (dispatch://INFRA-5910
-// D1, decision 20, b11). So an open made again opens none, and never answers another base's pull
+// D1, decision 20). So an open made again opens none, and never answers another base's pull
 // request. Every other answer is an error naming the repository and both branches and wrapping
 // GitHub's *githubrest.Answer, GitHub's 422 for a head with no commit base lacks among them.
 //

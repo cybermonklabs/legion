@@ -4423,6 +4423,7 @@ The release moves a recorded issue's repository onto the one Dispatch resolves t
 While GitHub does not answer them, nothing waits on the record, and the daemon reads the issue again until GitHub answers.
 Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
 The issue's `pullRequest` is read beside them and takes no new key: a correction moves the issue's record alone, so `pullRequest.repo` is the repository the pull request was opened on, and an issue whose `repo` and `pullRequest.repo` name two repositories has open work on a repository it has left, which the daemon applies no GitHub event of to the issue any more.
+From the release of migration `20261127234212_pull_requests_by_repository_and_number`, the state serves such a pull request in no view, neither as the issue's `pullRequest` nor in its `pullRequests`, and the issue's next task names it.
 A caller below that entry's number is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
 The daemon places a plugin that states its contract in the `Legion-Plugin-Contract` header by that contract, as every plugin from contract 193 on does, and one that states none by the claims of its pod.
 

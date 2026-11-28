@@ -111,7 +111,7 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 			pr, err = fn(tx)
 			return err
 		}); err != nil {
-			t.Fatalf("read %s after the migration: %v", name, err)
+			t.Fatalf("read %s after the roll-forward: %v", name, err)
 		}
 		return pr
 	}
@@ -177,13 +177,13 @@ func TestMigrationPullRequestsByTaskKeysEachRowByItsBranch(t *testing.T) {
 			return records.MergePullRequest(ctx, tx, want.issue)
 		})
 		if merge == nil || merge.Issue != want.issue || merge.Task != want.task || merge.HeadSHA != "head-"+want.issue {
-			t.Fatalf("the merge pull request of %s after the migration = %+v, want its one row, of task %q", want.issue, merge, want.task)
+			t.Fatalf("the merge pull request of %s after the roll-forward = %+v, want its one row, of task %q", want.issue, merge, want.task)
 		}
 		own := read("the pull request of task "+want.task+" of "+want.issue, func(tx pgx.Tx) (*record.PullRequest, error) {
 			return records.PullRequestOfTask(ctx, tx, want.issue, want.task)
 		})
 		if own == nil || own.Number != merge.Number {
-			t.Fatalf("the pull request of task %q of %s after the migration = %+v, want #%d", want.task, want.issue, own, merge.Number)
+			t.Fatalf("the pull request of task %q of %s after the roll-forward = %+v, want #%d", want.task, want.issue, own, merge.Number)
 		}
 	}
 }

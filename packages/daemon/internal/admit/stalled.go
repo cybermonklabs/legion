@@ -514,14 +514,17 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
 //
-// The two holds an owner's plan makes do not silence either: a parent held before its retro for
-// the issues beneath it (children_before_retro) and a task that was stopped (task_stopped). Each
-// stands on an issue that has had its start and stands in held, which lineHolds.waitsByDesign
-// reads as stopped before it reads any word, so their rows here are never what decides, and
-// false says the same as that rule. A held parent is then judged as a parent
-// that waits in accepting for its children is judged, and each issue beneath it by its own word;
-// a stopped task waits for its owner's next version of the plan or for a person, the tree's own
-// work or a person's (TestAHoldOfAPlanIsNoWaitByDesign).
+// The two holds an owner's plan makes do not silence either, and neither does the hold of an
+// issue's close for its pull requests: a parent held before its retro for the issues beneath it
+// (children_before_retro), a task that was stopped (task_stopped), and an issue whose close waits,
+// with no merge in hand, for a pull request of its set (pull_requests). Each stands on an
+// issue that has had its start and stands in held, which lineHolds.waitsByDesign reads as stopped
+// before it reads any word, so their rows here are never what decides, and false says the same as
+// that rule. A held parent is then judged as a parent that waits in accepting for its children is
+// judged, and each issue beneath it by its own word; a stopped task waits for its owner's next
+// version of the plan or for a person, the tree's own work or a person's
+// (TestAHoldOfAPlanIsNoWaitByDesign); and an issue held for its pull requests waits for a merge
+// or for the removal of a link, which is also the tree's own work or a person's.
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
@@ -887,8 +890,8 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // from, and which at step is the role of the running step), whose turn its standing is, or that
 // the phase has no role, and each pull request of its set with its state, named as
 // owner/name#number, since a set can hold pull requests of several repositories
-// (dispatch://INFRA-5910 decision 21, r7). It ends by telling the controller to
-// read the tree and decide. An issue standing at admitted is told as a phase no role works, as it
+// (dispatch://INFRA-5910 decision 21). It ends by telling the controller to read the tree and
+// decide. An issue standing at admitted is told as a phase no role works, as it
 // was before workflow.RoleFor named the architect there: that answer is for the readers that
 // start, resume or report the architect, and this notice keeps the words it had
 // (dispatch://INFRA-2614 R2). Accepting was the architect's before as well, so an issue standing

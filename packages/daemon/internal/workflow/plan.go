@@ -175,11 +175,11 @@ const notCarriedComment = "The issue's run started its plan again; the work of t
 // (record.StoredPlan.TasksOfBranch), so the pull request open there is kept, and the issue goes on
 // on it as it always did. Each pull request of the earlier run is its own row, closed and deleted
 // by its repository and number, so two of one branch both close (dispatch://INFRA-5910 decision
-// 20, b5); a pull request the issue links is none of them, whatever its branch: it is the issue's
-// link, which the stack never closes (decision 11). The row names the issue's repository
-// (record.TaskPullRequestsClose.Repo), the one every such pull request is of. An issue no earlier
-// run of which ran a step holds no pull request of an earlier run (record.Store.EarlierRunOf), and
-// nothing of it closes.
+// 20); a pull request the issue links is none of them, whatever its branch: it is the issue's
+// link, which the close of the task pull requests never closes (decision 11). The row names the
+// issue's repository (record.TaskPullRequestsClose.Repo), the one every such pull request is of.
+// An issue no earlier run of which ran a step holds no pull request of an earlier run
+// (record.Store.EarlierRunOf), and nothing of it closes.
 func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	ran, err := e.store.EarlierRunOf(ctx, tx, issue)
 	if err != nil || !ran {

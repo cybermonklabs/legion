@@ -147,7 +147,8 @@ const (
 // is what writes a merge forward's messages (conflict_confirm), the read of a pull request the
 // issue links in Dispatch (pull_request_link_read), and the read of the branches of the issue's
 // tasks before the close of its last open pull request is told (pull_request_branch_read). It is a
-// lane of its for as long as its architect holds no role (the daemon's errNoticeWaits): a worker
+// lane of its own because the board lane's architect notices are ordered among themselves and one
+// of them waits for as long as its architect holds no role (the daemon's errNoticeWaits): a worker
 // told that its open children ended its phase, a role given the words a hook fired on a move back,
 // told that its pull request left the merge queue or that the merge holds changed, asked to merge
 // the base forward or to hold while that merge runs, or asked to get ready for the replacement of

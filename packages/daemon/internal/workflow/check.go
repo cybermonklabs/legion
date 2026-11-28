@@ -235,7 +235,7 @@ const checkTaskLead = "Production check of "
 // reaches may be fresh — a woken pod after a lost volume — so the text stands on its own: the
 // issue, the repository, the pull request of the check's own merge as owner/name#number (an issue's
 // merges can be of several repositories, each with a check of its own, dispatch://INFRA-5910
-// decision 21, r3), the merge commit, the look and what woke it (wokenBy),
+// decision 21), the merge commit, the look and what woke it (wokenBy),
 // whether it is the last, and the rules of the check in prose: each requirement only the deploy can
 // show observed as it names it, the three verdicts and what each asks of the pull request, no
 // commit, the wake a pending names for its own next look, the suspension that follows it once the

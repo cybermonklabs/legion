@@ -26,10 +26,15 @@ import (
 // second repository, linkedNumber, that the walk's issue links once it stands in merging.
 type linkedWalk struct {
 	*stepRecordsRig
-	linkedNumber int
 }
 
 const linkedBranch = "fix/deploy"
+
+// linkedNumber is the number of the pull request of the second repository, linkedDeploy, that the
+// walks of the rig link: a number no pull request of the issue's own repository holds.
+func (r *stepRecordsRig) linkedNumber() int {
+	return r.number + 7000000
+}
 
 func newLinkedWalk(t *testing.T) *linkedWalk {
 	t.Helper()
@@ -38,8 +43,7 @@ func newLinkedWalk(t *testing.T) *linkedWalk {
 	natsURL := testnats.URL(t)
 	through := behindTheWebhookCheck(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}))
 	walk := &linkedWalk{stepRecordsRig: newStepRecordsRigWith(t, newLiveProofWith(t, natsURL, false, true), through, 1)}
-	walk.linkedNumber = walk.number + 7000000
-	walk.github.openIn(stepRecordsLinkedRepo, linkedBranch, walk.linkedNumber)
+	walk.github.openIn(linkedDeploy, linkedBranch, walk.linkedNumber())
 	return walk
 }
 
@@ -82,7 +86,7 @@ func (w *linkedWalk) toMerging() {
 // waits for the daemon to hold the pull request in the issue's set.
 func (w *linkedWalk) link() {
 	w.t.Helper()
-	w.linkTo(stepRecordsLinkedRepo, w.linkedNumber)
+	w.linkTo(linkedDeploy, w.linkedNumber())
 }
 
 // linkTo has Dispatch link the walk's issue to pull request number of repo, as a person does,
@@ -122,24 +126,24 @@ func (w *linkedWalk) mergeOwn() {
 // mergeLinked is GitHub merging the linked pull request, as Envoy relays it from acme/deploy.
 func (w *linkedWalk) mergeLinked() {
 	w.t.Helper()
-	w.github.merged(w.linkedNumber)
-	w.linkedMerged(w.linkedNumber, linkedBranch, stepRecordsHead)
+	w.github.merged(w.linkedNumber())
+	w.linkedMerged(w.linkedNumber(), linkedBranch, stepRecordsHead)
 }
 
 // linkedMerged is Envoy relaying GitHub's merge of pull request number of the second repository,
-// stepRecordsLinkedRepo, from branch at head, which GitHub already answers merged; it waits for
-// the daemon to record the merge.
+// linkedDeploy, from branch at head, which GitHub already answers merged; it waits for the daemon
+// to record the merge.
 func (r *stepRecordsRig) linkedMerged(number int, branch, head string) {
 	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{"action": "closed", "kind": "pr", "repo": stepRecordsLinkedRepo, "number": fmt.Sprint(number), "merged": "true",
-		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch, "head_repo": stepRecordsLinkedRepo,
+	payload, err := json.Marshal(map[string]string{"action": "closed", "kind": "pr", "repo": linkedDeploy, "number": fmt.Sprint(number), "merged": "true",
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch, "head_repo": linkedDeploy,
 		"updated_at": time.Now().UTC().Format(time.RFC3339)})
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	r.publish(fmt.Sprintf("notifications.github.acme.deploy.pr.%d", number), "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
+	r.publish("notifications.github."+strings.ReplaceAll(linkedDeploy, "/", ".")+".pr."+fmt.Sprint(number), "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
 	testwait.WithinPolling(r.t, stepRecordsWait, 100*time.Millisecond, "the daemon to record the merge of the linked pull request", func() bool {
-		return r.pullState(stepRecordsLinkedRepo, number) == "merged"
+		return r.pullState(linkedDeploy, number) == "merged"
 	})
 }
 

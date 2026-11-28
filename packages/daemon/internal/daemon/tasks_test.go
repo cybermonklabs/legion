@@ -871,7 +871,7 @@ func tasksCopyTools(t *testing.T) map[string]string {
 // its branches, the joins of its branches and its pull requests are the repository's, each pull
 // request clean until GitHub merges it (merged) or closes it unmerged (closePull), the person of
 // the reviews has write access, and a GraphQL root knows no pull request. A second repository,
-// stepRecordsLinkedRepo, holds the pull requests a test opens there (openLinked). Every other
+// linkedDeploy, holds the pull requests a test opens there (openLinked). Every other
 // route is a 404, so nothing reaches github.com.
 // Each pull request's number is the repository's plus offset, a number of the run's own: the tests
 // of the package share one database, where the daemon finds a pull request by its repository and
@@ -885,7 +885,7 @@ type tasksGitHub struct {
 	// merges is each pull request GitHub merged, and closed each one it closed unmerged, by
 	// number.
 	merges, closed map[int]bool
-	// linked is each pull request of the second repository, stepRecordsLinkedRepo, by number,
+	// linked is each pull request of the second repository, linkedDeploy, by number,
 	// which only a link of an issue names (openLinked), and front answers a request before the
 	// fake repository does where it reports it answered (a test's close of pull requests).
 	linked map[int]*linkedPull
@@ -904,7 +904,7 @@ func newTasksGitHub(t *testing.T) *tasksGitHub {
 	prefix := "/repos/" + liveRepo
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, ofRepository := strings.CutPrefix(r.URL.Path, prefix)
-		linkedRest, ofLinked := strings.CutPrefix(r.URL.Path, "/repos/"+stepRecordsLinkedRepo)
+		linkedRest, ofLinked := strings.CutPrefix(r.URL.Path, "/repos/"+linkedDeploy)
 		g.mu.Lock()
 		front := g.front
 		g.mu.Unlock()
@@ -943,7 +943,7 @@ func (g *tasksGitHub) setFront(front func(w http.ResponseWriter, r *http.Request
 func (g *tasksGitHub) openLinked(number int, branch, head string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.linked[number] = &linkedPull{repo: stepRecordsLinkedRepo, number: number, branch: branch, base: "main", head: head, state: "open"}
+	g.linked[number] = &linkedPull{repo: linkedDeploy, number: number, branch: branch, base: "main", head: head, state: "open"}
 }
 
 // closePull is GitHub closing pull request number of liveRepo unmerged.
@@ -964,7 +964,7 @@ func (g *tasksGitHub) mergeLinked(number int) {
 // repository itself, or one of its pull requests and its reviews.
 func (g *tasksGitHub) readLinked(w http.ResponseWriter, rest string) {
 	if rest == "" {
-		_, _ = io.WriteString(w, `{"full_name":"`+stepRecordsLinkedRepo+`","default_branch":"main"}`)
+		_, _ = io.WriteString(w, `{"full_name":"`+linkedDeploy+`","default_branch":"main"}`)
 		return
 	}
 	number, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")

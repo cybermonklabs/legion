@@ -1128,13 +1128,13 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 			answer, known = g.pullRequest(number)
 		}
 		switch {
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"+stepRecordsLinkedRepo+"/pulls/"):
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"+linkedDeploy+"/pulls/"):
 			// A pull request of the second repository, which only a link of the walk's issue names.
-			number, linkedReviews := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"+stepRecordsLinkedRepo+"/pulls/"), "/reviews")
+			number, linkedReviews := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"+linkedDeploy+"/pulls/"), "/reviews")
 			n, err := strconv.Atoi(number)
 			linked, known := g.pullRequest(n)
 			switch {
-			case err != nil || !known || !g.inRepository(n, stepRecordsLinkedRepo):
+			case err != nil || !known || !g.inRepository(n, linkedDeploy):
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 			case linkedReviews:
@@ -1167,10 +1167,6 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	}})
 	return g
 }
-
-// stepRecordsLinkedRepo is the second repository of the walks that link a pull request of another
-// repository.
-const stepRecordsLinkedRepo = "acme/deploy"
 
 // open is the pull request number of branch, open at stepRecordsHead.
 func (g *stepRecordsGitHub) open(branch string, number int) {

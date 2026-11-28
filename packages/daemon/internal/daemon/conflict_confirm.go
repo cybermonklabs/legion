@@ -24,10 +24,12 @@ import (
 // branch confirms the conflict, which R0 then decides on with the base's rules this read carries,
 // and MERGEABLE releases the first read.
 //
-// Each attempt first reads the issue and its pull request record in one transaction
-// (issueRecord), and finishes the row without reading GitHub, with one line naming why, once the
-// pull request is not open at the row's head or the record no longer holds the row's first read,
-// of that head and made at the row's FirstReadAt (conflictReadLeft): a later read already
+// Each attempt first reads, in one transaction, the issue and the row of the pull request the
+// payload names by its repository and number (record.Store.PullRequestRowByNumber,
+// record.ConflictConfirm.RepoOf), a row of another issue read as none, and finishes the row without
+// reading GitHub, with one line naming why, once the pull request is not open at the row's head or
+// the record no longer holds the row's first read, of that head and made at the row's FirstReadAt
+// (conflictReadLeft): a later read already
 // confirmed or released it, a new head left it behind, or it was released and a later read of the
 // same head made a newer first read with a row of its own, and a second read of it would decide
 // nothing. Otherwise it reads the pull request once, bounded by issueRead as the per-issue read

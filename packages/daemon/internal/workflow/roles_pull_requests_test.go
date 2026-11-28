@@ -63,7 +63,7 @@ func namesBoth(t *testing.T, who, text string) {
 }
 
 // Every worker's step text names each open pull request of its step's scope as owner/name#number,
-// its own task's first (dispatch://INFRA-5910 D6, decision 21, r1). LEGION-208's one task a runs
+// its own task's first (dispatch://INFRA-5910 D6, decision 21). LEGION-208's one task a runs
 // `planner implementer tester reviewer acceptance:owner` and merges, with its own pull request
 // sjawhar/legion#42 on the issue's branch, and the issue links acme/deploy#6990, a pull request of
 // a second repository, which a's scope works (decision 6). One row for each worker: the planner,
@@ -162,9 +162,9 @@ func decisionOf(t *testing.T, pool *pgxpool.Pool, repo string, number int, state
 }
 
 // Each open pull request of a review round is reviewed at its own head, and the merger is asked to
-// merge each whose review allows it (dispatch://INFRA-5910 D6, decisions 6 and 7; c-roles' first
-// test). LEGION-208's task a reviews its own sjawhar/legion#42 at head-a, and the issue links
-// acme/deploy#6990 at head-6990, which a's scope works. Each row is a record of its own:
+// merge each whose review allows it (dispatch://INFRA-5910 D6, decisions 6 and 7). LEGION-208's
+// task a reviews its own sjawhar/legion#42 at head-a, and the issue links acme/deploy#6990 at
+// head-6990, which a's scope works. Each row is a record of its own:
 //   - each head has a decision of its own, and the issue leaves reviewing only when each open head
 //     has an approving review standing, whichever is approved first: one approval leaves a at its
 //     reviewer's step, the second moves it on to its retro;
@@ -354,18 +354,19 @@ func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 
 // Each merge of an issue opens a production check of its own, with its repository, its number and
 // its merge commit, and a second merge does not replace the first check (dispatch://INFRA-5910 D6,
-// decision 6; c-roles' second test). LEGION-208's task a (`implementer tester`, its agents named
-// implementer and tester) merges its own sjawhar/legion#42, and the issue links acme/deploy#6990,
-// a pull request of a second repository, under `production_check: tester`. In either order of the
+// decision 6). LEGION-208's task a (`implementer tester`, its agents named implementer and tester)
+// merges its own sjawhar/legion#42, and the issue links acme/deploy#6990, a pull request of a
+// second repository, under `production_check: tester`. In either order of the
 // two merges: two checks stand after both, each opened at its own merge, with its repository,
 // number and merge commit, the first not replaced by the second; the check of the linked merge is
 // a's, claimed by the agent of a's tester (checkClaim over the scope's task); and each check's first
 // look's task names its own merge, as owner/name#number with its merge commit, and not the other's.
 //
-// The fault it catches is a linked merge that opens no check, as on the stack, whose intake records
-// no pull request of another repository (its control: mergedNotOwn with no openCheck, under which
-// one check stands after both merges), and a linked merge's check claimed by the checking role's own
-// claim on the issue rather than by its scope's agent (its control: openCheck keeping the pull
+// The fault it catches is a linked merge that opens no check, as in the release before this one,
+// whose intake recorded no pull request of another repository (its control: mergedNotOwn with no
+// openCheck, under which one check stands after both merges), and a linked merge's check claimed
+// by the checking role's own claim on the issue rather than by its scope's agent (its control:
+// openCheck keeping the pull
 // request's own task, "" for a linked pull request).
 func TestEachMergeOpensItsOwnProductionCheck(t *testing.T) {
 	t.Parallel()

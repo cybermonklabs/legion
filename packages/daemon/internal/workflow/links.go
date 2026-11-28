@@ -172,10 +172,10 @@ func (e *Engine) linkedRow(ctx context.Context, tx pgx.Tx, repo string, number i
 // branch holds in the issue's repository leaves the issue's set with its link (D2), so its row goes
 // too, whether it is open or merged: no fact of it moves the issue after. A pull request on a
 // task's branch keeps its row and stays in the set, as the task's own or as another pull request of
-// the task (decision 5), which the stack's close then reaches at the issue's last merge (decision
-// 11). A production check its merge opened stays open and runs: a check is the issue's, not the
-// pull request's. A link the daemon refused as a fork's or as another issue's held no row of the
-// issue, and its removal deletes nothing.
+// the task (decision 5), which the close of the task pull requests (record.TaskPullRequestsClose)
+// then reaches at the issue's last merge (decision 11). A production check its merge opened stays
+// open and runs: a check is the issue's, not the pull request's. A link the daemon refused as a
+// fork's or as another issue's held no row of the issue, and its removal deletes nothing.
 func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink) error {
 	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
 	if err != nil || pr == nil || pr.Issue != issue.Key {
@@ -519,18 +519,19 @@ func (h heldLink) named() string {
 
 // setHolds is each link of issue that holds its close (dispatch://INFRA-5910 decision 9), in the
 // order of their repositories, compared without case, and numbers: each pull request the issue
-// links that is open, whether or not a task holds its branch, since the stack's close of the
-// pull requests of tasks never reaches a pull request the issue links (closeHeldPullRequests); each
-// link whose read is still owed, whose pull request the record holds no row of yet, which counts as
-// open so that no close happens between a link and its read (decision 4); and each link held refused
-// as unserved or unreadable, whose pull request Legion cannot read or see merge (decision 8). A
-// pull request of a task that the issue does not link holds nothing, since the stack's close
-// reaches it at the issue's last merge, and neither does a merged or a closed pull request, which
-// the architect left closed (D5), nor a link refused as a fork's or another issue's, which takes its
-// pull request into no set. It is the one statement of which pull requests hold a close, a read of
-// the store alone, as PhaseFinished reads it outside the engine: the issue's links
-// (record.Store.PullRequestLinksOf) and the row of each, read under the link's own name as rows
-// alone (record.Store.PullRequestRowByNumber), the repository compared without case.
+// links that is open, whether or not a task holds its branch, since the close of the task pull
+// requests (record.TaskPullRequestsClose) never reaches a pull request the issue links
+// (closeHeldPullRequests); each link whose read is still owed, whose pull request the record holds
+// no row of yet, which counts as open so that no close happens between a link and its read
+// (decision 4); and each link held refused as unserved or unreadable, whose pull request Legion
+// cannot read or see merge (decision 8). A pull request of a task that the issue does not link
+// holds nothing, since the close of the task pull requests reaches it at the issue's last merge,
+// and neither does a merged or a closed pull request, which the architect left closed (D5), nor a
+// link refused as a fork's or another issue's, which takes its pull request into no set. It is the
+// one statement of which pull requests hold a close, a read of the store alone, as PhaseFinished
+// reads it outside the engine: the issue's links (record.Store.PullRequestLinksOf) and the row of
+// each, read under the link's own name as rows alone (record.Store.PullRequestRowByNumber), the
+// repository compared without case.
 func setHolds(ctx context.Context, store record.Store, tx pgx.Tx, issue string) ([]heldLink, error) {
 	links, err := store.PullRequestLinksOf(ctx, tx, issue)
 	if err != nil {

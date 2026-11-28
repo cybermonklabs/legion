@@ -11,9 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -167,8 +169,8 @@ func heldForPullRequests(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, 
 //   - row 8, a member of a lingering tree: its merge closes nothing while the linked pull request is
 //     open, and the expiry of the linger hands the member over;
 //   - row 9: a's own pull request, which the issue links, is open at the merge of b, the last: the
-//     stack's close leaves it open, the issue stays in merging, and closes when #42 merges, or
-//     when it closes with no merge and the read of the branches finds none open;
+//     close of the task pull requests leaves it open, the issue stays in merging, and closes when
+//     #42 merges, or when it closes with no merge and the read of the branches finds none open;
 //   - row 10: a merges, and the issue links a's own pull request: a's merge is that pull request's
 //     merge, and the issue closes at it.
 //
@@ -199,7 +201,7 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 		stillOpen(t, pool, root.Key, phase.Merging, "the merge of #42")
 		holdToldOnce(t, pool, root.Key, linkedPR, "the merge of #42")
 		if closes := closesOf(t, pool, root.Key); len(closes) != 0 {
-			t.Fatalf("after the merge of #42 the stack's closes are %+v, want none", closes)
+			t.Fatalf("after the merge of #42 the closes of the task pull requests are %+v, want none", closes)
 		}
 		assertTask(t, tasksOf(t, pool, engine, root.Key), "a", record.TaskRunning, atMerge)
 		mergerKeepsWorking(t, pool, engine, root.Key, "a")
@@ -401,7 +403,7 @@ func TestAnIssueWithTwoPullRequestsClosesAtTheLastMerge(t *testing.T) {
 		stillOpen(t, pool, root.Key, phase.Merging, "the merge of b's #45")
 		for _, close := range closesOf(t, pool, root.Key) {
 			if slices.Contains(close.Numbers, 42) {
-				t.Fatalf("the stack's close %+v closes #42, want none: the issue links it", close)
+				t.Fatalf("the close of the task pull requests %+v closes #42, want none: the issue links it", close)
 			}
 		}
 		holdToldOnce(t, pool, root.Key, "sjawhar/legion#42", "the merge of b's #45")
@@ -527,4 +529,77 @@ func TestAnOpenLinkedPullRequestThatHoldsTheCloseIsToldOnce(t *testing.T) {
 		mustSpend(t, "the read again, merged", apply("read-merged-again", merged))
 		closedDone(t, pool, root.Key, "the read that takes the refusal back")
 	})
+}
+
+// projectedIssue is key as GET /legion/v1/state serves it (projection.Project over the record).
+func projectedIssue(t *testing.T, pool *pgxpool.Pool, key string) api.Issue {
+	t.Helper()
+	var state api.State
+	if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+		var err error
+		state, err = projection.Project(t.Context(), projection.Inputs{Tx: tx, Store: record.NewStore(), Project: "LEGION", Now: linkedAt})
+		return err
+	}); err != nil {
+		t.Fatalf("project the state: %v", err)
+	}
+	return state.Issues[key]
+}
+
+// A pull request that a correction of the issue's repository left open on the repository the issue
+// left is in no view of the state and holds no close: the record keeps its row, of the repository
+// it was opened on, and that row is in neither the issue's set nor its merge
+// (record.Store.LeftPullRequests), so GET /legion/v1/state names it neither as the issue's
+// `pullRequest` nor in its `pullRequests`, and the close of the issue's last merge waits for no
+// such row (the decision dispatch://INFRA-5910/comment/234a0d3e-de71-4456-bafe-c042a6191e4d). The
+// issue's next task names it, which the daemon's
+// TestRepositoryCorrectionNamesThePullRequestLeftOnTheRepositoryTheIssueLeft holds, since this rig
+// renders no task. LEGION-208, recorded on acme/widgets, opened acme/widgets#4251 there, and a
+// correction moved its record onto sjawhar/legion; its one task a then stands at its merge with
+// its own sjawhar/legion#42. The state names #42 alone, and the merge of #42 closes the issue.
+//
+// The faults it catches: the left row read into the issue's set (its control: ofSet true for a
+// row of another repository than the issue's own that the issue does not link, under which the
+// state names acme/widgets#4251), and a close that waits for every open pull request the record
+// holds for the issue (its control: closeWaitOf holding each row LeftPullRequests reads, under
+// which the issue stays in merging).
+func TestAPullRequestACorrectionLeftIsInNoViewAndHoldsNoClose(t *testing.T) {
+	t.Parallel()
+	const leftRepo = "acme/widgets"
+	left := fmt.Sprintf("%s#%d", leftRepo, 4251)
+	pool := migratedPool(t)
+	root := record.Issue{Key: "LEGION-208", Repo: leftRepo, DefaultBranch: "main", GitHubRepo: leftRepo, Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	seedIssue(t, pool, root)
+	seedTreeLifecycle(t, pool, root.Key)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: leftRepo, Number: 4251,
+		Branch: "legion/LEGION-208", HeadSHA: "head-left", Failing: []string{}})
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		corrected, err := record.NewStore().CorrectIssueRepository(t.Context(), tx, root.Key, "sjawhar/legion", "main", "sjawhar/legion", linkedAt)
+		if err == nil && !corrected {
+			err = fmt.Errorf("the record of %s was already on sjawhar/legion", root.Key)
+		}
+		return err
+	})
+	seedTasksAt(t, pool, root.Key, root.Generation, taskAt{id: "a", state: record.TaskRunning, place: atMerge, number: 42, merges: true})
+	if pr := pullRequestOf(t, pool, leftRepo, 4251); pr == nil || pr.State != record.PullRequestOpen || pr.Issue != root.Key {
+		t.Fatalf("premise: %s is %+v, want it open and %s's", left, pr, root.Key)
+	}
+
+	issue := projectedIssue(t, pool, root.Key)
+	if issue.RepoBefore != leftRepo {
+		t.Fatalf("premise: the state shows %s corrected from %q, want %s", root.Key, issue.RepoBefore, leftRepo)
+	}
+	var served []string
+	for _, pr := range issue.PullRequests {
+		served = append(served, fmt.Sprintf("%s#%d", pr.Repo, pr.Number))
+	}
+	if !slices.Equal(served, []string{"sjawhar/legion#42"}) {
+		t.Errorf("the state serves the pull requests %v of %s, want sjawhar/legion#42 alone: %s is in no view", served, root.Key, left)
+	}
+	if pr := issue.PullRequest; pr == nil || pr.Repo != "sjawhar/legion" || pr.Number != 42 {
+		t.Errorf("the state serves %+v as the pull request of %s, want sjawhar/legion#42: %s is in no view", pr, root.Key, left)
+	}
+
+	mustSpend(t, "the merge of #42", applyFacts(t, pool, noCheckEngine())("merged-42", mergedFact(42, "a")))
+	closedDone(t, pool, root.Key, "the merge of #42, with "+left+" still open")
 }

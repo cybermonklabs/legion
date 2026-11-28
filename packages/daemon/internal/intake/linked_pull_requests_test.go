@@ -103,7 +103,7 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 		seq3 := readTestdata(t, "testdata/dispatch/issue-updated-link-own-repository.json")
 		seq4 := readTestdata(t, "testdata/dispatch/issue-updated-link-other-repository.json")
 		closed := readTestdata(t, "testdata/dispatch/issue-closed.json")
-		created := readTestdata(t, "testdata/dispatch/issue-created.json")
+		created := capturedIssueCreatedEnvelope(t)
 		bothLinks := `[{"url":"https://github.com/acme/widgets/pull/5481","kind":"url"},{"url":"https://github.com/acme/deploy/pull/6990","kind":"url"}]`
 		for _, tc := range []struct {
 			name, subject, project string

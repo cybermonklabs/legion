@@ -103,9 +103,6 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 	}
 	assertSet := func(t *testing.T, pool *pgxpool.Pool, key, after string, want ...string) {
 		t.Helper()
-		if want == nil {
-			want = []string{}
-		}
 		if got := pullRequestSetOf(t, pool, key); !slices.Equal(got, want) {
 			t.Errorf("after %s the set of %s is %v, want %v", after, key, got, want)
 		}
@@ -123,29 +120,18 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 		t.Run(fmt.Sprintf("the pull request of a task a later version removed, linked %t", linked), func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
-			root := stepRoot(t, pool, phase.Testing)
-			seedTasks(t, pool, root.Key, root.Generation,
-				planTask{id: "a", steps: []string{"tester:a"}, agents: []claim.Agent{"test-a"}, state: record.TaskRunning, place: atStep(1)},
-				planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskStopped, place: atStep(1)},
-				planTask{id: "z", steps: []string{"reviewer:z"}, agents: []claim.Agent{"rev-z"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
-			seedTaskBranch(t, pool, root.Key, "a", "legion/LEGION-208")
-			var bBranch string
-			seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-				bBranch, err = record.NewStore().AssignTaskBranch(t.Context(), tx, root.Key, root.Generation, "b")
-				return err
-			})
+			root, bBranch := removedTaskRoot(t, pool)
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 45,
 				Branch: bBranch, Base: "main", HeadSHA: "head-b", Failing: []string{}})
 			apply := applyFacts(t, pool, engine)
 			if linked {
 				mustSpend(t, "the link of #45", apply("linked-45", linksOf(root.Key, 2, status, intake.PullRequestLink{Repo: "sjawhar/legion", Number: 45})))
 			}
-			mustTake(t, "version 2", apply("version-2", laterVersion(t, root.Key, root.Generation, 2,
-				keyed(t, "a", "", []string{"tester:a"}), keyed(t, "z", "", []string{"reviewer:z"}, "a"))))
+			mustTake(t, "version 2", apply("version-2", removingB(t, root)))
 			if linked {
 				assertSet(t, pool, root.Key, "version 2 removed b", "sjawhar/legion#42", "sjawhar/legion#45")
 				if got := closedNumbers(t, pool, root.Key, "Task b was removed from the plan."); len(got) != 0 {
-					t.Errorf("version 2 closed %v, want none: the issue links #45, which the stack never closes", got)
+					t.Errorf("version 2 closed %v, want none: the issue links #45, which the close of the task pull requests never closes", got)
 				}
 				return
 			}

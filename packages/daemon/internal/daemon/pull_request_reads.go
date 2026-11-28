@@ -88,7 +88,7 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 }
 
 // openRecord is pr's record as it stands now, read by its repository and number
-// (record.Store.PullRequestRowByNumber, dispatch://INFRA-5910 decision 20, b9), which must still
+// (record.Store.PullRequestRowByNumber, dispatch://INFRA-5910 decision 20), which must still
 // be pr's issue's and open. The per-issue read builds facts from it and writes nothing of it.
 func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest) (record.PullRequest, error) {
 	var current *record.PullRequest
@@ -406,7 +406,7 @@ func (w *workflowRuntime) heardSpelling(repo string) string {
 }
 
 // openPullRequestsOn is each open pull request of repo on branch, in GitHub's order, newest first,
-// as githubrest.Client.OpenPullRequestsOn reads them (dispatch://INFRA-5910 decision 20, b6).
+// as githubrest.Client.OpenPullRequestsOn reads them (dispatch://INFRA-5910 decision 20).
 //
 // The repository GitHub serves the recorded one under is what this reads, addresses and filters
 // on (repositories.serving): after a transfer the record keeps the old name, and the head filter

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,20 +23,9 @@ func keyedPullRequest(repo string, number int, base string) PullRequest {
 func repoNumbers(prs []PullRequest) []string {
 	named := make([]string, len(prs))
 	for i, pr := range prs {
-		named[i] = fmt.Sprintf("%s#%d", lowerASCII(pr.Repo), pr.Number)
+		named[i] = fmt.Sprintf("%s#%d", strings.ToLower(pr.Repo), pr.Number)
 	}
 	return named
-}
-
-// lowerASCII is name with its ASCII capitals lowered, as PostgreSQL's lower() reads a repository.
-func lowerASCII(name string) string {
-	lowered := []byte(name)
-	for i, c := range lowered {
-		if 'A' <= c && c <= 'Z' {
-			lowered[i] = c + 'a' - 'A'
-		}
-	}
-	return string(lowered)
 }
 
 // The record keeps one row for each pull request of an issue, keyed by its repository and its

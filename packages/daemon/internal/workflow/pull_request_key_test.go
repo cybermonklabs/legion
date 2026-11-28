@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -22,19 +21,6 @@ const (
 	sharedBranch = "legion/LEGION-208"
 	secondBase   = "legion/LEGION-208-ci-base"
 )
-
-// numberedPullRequest is pull request number of sjawhar/legion as the store reads it back by its
-// repository and its number (record.Store.PullRequestByNumber), nil where the record holds no row
-// of it.
-func numberedPullRequest(t *testing.T, pool *pgxpool.Pool, number int) *record.PullRequest {
-	t.Helper()
-	var pr *record.PullRequest
-	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-		pr, err = record.NewStore().PullRequestByNumber(t.Context(), tx, "sjawhar/legion", number)
-		return err
-	})
-	return pr
-}
 
 // rowStands is what a test holds of one pull request's row: its state, the base it merges into,
 // its head, and the merge commit of a merged one.
@@ -62,7 +48,7 @@ func rowStandsOf(pr record.PullRequest) rowStands {
 func assertRowsStand(t *testing.T, pool *pgxpool.Pool, after string, want map[int]rowStands) {
 	t.Helper()
 	for _, number := range slices.Sorted(maps.Keys(want)) {
-		pr := numberedPullRequest(t, pool, number)
+		pr := pullRequestOf(t, pool, "sjawhar/legion", number)
 		if pr == nil {
 			t.Errorf("after %s the record holds no row of #%d; want #%d %s: each pull request of %s is a row of its own, which no other pull request's write replaces",
 				after, number, number, want[number], sharedBranch)
@@ -87,7 +73,7 @@ func holdsPush(pr record.PullRequest, before, after string) bool {
 func assertPushReached(t *testing.T, pool *pgxpool.Pool, after string, before, to string, numbers ...int) {
 	t.Helper()
 	for _, number := range numbers {
-		pr := numberedPullRequest(t, pool, number)
+		pr := pullRequestOf(t, pool, "sjawhar/legion", number)
 		switch {
 		case pr == nil:
 			t.Errorf("after %s the record holds no row of #%d to hold the push %s..%s; want it held by each open pull request on %s", after, number, before, to, sharedBranch)

@@ -31,10 +31,12 @@ import (
 // (dispatch://INFRA-5910 D2, D3, D6): a hand-built runtime (linkedRig) over a Postgres of its own,
 // a fake GitHub of two repositories, acme/widgets and acme/deploy (linkedGitHub), and a fake
 // Dispatch that holds each issue's external links and answers its webhook App check
-// (linkDetails). Each fake records every request it was asked, so a test reads which repository
-// a read of one pull request was made in. The whole-daemon tests of D4 and D10 are in
+// (linkDetails). The fake GitHub records every request it was asked, so a test reads which
+// repository a read of one pull request was made in. The whole-daemon tests of D4 and D10 are in
 // linked_pull_requests_live_test.go.
 
+// linkedDeploy is the second repository of the tests that link a pull request of another
+// repository than the issue's own.
 const linkedDeploy = "acme/deploy"
 
 // linkedPull is one pull request of linkedGitHub: its repository, number, head branch, base, head
@@ -77,18 +79,6 @@ func (g *linkedGitHub) find(repo string, number int) *linkedPull {
 		}
 	}
 	return nil
-}
-
-// merge is GitHub merging pull request number of repo.
-func (g *linkedGitHub) merge(repo string, number int) {
-	g.t.Helper()
-	pull := g.find(repo, number)
-	if pull == nil {
-		g.t.Fatalf("GitHub holds no pull request %s#%d to merge", repo, number)
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	pull.state, pull.merged = "closed", true
 }
 
 // asked is each request GitHub was asked, "<method> <path>", in order.
@@ -202,27 +192,22 @@ func (g *linkedGitHub) serve(w http.ResponseWriter, r *http.Request) {
 }
 
 // linkDetails is Dispatch's detail of each issue it holds, with its external links, and its
-// answer of whether its webhook App is installed on a repository (uninstalled names those it is not
-// installed on). It records every path it was asked.
+// answer that its webhook App is installed on every repository.
 type linkDetails struct {
-	url         string
-	mu          sync.Mutex
-	links       map[string][]string
-	uninstalled map[string]bool
-	seen        []string
+	url   string
+	mu    sync.Mutex
+	links map[string][]string
 }
 
 func newLinkDetails(t *testing.T) *linkDetails {
 	t.Helper()
-	d := &linkDetails{links: map[string][]string{}, uninstalled: map[string]bool{}}
+	d := &linkDetails{links: map[string][]string{}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		defer d.mu.Unlock()
-		d.seen = append(d.seen, r.URL.Path)
 		switch {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/github/app-installation/"):
-			repo := strings.TrimPrefix(r.URL.Path, "/api/v1/github/app-installation/")
-			_ = json.NewEncoder(w).Encode(map[string]bool{"installed": !d.uninstalled[repo]})
+			_ = json.NewEncoder(w).Encode(map[string]bool{"installed": true})
 		case strings.HasPrefix(r.URL.Path, "/api/v1/issues/"):
 			key := strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")
 			links := []map[string]string{}
@@ -238,13 +223,6 @@ func newLinkDetails(t *testing.T) *linkDetails {
 	t.Cleanup(server.Close)
 	d.url = server.URL
 	return d
-}
-
-// askedFor is how many times the issue's detail was read.
-func (d *linkDetails) askedFor(key string) int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return strings.Count(strings.Join(d.seen, "\n")+"\n", "/api/v1/issues/"+key+"\n")
 }
 
 // linkedRig is the runtime of the tests, over pool, with the engine that applies every fact it
@@ -358,16 +336,6 @@ func seedLinks(t *testing.T, pool *store.Pool, issue string, links []record.Pull
 // linkedPullRow is a row of pull request number of repo, open, that issue links.
 func linkedPullRow(issue, repo string, number int, branch, head string) record.PullRequest {
 	return record.PullRequest{State: record.PullRequestOpen, Issue: issue, Repo: repo, Number: number, Branch: branch, Base: "main", HeadSHA: head, Failing: []string{}}
-}
-
-// linkNoticesOf is how many notices of kind the issue's outbox holds.
-func linkNoticesOf(t *testing.T, pool *store.Pool, issue, kind string) int {
-	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'notice' and payload->>'kind' = $2`, issue, kind).Scan(&count); err != nil {
-		t.Fatalf("count the %s notices of %s: %v", kind, issue, err)
-	}
-	return count
 }
 
 // Each read of an issue's pull requests the daemon makes is made in the repository of the pull
@@ -533,7 +501,6 @@ func TestTheDaemonReadsEachPullRequestInItsOwnRepository(t *testing.T) {
 		github := newLinkedGitHub(t, pulls()...)
 		rig := seed(t, github)
 		closing := newClosingGitHub(map[int]string{86: "open"})
-		rig.github.t = t
 		o := rig.outbox()
 		o.githubAPI = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 			if !closing.handle(w, r) {
@@ -598,7 +565,7 @@ func TestTheDaemonReadsEachPullRequestInItsOwnRepository(t *testing.T) {
 		}); err != nil || link == nil || link.Refused != record.LinkRefusedUnserved {
 			t.Fatalf("the link to acme/gadgets#5 = %+v, %v; want it refused as unserved", link, err)
 		}
-		if told := linkNoticesOf(t, rig.pool, "CAPTURE-1", "pr-holds-close"); told != 1 {
+		if told := len(noticeReasons(t, rig.pool, "pr-holds-close")); told != 1 {
 			t.Errorf("the architect was sent %d notices that the link holds the close, want one over two passes", told)
 		}
 		merge := intake.PullRequestMerged{Repo: "acme/widgets", Number: 86, MergeSHA: "merge-own", HeadSHA: "code"}

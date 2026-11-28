@@ -2699,7 +2699,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
 // reviewer's answer to its request. The pull request the round and the restarted worker's task
-// read is the one of the work issue is read for (pullRequestOf): of a copy read for one task of a
+// read is the one of the work issue is read for (taskPullRequest): of a copy read for one task of a
 // plan of several, that task's own.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
@@ -3571,7 +3571,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// The move into accepting starts no worker: the architect's acceptance is the step of the issue
 	// there, and the phase-finished notice of the step before it is what tells the architect so
 	// (prompts/go/architect-common.md). That notice names each open pull request of the issue with
-	// its repository, number and head (acceptancePart, dispatch://INFRA-5910 decision 21, r1), its
+	// its repository, number and head (acceptancePart, dispatch://INFRA-5910 decision 21), its
 	// task's own first, so the architect accepts the code each of them stands at.
 	notice := noticeFor(trigger, issue, from, row.To, handoff, reason, ended)
 	if row.To == phase.Accepting && notice.Kind != "" {
@@ -3766,11 +3766,11 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, s TaskScope, tr
 // to wait with, so the task moves to done and the issue stands held for its pull requests from
 // merging over tasks that are all done (record.HoldForPullRequests, arrive), in place of the close.
 // The hold writes no status, since held has none, so Dispatch is not told done; it starts nothing,
-// since no merge step is left in any task's line to start a merger through (the plan's departure
-// 1), and the issue does not leave the workflow. The architect is told the move, as any move tells it
-// (noticeFor), and each link that holds the close, once (tellHolds). The merge or the end of the
-// last of those pull requests, or the removal of its link, judges the close again (judgeClose),
-// which releases the hold and closes the issue (releaseHeldClose).
+// since no merge step is left in any task's line to start a merger through, and the issue does not
+// leave the workflow. The architect is told the move, as any move tells it (noticeFor), and each
+// link that holds the close, once (tellHolds). The merge or the end of the last of those pull
+// requests, or the removal of its link, judges the close again (judgeClose), which releases the
+// hold and closes the issue (releaseHeldClose).
 func (e *Engine) holdForPullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, holds []heldLink) error {
 	issue, w := s.issue, s.walk

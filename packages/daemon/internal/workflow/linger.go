@@ -327,7 +327,7 @@ func (e *Engine) leaveMerges(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // it links, in any repository) that is open and that no queued close of the issue's generation
 // names (record.Store.QueuedPullRequestCloses), as owner/name#number, in the set's order of
 // repositories and numbers: what the notice of a child's leave names (leftNotice,
-// dispatch://INFRA-5910 decision 21, r6). A merge that ends the issue queues the close of each
+// dispatch://INFRA-5910 decision 21). A merge that ends the issue queues the close of each
 // other open pull request of a task in its own transaction, before its leave, so that leave names
 // none of them; a close that keeps failing keeps its row, and its pull requests are not named while
 // it retries. A queued close reaches an unlinked pull request of the issue's own repository alone
@@ -567,9 +567,10 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, key string, merge *r
 // from merging over tasks that are all done, where no merge was in hand, holdForPullRequests and
 // leaveWhereDone) once no link of its set holds its close any longer (setHolds), and the issue
 // closes: it is written where its tasks put it, done, with the Dispatch status done (putScope, on
-// the copy of a task, which stands in done), the stack's close of each open pull request of a task
-// that the issue does not link is queued with the comment that the issue is done, naming the last
-// merge of its set (queueDoneClose, lastMerge, decision 11), and it leaves the workflow through the
+// the copy of a task, which stands in done), the close of the task pull requests
+// (record.TaskPullRequestsClose) is queued for each open pull request of a task that the issue
+// does not link, with the comment that the issue is done, naming the last merge of its set
+// (queueDoneClose, lastMerge, decision 11), and it leaves the workflow through the
 // one place of a leave its tasks make (leaveByTasks), as leaveWhereDone leaves. While a link still
 // holds the close, the architect is told of each such link no notice named yet (tellHolds), and the
 // hold stands.
@@ -688,8 +689,8 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 // request of its set, rather than a merger still at work. It asks the one predicate written over a
 // hold (record.StandsIn) of the one phase, and stays a question of its own rather than folding into
 // record.Accepted: a root in retro has been accepted and does not await its merge, and this is
-// what closes an issue at its merge (merged, closeMerged), what judges the close of an issue again
-// (judgeClose) and what keeps that merge against a later pull request (pullRequestOpened).
+// what closes an issue at its merge (merged, closeMerged) and what judges the close of an issue
+// again (judgeClose).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
 }

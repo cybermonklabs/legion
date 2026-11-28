@@ -1622,9 +1622,12 @@ func mergePlans(ctx context.Context, tx pgx.Tx, issues []string) (map[string]*St
 // OpenPullRequestsOnBranch by pull_requests_lower_repo_branch, both from migration 20261102095707.
 // An index on (repo, number) or (repo, branch) bounds none of these reads, because lower(repo) is
 // not the indexed expression: the planner walks the whole index and filters every row it reads, a
-// cost that grows with the records of finished issues, which are never deleted. The one other read
-// of the table that keys on the repository is the one-time rename pass (rename.go:
-// RenameCandidates, RenameIssueRepository), which compares the name without case in the same way.
+// cost that grows with the records of finished issues, which are never deleted. Every other read
+// and write of the table that keys on the repository compares the name without case in the same
+// way: OpenPullRequestsOnBase, which pull_requests_open_on_base bounds; the writes of one pull
+// request by its repository and number (PutPullRequest's conflict key, SetPullRequestBaseMoved,
+// MovePullRequest, DeletePullRequest), which pull_requests_lower_repo_number bounds; and the
+// one-time rename pass (rename.go: RenameCandidates, RenameIssueRepository).
 const (
 	pullRequestsOnBranch = "select " + pullRequestColumns + ` from pull_requests where lower(repo) = lower($1) and branch = $2
 		and state = 'open' order by number`

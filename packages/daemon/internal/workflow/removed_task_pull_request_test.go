@@ -46,6 +46,37 @@ func pullRequestRows(t *testing.T, pool *pgxpool.Pool, number int) int {
 	return rows
 }
 
+// removedTaskRoot seeds LEGION-208 in testing with the plan a later version removes b from: a runs
+// its tester's step on the issue's branch, legion/LEGION-208, b stopped at its implementer's step,
+// and z, the task that merges, waits on both. It answers the issue and the branch the generation
+// gave b (record.Store.AssignTaskBranch), legion/LEGION-208.b, on which the caller opens b's pull
+// requests.
+func removedTaskRoot(t *testing.T, pool *pgxpool.Pool) (record.Issue, string) {
+	t.Helper()
+	root := stepRoot(t, pool, phase.Testing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"tester:a"}, agents: []claim.Agent{"test-a"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskStopped, place: atStep(1)},
+		planTask{id: "z", steps: []string{"reviewer:z"}, agents: []claim.Agent{"rev-z"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
+	seedTaskBranch(t, pool, root.Key, "a", "legion/LEGION-208")
+	var bBranch string
+	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
+		bBranch, err = record.NewStore().AssignTaskBranch(t.Context(), tx, root.Key, root.Generation, "b")
+		return err
+	})
+	if bBranch != "legion/LEGION-208.b" {
+		t.Fatalf("b's branch = %q, want legion/LEGION-208.b", bBranch)
+	}
+	return root, bBranch
+}
+
+// removingB is version 2 of root's plan, which removes b from the plan removedTaskRoot seeds and
+// keeps a, and z needing a alone.
+func removingB(t *testing.T, root record.Issue) intake.PlanGiven {
+	t.Helper()
+	return laterVersion(t, root.Key, root.Generation, 2, keyed(t, "a", "", []string{"tester:a"}), keyed(t, "z", "", []string{"reviewer:z"}, "a"))
+}
+
 // A task that a later version removes closes its pull request, and its row goes in the version's
 // transaction. Task a runs its tester's step on the issue's branch, b stopped at its implementer's
 // step with its open pull request #2 on legion/LEGION-208.b, and z, the task that merges, waits on
@@ -66,27 +97,13 @@ func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Testing)
-	seedTasks(t, pool, root.Key, root.Generation,
-		planTask{id: "a", steps: []string{"tester:a"}, agents: []claim.Agent{"test-a"}, state: record.TaskRunning, place: atStep(1)},
-		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskStopped, place: atStep(1)},
-		planTask{id: "z", steps: []string{"reviewer:z"}, agents: []claim.Agent{"rev-z"}, needs: []string{"a", "b"}, state: record.TaskWaiting})
-	seedTaskBranch(t, pool, root.Key, "a", "legion/LEGION-208")
-	var bBranch string
-	seedRecord(t, pool, func(tx pgx.Tx) (err error) {
-		bBranch, err = record.NewStore().AssignTaskBranch(t.Context(), tx, root.Key, root.Generation, "b")
-		return err
-	})
-	if bBranch != "legion/LEGION-208.b" {
-		t.Fatalf("b's branch = %q, want legion/LEGION-208.b", bBranch)
-	}
+	root, bBranch := removedTaskRoot(t, pool)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 2,
 		Branch: bBranch, Base: "main", HeadSHA: "head-b", Failing: []string{}})
 	apply := applyFacts(t, pool, engine)
 	aBlock := keyed(t, "a", "", []string{"tester:a"})
 
-	mustTake(t, "version 2", apply("version-2", laterVersion(t, root.Key, root.Generation, 2,
-		aBlock, keyed(t, "z", "", []string{"reviewer:z"}, "a"))))
+	mustTake(t, "version 2", apply("version-2", removingB(t, root)))
 	want := record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{2}, Comment: "Task b was removed from the plan."}
 	if closes := pullRequestCloses(t, pool); !reflect.DeepEqual(closes, []record.TaskPullRequestsClose{want}) {
 		t.Fatalf("the rows that close pull requests after version 2 removed b = %+v, want the one %+v", closes, want)

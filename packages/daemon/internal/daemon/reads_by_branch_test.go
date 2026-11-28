@@ -120,27 +120,11 @@ func seedTwoOnTheBranch(t *testing.T, pool *store.Pool) {
 	}
 }
 
-// numberedPullRequest is pull request number of acme/widgets as the store reads it back by its
-// repository and its number (record.Store.PullRequestByNumber), nil where the record holds no row
-// of it.
-func numberedPullRequest(t *testing.T, pool *store.Pool, number int) *record.PullRequest {
-	t.Helper()
-	var pr *record.PullRequest
-	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		pr, err = record.NewStore().PullRequestByNumber(ctx, tx, "acme/widgets", number)
-		return err
-	}); err != nil {
-		t.Fatalf("read #%d: %v", number, err)
-	}
-	return pr
-}
-
 // assertOpenOnItsBase fails the test unless the record holds #number open onto base at head, read
 // by its repository and its number, after what.
 func assertOpenOnItsBase(t *testing.T, pool *store.Pool, after string, number int, base, head string) {
 	t.Helper()
-	pr := numberedPullRequest(t, pool, number)
+	pr := linkedRow(t, pool, "acme/widgets", number)
 	switch {
 	case pr == nil:
 		t.Errorf("after %s the record holds no row of #%d; want #%d open onto %s at %s: each open pull request on legion/CAPTURE-1 is a row of its own",
@@ -225,7 +209,7 @@ func TestEachReadByBranchTakesEveryOpenPullRequestOnIt(t *testing.T) {
 		github := &twoOnTheBranch{head: "pushed", updated: read, activity: []string{lostPush}}
 		readCapture(t, reviewAppRuntime(pool, github.serve(t).URL, quietLogger()))
 		for _, number := range []int{86, 87} {
-			pr := numberedPullRequest(t, pool, number)
+			pr := linkedRow(t, pool, "acme/widgets", number)
 			switch {
 			case pr == nil:
 				t.Errorf("after the read the record holds no row of #%d to hold the push code..pushed it rebuilt; want it held by each open pull request on legion/CAPTURE-1", number)

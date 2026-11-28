@@ -49,8 +49,8 @@ func branchReadsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PullRe
 // (the daemon's pullRequestBranchRead): it fails unless key's outbox holds exactly one such read,
 // ends that row, as the outbox ends a row that ran, and applies the read's fact
 // (intake.PullRequestBranchReadDone) with open, each pull request GitHub shows open on those
-// branches. It answers the read's row, for the caller to hold to what the close queued.
-func readBranches(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result, key string, open ...intake.PullRequestOpened) record.PullRequestBranchRead {
+// branches.
+func readBranches(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact) intake.Result, key string, open ...intake.PullRequestOpened) {
 	t.Helper()
 	rows := issueOutboxOf(t, pool, key, string(record.OutboxKindPullRequestBranchRead))
 	reads := branchReadsOf(t, pool, key)
@@ -63,7 +63,6 @@ func readBranches(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fa
 	read := reads[0]
 	mustSpend(t, "the read of the branches of "+key, apply(fmt.Sprintf("branch-read-%s-%d", key, rows[0].id),
 		intake.PullRequestBranchReadDone{Issue: key, Generation: read.Generation, Repo: read.Repo, Number: read.Number, Open: open}))
-	return read
 }
 
 // undecided fails unless the close named after has told key's architect nothing yet, neither

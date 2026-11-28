@@ -82,7 +82,7 @@ func newStackWalk(t *testing.T) *stackWalk {
 	w.closing = newClosingGitHub(map[int]string{w.pulls["a"]: "open", w.unrelated: "open"})
 	w.gh.setFront(w.front)
 	w.gh.openLinked(w.unrelated, w.branchOf("a"), "linked-head")
-	w.linkTo(stepRecordsLinkedRepo, w.unrelated)
+	w.linkTo(linkedDeploy, w.unrelated)
 	return w
 }
 
@@ -158,11 +158,11 @@ func (w *stackWalk) mergeLinkedPull() {
 	w.linkedMerged(w.unrelated, w.branchOf("a"), "linked-head")
 }
 
-// The stack's close of the other tasks' pull requests leaves a linked pull request open, and a
-// linked pull request holds the issue's close (dispatch://INFRA-5910 D4, D2). The whole daemon walks
-// stackPlan to merging: a's pull request is open, since b needs a and a merges nothing, and b's is
-// the last task's. The issue links a pull request of acme/deploy on a's branch name, numbered as an
-// unrelated open pull request of acme/widgets.
+// The close of the other tasks' pull requests (record.TaskPullRequestsClose) leaves a linked pull
+// request open, and a linked pull request holds the issue's close (dispatch://INFRA-5910 D4, D2).
+// The whole daemon walks stackPlan to merging: a's pull request is open, since b needs a and a
+// merges nothing, and b's is the last task's. The issue links a pull request of acme/deploy on a's
+// branch name, numbered as an unrelated open pull request of acme/widgets.
 //   - Case 1: b's merge, the last, closes a's pull request through GitHub with a comment that does
 //     not say the issue is done; the linked pull request and the unrelated one stay open, nothing
 //     writes to either, and the issue stays in merging until the linked pull request merges, which
@@ -185,7 +185,7 @@ func TestTheStacksCloseOfTaskPullRequestsLeavesALinkedPullRequestOpen(t *testing
 		if writes := slices.Concat(w.wrote(fmt.Sprintf("/pulls/%d", w.unrelated)), w.wrote(fmt.Sprintf("/issues/%d/", w.unrelated)), w.wrote("acme/deploy")); len(writes) != 0 {
 			t.Errorf("the daemon wrote %v to GitHub, want nothing written to the linked pull request or the unrelated one", writes)
 		}
-		if got := w.pullState(stepRecordsLinkedRepo, w.unrelated); got != string(record.PullRequestOpen) {
+		if got := w.pullState(linkedDeploy, w.unrelated); got != string(record.PullRequestOpen) {
 			t.Errorf("the record holds the linked acme/deploy#%d %q, want open", w.unrelated, got)
 		}
 		w.stands("b's merge, with the linked pull request open", phase.Merging)
@@ -224,8 +224,8 @@ func newestMigration(t *testing.T) int {
 // issue as Dispatch answered the write.
 func (r *stepRecordsRig) linkInDispatch(number int, more map[string]any) createdIssue {
 	r.t.Helper()
-	r.github.openIn(stepRecordsLinkedRepo, linkedBranch, number)
-	body := map[string]any{"external_links": []map[string]string{{"url": fmt.Sprintf("https://github.com/%s/pull/%d", stepRecordsLinkedRepo, number)}}}
+	r.github.openIn(linkedDeploy, linkedBranch, number)
+	body := map[string]any{"external_links": []map[string]string{{"url": fmt.Sprintf("https://github.com/%s/pull/%d", linkedDeploy, number)}}}
 	for name, value := range more {
 		body[name] = value
 	}
@@ -313,7 +313,7 @@ func TestARunningIssueKeepsItsPhaseWhenALinkedPullRequestJoinsTheSet(t *testing.
 	r := newStepRecordsRigSeeded(t, proof, behindTheWebhookCheck(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL})), len(stands),
 		func(r *stepRecordsRig, created createdIssue) bool {
 			stand := stands[len(before)]
-			linked := r.linkInDispatch(r.number+7000000, nil)
+			linked := r.linkInDispatch(r.linkedNumber(), nil)
 			r.seedAsMain(stand.at, stand.status, created.Rank, linked.LastSeq)
 			r.seedArchitect()
 			before[r.key] = r.implementerRow()
@@ -322,7 +322,7 @@ func TestARunningIssueKeepsItsPhaseWhenALinkedPullRequestJoinsTheSet(t *testing.
 	for place, stand := range stands {
 		r.on(r.issues[place].key)
 		testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the boot to read "+r.key+"'s linked pull request", func() bool {
-			return r.pullState(stepRecordsLinkedRepo, r.number+7000000) == string(record.PullRequestOpen)
+			return r.pullState(linkedDeploy, r.linkedNumber()) == string(record.PullRequestOpen)
 		})
 		r.stands("the boot", stand.at)
 		if got := linkedIssue(t, r.st.Pool(), r.key); got.Phase != stand.at || got.Status != stand.status {
@@ -331,7 +331,7 @@ func TestARunningIssueKeepsItsPhaseWhenALinkedPullRequestJoinsTheSet(t *testing.
 		if got := r.implementerRow(); got != before[r.key] {
 			t.Errorf("%s's implementer's phases row (claim, handoff commit, entry) is %s after the boot, want %s, as it was", r.key, got, before[r.key])
 		}
-		want := []string{fmt.Sprintf("%s#%d open", stepRecordsLinkedRepo, r.number+7000000), fmt.Sprintf("%s#%d open", liveRepo, r.number)}
+		want := []string{fmt.Sprintf("%s#%d open", linkedDeploy, r.linkedNumber()), fmt.Sprintf("%s#%d open", liveRepo, r.number)}
 		if got := r.pullRequestSet(); !slices.Equal(got, want) {
 			t.Errorf("the set of %s after the boot is %v, want %v: the linked pull request beside its own", r.key, got, want)
 		}
@@ -349,7 +349,7 @@ func TestAClosedIssueIsNotReopenedByItsLinks(t *testing.T) {
 	r := newStepRecordsRigSeeded(t, newLiveProofWith(t, natsURL, false, true),
 		behindTheWebhookCheck(t, startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL})), 1,
 		func(r *stepRecordsRig, created createdIssue) bool {
-			linked := r.linkInDispatch(r.number+7000000, map[string]any{"status": "done"})
+			linked := r.linkInDispatch(r.linkedNumber(), map[string]any{"status": "done"})
 			if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 				if err := r.records.PutIssue(ctx, tx, record.Issue{
 					Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
@@ -382,7 +382,7 @@ func TestAClosedIssueIsNotReopenedByItsLinks(t *testing.T) {
 	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from pull_request_links where issue = $1`, r.key).Scan(&links); err != nil {
 		t.Fatalf("count the links of %s: %v", r.key, err)
 	}
-	if got := r.pullState(stepRecordsLinkedRepo, r.number+7000000); links != 0 || got != "" {
-		t.Errorf("the boot recorded %d links of the done issue and its linked acme/deploy#%d as %q, want it to read nothing of a done issue", links, r.number+7000000, got)
+	if got := r.pullState(linkedDeploy, r.linkedNumber()); links != 0 || got != "" {
+		t.Errorf("the boot recorded %d links of the done issue and its linked acme/deploy#%d as %q, want it to read nothing of a done issue", links, r.linkedNumber(), got)
 	}
 }

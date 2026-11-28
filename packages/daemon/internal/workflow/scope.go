@@ -745,9 +745,9 @@ type scopedPulls struct {
 // is a task it is of (tasksOfPullRequest: the task whose branch it is on, or, for one no task's
 // branch holds, the task whose scope works it), and every one is for a run with no plan rows, whose
 // scope is the issue itself; every other link that holds the close is holding. An unlinked other
-// pull request of the task on its branch is in neither: no role works it, and the stack's close
-// closes it at the issue's last merge (the plan's departure 2). The rows are rows alone
-// (record.Store.PullRequestRowByNumber), for a reader that writes none of them back.
+// pull request of the task on its branch is in neither: no role works it, and the close of the
+// task pull requests (record.TaskPullRequestsClose) closes it at the issue's last merge. The rows
+// are rows alone (record.Store.PullRequestRowByNumber), for a reader that writes none of them back.
 func (e *Engine) scopePullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (scopedPulls, error) {
 	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
 	if err != nil {

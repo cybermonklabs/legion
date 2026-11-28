@@ -634,8 +634,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // completionPosition) are read as the implement App, minted for the owner of the issue's
 // repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it
 // by). A branch can hold several, each onto a base of its own (dispatch://INFRA-5910 D1, decision
-// 20's b10), so the completion is taken on the task's own pull request among them
-// (taskPullRequest, decision 5), whether or not the issue links it, and that one says whether the
+// 20), so the completion is taken on the task's own pull request among them (taskPullRequest,
+// decision 5), whether or not the issue links it, and that one says whether the
 // completion goes on:
 //
 //   - one open against the base the plan gives the task (position.base, record.StoredPlan.BaseOf),

@@ -85,8 +85,8 @@ func pullRequestOf(t *testing.T, pool *pgxpool.Pool, repo string, number int) *r
 	return pr
 }
 
-// mergeOf is the pull request of key's merge (record.Store.MergePullRequest), and mergesOf the
-// number of each of its merges (MergePullRequests).
+// mergeOf is the pull request of key's merge (record.Store.MergePullRequest), and the number of
+// each of its merges (MergePullRequests).
 func mergeOf(t *testing.T, pool *pgxpool.Pool, key string) (*record.PullRequest, []int) {
 	t.Helper()
 	var merge *record.PullRequest
@@ -119,11 +119,11 @@ func mergeOf(t *testing.T, pool *pgxpool.Pool, key string) (*record.PullRequest,
 //     sends no pr-closed-unmerged, whose words say the issue's pull request closed (D5);
 //   - a link of #3955 takes it into the set as linked, still another pull request of the issue;
 //   - at #3654's merge in merging the linked #3955 holds the close: the issue stays in merging, the
-//     stack's close does not close #3955, and one pr-holds-close names it with the way out, its
-//     link's removal (decisions 9, 10 and 11);
+//     close of the task pull requests does not close #3955, and one pr-holds-close names it with
+//     the way out, its link's removal (decisions 9, 10 and 11);
 //   - once its link is removed, #3654 is still the issue's merge, #3955 stays in the set as another
-//     pull request of the issue, the issue closes, and the stack's close closes #3955 with the
-//     comment that the issue is done (decisions 9, 11 and 18).
+//     pull request of the issue, the issue closes, and the close of the task pull requests closes
+//     #3955 with the comment that the issue is done (decisions 9, 11 and 18).
 //
 // The faults it catches are the record keyed by the issue and the branch, or by the issue, the
 // repository and the branch, the two keys dispatch://INFRA-5910/comment/37e6f13e-cb9d-4c00-9ee1-bf090dd747e3
@@ -220,7 +220,7 @@ func TestASecondPullRequestFromTheBranchReplacesNone(t *testing.T) {
 		}
 		for _, close := range closesOf(t, pool, replayIssue) {
 			if slices.Contains(close.Numbers, 3955) {
-				t.Errorf("the stack's close %+v closes #3955, want none: a linked pull request is the issue's to merge or to unlink", close)
+				t.Errorf("the close of the task pull requests %+v closes #3955, want none: a linked pull request is the issue's to merge or to unlink", close)
 			}
 		}
 		holds := noticesOf(t, pool, replayIssue, "pr-holds-close")
@@ -251,7 +251,7 @@ func TestASecondPullRequestFromTheBranchReplacesNone(t *testing.T) {
 		if !slices.ContainsFunc(closesOf(t, pool, replayIssue), func(close record.TaskPullRequestsClose) bool {
 			return slices.Contains(close.Numbers, 3955) && close.Comment == done
 		}) {
-			t.Errorf("the stack's closes %+v close no #3955 with %q, want one: the release of the held close closes each open task pull request the issue does not link",
+			t.Errorf("the closes of the task pull requests %+v close no #3955 with %q, want one: the release of the held close closes each open task pull request the issue does not link",
 				closesOf(t, pool, replayIssue), done)
 		}
 	})
