@@ -328,23 +328,22 @@ func withheldTask(d supervise.Delivery) string {
 	return withheldLookIDLines(task)
 }
 
-// withheldLookIDLines is task with the text between the backticks of each look-id line
-// (intake.LookIDLine, then the id between backticks: workflow's checkTask) replaced by
-// lookIDWithheld. A line whose closing backtick is missing, and everything after it, stays.
+// withheldLookIDLines is task with the text between intake.LookIDLineOpen and
+// intake.LookIDLineClose of each look-id line (intake.LookIDLine) replaced by lookIDWithheld. A
+// line whose close is missing, and everything after it, stays.
 func withheldLookIDLines(task string) string {
-	const lead = intake.LookIDLine + "`"
-	if !strings.Contains(task, lead) {
+	if !strings.Contains(task, intake.LookIDLineOpen) {
 		return task
 	}
 	var withheld strings.Builder
 	withheld.Grow(len(task))
 	for {
-		at := strings.Index(task, lead)
+		at := strings.Index(task, intake.LookIDLineOpen)
 		if at < 0 {
 			break
 		}
-		at += len(lead)
-		end := strings.IndexByte(task[at:], '`')
+		at += len(intake.LookIDLineOpen)
+		end := strings.Index(task[at:], intake.LookIDLineClose)
 		if end < 0 {
 			break
 		}

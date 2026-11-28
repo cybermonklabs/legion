@@ -2044,10 +2044,10 @@ func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 // of this check instance (LookIDLook is Looks, and LookIDOpenedAt is the instant OpenedAt is, as
 // NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns.
 // So after a rollback the record can hold the id of a look that a later look replaced: the way
-// back of docs/kubernetes.md keeps the look id of an open check whose issue runs again, and the
-// release before starts the next look once the run ends. The record can also hold the id of the
-// check that a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the
-// look has no id of its own until the boot gives it one.
+// back of docs/kubernetes.md keeps the look id of every open check, and the release before's
+// start of the next look leaves it as it was. The record can also hold the id of the check that a
+// later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look has no id
+// of its own until the boot gives it one.
 func (c ProductionCheck) CurrentLookID() string {
 	if c.LookID == "" || c.LookIDLook != c.Looks || !c.LookIDOpenedAt.Equal(c.OpenedAt) {
 		return ""
@@ -3884,6 +3884,16 @@ func PhaseHolds(issue *Issue, queuedFor phase.Phase, generation uint64) bool {
 // look that does not hold costs no allocation here.
 func LookHolds(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) bool {
 	return lookFails(issue, check, look, lookID) == lookHoldsNoFailure
+}
+
+// LookGivesAnotherID says whether a production check look's task (look, lookID) is a task of the
+// check's current look that gives no look id or one that is not the check's current one: lookFails
+// finds lookNoID or lookOtherID, so the task fails on its look id alone. The boot asks it of the
+// tasks of an open look (workflow.Engine.RepairOpenChecks), beside LookHolds. Like LookHolds, it
+// formats no reason.
+func LookGivesAnotherID(issue *Issue, check *ProductionCheck, look supervise.CheckLook, lookID string) bool {
+	failure := lookFails(issue, check, look, lookID)
+	return failure == lookNoID || failure == lookOtherID
 }
 
 // lookFailure is the first reason a look's task does not hold (lookFails), which

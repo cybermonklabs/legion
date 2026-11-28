@@ -26,7 +26,7 @@ func TestTheOperatorClaimViewWithholdsTheLookID(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newLookIDFixture(t, sent)
 			want := strings.ReplaceAll(f.task, hiddenLookID, lookIDWithheld)
-			if !strings.Contains(want, "Look id: `"+lookIDWithheld+"`.") || strings.Count(f.task, hiddenLookID) != 1 {
+			if !strings.Contains(want, "\n"+intake.LookIDLine(lookIDWithheld)) || strings.Count(f.task, hiddenLookID) != 1 {
 				t.Fatalf("the fixture's task %q does not give the look id once on its own line", f.task)
 			}
 			withheld := func(label string, rec *httptest.ResponseRecorder, view OperatorClaim) {
@@ -96,8 +96,7 @@ func TestTheOperatorClaimViewWithholdsTheLookID(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			line := func(id string) string {
-				return "Production check of LEGION-209: child.\n" + intake.LookIDLine + "`" + id +
-					"`. Your report gives check_opened_at and look_id from this task.\nReport the look."
+				return "Production check of LEGION-209: child.\n" + intake.LookIDLine(id) + "\nReport the look."
 			}
 			view := operatorView(supervise.Claim{Token: "legion-legion-legion-209-tester", Pending: &supervise.Delivery{ID: "outbox:look-2",
 				Task: line(hiddenLookID), CheckLook: supervise.CheckLook{Look: 2}, LookID: tc.lookID}}, supervise.StepRecord{})

@@ -191,11 +191,12 @@ const checkTaskLead = "Production check of "
 // (wokenBy), the check's OpenedAt in the form the report sends it back as check_opened_at,
 // whether it is the last, then on a line of its own the look's id (lookID, the id startLook made
 // for this look: record.ProductionCheck.LookID) and that the report gives check_opened_at and
-// look_id from this task, and the rules of the check in prose: each requirement only
-// the deploy can show observed as it names it, the three verdicts and what each asks of the pull
-// request, no commit, the wake a pending names for its own next look and the suspension that
-// follows it, and nothing to wait for in the session, since the look ends with the report. A merge
-// production carries with such a requirement still unobserved is a pending while a look follows.
+// look_id from this task (intake.LookIDLine), and the rules of the check in prose: each
+// requirement only the deploy can show observed as it names it, the three verdicts and what each
+// asks of the pull request, no commit, the wake a pending names for its own next look and the
+// suspension that follows it, and nothing to wait for in the session, since the look ends with
+// the report. A merge production carries with such a requirement still unobserved is a pending
+// while a look follows.
 // A requirement observed as not met is a fail on every look. On the last look one still unobserved
 // is a fail too, whether or not production carries the merge. The last look's task gives pending
 // only for an issue with none of those requirements, a pending that closes the check as not run.
@@ -221,7 +222,8 @@ func checkTask(issue record.Issue, check record.ProductionCheck, lookID, cause, 
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
-	fmt.Fprintf(&text, "\n%s`%s`. Your report gives check_opened_at and look_id from this task.", intake.LookIDLine, lookID)
+	text.WriteByte('\n')
+	text.WriteString(intake.LookIDLine(lookID))
 	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
 		"Then report with the legion tool's handoff_complete, check_opened_at and look_id from this task and a verdict, committing nothing: " +

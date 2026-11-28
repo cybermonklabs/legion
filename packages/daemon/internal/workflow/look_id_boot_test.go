@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -166,18 +167,20 @@ func queueLookBootStart(t *testing.T, rig checkRig, issue record.Issue, check re
 // issue out of the workflow that has its own id, where a task of that look gives no look id or
 // another look's id: a task pending on the checking role's claim, whose delivery holds that id,
 // where the release before ran a start of the look that this release queued, with its look id
-// taken off by the way back, and a start row of the look queued for that role, where the way back
-// took the look id off a start that this release queued before the issue's last run. The send
-// drops such a task and the fence finishes such a row (record.LookHolds), so the look gets a new id
-// and a new task. The controls change nothing and queue nothing: a look with its own id and no
-// task pending; a look with its own id whose pending task of the look, or whose queued start of
-// the look, gives that id; such a start beside a pending task of the look with no look id, and
-// such a pending task beside a queued start of the look with no look id, since the task of the
-// look's own id takes the other's place; the same task or start with no look id while the
-// issue runs again, whose checking role can hold the id from the look's task and report with it
-// while the run holds the issue; a pending task or a queued start of the previous look, of the
-// check a later merge replaced, or a pending task of no look, none of which gives the look's id;
-// and a check with no open look. The engine's journal carries no look id and no task.
+// taken off by the way back; a start row of the look queued for that role, where the way back
+// took the look id off a start that this release queued before the issue's last run; and such a
+// start beside a phase task whose delivery kept the look's own id from the task it replaced,
+// since a task of no look is no task of the look whatever id its delivery holds. The send drops
+// such a task and the fence finishes such a row (record.LookHolds), so the look gets a new id and
+// a new task. The controls change nothing and queue nothing: a look with its own id and no task
+// pending; a look with its own id whose pending task of the look, or whose queued start of the
+// look, gives that id; such a start beside a pending task of the look with no look id, and such
+// a pending task beside a queued start of the look with no look id, since the task of the look's
+// own id takes the other's place; the same task or start with no look id while the issue runs
+// again, whose checking role can hold the id from the look's task and report with it while the
+// run holds the issue; a pending task or a queued start of the previous look, or of the check a
+// later merge replaced, neither of which gives the look's id; and a check with no open look. The
+// engine's journal carries no look id and no task.
 func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -223,10 +226,10 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 			pending: &lookBootTask{look: 1}},
 		{name: "control: a task of the check a later merge replaced whose delivery holds no look id", check: lookBootOwnIDOf,
 			pending: &lookBootTask{look: 2, replaced: true}},
-		{name: "control: a phase task whose delivery kept the look's own id from the task it replaced", check: lookBootOwnIDOf,
-			pending: &lookBootTask{id: lookBootOwnID}},
 		{name: "a start of the look queued with no look id, the look holding its own id", reissues: true, check: lookBootOwnIDOf,
 			queued: &lookBootTask{look: 2}},
+		{name: "a start of the look queued with no look id, beside a phase task whose delivery kept the look's own id from the task it replaced",
+			reissues: true, check: lookBootOwnIDOf, pending: &lookBootTask{id: lookBootOwnID}, queued: &lookBootTask{look: 2}},
 		{name: "control: a start of the look queued with the look's own id", check: lookBootOwnIDOf,
 			queued: &lookBootTask{look: 2, id: lookBootOwnID}},
 		{name: "control: a start of the look queued with the look's own id, beside a task of the look whose delivery holds no look id",
@@ -316,7 +319,7 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 			if want := checkTask(child, *check, id, before.LastWakeKind, before.LastWakeDetail, before.Last); start.Task != want {
 				t.Fatalf("the boot's task =\n%s\nwant checkTask's text of now:\n%s", start.Task, want)
 			}
-			for _, line := range append([]string{"your report names it with check_opened_at `" + openedAt + "`.", "This look has the look id `" + id + "`."}, tc.says...) {
+			for _, line := range append([]string{"your report names it with check_opened_at `" + openedAt + "`.", intake.LookIDLine(id)}, tc.says...) {
 				if !strings.Contains(start.Task, line) {
 					t.Fatalf("the boot's task =\n%s\nwant it to say %q", start.Task, line)
 				}

@@ -31,15 +31,12 @@ import (
 //     keeps its close.
 //   - opened_generation goes null on each check, which the release before's upsert of a new check
 //     would leave in place.
-//   - The look id, the look and the check instance it was made for go null on each open check
-//     whose issue is out of the workflow (a done issue or a parked one): a start of the current look
-//     that the release before runs would otherwise leave the check holding that look's id as the
-//     current one with a delivery that holds none, so after the roll forward the boot would give the
-//     look no new task and the send would drop the old one. The open check of a root in the
-//     workflow keeps its look id: the root's checking role can hold that id from the task of the
-//     look and report with it while the root runs (decision 7 of dispatch://INFRA-3518), and the
-//     release before sends that role no task of the look while the run holds the root. A check the
-//     block closes, and a check that closed already, keeps its look id.
+//   - Every look id stays, with the look and the check instance it was made for, on each check,
+//     open or closed: a root's in the workflow, a done issue's and a parked one's among them.
+//     Whether a look needs a new id depends on the state of its issue at the roll forward, which
+//     the block runs before, and a cleared id would lose the report of a root that runs again then
+//     (decision 7 of dispatch://INFRA-3518). The roll forward's boot gives a new look id to each
+//     open look that needs one (workflow.Engine.RepairOpenChecks).
 //
 // OTHER's rows, of the same shapes, stay as they are. A second run changes nothing. The control is
 // the state before the block, which the same reads hold to the fixtures.
@@ -67,15 +64,15 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		// A child that runs again: set back to todo after its check opened. Its check closes with its
 		// look id.
 		{"LEGION-301", "LEGION", "LEGION-300", phase.Implementing, "in_progress", false},
-		// A done child, which loses its look id.
+		// A done child, which keeps its look id.
 		{"LEGION-302", "LEGION", "LEGION-300", phase.Done, "done", false},
-		// A parked child: its status takes it out of the workflow whatever its phase. It loses its look
-		// id.
+		// A parked child: its status takes it out of the workflow whatever its phase. It keeps its
+		// look id.
 		{"LEGION-303", "LEGION", "LEGION-300", phase.Implementing, "backlog", false},
 		// A child that runs again whose check closed already, which keeps its look id.
 		{"LEGION-304", "LEGION", "LEGION-300", phase.Testing, "testing", true},
-		// A done root whose check is open: the look id goes, and the roll forward's boot gives the
-		// open look a new one.
+		// A done root whose check is open, which keeps its look id: a person can re-admit the root
+		// before the roll forward, and its checking role then reports with that id.
 		{"LEGION-305", "LEGION", "LEGION-305", phase.Done, "done", false},
 		// A done root whose check closed: a closed check keeps its look id.
 		{"LEGION-306", "LEGION", "LEGION-306", phase.Done, "done", true},
@@ -168,14 +165,14 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		`OTHER-301 supervise {"op": "retire_look", "role": "tester", "tree": "OTHER-300", "reported": true, "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
 	})
 	held("the checks after the way back: the open check of LEGION's child that runs again closed not_run, every LEGION "+
-		"generation cleared, the look id of each LEGION check left open whose issue is out of the workflow cleared, and the "+
-		"look ids of LEGION's root that runs again, of LEGION's closed checks and of OTHER's checks kept", checks, []string{
+		"generation cleared, and every look id kept, of each check open or closed, the done and parked issues' among "+
+		"them, and of OTHER's checks", checks, []string{
 		"LEGION-300 open - look open true generation - id LOOKIDOFLEGION300 made for look 2 of this check",
 		"LEGION-301 closed now not_run look open false generation - id LOOKIDOFLEGION301 made for look 2 of this check",
-		"LEGION-302 open - look open true generation - id - made for look - of -",
-		"LEGION-303 open - look open true generation - id - made for look - of -",
+		"LEGION-302 open - look open true generation - id LOOKIDOFLEGION302 made for look 2 of this check",
+		"LEGION-303 open - look open true generation - id LOOKIDOFLEGION303 made for look 2 of this check",
 		"LEGION-304 closed before recorded look open false generation - id LOOKIDOFLEGION304 made for look 2 of this check",
-		"LEGION-305 open - look open true generation - id - made for look - of -",
+		"LEGION-305 open - look open true generation - id LOOKIDOFLEGION305 made for look 2 of this check",
 		"LEGION-306 closed before recorded look open false generation - id LOOKIDOFLEGION306 made for look 2 of this check",
 		"OTHER-300 open - look open true generation 2 id LOOKIDOFOTHER300 made for look 2 of this check",
 		"OTHER-301 open - look open true generation 2 id LOOKIDOFOTHER301 made for look 2 of this check",

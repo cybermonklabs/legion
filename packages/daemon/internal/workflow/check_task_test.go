@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -45,7 +46,7 @@ func TestTheCheckTaskNamesItsCheckInTheFormAReportSendsBack(t *testing.T) {
 			t.Fatalf("the task (last %t) gives the look id %q (%t), want %q", last, id, ok, checkTaskLookID)
 		}
 		lines := strings.Split(task, "\n")
-		const idLine = "This look has the look id `" + checkTaskLookID + "`. Your report gives check_opened_at and look_id from this task."
+		idLine := intake.LookIDLine(checkTaskLookID)
 		at := slices.Index(lines, idLine)
 		if at < 1 || !strings.Contains(lines[at-1], "check_opened_at `"+value+"`") {
 			t.Fatalf("the task (last %t) = %q, want the line %q right after the line that gives check_opened_at", last, task, idLine)

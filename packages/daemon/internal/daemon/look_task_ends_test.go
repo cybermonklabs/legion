@@ -674,7 +674,7 @@ func TestALooksTaskEndsAtEveryPlace(t *testing.T) {
 		id := readProductionCheck(t, r.pool, r.records, lookEndsChild).CurrentLookID()
 		reached := false
 		for _, p := range sent {
-			reached = reached || id != "" && strings.Contains(p.Message, "This look has the look id `"+id+"`.")
+			reached = reached || id != "" && strings.Contains(p.Message, intake.LookIDLine(id))
 		}
 		if p := machine.Claim().Pending; id == "" || !reached || p == nil || p.LookID != id || p.CheckLook.Look != 1 {
 			t.Errorf("the boot's re-issue of the same look: look 1's id after the boot = %q, its new task sent %t, pending %+v; want an id, and its task carrying it sent and pending",

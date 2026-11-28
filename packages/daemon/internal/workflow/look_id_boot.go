@@ -33,26 +33,20 @@ import (
 // look (the outbox's start executor).
 //
 // An open look that has an id of its own, of an issue out of the workflow, gets a new id and the
-// same start row where a task of that look gives no look id or another one
-// (lookTaskGivesAnotherID): a task the checking role's claim holds, whose delivery holds that id,
-// or a start row of the look queued for that role, which carries it. The way back of
-// docs/kubernetes.md keeps the look id of an open check whose issue runs again, and strips the
-// look id off each start row it finds queued. The release before can then run a start of that look
-// once the issue is out of the workflow: the task gives the look's id, the delivery holds no id of
-// that look, and the send drops it. Or the row stays queued through the roll forward, and the
-// fence finishes it unrun. Either way the look would end at its bound with no task of this
-// release. A look whose issue runs again keeps its id: its checking role can hold that id from the
-// look's task and report with it while the run holds the issue (decision 7 of
-// dispatch://INFRA-3518). Its leave, however it reaches the record (the listing's reconcile after
-// this pass among them), closes its check as not run, or as replaced where a later merge opens
-// one (leave: closeCheckOfARunThatLeft, openCheck), since this pass gives the check, which the way
-// back left with no generation, the issue's generation less one (bootGeneration), so no open look
-// of it is left that needs a task. A task or a row of the look that gives the current id leaves
-// the look as it is, whatever other task of it stands: that task reaches the role. A pending task
-// or a queued start of no look, of another look or of the check a later merge replaced leaves the
-// look as it is too: it gives no id of the current look, and the release before writes a look's
-// task only for the current look of the check (its start fence), so such a task changes nothing of
-// what the role holds of the current look.
+// same start row where a task of that look gives no look id or another one, as
+// lookTaskGivesAnotherID reads the tasks of the look. After a rollback the release before can
+// leave such a task. The way back of docs/kubernetes.md keeps the look id of every open check and
+// takes the look id off each start row it finds queued. The release before can run such a row
+// once the issue is out of the workflow, and its one write of a delivery names no look id, so the
+// delivery holds none or keeps the id of the delivery it replaced. Or the row stays queued through
+// the roll forward. The send drops such a task and the fence finishes such a row unrun, so the
+// look would end at its bound with no task of this release. A look whose issue runs again keeps
+// its id: its checking role can hold that id from the look's task and report with it while the
+// run holds the issue (decision 7 of dispatch://INFRA-3518). Its leave, however it reaches the
+// record (the listing's reconcile after this pass among them), closes its check as not run, or as
+// replaced where a later merge opens one (leave: closeCheckOfARunThatLeft, openCheck), since this
+// pass gives the check, which the way back left with no generation, the issue's generation less
+// one (bootGeneration), so no open look of it is left that needs a task.
 //
 // An open check with no generation (record.ProductionCheck.OpenedGeneration is 0), which an older
 // binary opened or the way back of docs/kubernetes.md left, gets one, read from its issue as the
@@ -95,7 +89,7 @@ func (e *Engine) RepairOpenChecks(ctx context.Context, tx pgx.Tx) (looks, genera
 		case check.CurrentLookID() == "":
 			reissue, why = true, "the look has no look id of its own"
 		case !record.InWorkflow(*issue):
-			if reissue, err = e.lookTaskGivesAnotherID(ctx, tx, *issue, check); err != nil {
+			if reissue, err = e.lookTaskGivesAnotherID(ctx, tx, issue, &check); err != nil {
 				return 0, 0, err
 			}
 			why = "a task of the look gives another look id or none"
@@ -125,29 +119,31 @@ func (e *Engine) RepairOpenChecks(ctx context.Context, tx pgx.Tx) (looks, genera
 }
 
 // lookTaskGivesAnotherID says whether a task of check's current look gives no look id or one that
-// is not the look's current id (RepairOpenChecks): a start row of the look queued for check's role
-// on issue that carries such an id, which the fence finishes unrun (the outbox's checkLookHolds),
-// or a task the role's claim holds whose delivery holds such an id, which the send drops
-// (record.LookHolds). Either way the look would get no task of this release. A start row of the
-// look that carries the current id, or a task of the look whose delivery holds it, answers false
-// whatever else stands: that task reaches the role and takes the place of any other, as the boot's
-// new task would, so a second boot before such a row runs gives the look no other id. A claim the
-// store does not hold holds no task, and a key or a role that makes no claim token has no claim,
-// as admission's resumeSlottedWorkers passes one over.
-func (e *Engine) lookTaskGivesAnotherID(ctx context.Context, tx pgx.Tx, issue record.Issue, check record.ProductionCheck) (bool, error) {
+// is not the look's current id (record.LookGivesAnotherID) while no task of that look gives the
+// current id (record.LookHolds), which is when the boot gives the look a new id and a new task
+// (RepairOpenChecks). The tasks are each start row of the look queued for check's role on issue,
+// which carries its id and which the fence finishes unrun where the id does not hold (the
+// outbox's checkLookHolds), and the task the role's claim holds, whose delivery holds its id and
+// which the send drops where the id does not hold. A task that gives the current id reaches the
+// role and takes the place of any other, as the boot's new task would, so a second boot before
+// such a row runs gives the look no other id. A task of no look, of another look or of the check
+// a later merge replaced counts for neither: it gives no id of the current look, and the release
+// before writes a look's task only for the current look of the check (its start fence), so such a
+// task changes nothing of what the role holds of the current look. A claim the store does not
+// hold holds no task, and a key or a role that makes no claim token has no claim, as admission's
+// resumeSlottedWorkers passes one over.
+func (e *Engine) lookTaskGivesAnotherID(ctx context.Context, tx pgx.Tx, issue *record.Issue, check *record.ProductionCheck) (bool, error) {
 	starts, err := e.store.QueuedLookStarts(ctx, tx, issue.Key, check.Role)
 	if err != nil {
 		return false, err
 	}
-	current, other := check.CurrentLookID(), false
+	other := false
 	for _, start := range starts {
-		if !ofCurrentLook(check, supervise.CheckLook{Look: start.CheckLook, OpenedAt: start.CheckOpenedAt}) {
-			continue
-		}
-		if start.LookID == current {
+		look := supervise.CheckLook{Look: start.CheckLook, OpenedAt: start.CheckOpenedAt}
+		if record.LookHolds(issue, check, look, start.LookID) {
 			return false, nil
 		}
-		other = true
+		other = other || record.LookGivesAnotherID(issue, check, look, start.LookID)
 	}
 	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {
@@ -161,20 +157,13 @@ func (e *Engine) lookTaskGivesAnotherID(ctx context.Context, tx pgx.Tx, issue re
 	if err != nil {
 		return false, err
 	}
-	if role := held[token]; role != nil && role.Pending != nil && ofCurrentLook(check, role.Pending.CheckLook) {
-		if role.Pending.LookID == current {
+	if role := held[token]; role != nil && role.Pending != nil {
+		if record.LookHolds(issue, check, role.Pending.CheckLook, role.Pending.LookID) {
 			return false, nil
 		}
-		other = true
+		other = other || record.LookGivesAnotherID(issue, check, role.Pending.CheckLook, role.Pending.LookID)
 	}
 	return other, nil
-}
-
-// ofCurrentLook says whether a task of look is a task of check's current look as the look fence
-// reads one (record.LookHolds): the look's number, and a check instance that names the check
-// (record.ProductionCheck.NamedBy).
-func ofCurrentLook(check record.ProductionCheck, look supervise.CheckLook) bool {
-	return look.Look == check.Looks && check.NamedBy(look.OpenedAt)
 }
 
 // bootGeneration is the generation the boot gives an open check that has none, read from its

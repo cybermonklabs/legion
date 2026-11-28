@@ -27,10 +27,12 @@ import (
 )
 
 const (
-	hiddenLookID      = "LOOKIDSECRET77777777777777"
-	hiddenCheckRoot   = "LEGION-208"
-	hiddenCheckChild  = "LEGION-209"
-	hiddenLookTaskFmt = "Production check of %s: child.\nRepository acme/widgets, pull request #42, merge commit merge-42. Look 1, woken by the merge. The check opened at `%s`: your report names it with check_opened_at `%s`.\nLook id: `%s`. Give check_opened_at and look_id from this task in your report."
+	hiddenLookID     = "LOOKIDSECRET77777777777777"
+	hiddenCheckRoot  = "LEGION-208"
+	hiddenCheckChild = "LEGION-209"
+	// hiddenLookTaskFmt is a look's task as workflow's checkTask writes it: the issue, the check's
+	// opening time twice and, on a line of its own, the look-id line (intake.LookIDLine).
+	hiddenLookTaskFmt = "Production check of %s: child.\nRepository acme/widgets, pull request #42, merge commit merge-42. Look 1, woken by the merge. The check opened at `%s`: your report names it with check_opened_at `%s`.\n%s\nDo what the deployment instructions say to reach production."
 )
 
 // lookIDFixture is a live API server backed by a real Postgres store whose production check on
@@ -195,7 +197,7 @@ func newLookIDFixture(t *testing.T, sent bool) *lookIDFixture {
 		t.Fatalf("no machine for %s", token)
 	}
 	openedStr := opened.Format(time.RFC3339Nano)
-	taskText := fmt.Sprintf(hiddenLookTaskFmt, hiddenCheckChild, openedStr, openedStr, hiddenLookID)
+	taskText := fmt.Sprintf(hiddenLookTaskFmt, hiddenCheckChild, openedStr, openedStr, intake.LookIDLine(hiddenLookID))
 	if err := machine.Handle(ctx, supervise.RequestDeliver{
 		Claim:      token,
 		ID:         "outbox:look-1",

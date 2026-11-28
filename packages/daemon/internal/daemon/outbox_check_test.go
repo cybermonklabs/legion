@@ -199,7 +199,7 @@ func TestACheckStartWhoseLookIDIsNotTheStoredOneFinishesWithoutActing(t *testing
 			var logged testlog.Buffer
 			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 				log: slog.New(slog.NewTextHandler(&logged, nil)), now: time.Now}
-			task := "Production check of " + root.Key + ": root.\nThis look has the look id `" + tc.lookID + "`."
+			task := "Production check of " + root.Key + ": root.\n" + intake.LookIDLine(tc.lookID)
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer,
 				Generation: root.Generation, CheckLook: tc.look, CheckOpenedAt: check.OpenedAt, LookID: tc.lookID, Task: task}, time.Now()))
 
@@ -422,7 +422,7 @@ func TestAReissuedLookStartWaitsOutAnOperatorHold(t *testing.T) {
 			}
 			machine.Wait()
 			if got := machine.Claim(); outboxRows(t, pool) != 0 || got.LastStartRow != row || got.Pending == nil || got.Pending.LookID != id ||
-				got.Pending.CheckLook.Look != 1 || !strings.Contains(got.Pending.Task, "This look has the look id `"+id+"`.") {
+				got.Pending.CheckLook.Look != 1 || !strings.Contains(got.Pending.Task, intake.LookIDLine(id)) {
 				t.Fatalf("after the %s's resume: %d rows, last start %d, pending %+v; want the boot's row %d run and look 1's new task held for the implementer",
 					by, outboxRows(t, pool), got.LastStartRow, got.Pending, row)
 			}
@@ -474,7 +474,7 @@ func TestAnOlderDaemonsLookStartFinishesWithoutActingInEitherOrder(t *testing.T)
 			machine.Wait()
 			got := machine.Claim()
 			if outboxRows(t, pool) != 0 || got.LastStartRow != row || len(resumesOf(rt, token)) != 1 || got.Pending == nil || got.Pending.LookID != id ||
-				!strings.Contains(got.Pending.Task, "This look has the look id `"+id+"`.") || got.Pending.Task == olderTask {
+				!strings.Contains(got.Pending.Task, intake.LookIDLine(id)) || got.Pending.Task == olderTask {
 				t.Fatalf("after both rows: %d rows, last start %d, %d resumes, pending %+v; want both run, the implementer resumed once by the boot's row %d, holding look 1's new task",
 					outboxRows(t, pool), got.LastStartRow, len(resumesOf(rt, token)), got.Pending, row)
 			}
@@ -1090,7 +1090,7 @@ func (r *lookRetirement) look() supervise.CheckLook {
 // lookTask is look 1's task as its start row delivers it: no phase, the issue's run, the look and
 // the look's id, unconfirmed.
 func (r *lookRetirement) lookTask() *supervise.Delivery {
-	return &supervise.Delivery{ID: "outbox:57", Task: "Production check of " + r.root.Key + ": root.\nThis look has the look id `" + checkLookID + "`.",
+	return &supervise.Delivery{ID: "outbox:57", Task: "Production check of " + r.root.Key + ": root.\n" + intake.LookIDLine(checkLookID),
 		Generation: 1, CheckLook: r.look(), LookID: checkLookID, QueuedAt: time.Now()}
 }
 
