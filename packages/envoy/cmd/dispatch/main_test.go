@@ -6,10 +6,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1591,18 +1594,170 @@ func blackholePostgres(t *testing.T, upstream string, blackholed *atomic.Bool) s
 	return proxyPostgres(t, upstream, blackholed, 0)
 }
 
-// slowPostgres puts a proxy in front of upstream and returns its address. Every connection
-// through it reaches upstream dialDelay late and is then forwarded whole, and nothing is ever
-// black-holed: the only thing the proxy adds is that wait. It is how a test makes a process pay
-// for a cold dial what a loaded database charges for one, which a caller already holding a
-// connection pays nothing of.
-func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) string {
-	t.Helper()
-	return proxyPostgres(t, upstream, &atomic.Bool{}, dialDelay)
+// slowPostgresDials is what slowPostgres saw: the dials it delayed, and the SSLRequests it was
+// sent, each of which hides the startup message that names the connection's pool.
+type slowPostgresDials struct {
+	delayed     atomic.Int64
+	sslRequests atomic.Int64
 }
 
-// proxyPostgres is the listener both proxies above are: it accepts for as long as the test runs
-// and hands each connection to proxyPostgresConnection on their terms.
+// slowPostgres puts a proxy in front of upstream and returns its address. It reads each
+// connection's first message (slowPostgresFirstMessage) and lets only a connection of the health
+// probe's pool (application_name dispatch-health) reach upstream dialDelay late; every other
+// connection is forwarded at once, whole, and nothing is ever black-holed. It is how a test makes
+// a process pay for the health pool's cold dial what a loaded database charges for one.
+func slowPostgres(t *testing.T, upstream string, dialDelay time.Duration) (string, *slowPostgresDials) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the slow Postgres proxy: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	dials := new(slowPostgresDials)
+	go func() {
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go slowPostgresConnection(client, upstream, dialDelay, dials)
+		}
+	}()
+	return listener.Addr().String(), dials
+}
+
+// maxPostgresFirstMessage is the longest first message the proxy reads: Postgres refuses a startup
+// packet over 10,000 bytes past its four-byte length field.
+const maxPostgresFirstMessage = 4 + 10_000
+
+// slowPostgresConnection reads client's first message whole, with no deadline of its own, and acts
+// on slowPostgresFirstMessage's answer: it holds a dispatch-health connection dialDelay (a stand-in
+// that answers late on purpose, testwait.Pause) before it dials upstream, records an SSLRequest and
+// closes the connection, and then forwards the bytes it read and pumps both ways.
+func slowPostgresConnection(client net.Conn, upstream string, dialDelay time.Duration, dials *slowPostgresDials) {
+	defer client.Close()
+	var length [4]byte
+	if _, err := io.ReadFull(client, length[:]); err != nil {
+		return
+	}
+	size := binary.BigEndian.Uint32(length[:])
+	if size < 8 || size > maxPostgresFirstMessage {
+		return
+	}
+	first := make([]byte, size)
+	copy(first, length[:])
+	if _, err := io.ReadFull(client, first[4:]); err != nil {
+		return
+	}
+	switch slowPostgresFirstMessage(first) {
+	case postgresDelay:
+		testwait.Pause(dialDelay)
+		dials.delayed.Add(1)
+	case postgresForward:
+	case postgresRejectSSL:
+		dials.sslRequests.Add(1)
+		return
+	default:
+		return
+	}
+	server, err := net.Dial("tcp", upstream)
+	if err != nil {
+		return
+	}
+	defer server.Close()
+	if _, err := server.Write(first); err != nil {
+		return
+	}
+	go func() {
+		_, _ = io.Copy(client, server)
+		_ = client.Close()
+	}()
+	_, _ = io.Copy(server, client)
+}
+
+// postgresFirstAction is what slowPostgres does with a connection, by its first message.
+type postgresFirstAction string
+
+const (
+	postgresForward   postgresFirstAction = "forward"
+	postgresDelay     postgresFirstAction = "delay"
+	postgresRejectSSL postgresFirstAction = "reject SSLRequest"
+	postgresInvalid   postgresFirstAction = "invalid first message"
+)
+
+// slowPostgresFirstMessage decides what to do with a complete first message. Startup parameters
+// are NUL-terminated key/value pairs in no fixed order, followed by an empty key.
+func slowPostgresFirstMessage(message []byte) postgresFirstAction {
+	if len(message) < 8 || len(message) > maxPostgresFirstMessage ||
+		binary.BigEndian.Uint32(message[:4]) != uint32(len(message)) {
+		return postgresInvalid
+	}
+	switch binary.BigEndian.Uint32(message[4:8]) {
+	case 80877102: // CancelRequest carries no startup parameters.
+		return postgresForward
+	case 80877103: // SSLRequest precedes startup and can hide its parameters.
+		return postgresRejectSSL
+	case 196608: // Protocol 3.0.
+		params := message[8:]
+		delay := false
+		for len(params) > 0 {
+			if params[0] == 0 {
+				if len(params) != 1 {
+					return postgresInvalid
+				}
+				if delay {
+					return postgresDelay
+				}
+				return postgresForward
+			}
+			key, rest, ok := bytes.Cut(params, []byte{0})
+			if !ok {
+				return postgresInvalid
+			}
+			value, rest, ok := bytes.Cut(rest, []byte{0})
+			if !ok {
+				return postgresInvalid
+			}
+			if string(key) == "application_name" {
+				delay = string(value) == "dispatch-health"
+			}
+			params = rest
+		}
+	}
+	return postgresInvalid
+}
+
+// The slow proxy's reader answers each first message pgx v5.13.0 (go.mod) writes as the proxy
+// needs: a startup message naming the health pool is delayed, one naming any other pool is
+// forwarded, an SSLRequest is the failure the boot probe row names, and a CancelRequest is
+// forwarded undelayed. Each fixture was captured from the real driver through a recording proxy
+// (INFRA-6336's plan, "The fixtures of the slow proxy"); the shared pool's startup message is the
+// health one with dispatch-health written as dispatch and its length field rewritten to match.
+func TestTheSlowPostgresProxyReadsEachFirstMessagePgxWrites(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, wire string
+		want       postgresFirstAction
+	}{
+		{"health startup", "00000050000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463682d6865616c74680075736572006c6567696f6e5f746573740000", postgresDelay},
+		{"shared startup", "00000049000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463680075736572006c6567696f6e5f746573740000", postgresForward},
+		{"SSLRequest", "0000000804d2162f", postgresRejectSSL},
+		{"CancelRequest", "0000001004d2162e000044ddd66b8be0", postgresForward},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			message, err := hex.DecodeString(tt.wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := slowPostgresFirstMessage(message); got != tt.want {
+				t.Fatalf("slowPostgresFirstMessage = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// proxyPostgres is the black-hole proxy's listener: it accepts for as long as the test runs and
+// hands each connection to proxyPostgresConnection on its terms.
 func proxyPostgres(t *testing.T, upstream string, blackholed *atomic.Bool, dialDelay time.Duration) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

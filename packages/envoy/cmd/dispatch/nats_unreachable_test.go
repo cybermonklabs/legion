@@ -159,6 +159,12 @@ func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	return p.healthUnder(t, ctx)
+}
+
+// healthUnder reads /healthz once under the caller's context.
+func (p *dispatchProcess) healthUnder(t *testing.T, ctx context.Context) (int, healthBody) {
+	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)

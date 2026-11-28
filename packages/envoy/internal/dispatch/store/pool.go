@@ -309,6 +309,9 @@ const roomAppendsApplicationName = "dispatch-room-appends"
 // so one is not a ration but the whole design.
 const healthPoolSize = 1
 
+// healthApplicationName is how a connection of the health pool names itself in pg_stat_activity.
+const healthApplicationName = "dispatch-health"
+
 // healthProbeTimeout bounds the health probe's own wait, dial and query together, and owns the
 // argument for why the probe is bounded at all. Every prober treats silence as a dead process:
 // the ALB fails a poll at five seconds and three consecutive failures replace the task,
@@ -817,7 +820,7 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 	if p.healthClosed {
 		return nil, ErrPoolClosed
 	}
-	return p.openSeparateLocked(&p.health, healthPoolSize, "health probe", "")
+	return p.openSeparateLocked(&p.health, healthPoolSize, "health probe", healthApplicationName)
 }
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
