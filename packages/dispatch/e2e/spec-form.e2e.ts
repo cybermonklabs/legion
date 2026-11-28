@@ -209,7 +209,7 @@ async function seedApprovedTerms(page: Page, home: string): Promise<{ terms: str
   // The root's terms.md is judged too, and its one definition of one sentence breaks no rule.
   expect(requested.code, printed(requested)).toBe(0);
   expect(requested.stdout).toContain(
-    "Dispatch read the form of 0 statements, 0 claims, 0 purposes and 1 definition against 0 terms: no text breaks it."
+    "Dispatch read the form of 0 statements, 0 claims, 0 purposes and 1 definition: no text breaks it."
   );
   await page.goto("/");
   const head = await askControls(page, await theOpenRequest(ROOT));
@@ -458,7 +458,7 @@ test("an agent's second definition of a term that the person approved under the 
     expect.soft(list.code, printed(list)).toBe(0);
     expect.soft(list.stdout).toContain(sessionListLine);
 
-    // The agent removes the second definition, and the request opens against the one term.
+    // The agent removes the second definition, and the request opens.
     await editArtifact(
       change.primary_artifact_id,
       { ops: [{ find: termLine("session", otherSession), op: "delete" }] },
@@ -467,7 +467,7 @@ test("an agent's second definition of a term that the person approved under the 
     const opened = await runDispatch(request, home);
     expect(opened.code, printed(opened)).toBe(0);
     expect(opened.stdout).toContain(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition against 1 term: no text breaks it."
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition: no text breaks it."
     );
   });
 });
@@ -511,7 +511,7 @@ test("spec-form --terms lists only what the person approved: the agent's later v
     const opened = await runDispatch(request, home);
     expect(opened.code, printed(opened)).toBe(0);
     expect(opened.stdout).toContain(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition against 1 term: no text breaks it."
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition: no text breaks it."
     );
   });
 });

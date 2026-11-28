@@ -1,0 +1,46 @@
+{
+  "id": 4306,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 93,
+  "type": "comment.reopened",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-19T01:28:31.538335Z",
+  "payload": {
+    "id": "9a89bd99-bde5-4ea0-8204-9dfd8b3ee2c6",
+    "body": "lorem ipsum do",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem",
+      "mark_id": "lorem ipsum dolor",
+      "version": 10,
+      "block_id": "72edfa2b-815d-471a-a2ba-cb609bcfce86",
+      "orphaned": true,
+      "artifact_id": "792c9820-09aa-449d-a15a-c06f342c20f4"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-19T00:52:47.262574Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "lorem i",
+    "suppress_route": false,
+    "suppressed_authors": null
+  }
+}
