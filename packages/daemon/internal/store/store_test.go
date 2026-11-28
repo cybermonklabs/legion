@@ -1124,7 +1124,8 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
 // 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
-// fails on the missing table. The merged-new-work migration's 20261128022326
+// fails on the missing table. So does the launch totals' 20261125171320, which alters step_starts
+// (20261117004117). The merged-new-work migration's 20261128022326
 // is the last migration that writes outbox_kind_check: it stands above the done-by-checks
 // 20261128022325, the state events' 20261126163320, the merge holds' 20261126110259, main's
 // 20261122154643, the design news's 20261119203047 and main's 20261119003157, which write it too,
@@ -1148,8 +1149,8 @@ var thisRelease = map[int]bool{
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
-	20261124033010: true, 20261126110259: true, 20261126163320: true, 20261128022325: true,
-	20261128022326: true,
+	20261124033010: true, 20261125171320: true, 20261126110259: true, 20261126163320: true,
+	20261128022325: true, 20261128022326: true,
 }
 
 const idleRelease = 20261101222956

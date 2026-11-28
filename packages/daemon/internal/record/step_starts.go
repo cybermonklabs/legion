@@ -41,12 +41,14 @@ const (
 // the record's id from and writes again (workflow's endStep), so the start and the end agree
 // whichever reaches Dispatch first. The zero StepStart is a place no start of this release has
 // raised: a step that was running when the release deployed. StartedAt is zero where the moment
-// is unknown: an end of such a step whose role's entry recorded none.
+// is unknown: an end of such a step whose role's entry recorded none. StartTotals is what the
+// latest start read of its agent (KeepStartTotals), nil where it kept nothing.
 type StepStart struct {
-	Starts    int64
-	Agent     string
-	StartedAt time.Time
-	Run       StepRun
+	Starts      int64
+	Agent       string
+	StartedAt   time.Time
+	Run         StepRun
+	StartTotals *StartTotals
 }
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
@@ -55,12 +57,13 @@ type StepStart struct {
 // moment that write names, which the run's end writes again, and the write itself — the identity
 // of the record, its id among them, and the moment; a start writes nothing else (workflow's
 // startStep) — which the roll forward of a rollback ends the record under where an earlier
-// release ended the run (store migration 20261117064152_step_starts_roll_forward). It is called
-// in the transaction that writes the start's record.
+// release ended the run (store migration 20261117064152_step_starts_roll_forward). It clears the
+// start totals the run before kept (KeepStartTotals): the new run's end counts from its own start.
+// It is called in the transaction that writes the start's record.
 func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
 	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
-		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open'
+		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open', start_totals = null
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts); err != nil {
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
@@ -87,10 +90,30 @@ func keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, wr
 	return nil
 }
 
-// StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
-// the latest, unchanged: the zero StepStart where the place has no row.
+// KeepStartTotals keeps start, what the latest start of place on issue read of its agent, on the
+// place's row, which the run's end reads (StepStarts, EndStepStart). The next start of the place
+// clears it (RaiseStepStarts). It is called in the start's transaction, after RaiseStepStarts, so
+// a place with no row is refused.
+func (s *Postgres) KeepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, start StartTotals) error {
+	encoded, err := json.Marshal(start)
+	if err != nil {
+		return fmt.Errorf("keep the start totals of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	tag, err := tx.Exec(ctx, `update step_starts set start_totals = $5 where issue = $1 and task = $2 and kind = $3 and place = $4`,
+		issue, place.Task, place.Kind, place.Place, encoded)
+	if err != nil {
+		return fmt.Errorf("keep the start totals of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("keep the start totals of %s %s/%s/%d: no start of that place is counted", issue, place.Task, place.Kind, place.Place)
+	}
+	return nil
+}
+
+// StepStarts is the count of starts of place on issue, with the agent, the moment, the run and the
+// start totals of the latest, unchanged: the zero StepStart where the place has no row.
 func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error) {
-	start, err := scanStepStart(tx.QueryRow(ctx, `select starts, agent, started_at, run from step_starts
+	start, err := scanStepStart(tx.QueryRow(ctx, `select starts, agent, started_at, run, start_totals from step_starts
 		where issue = $1 and task = $2 and kind = $3 and place = $4`, issue, place.Task, place.Kind, place.Place))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, nil
@@ -141,7 +164,7 @@ func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepE
 func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error) {
 	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended'
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'open'
-		returning starts, agent, started_at, run`, issue, place.Task, place.Kind, place.Place))
+		returning starts, agent, started_at, run, start_totals`, issue, place.Task, place.Kind, place.Place))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, false, nil
 	}
@@ -156,14 +179,15 @@ func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, pl
 // step that started under the release before this one deployed, and at the count after the one its
 // row holds for a row that reads RunUncounted, a step an earlier release started after a rollback,
 // so the record of the run that row counted keeps its own id — with the write run gives at that count
-// kept as a start keeps its own (keepStart): its agent, its moment and its identity. The run's end
+// kept as a start keeps its own (keepStart): its agent, its moment and its identity. No start read
+// the run's agent, so it keeps no start totals, and clears those of the run before. The run's end
 // is then the end of an open run (EndStepStart), under the id of that count, and the next start of
 // the place counts one more. It queues nothing. It answers false, and writes nothing, where the
 // place's row is open or ended: a start of this release counted that run, or a boot before this
 // one opened it.
 func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error) {
 	var starts int64
-	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open'
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open', start_totals = null
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -184,15 +208,22 @@ func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue strin
 	return true, nil
 }
 
-// scanStepStart reads one step_starts row's starts, agent, started_at and run.
+// scanStepStart reads one step_starts row's starts, agent, started_at, run and start_totals.
 func scanStepStart(row pgx.Row) (StepStart, error) {
 	var start StepStart
 	var at *time.Time
-	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run); err != nil {
+	var totals []byte
+	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run, &totals); err != nil {
 		return StepStart{}, err
 	}
 	if at != nil {
 		start.StartedAt = at.UTC()
+	}
+	if totals != nil {
+		start.StartTotals = new(StartTotals)
+		if err := json.Unmarshal(totals, start.StartTotals); err != nil {
+			return StepStart{}, fmt.Errorf("read the start totals: %w", err)
+		}
 	}
 	return start, nil
 }

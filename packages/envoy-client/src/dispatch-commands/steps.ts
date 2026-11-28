@@ -1,4 +1,5 @@
 import type { PlannedStep, StepRecord } from "@legion/contracts";
+import { answeredText, setModelText } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 
 /** A field the record holds empty or null prints `-`, so every line keeps its columns. */
@@ -7,7 +8,9 @@ function orDash(value: string | null): string {
 }
 
 /** One run of a step: where it stands in its task, who ran it on which model, and how it ended.
- *  A run that has not ended holds no end and no result, and prints `running` for both. */
+ *  A run that has not ended holds no end and no result, and prints `running` for both. The model
+ *  is the one that answered last. Then `set` names the model the run's role was set to, and
+ *  `answered` the models that answered its agent (`setModelText`, `answeredText`). */
 function stepLine(record: StepRecord): string {
   return [
     orDash(record.task),
@@ -23,6 +26,10 @@ function stepLine(record: StepRecord): string {
     ...(record.ended_at === null
       ? ["running", "running"]
       : [record.ended_at, orDash(record.result)]),
+    "set",
+    orDash(setModelText(record)),
+    "answered",
+    answeredText(record),
   ].join(" ");
 }
 

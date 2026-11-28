@@ -104,6 +104,7 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	if lead := "Production check of " + r.key + ":"; !strings.HasPrefix(prompt.Message, lead) && !strings.Contains(prompt.Message, "\n\n"+lead) {
 		t.Fatalf("%s's tester was told %q, want the first look of the production check", r.key, prompt.Message)
 	}
+	c.answer()
 	c.startTurn(prompt)
 	opened, err := checkOpenedAt(prompt.Message)
 	if err != nil {

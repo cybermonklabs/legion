@@ -471,6 +471,7 @@ func (r *doneByChecksRig) taskWithin(c *stepClaimant, bound time.Duration) shimw
 		held := r.d.claim(c.token)
 		t.Fatalf("%s was told no task within %s: the daemon holds its claim %s at generation %d", c.token, bound, held.State, held.Generation)
 	}
+	c.answer()
 	c.startTurn(prompt)
 	return prompt
 }

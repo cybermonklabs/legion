@@ -121,6 +121,7 @@
   "plan_artifact_id": "",
   "primary_artifact_id": "00000000-0000-4000-8000-000000000001",
   "priority": null,
+  "priority_from": null,
   "progress": {
     "children": {
       "done": 0,
@@ -132,6 +133,7 @@
   "rank": "U",
   "referenced_by_count": 3,
   "repo": null,
+  "resolved_priority": null,
   "resolved_repo": "acme/widgets",
   "route": null,
   "route_holder": null,

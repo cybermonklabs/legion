@@ -174,6 +174,8 @@ type Runtime struct {
 	holdProbe  func(runtime.Locator)
 	queue      []runtime.Observation
 	minted     int
+	// probesOf is the answers queued for the probes of one claim's locators alone (ScriptProbeOf).
+	probesOf map[claim.Token][]ProbeResult
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
@@ -184,6 +186,7 @@ func NewRuntime() *Runtime {
 		drift:       map[claim.Token][]string{},
 		repository:  map[claim.Token]string{},
 		gone:        map[claim.Token]bool{},
+		probesOf:    map[claim.Token][]ProbeResult{},
 		issuePods:   map[string]string{},
 		keptVolumes: map[string]time.Time{},
 		sessions:    map[claim.Token]string{},
@@ -220,6 +223,15 @@ func (r *Runtime) ScriptProbe(results ...ProbeResult) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.probes = append(r.probes, results...)
+}
+
+// ScriptProbeOf queues answers to the probes of token's locators alone, one per call, in order. A
+// probe of that claim takes them before the shared queue (ScriptProbe). A probe of another claim
+// never takes them, so a test that ends one claim's process hands its answer to no other claim.
+func (r *Runtime) ScriptProbeOf(token claim.Token, results ...ProbeResult) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probesOf[token] = append(r.probesOf[token], results...)
 }
 
 // Emit hands the sweep observations. They are queued, so a test may emit before `Observe` is
@@ -692,16 +704,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail, outOfMemory := runtime.Alive, "", false
-	if len(r.probes) > 0 {
-		next := r.probes[0]
-		r.probes = r.probes[1:]
-		if next.Err != nil {
-			return runtime.Observation{}, next.Err
-		}
-		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
+	next := ProbeResult{Kind: runtime.Alive}
+	if own := r.probesOf[loc.Claim]; len(own) > 0 {
+		next, r.probesOf[loc.Claim] = own[0], own[1:]
+	} else if len(r.probes) > 0 {
+		next, r.probes = r.probes[0], r.probes[1:]
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
+	if next.Err != nil {
+		return runtime.Observation{}, next.Err
+	}
+	return runtime.Observation{Locator: loc, Kind: next.Kind, At: r.Now(), Detail: next.Detail, OutOfMemory: next.OutOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the

@@ -3066,6 +3066,48 @@ A deleted row is a hook's words that no worker reads for that move.
 The counts of moves back a task's row holds (`plan_tasks.backward_moves`) can keep a pair in another order; the release before reads the map and lists only its own pairs in a hook's words, so such a count stays and harms nothing.
 The outbox and the plan rows are shared by every project's daemon on the database, and each statement above takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), so one project can roll back while another stays on this release.
 
+#### Rolling back the release that counts each step's models
+
+This release names, on the end of each step record, the model the step's role was set to (`set_model`) and each model that answered (`answers`).
+Its migration `20261125171320_launch_model_totals.up.sql` adds the table `claim_launches` and the column `step_starts.start_totals`.
+The table holds each launch of a claim, with the newest read of its totals that a step used and its final totals.
+The column holds what each step's start read of its agent.
+
+The release before cannot run on what this release leaves:
+
+- It decodes a queued `step_record` row strictly (`DecodeOutboxPayload` in `record/outbox.go`).
+  It fails a row that names `set_model` or `answers` at every attempt, so the end of that step never reaches Dispatch.
+
+- Its start of a step leaves `start_totals` as the run before kept it, since it names the column in no statement.
+  After a roll forward, the end of such a run would count from the read of an earlier run.
+
+Run the way back below with every daemon of the database stopped, before the earlier image is pinned.
+Run it in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, before the block of any older release below:
+
+```sql
+begin;
+update outbox set payload = payload - 'set_model' - 'answers' where kind = 'step_record';
+alter table step_starts drop column start_totals;
+drop table claim_launches;
+delete from schema_version where version = 20261125171320;
+commit;
+```
+
+The header of `20261125171320_launch_model_totals.up.sql` carries this same block.
+The `update` takes the two keys off each queued step record, so the end of that step lands with no counts.
+The `alter` and the `drop` take the column and the table.
+The `delete` makes the roll forward's `Migrate` apply the migration again, which adds them back empty.
+The block is one transaction, so a run that fails changes nothing.
+A second run after a whole one stops at the `alter`, since the first run took the column.
+
+**Every daemon sharing the database moves together.**
+The table, the column and the outbox are shared by every project's daemon on the database, and the block names no project.
+A daemon of this release left running fails each claim write once the table is gone, since that write adds the launch's row.
+So roll back and roll forward every daemon of one database in the same change.
+
+What the way back costs is the counts of each step whose end had not reached Dispatch, and the kept reads of each launch.
+After the roll forward, each step that started before it ends with no set model and no counts, since its start kept no read.
+
 #### Rolling back the release that holds every worker while a merge forward is owed
 
 This release holds the worker of each phase that starts while another role's merge forward of the head is owed, the planner among them, tells the implementer when the merge forward it was asked for is no longer its work, and asks a role again at the ready of its claim's next launch while the merge it was asked for is still owed to it (cybermonklabs/legion#5312).
@@ -4389,6 +4431,8 @@ Contract 123, cybermonklabs/legion#3793, has no section of its own here either: 
 To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone, after cybermonklabs/legion#3995's four statements where the store carries that release: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
 On a store that cybermonklabs/legion#4115 or cybermonklabs/legion#4464 migrated, run that release's steps after those four statements and before the block, on one that cybermonklabs/legion#4598 migrated, its one statement before every one of them, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of them too, and on one that cybermonklabs/legion#4573 migrated, the statement of its own section before every one of them too, in the order the rollback to contract 87 below gives.
 Every store that cybermonklabs/legion#3995's release migrated carries all five.
+A rollback of the release that counts each step's models to any earlier release, contract 144 or 87 among them, runs its way back first.
+It runs before every other block here, and it stands in [Rolling back the release that counts each step's models](#rolling-back-the-release-that-counts-each-steps-models).
 A rollback of the release whose owner's plan picks the steps to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps).
 A rollback of the release that rates each plan to any release before it, contract 144 and contract 87 among them, also takes the steps of that release's own section above, [Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).
 A rollback of the release that records each step to any release before it also takes the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), whose way back runs first: its witness reads `phases.entry`, which the phase entry's block, the eleven statements of the rollback to contract 87 below, drops.
@@ -4478,6 +4522,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models), which deletes the row of 20261125171320, before every other way back here, the next line's among them.
 A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
 `20261126001514_pod_release_give_ups.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its table in place and the release before names it in no statement (the migration's header).
@@ -4599,6 +4644,8 @@ A rollback to a release before it leaves the table in place and needs no SQL for
 20261125023041_idle_release_declines_told_pod adds the column `idle_release_declines.told_pod`, null on every row it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the column and deletes its version row.
 20261125023100_pod_replacements adds the table `pod_replacements`, empty, the daemon's record of each replacement of an issue pod that may take a disk until the issue's architect's `workspace-taken` notice of it is queued, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, newest first in the block of [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which drops the table and deletes its version row.
 20261125163328_message_wake_pacing, of dispatch://INFRA-5682, adds `claims.message_mark_at`, null on every claim it finds, and `pod_resumes.queued`, false on every resume it finds, and touches none of the six, so the block holds over it and leaves the two columns standing, which the earlier release names in no statement; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, since the release before publishes a notice only once it is due and the pacing holds such a row at a due time of 2100, takes `paced_turns` off every queued catch-up, a key the release before refuses as one it does not know, and clears every claim's message mark.
+20261125171320_launch_model_totals adds the table `claim_launches` and the column `step_starts.start_totals`, and touches none of the six, so the block holds over it.
+A rollback past it first runs the way back of [its own section](#rolling-back-the-release-that-counts-each-steps-models), which drops both and deletes its version row.
 20261125181828_p0_bound, of dispatch://INFRA-5636, adds the table `project_p0_bound_changes`, empty, and the columns `issues.resolved_priority`, `issues.resolved_known` and `issues.priority_from`, and touches none of the six, so the block holds over it and leaves the table and the columns standing, which the earlier release names in no statement; it carries no way back.
 A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since the earlier release refuses a key it does not know (`unknown key admission_p0_bound`), and after it every P0 issue waits for a slot under the cap again.
 20261125212800_claims_tree adds the index `claims_tree` on `claims (tree)`, which the reads of a session's claims in one tree use, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads and writes `claims` the same with the index in place, and a rollback leaves it standing.
