@@ -1,6 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { controlPadding } from "../../components/control-names";
+import { landWhole } from "../../components/focus-place";
 import {
   borderDefault,
   focusVisibleRing,
@@ -26,16 +27,25 @@ const BUTTON = `rounded-lg border text-sm ${controlPadding.toolbar} ${borderDefa
  * is marked as the row's own line (`data-row-line`): while it is drawn, the row's first line
  * wraps and the slot of the page's own controls draws no box, so the form stands under the row's
  * other controls and the row never runs past its width (`ControlRow`). Its title box, Add priority
- * and Cancel wrap inside the form where the line cannot hold them.
+ * and Cancel wrap inside the form where the line cannot hold them. Cancel puts the keyboard focus
+ * back on New priority, the button that opened the form, before the form goes, with no scroll of
+ * the engine's own (`landWhole`), so the focus never falls to the page's body and the row's
+ * hand-off has no loss to answer.
  */
 export function NewPriority(): ReactNode {
   const { add, canWrite } = usePriorityWrites();
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
+  const opener = useRef<HTMLButtonElement>(null);
   if (!canWrite) return null;
   return (
     <>
-      <button className={BUTTON} onClick={() => setAdding((was) => !was)} type="button">
+      <button
+        className={BUTTON}
+        onClick={() => setAdding((was) => !was)}
+        ref={opener}
+        type="button"
+      >
         New priority
       </button>
       {adding ? (
@@ -72,6 +82,9 @@ export function NewPriority(): ReactNode {
             onClick={() => {
               setAdding(false);
               setTitle("");
+              // The form goes in the commit after this handler, so New priority takes the focus
+              // while Cancel still holds it, and the landing's second look follows that commit.
+              if (opener.current !== null) landWhole(opener.current);
             }}
             type="button"
           >

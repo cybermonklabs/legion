@@ -1922,6 +1922,54 @@ test("with the New priority form open the priorities control row scrolls nothing
   }
 });
 
+// Cancel of the New priority form, pressed from the keyboard, puts the focus back on New
+// priority, the button that opened the form, at every width (`NewPriority`). Left to the control
+// row's hand-off (`ControlRow`), the focus Cancel held went to the page's body at 600 and 640 px,
+// to New priority at 680 px and to Columns from 700 px up. At each size the form is opened with
+// New priority, Cancel takes the focus and Enter presses it, and the focus is on New priority.
+// SLOW(>=2s): two priorities written, and the page loaded and its form opened and cancelled at
+// six sizes.
+test("Cancel of the New priority form puts the keyboard focus back on New priority at 390, 600, 640, 680, 720 and 1280 px", async ({
+  browser,
+}) => {
+  const first = await createPriority({ owner: "alice", title: "Ship the daemon everywhere" });
+  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const opener = page.getByRole("button", { exact: true, name: "New priority" });
+    const form = page.locator('form[aria-label="New priority"]');
+    const cancel = form.getByRole("button", { exact: true, name: "Cancel" });
+    for (const size of [
+      PHONE,
+      { height: 900, width: 600 },
+      { height: 900, width: 640 },
+      { height: 900, width: 680 },
+      { height: 900, width: 720 },
+      DESKTOP,
+    ]) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+      await expectRowOrder(page.getByRole("table", { exact: true, name: "Priorities table" }), [
+        `#1 ${first.title}`,
+        `#2 ${second.title}`,
+      ]);
+      await opener.click();
+      await cancel.focus();
+      await expect(cancel).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect(form).toHaveCount(0);
+      await soft(
+        opener,
+        `at ${size.width} px Cancel puts the keyboard focus back on New priority`
+      ).toBeFocused();
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // INFRA-2947 R7 (spec v83 to v85) and check 138e9e4d (Verification v60 to v62), read on a phone,
 // 390 by 844: the priorities tab draws each priority as its place beside one cell, which holds
 // its title, the start of its description, its owner, its three counts under their column names
