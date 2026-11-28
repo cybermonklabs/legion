@@ -16,6 +16,7 @@ import { expect, test } from "./test";
 
 // Decision 396 (3): from an act of a focused row, Copy reference, Ctrl+K and then Escape give the
 // focus back to the row that held the act, which went with the focus when the palette took it.
+// SLOW(>=2s): it seeds a whole issue, loads the page, unfolds every branch and drives the palette.
 test("a dialog opened from a row's act gives the focus back to the row", async ({ browser }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
