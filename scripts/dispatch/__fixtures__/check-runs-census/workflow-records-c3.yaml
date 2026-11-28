@@ -1,0 +1,15 @@
+name: record-rows
+
+on:
+  pull_request:
+
+jobs:
+  rows:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the third row
+        run: bun test fixtures/c3.test.ts > rows.txt
+      - name: Record the third row
+        run: |
+          dispatch result --issue ACME-1 --check c3 --verdict pass \
+            --role tester --commit 1111111111111111111111111111111111111111 --observed-file rows.txt

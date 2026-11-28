@@ -69,10 +69,11 @@
 #   rig.sh judge-image                             pulls the judges' container image unless Docker
 #                                                  holds it: the pull judge-omp makes when it must
 #
-# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
-# batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
-# seconds. One run on its own is `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored
-# owner-walk 1 <label>` for owner-walk.
+# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>` (a tester-reruns run
+# with its case after <start>), which needs that batch's services: <index> is the run's place in
+# the batch and <start> the batch's start in epoch seconds. One run on its own is
+# `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored owner-walk 1 <label>` for
+# owner-walk.
 #
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
@@ -103,7 +104,19 @@
 #                   a recording stand-in, the remote a local bare repository, and the implementer's
 #                   handoff a record on the run's own Dispatch issue (seed.ts tester-proof and
 #                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
-#                   handoff record of the issue. Scored by testerProof.
+#                   handoff record of the issue, and seed.ts capture-results every result recorded
+#                   against its checks. Scored by testerProof.
+#   tester-reruns   The same tester phase worker, told the implementer has finished at H1, a push
+#                   above an earlier head H0, on an issue whose one check c1 is a named test of the
+#                   fixture repository (tester-reruns-world.ts, through seed.ts tester-reruns and
+#                   tester-reruns-results). A batch runs each case <runs> times per label:
+#                   implementer-pass-broken (the implementer's pass of c1 stands at H1, which holds
+#                   a defect c1 fails on), carried-own-pass (the tester's own pass stands at H0, and
+#                   H1 changes a file c1 reads, so c1 fails at H1) and clean-push (passes stand at
+#                   H0, H1 changes only README.md, and c1 passes at H1). The case is in the run's
+#                   name, tester-reruns-<case>-<label>-<n>. After the run, seed.ts capture-handoffs
+#                   and capture-results read back the issue. Scored by testerReruns, counted per
+#                   case and label.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -908,8 +921,26 @@ base_env() {
 # The run's stand-ins in $R/bin: `gh`, which records the call and answers from $R/fixtures.json,
 # and `bun`, which runs the bun this script runs on (a caller's `bun` may be a shim that resolves
 # nothing under the agent's HOME) and records the call to $R/calls.jsonl as gh-standin.ts records
-# its own. The score reads the tester's run of the CLI from that record. No `legion` stands in: an
-# agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
+# its own, with the workspace the call ran in, read before it runs: the nearest directory at or
+# above the call's directory that holds a `.git` or a `.jj` (its `root`) and, where that directory
+# is under the run's own, the git blob of each file in it (`files`, path to blob; `.git`, `.jj` and
+# `node_modules` left out), so a score can tell at which commit's files a command ran; a root
+# outside the run's directory has `files` null, and a call outside any workspace `workspace` null.
+# For a `bun test` call (its first argument `test`, as score.ts's bunRuns reads a call) the record
+# also holds Bun's JUnit report (`junit`, the XML text; null for any other call, and for a call Bun
+# refused before it ran a test, such as `--timeout=oops`, which writes none). The stand-in asks for
+# it with `--reporter=junit --reporter-outfile=<a file of its own>` right after `test`, so the
+# caller's arguments read as they would without it; Bun still writes its usual report to standard
+# error, which the caller sees as it comes. A score reads which test files a call ran, and how
+# many tests, from that report and never from the console one, because the console report is
+# shaped by the caller's environment and the JUnit one is not (Bun 1.4.4, measured):
+# `GITHUB_ACTIONS` (set in every CI step) puts each file's line in GitHub's group form
+# (`::group::<file>:`) unless an agent variable is set too; `CLAUDECODE`, `AGENT=1` or `REPL_ID`
+# (an agent's shell sets the first two) leave out passing tests and the line of a file whose tests
+# pass; `FORCE_COLOR` adds colour codes; `BUN_OPTIONS` can add any option. So the stand-in passes
+# the caller's environment to Bun unchanged, and the record reads the same in CI and in an agent's
+# shell. The score reads the tester's runs from that record. No `legion` stands in: an agent
+# reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 standins() {
   local bun_real
   bun_real=$(bun -e 'console.log(process.execPath)')
@@ -918,9 +949,32 @@ standins() {
   cat >"$R/bin/bun" <<EOF
 #!/usr/bin/env bash
 at=\$(date -u +%FT%T.%3NZ)
+root=\$PWD
+while [ "\$root" != / ] && [ ! -e "\$root/.git" ] && [ ! -e "\$root/.jj" ]; do root=\$(dirname -- "\$root"); done
+workspace=null
+if [ "\$root" != / ]; then
+  case \$root/ in
+  $(printf %q "$R")/*)
+    workspace=\$(cd "\$root" && find . -type f ! -path './.git/*' ! -path './.jj/*' ! -path './node_modules/*' -print | LC_ALL=C sort | sed 's|^\./||' |
+      { mapfile -t paths; [ \${#paths[@]} = 0 ] || paste <(printf '%s\n' "\${paths[@]}" | git hash-object --stdin-paths) <(printf '%s\n' "\${paths[@]}"); } |
+      jq -cRn --arg root "\$root" '{root:\$root, files:([inputs | split("\t") | {(.[1]):.[0]}] | add // {})}') || workspace=null
+    ;;
+  *) workspace=\$(jq -cn --arg root "\$root" '{root:\$root, files:null}') ;;
+  esac
+fi
 status=0
-$(printf %q "$bun_real") "\$@" || status=\$?
-jq -cn --arg at "\$at" --argjson exit "\$status" '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit}' \\
+report=
+if [ "\${1:-}" = test ]; then
+  report=\$(mktemp)
+  trap 'rm -f "\$report"' EXIT
+  $(printf %q "$bun_real") test --reporter=junit --reporter-outfile="\$report" "\${@:2}" || status=\$?
+else
+  $(printf %q "$bun_real") "\$@" || status=\$?
+fi
+junit=(--argjson junit null)
+[ -z "\$report" ] || [ ! -s "\$report" ] || junit=(--rawfile junit "\$report")
+jq -cn --arg at "\$at" --argjson exit "\$status" --argjson workspace "\$workspace" "\${junit[@]}" \\
+  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, workspace:\$workspace, junit:\$junit}' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
 EOF
@@ -1925,6 +1979,43 @@ worker_routes() {
     ]}'
 }
 
+# fixture_remote makes $R/remote.git, the run's bare remote on $worker_default_branch, whose
+# post-receive hook logs each push to $R/pushes.log as `<time> <ref> <old> <new>`.
+fixture_remote() {
+  git init -q --bare -b "$worker_default_branch" "$R/remote.git"
+  cat >"$R/remote.git/hooks/post-receive" <<EOF
+#!/bin/sh
+while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
+EOF
+  chmod +x "$R/remote.git/hooks/post-receive"
+}
+
+# fixture_workspace KEY clones the run's remote into $R/ws, the issue workspace, with jj, and starts
+# a new change on legion/KEY.
+fixture_workspace() {
+  local jj_setup_config=$R/jj-setup.toml
+  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
+  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
+  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
+  # registers this run's workspace with the operator's long-running watchman.
+  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
+  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
+  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$1" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$1") >/dev/null 2>&1
+}
+
+# fixture_pr HEAD BODY NUMBER TITLE prints the open PR #NUMBER of $worker_repo from
+# legion/$worker_key into $worker_default_branch, at HEAD, with TITLE and BODY and its checks green,
+# as `gh pr view --json` prints it whole, for worker_routes.
+fixture_pr() {
+  jq -n --arg head "$1" --arg body "$2" --arg url "https://github.com/$worker_repo/pull/$3" \
+    --arg ref "legion/$worker_key" --arg title "$4" --arg base "$worker_default_branch" --argjson number "$3" '
+    {number:$number, url:$url, html_url:$url, title:$title, state:"OPEN", isDraft:false,
+     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
+     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:$base},
+     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
+                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]}'
+}
+
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
 # run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
 # workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves
@@ -1940,16 +2031,10 @@ worker_routes() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config pr
+  local index=$1 start=$2 src C1 body when worker_pr
   worker_pr=$((1000 + index))
-  worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
-  git init -q --bare -b "$worker_default_branch" "$R/remote.git"
-  cat >"$R/remote.git/hooks/post-receive" <<EOF
-#!/bin/sh
-while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
-EOF
-  chmod +x "$R/remote.git/hooks/post-receive"
+  fixture_remote
   src=$R/src
   git init -q -b "$worker_default_branch" "$src"
   g() {
@@ -1996,14 +2081,7 @@ EOF
   # implementer ran is no part of it: seed.ts implement-handoff records that as a result against the
   # issue's check k1.
   jq -n --arg head "$C1" '{head:$head}' >"$R/implement.json"
-  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
-  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
-  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
-  # registers this run's workspace with the operator's long-running watchman.
-  jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
-  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
+  fixture_workspace "$worker_key"
   body="Dispatch: $worker_key
 
 Adds \`greet(name)\` and \`bun greet.ts <name>\`.
@@ -2018,14 +2096,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  pr=$(jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --arg base "$worker_default_branch" --argjson number "$worker_pr" '
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
-     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:$base},
-     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]}')
-  worker_routes "$pr" >"$R/fixtures.json"
+  worker_routes "$(fixture_pr "$C1" "$body" "$worker_pr" "feat: greet() ($worker_key)")" >"$R/fixtures.json"
   # The world the scorer reads: head is the PR's head, the implementer's code commit.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
@@ -2045,28 +2116,32 @@ handoff_line() {
   printf '%s\n' "${line//"{issue}"/"$3"}"
 }
 
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version handoff
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+# legion_project SCENARIO LABEL N INDEX prints the Legion project of the run N of LABEL, at INDEX in
+# its batch: `skills`, the label, `r` and N, and for tester-reruns `i` and INDEX too, with every
+# hyphen dropped, since a project token is lower-case letters and digits only
+# (isLegionProjectToken). Each run of a batch gets its own project, so concurrent runs claim
+# distinct role tokens on one listener: the three cases of one tester-reruns repetition share a
+# label, a run number and an issue key (ACME-1, on each run's own Dispatch), and only the index
+# tells their claims apart.
+legion_project() {
+  local project=skills$2r$3
+  [ "$1" != tester-reruns ] || project=${project}i$4
+  printf '%s\n' "${project//-/}"
+}
+
+# tester_session NAME PROJECT PR HEAD VERSION runs the tester phase worker of the run's issue
+# $worker_key in the Legion project PROJECT (legion_project), as run_tester_proof and
+# run_tester_reruns give it: the architect's assignment of PR #PR at HEAD with the implement record
+# VERSION, a daemon stand-in for the worker's `legion` tool, and the pane the label's checkout's
+# daemon would give the tester.
+tester_session() {
+  local name=$1 project=$2 pr=$3 head=$4 version=$5 state port handoff
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
   # record in (handoff_line).
   handoff=$(handoff_line implement "$version" "$worker_key")
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. %s Test it and finish your phase.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$handoff" >"$R/prompt.txt"
   state=$R/state
-  # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
-  # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
-  # hyphens go and `r` separates it from the run number.
-  project=skills${P##*/}r$n
-  project=${project//-/}
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
@@ -2084,8 +2159,66 @@ run_tester_proof() {
   bun "$here/worker-pane.ts" "$R" "$R/pane.env" "$port" "$profile" "$project" "$worker_key" tester "$co"
   tester_pane
   launch "$name"
-  # What the run left on its issue: every handoff record, each with its body, for testerProof.
+}
+
+run_tester_proof() {
+  local name=$1 n=$2 index=$3 start=$4 pr head version
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
+  own_dispatch project
+  seed_ts tester-proof "$R/fixture.json"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  version=$(jq -r .implement.version "$R/fixture.json")
+  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  tester_session "$name" "$(legion_project tester-proof "${P##*/}" "$n" "$index")" "$pr" "$head" "$version"
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # its checks, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
+}
+
+# The tester-reruns world of CASE under $R (tester-reruns-world.ts, through seed.ts): the run's own
+# issue, the first of project ACME on its own Dispatch, with one `before_merge` check c1 whose run
+# is a named test of the fixture repository; that repository, which `seed.ts tester-reruns` makes
+# in $R/src (main, and on legion/<key> the implementer's commit H0 and the case's push H1), pushed
+# to the run's remote, its main as $worker_default_branch; the issue workspace cloned from it; the
+# results the case records at H0 and H1 and the implementer's handoff record (`seed.ts
+# tester-reruns-results`); and the PR at H1 the gh stand-in serves, whose body carries the line of
+# c1 Dispatch answered last. The PR number and the commits' date follow worker_fixture's rule. Then
+# the tester runs as in tester-proof, and what it left on its issue is read back for testerReruns.
+run_tester_reruns() {
+  local name=$1 n=$2 index=$3 start=$4 reruns_case=$5 pr head version
+  pr=$((1000 + index))
+  own_dispatch project
+  seed_ts tester-reruns "$R/fixture.json" "$reruns_case" "$R/src" "$((start + index))"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  head=$(jq -r .h1 "$R/fixture.json")
+  {
+    fixture_remote &&
+      git -C "$R/src" push -q "$R/remote.git" "main:$worker_default_branch" "legion/$worker_key" &&
+      : >"$R/pushes.log" &&
+      fixture_workspace "$worker_key"
+  } >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  seed_ts tester-reruns-results "$R/fixture.json"
+  worker_routes "$(fixture_pr "$head" "$(jq -r .body "$R/fixture.json")" "$pr" "feat: a name limit for widgets ($worker_key)")" >"$R/fixtures.json"
+  # The world the scorer reads: head is the PR's head, H1, over the implementer's H0.
+  jq --arg repo "$worker_repo" --argjson pr "$pr" \
+    '{key:.issue, repo:$repo, pr:$pr, branch:("legion/" + .issue), head:.h1, h0, case, h1Output, h1Files}' \
+    "$R/fixture.json" >"$R/world.json"
+  version=$(jq -r .implement.version "$R/fixture.json")
+  tester_session "$name" "$(legion_project tester-reruns "${P##*/}" "$n" "$index")" "$pr" "$head" "$version"
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # c1, for testerReruns.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
+}
+
+# reruns_cases prints the cases of tester-reruns, one a line, each its own world
+# (tester-reruns-cases.ts).
+reruns_cases() {
+  bun "$here/tester-reruns-cases.ts" || fail "tester-reruns-cases.ts failed"
 }
 
 # tester_pane writes the tester's pane, $R/pane.env: worker.env (worker-pane.ts's), the batch's
@@ -3136,8 +3269,9 @@ cmd_score() {
 }
 
 cmd_run() {
-  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name owner_case=''
+  [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = tester-reruns ]; } ||
+    fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <label> <n> <index> <start>, or rig.sh run tester-reruns <label> <n> <index> <start> <case>"
+  local scenario=$1 n=$3 index=$4 start=$5 reruns_case=${6:-} name owner_case='' cases
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
@@ -3155,6 +3289,12 @@ cmd_run() {
     # A scored run's name carries its case (score.ts runs --run reads it).
     owner_case=$(owner_walk_case) || exit 1
     name=$scenario-$owner_case-${P##*/}-$n
+  elif [ "$scenario" = tester-reruns ]; then
+    # A tester-reruns run's name carries its case too, and every case runs in one batch.
+    cases=$(reruns_cases) || exit 1
+    grep -qxF -- "$reruns_case" <<<"$cases" ||
+      fail "a tester-reruns run's case is '$reruns_case', not one of $(paste -sd' ' <<<"$cases")"
+    name=$scenario-$reruns_case-${P##*/}-$n
   else
     name=$scenario-${P##*/}-$n
   fi
@@ -3168,6 +3308,7 @@ cmd_run() {
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;
   tester-proof) run_tester_proof "$name" "$n" "$index" "$start" ;;
+  tester-reruns) run_tester_reruns "$name" "$n" "$index" "$start" "$reruns_case" ;;
   brainstorm) run_brainstorm "$name" ;;
   askgate) run_askgate "$name" ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
@@ -3191,13 +3332,36 @@ stop_batch() {
   services_down
 }
 
+# batch_runs SCENARIO FIRST RUNS START LABEL... prints one line for each run of a batch, the
+# arguments `rig.sh run` takes: `<scenario> <label> <n> <index> <start>`, and a tester-reruns run's
+# case after <start>. Each label runs n from FIRST to FIRST + RUNS - 1, a tester-reruns label each
+# of its cases (reruns_cases) at each n, and <index> counts the runs of the batch from 1.
+batch_runs() {
+  local scenario=$1 first=$2 runs=$3 start=$4 label n index=0 reruns_case cases=''
+  shift 4
+  if [ "$scenario" = tester-reruns ]; then cases=$(reruns_cases) || exit 1; fi
+  for label in "$@"; do
+    for n in $(seq "$first" $((first + runs - 1))); do
+      if [ "$scenario" = tester-reruns ]; then
+        while read -r reruns_case; do
+          index=$((index + 1))
+          printf '%s %s %s %s %s %s\n' "$scenario" "$label" "$n" "$index" "$start" "$reruns_case"
+        done <<<"$cases"
+      else
+        index=$((index + 1))
+        printf '%s %s %s %s %s\n' "$scenario" "$label" "$n" "$index" "$start"
+      fi
+    done
+  done
+}
+
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
-  local runs=$2 label n index=0 start parallel=${SKILL_SCENARIOS_PARALLEL:-5}
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|tester-reruns|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
+  local runs=$2 label start parallel=${SKILL_SCENARIOS_PARALLEL:-5}
   batch_scenario=$1
   case $batch_scenario in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;;
-  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
+  ask-on-message | measure-before-ask | tester-proof | tester-reruns | brainstorm | askgate | spec-writing | spec-rewrite) ;;
+  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, tester-reruns, brainstorm, askgate, spec-writing or spec-rewrite, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
   esac
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
@@ -3231,12 +3395,8 @@ cmd_batch() {
   on_exit stop_batch
   services_up "$parallel"
   start=$(date +%s)
-  for label in "$@"; do
-    for n in $(seq "$first" $((first + runs - 1))); do
-      index=$((index + 1))
-      printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"
-    done
-  done | xargs -r -P "$parallel" -L 1 bash "$here/rig.sh" run &
+  batch_runs "$batch_scenario" "$first" "$runs" "$start" "$@" |
+    xargs -r -P "$parallel" -L 1 bash "$here/rig.sh" run &
   runs_pid=$!
   wait "$runs_pid"
 }

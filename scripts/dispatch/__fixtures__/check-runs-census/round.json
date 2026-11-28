@@ -1,0 +1,174 @@
+{
+  "issue": "ACME-1",
+  "since": "2026-11-24T09:00:00Z",
+  "status": "needs_review",
+  "events": [
+    {
+      "id": 1,
+      "seq": 1,
+      "type": "issue.created",
+      "created_at": "2026-11-24T08:00:00Z",
+      "payload": { "status": "triage", "changed": ["status"] }
+    },
+    {
+      "id": 2,
+      "seq": 2,
+      "type": "issue.updated",
+      "created_at": "2026-11-24T08:30:00Z",
+      "payload": { "status": "in_progress", "changed": ["status"] }
+    },
+    {
+      "id": 3,
+      "seq": 3,
+      "type": "issue.updated",
+      "created_at": "2026-11-24T10:00:00Z",
+      "payload": { "status": "testing", "changed": ["status"] }
+    },
+    {
+      "id": 4,
+      "seq": 4,
+      "type": "issue.updated",
+      "created_at": "2026-11-24T11:00:00Z",
+      "payload": { "status": "needs_review", "changed": ["status"] }
+    }
+  ],
+  "handoffs": [
+    {
+      "id": "handoff-implement-1",
+      "phase": "implement",
+      "version": 1,
+      "author": { "kind": "session", "id": "ses-implementer" },
+      "created_at": "2026-11-24T09:55:00Z",
+      "body": "{\"head\":\"H1\"}"
+    },
+    {
+      "id": "handoff-test-1",
+      "phase": "test",
+      "version": 1,
+      "author": { "kind": "session", "id": "ses-tester" },
+      "created_at": "2026-11-24T10:50:00Z",
+      "body": "{\"head\":\"H1\",\"note\":\"Walked the page at H1.\"}"
+    }
+  ],
+  "checks": [
+    {
+      "block_id": "c1",
+      "when": "before_merge",
+      "run": "bun test fixtures/c1.test.ts",
+      "text": "The unit row of the page.",
+      "results": [
+        {
+          "id": "c1-implementer",
+          "session": "ses-implementer",
+          "actor": { "kind": "session", "id": "ses-implementer" },
+          "role": "implementer",
+          "verdict": "pass",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T09:50:00Z",
+          "run": "bun test fixtures/c1.test.ts",
+          "observed": "1 pass at H1."
+        },
+        {
+          "id": "c1-tester",
+          "session": "ses-tester",
+          "actor": { "kind": "session", "id": "ses-tester", "proven": true },
+          "role": "tester",
+          "verdict": "pass",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T10:10:00Z",
+          "run": "bun test fixtures/c1.test.ts (output {stub}/outputs/c1-H1.txt)",
+          "observed": "1 pass."
+        }
+      ]
+    },
+    {
+      "block_id": "c2",
+      "when": "before_merge",
+      "run": "bun test fixtures/c2.test.ts",
+      "text": "The second row of the page.",
+      "results": [
+        {
+          "id": "c2-implementer",
+          "session": "ses-implementer",
+          "actor": { "kind": "session", "id": "ses-implementer" },
+          "role": "implementer",
+          "verdict": "pass",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T09:50:00Z",
+          "run": "bun test fixtures/c2.test.ts",
+          "observed": "1 pass at H1."
+        },
+        {
+          "id": "c2-tester",
+          "session": "ses-tester",
+          "actor": { "kind": "session", "id": "ses-tester" },
+          "role": "tester",
+          "verdict": "fail",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T10:12:00Z",
+          "run": "bun test fixtures/c2.test.ts (output {stub}/outputs/c2-H1.txt)",
+          "observed": "1 fail: the second row is empty."
+        }
+      ]
+    },
+    {
+      "block_id": "c3",
+      "when": "before_merge",
+      "run": "bun test fixtures/c3.test.ts",
+      "text": "The third row of the page.",
+      "results": [
+        {
+          "id": "c3-implementer",
+          "session": "ses-implementer",
+          "actor": { "kind": "session", "id": "ses-implementer" },
+          "role": "implementer",
+          "verdict": "pass",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T09:50:00Z",
+          "run": "bun test fixtures/c3.test.ts",
+          "observed": "1 pass at H1."
+        }
+      ]
+    },
+    {
+      "block_id": "c4",
+      "when": "before_merge",
+      "run": "A person runs it.",
+      "text": "A person opens the page on a phone.",
+      "results": [
+        {
+          "id": "c4-implementer",
+          "session": "ses-implementer",
+          "actor": { "kind": "session", "id": "ses-implementer" },
+          "role": "implementer",
+          "verdict": "pass",
+          "commit_sha": "H1",
+          "created_at": "2026-11-24T09:50:00Z",
+          "run": "Opened the page on a phone.",
+          "observed": "The page shows three rows."
+        }
+      ]
+    },
+    {
+      "block_id": "c5",
+      "when": "before_merge",
+      "ci_check": "test",
+      "run": "bun test fixtures/c5.test.ts",
+      "text": "The lint of the page.",
+      "results": []
+    },
+    {
+      "block_id": "c6",
+      "when": "after_merge",
+      "run": "bun test fixtures/c6.test.ts",
+      "text": "The page on main.",
+      "results": []
+    }
+  ],
+  "outputs": {
+    "c1-H1.txt": "$ bun test fixtures/c1.test.ts\nat H1\n 1 pass\n",
+    "c2-H1.txt": "$ bun test fixtures/c2.test.ts\nat H1\n 0 pass\n 1 fail\n",
+    "c3-H1.txt": "$ bun test fixtures/c3.test.ts\nat H1\n 1 pass\n",
+    "c3-H2.txt": "$ bun test fixtures/c3.test.ts\nat H2\n 1 pass\n"
+  }
+}

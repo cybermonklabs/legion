@@ -19,6 +19,24 @@
 //                                          first as Dispatch lists them, each with the body it
 //                                          stores, as score.ts's testerProof reads them
 //                                          (handoffs.json in <run dir>)
+//   seed.ts capture-results <file> <run dir>
+//                                          every result of the issue <file> names: each check of
+//                                          its Verification document in document order, with the
+//                                          check's run and its results newest first, each with
+//                                          session, commit, verdict, run, observed and created_at,
+//                                          and retracted and check_words_moved where Dispatch
+//                                          gives them, as score.ts's testerProof and testerReruns
+//                                          read them (results.json in <run dir>)
+//   seed.ts tester-reruns <file> <case> <repository dir> <epoch seconds>
+//                                          the project ACME and one run's own issue in it, the
+//                                          tester-reruns world of <case>, and that case's fixture
+//                                          repository in <repository dir>; writes {issue, case,
+//                                          base, h0, h1, h1Output, h1Files} to <file>
+//                                          (tester-reruns-world.ts)
+//   seed.ts tester-reruns-results <file>   records the case's results of check c1 and the
+//                                          implement handoff, under sessions never the run's, and
+//                                          adds the record's {id, version} and the pull request's
+//                                          body to <file> (tester-reruns-world.ts)
 //   seed.ts ask-on-message <file>          one run's own issue and the owner's message posting its
 //                                          plan; writes {issue, message} to <file>
 //   seed.ts measure-before-ask <file>      one run's own issue and the owner's message naming three
@@ -114,7 +132,9 @@ import {
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
-import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
+import { APPROVE, handoffsOf, PERSON, resultsOf } from "./seed-dispatch";
+import { RERUNS_CASES } from "./tester-reruns-cases";
+import { rerunsIssue, rerunsResults } from "./tester-reruns-world";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -710,6 +730,36 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
 
+/** `capture-results <file> <run dir>`: every result of the run's issue, from `GET
+ * /api/v1/issues/{key}/results`: each check of its Verification document in document order, with
+ * its block id and its `run`, and each result recorded against it, newest first as Dispatch
+ * answers them, with the session that recorded it, its commit, verdict, run, observed reading and
+ * created_at, and, where Dispatch gives them, the retraction that stands against it and whether
+ * the check's words moved after it was recorded. Any fixture that names the issue reads. */
+export async function captureResults(file: string, runDir: string): Promise<void> {
+  const { issue } = z
+    .looseObject({ issue: z.string() })
+    .parse(JSON.parse(readFileSync(file, "utf8")));
+  const read = await resultsOf(issue);
+  const checks = (read.checks ?? []).map((check) => ({
+    check: check.block_id,
+    run: check.run,
+    results: (check.results ?? []).map((result) => ({
+      session: result.session,
+      commit: result.commit_sha,
+      verdict: result.verdict,
+      run: result.run,
+      observed: result.observed,
+      created_at: result.created_at,
+      retracted: result.retracted,
+      check_words_moved: result.check_words_moved,
+    })),
+  }));
+  writeFileSync(path.join(runDir, "results.json"), `${JSON.stringify(checks)}\n`);
+  const count = checks.reduce((sum, check) => sum + check.results.length, 0);
+  console.log(`captured ${issue}: ${count} results on ${checks.length} checks`);
+}
+
 async function askOnMessage(file: string): Promise<void> {
   // The owner session's world: an issue whose backfill was proposed and never run, the proposal
   // as an attached table, and the message that posts the plan for the rest of the work. Every run
@@ -907,13 +957,13 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir> | capture-results <file> <run dir> | tester-reruns <file> <case> <repository dir> <epoch seconds> | tester-reruns-results <file>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
  * own. */
 async function main(argv: string[]): Promise<boolean> {
-  const [command, file, second, third] = argv;
+  const [command, file, second, third, fourth] = argv;
   const n = argv.length;
   if (command === "project") await seedProject();
   else if (command === "ask-on-message" && file !== undefined) await askOnMessage(file);
@@ -960,6 +1010,14 @@ async function main(argv: string[]): Promise<boolean> {
     await ownerWalkIssues(file, second, third);
   else if (command === "capture-scored" && file !== undefined && second !== undefined && n === 3)
     await captureScored(file, second);
+  else if (command === "capture-results" && file !== undefined && second !== undefined && n === 3)
+    await captureResults(file, second);
+  else if (command === "tester-reruns" && file !== undefined && fourth !== undefined && n === 5) {
+    const rerunsCase = RERUNS_CASES.find((known) => known === second);
+    if (rerunsCase === undefined || third === undefined || !/^[0-9]+$/.test(fourth)) return false;
+    await rerunsIssue(file, rerunsCase, third, Number(fourth));
+  } else if (command === "tester-reruns-results" && file !== undefined && n === 2)
+    await rerunsResults(file);
   else return false;
   return true;
 }

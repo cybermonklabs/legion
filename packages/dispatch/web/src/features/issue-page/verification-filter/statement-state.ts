@@ -31,12 +31,13 @@ import {
  *   statement that has a check is not a statement that is true (R17, R22).
  *
  * How one check stands on its own row is `statement-rules.ts`'s `checkStanding`, the page's one
- * reading of it: each of its results read against the commit the server names for that check, the
- * basis it compares with (`commit_stands`), as the server reads it, where the newest result over
- * the check's words now at that basis decides - a fail there is Failed whatever older pass the
- * server still counts, and a newer result at another commit says nothing about it. Two checks of
- * one issue compare with different commits, so no check's row is read against the one commit the
- * page names (decision 152): a check whose pass at its own basis is older than the commit the page
+ * reading of it: Dispatch's answer over the check's results (`pass_stands`), with each result read
+ * against the commit the server names for that check, the basis it compares with
+ * (`commit_stands`), as the server reads it. Where Dispatch answers no, the page never reads
+ * Passed: a fail over the check's words now at that basis is Failed whatever newer pass stands
+ * there, and a result at another commit says nothing about the basis. Two checks of one issue
+ * compare with different commits, so no check's row is read against the one commit the page
+ * names (decision 152): a check whose pass at its own basis is older than the commit the page
  * names reads Passed on its row, and Out of date in its statement's state.
  * The tree's check node holds the same reading (`addChecks`), so this body, the outline's row,
  * the fold's frontier and the filter row's failing count say one word for one check, and it is

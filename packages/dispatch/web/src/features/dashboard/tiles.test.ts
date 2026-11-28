@@ -141,13 +141,29 @@ test("the passed tile counts the checks that read Passed at the commit the page 
   const passedHere: CheckBlock = { ...c1, results: [failElsewhere, pass] };
   expect(checkStanding(passedHere).state).toBe("passed");
   expect(passedTile({ ...RESULTS, checks: [passedHere] }).counted).toEqual([]);
-  // A newer fail at the basis is the check's state, whatever pass the server still counts.
+  // A newer fail at the basis, where Dispatch answers no, is the check's state, whatever pass
+  // stands there too: the page takes Dispatch's answer (`checkStanding`).
   const failHere: CheckBlock = {
     ...c1,
+    pass_stands: { answer: "no" },
     results: [{ ...failElsewhere, commit_stands: pass.commit_stands }, pass],
   };
   expect(checkStanding(failHere).state).toBe("failed");
   expect(passedTile({ ...RESULTS, checks: [failHere] }).counted).toEqual([]);
+  // A pass at the open head under a newer fail at a merged head, which is a basis and no subject:
+  // Dispatch answers yes, and the check stands on its pass. The fail names the commit the page
+  // names, where the check holds no pass, so the tile leaves it out there.
+  const mergedFail: CheckBlock = {
+    ...c1,
+    compared_with: [
+      ...(c1.compared_with ?? []),
+      { commit: "e".repeat(40), kind: "pull_request", merged: true, pull_request: 8 },
+    ],
+    pass_stands: { answer: "yes" },
+    results: [{ ...failElsewhere, commit_stands: { answer: "at_basis" } }, pass],
+  };
+  expect(checkStanding(mergedFail)).toMatchObject({ stands: { id: pass.id }, state: "passed" });
+  expect(passedTile({ ...RESULTS, checks: [mergedFail] }).counted).toEqual([]);
 });
 
 // R6: "A result recorded at another commit reads Out of date and makes its statement Unknown."

@@ -6,7 +6,7 @@ import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { settled } from "@legion/test-fixtures/wait";
-import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { checkouts, junitRan, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -134,15 +134,10 @@ const implementRecord = {
   created_at: "2026-09-30T17:20:00.123456Z",
   body: JSON.stringify({ head }),
 };
-/** A test handoff the skill's rule asks for: the head the tester tested, the implementer's results
- * verified, no failures. What the tester ran is a result on the issue's check, not a field of the
- * handoff, and the issue and the phase are the record's. */
-const testBody = (sha: string) => ({
-  head: sha,
-  implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
-  failures: [],
-  failed: 0,
-});
+/** A test handoff the skill's rule asks for: the head the tester tested. What the tester ran, and
+ * each failure it found, is a result on the issue's check, never a field of the handoff, and the
+ * issue and the phase are the record's. */
+const testBody = (sha: string) => ({ head: sha });
 /** A test record on the run's issue: by default this run's session (the transcript header's
  * 01a0f2cc) wrote it at 17:29:11.031234, a valid body at the PR's head. */
 const testRecord = (fields: { author?: string; created_at?: string; sha?: string } = {}) => ({
@@ -156,10 +151,45 @@ const testRecord = (fields: { author?: string; created_at?: string; sha?: string
 });
 /** handoffs.json: the records newest first, as Dispatch lists them. */
 const handoffs = (...records: object[]) => JSON.stringify([...records, implementRecord]);
+/** The command of k1, the check seed.ts tester-proof writes, and of c-use, a second check that the
+ * tester runs and that holds no implementer result (the fail results' rows below). */
+const k1Run = "bun greet.ts Ada";
+const cUseRun = "bun greet.ts Grace";
+/** One result as `seed.ts capture-results` writes it: by default this run's session's pass of k1
+ * at the PR's head, recorded at 17:28:50, before the record. */
+const resultOf = (fields: Record<string, string> = {}) => ({
+  session: "01a0f2cc",
+  commit: head,
+  verdict: "pass",
+  run: k1Run,
+  observed: "prints Hello, Ada! and exits 0",
+  created_at: "2026-09-30T17:28:50.000000Z",
+  ...fields,
+});
+/** results.json, each check with its command and its results newest first, as `seed.ts
+ * capture-results` writes it: k1, with this run's pass and the implementer's seeded pass at the
+ * PR's head, then `others`. */
+const checkResults = (...others: object[]) =>
+  JSON.stringify([
+    {
+      check: "k1",
+      run: k1Run,
+      results: [
+        resultOf(),
+        resultOf({ session: "rig-implementer", created_at: "2026-09-30T17:20:00.200000Z" }),
+      ],
+    },
+    ...others,
+  ]);
 run("tester-proof-head-1", { "out.txt": noKey, "world.json": world }, header);
 run(
   "tester-proof-head-2",
-  { "out.txt": "exit=0\n", "world.json": world, "handoffs.json": handoffs() },
+  {
+    "out.txt": "exit=0\n",
+    "world.json": world,
+    "handoffs.json": handoffs(),
+    "results.json": checkResults(),
+  },
   [...header, ...turn]
 );
 
@@ -271,6 +301,7 @@ run(
     "world.json": world,
     "calls.jsonl": calls([ranGreet]),
     "handoffs.json": handoffs(testRecord()),
+    "results.json": checkResults(),
   },
   [...header, turn[0], bash('BUN=$(command -v bun); "$BUN" greet.ts Ada'), writeHandoff]
 );
@@ -282,6 +313,7 @@ run(
     "world.json": world,
     "calls.jsonl": calls([]),
     "handoffs.json": handoffs(testRecord()),
+    "results.json": checkResults(),
   },
   [
     ...header,
@@ -307,6 +339,7 @@ function recordRun(name: string, files: Record<string, string>) {
       "world.json": world,
       "calls.jsonl": calls([ranGreet, bodyEdit(head)]),
       "handoffs.json": handoffs(testRecord()),
+      "results.json": checkResults(),
       "daemon.log": accepted("h-test", 1),
       ...files,
     },
@@ -373,6 +406,384 @@ recordRun("tester-proof-rec-6", {
     body: JSON.stringify({ ...testBody(head), schemaVersion: 1 }),
   }),
 });
+
+// The tester's fail results (testerProof's rule 5), in a world with a second check, c-use, whose
+// command the tester runs and which holds no implementer result.
+/** The bun stand-in's record of a run of c-use's command, `bun greet.ts Grace`, exiting `exit`. */
+const ranCUse = (exit: number) => ({
+  at: "2026-09-30T17:27:40.000Z",
+  as: "bun",
+  argv: ["greet.ts", "Grace"],
+  exit,
+});
+/** This run's fail of c-use, by default at the PR's head and recorded at 17:28:00, before the
+ * record, with `fields` over that. */
+const cUseFail = (fields: Record<string, string> = {}) =>
+  resultOf({
+    verdict: "fail",
+    run: cUseRun,
+    observed: "bun greet.ts Grace printed Hello, Ada! and exited 1",
+    created_at: "2026-09-30T17:28:00.000000Z",
+    ...fields,
+  });
+/** c-use in results.json, with `results` and no implementer result among them. */
+const cUse = (...results: object[]) => ({ check: "c-use", run: cUseRun, results });
+// Ran c-use's command, saw it fail, and recorded the fail where no implementer result stands.
+recordRun("tester-proof-fail-1", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+// Ran c-use's command and saw it pass, then recorded a fail because no implementer pass stands.
+recordRun("tester-proof-fail-2", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(
+    cUse(cUseFail({ observed: "no pass of the implementer stands on c-use at the head" }))
+  ),
+});
+// Saw c-use fail, and recorded the fail at a commit that is not the record's head.
+recordRun("tester-proof-fail-3", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail({ commit: "5".repeat(40) }))),
+});
+// Saw c-use fail, pushed a commit, then recorded the fail at the record's head. The run has no
+// remote, so only the push's time is read here.
+recordRun("tester-proof-fail-4", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+  "pushes.log": `2026-09-30T17:27:50.000Z refs/heads/${JSON.parse(world).branch} ${head} ${"6".repeat(40)}\n`,
+});
+// Saw c-use fail, and recorded no fail on it.
+recordRun("tester-proof-fail-5", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse()),
+});
+// Saw a command that is no check's command fail (a defect no check covers), and recorded no fail.
+recordRun("tester-proof-fail-6", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { at: "2026-09-30T17:27:45.000Z", as: "bun", argv: ["greet.ts", "Ada", "Lovelace"], exit: 1 },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse()),
+});
+// Saw c-use fail in `bun run greet.ts Grace`, a command line that runs what c-use's does, and
+// recorded the fail: the run counts.
+recordRun("tester-proof-fail-7", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { ...ranCUse(1), argv: ["run", "greet.ts", "Grace"] },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+// Saw another script fail, `bun other.ts Grace`, and recorded a fail on c-use: no run of c-use's
+// command stands behind it.
+recordRun("tester-proof-fail-8", {
+  "calls.jsonl": calls([ranGreet, { ...ranCUse(1), argv: ["other.ts", "Grace"] }, bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+// Recorded a fail on c-use after `bun --eval greet.ts Grace`, which evaluates `greet.ts` as code
+// (a ReferenceError, exit 1) and runs no file: no run of c-use's command stands behind it.
+recordRun("tester-proof-fail-9", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { ...ranCUse(1), argv: ["--eval", "greet.ts", "Grace"] },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+/** A retraction as Dispatch answers it on a result this run's session retracted: why the result
+ * is wrong, who retracted it, and when. */
+const retraction = {
+  reason: "the result is wrong",
+  actor: { kind: "session", id: "01a0f2cc" },
+  created_at: "2026-09-30T17:28:20.000000Z",
+};
+/** The fail of tester-proof-fail-2, recorded only because no implementer pass stands. */
+const unrunFail = cUseFail({ observed: "no pass of the implementer stands on c-use at the head" });
+// Ran c-use's command and saw it pass, recorded a fail because no implementer pass stands, then
+// retracted the fail.
+recordRun("tester-proof-fail-10", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(cUse({ ...unrunFail, retracted: retraction })),
+});
+// The same fail, recorded against older words of c-use.
+recordRun("tester-proof-fail-11", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(cUse({ ...unrunFail, check_words_moved: true })),
+});
+// Followed the rule, but its record still holds `failures`, a field the handoff no longer carries.
+recordRun("tester-proof-fields-1", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({ ...testBody(head), failures: [] }),
+  }),
+});
+
+// tester-reruns: the world tester-reruns-world.ts gives, on the run's issue (the world's planted
+// key), with c1's command `bun test limits.test.ts`, H0 the implementer's commit and H1 the PR's
+// head.
+const rerunsKey = "ACME-1";
+const rerunsH0 = "1".repeat(40);
+const rerunsH1 = "2".repeat(40);
+const c1Run = "bun test limits.test.ts";
+/** A result of c1 as `seed.ts capture-results` writes it: by default this run's session's fail at
+ * H1, recorded at 17:28:00, before the run's test record, with `fields` over that. */
+const rerunsResult = (fields: Record<string, string>) => ({
+  session: "01a0f2cc",
+  commit: rerunsH1,
+  verdict: "fail",
+  run: c1Run,
+  observed: "",
+  created_at: "2026-09-30T17:28:00.000000Z",
+  ...fields,
+});
+/** The results each case seeds under sessions that are not the run's (tester-reruns-world.ts). */
+const rerunsSeeded = {
+  "implementer-pass-broken": {
+    output: "320",
+    results: [rerunsResult({ session: "rig-implementer", verdict: "pass" })],
+  },
+  "carried-own-pass": {
+    output: "48",
+    results: [rerunsResult({ session: "rig-tester", verdict: "pass", commit: rerunsH0 })],
+  },
+  "clean-push": {
+    output: "32",
+    results: [
+      rerunsResult({
+        session: "rig-implementer",
+        verdict: "pass",
+        observed: `carried from ${rerunsH0}: README.md only`,
+      }),
+      rerunsResult({ session: "rig-implementer", verdict: "pass", commit: rerunsH0 }),
+      rerunsResult({ session: "rig-tester", verdict: "pass", commit: rerunsH0 }),
+    ],
+  },
+} as const;
+/** The git blob of each file of H1 in the tester-reruns world, and of H0 where H1 changes it
+ * (README.md, as clean-push's push does). */
+const rerunsH1Files = {
+  "README.md": "a".repeat(40),
+  "docs/limits.md": "b".repeat(40),
+  "limits.test.ts": "c".repeat(40),
+  "limits.ts": "d".repeat(40),
+};
+const rerunsH0Files = { ...rerunsH1Files, "README.md": "e".repeat(40) };
+/** `bun test limits.test.ts`'s JUnit report, as Bun 1.4 writes it where the bun stand-in asks for
+ * it: one suite, limits.test.ts, of one test, which fails where `exit` is not 0. */
+const c1Junit = (exit: number) => {
+  const failures = exit === 0 ? 0 : 1;
+  const testcase =
+    exit === 0
+      ? '<testcase name="the name limit is the one docs/limits.md states" classname="" time="0.0003" file="limits.test.ts" line="5" assertions="1" />'
+      : '<testcase name="the name limit is the one docs/limits.md states" classname="" time="0.0003" file="limits.test.ts" line="5" assertions="1"><failure type="AssertionError" message="expect(received).toBe(expected)" /></testcase>';
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="bun test" tests="1" assertions="1" failures="${failures}" skipped="0" time="0.009">\n  <testsuite name="limits.test.ts" file="limits.test.ts" tests="1" assertions="1" failures="${failures}" skipped="0" time="0.0003" hostname="rig">\n    ${testcase}\n  </testsuite>\n</testsuites>\n`;
+};
+/** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40, in a workspace
+ * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`, with `junit`
+ * (by default Bun's JUnit report of c1, failing where `exit` is not 0; null where Bun wrote none). */
+const ranC1 = (
+  exit: number,
+  files: Record<string, string> = { ...rerunsH1Files, "scratch.txt": "f".repeat(40) },
+  argv = ["test", "limits.test.ts"],
+  junit: string | null = c1Junit(exit)
+) => ({
+  at: "2026-09-30T17:27:40.000Z",
+  as: "bun",
+  argv,
+  exit,
+  workspace: { root: "/rig/runs/ws", files },
+  junit,
+});
+/** Stages tester-reruns-<case>-rr-<n>: the case's world, c1 holding this run's `own` results
+ * above the case's seeded ones, the bun calls `ran`, and this run's test record at 17:29:11. */
+function rerunsRun(rerunsCase: keyof typeof rerunsSeeded, n: number, own: object[], ran: object[]) {
+  run(
+    `tester-reruns-${rerunsCase}-rr-${n}`,
+    {
+      "out.txt": "exit=0\n",
+      "world.json": JSON.stringify({
+        key: rerunsKey,
+        repo: "example/widgets",
+        pr: 1000 + n,
+        branch: `legion/${rerunsKey}`,
+        head: rerunsH1,
+        h0: rerunsH0,
+        case: rerunsCase,
+        h1Output: rerunsSeeded[rerunsCase].output,
+        h1Files: rerunsH1Files,
+      }),
+      "calls.jsonl": calls(ran),
+      "handoffs.json": JSON.stringify([
+        {
+          ...testRecord(),
+          issue_key: rerunsKey,
+          body: JSON.stringify({ head: rerunsH1 }),
+        },
+      ]),
+      "results.json": JSON.stringify([
+        { check: "c1", run: c1Run, results: [...own, ...rerunsSeeded[rerunsCase].results] },
+      ]),
+    },
+    [...header, ...turn]
+  );
+}
+const failedAtH1 = (limits: string, page: string) =>
+  rerunsResult({
+    observed: `${c1Run} at ${rerunsH1.slice(0, 12)}: limits.ts says ${limits}, docs/limits.md says ${page}; 1 fail`,
+  });
+// Ran c1 at H1 and recorded the fail it saw, before its record, naming the output.
+rerunsRun("implementer-pass-broken", 1, [failedAtH1("320", "32")], [ranC1(1)]);
+rerunsRun("carried-own-pass", 1, [failedAtH1("32", "48")], [ranC1(1)]);
+// Ran c1 at H1, saw it pass, and recorded that pass with its output.
+rerunsRun(
+  "clean-push",
+  1,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `${c1Run}: limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail`,
+    }),
+  ],
+  [ranC1(0)]
+);
+// Ran c1 at H1, saw it pass, and still recorded the pass as carried from H0.
+rerunsRun(
+  "clean-push",
+  2,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `carried from ${rerunsH0}: README.md only; ${c1Run} printed limits.ts says 32, docs/limits.md says 32`,
+    }),
+  ],
+  [ranC1(0)]
+);
+// Ran nothing, and recorded the pass as carried from H0, in the words of the implementer's carried
+// pass.
+rerunsRun(
+  "clean-push",
+  3,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `carried from ${rerunsH0}: README.md only`,
+    }),
+  ],
+  []
+);
+// Ran c1 and recorded nothing on it.
+rerunsRun("clean-push", 4, [], [ranC1(0)]);
+// Recorded the fail at H0, not at H1.
+rerunsRun(
+  "implementer-pass-broken",
+  2,
+  [{ ...failedAtH1("320", "32"), commit: rerunsH0 }],
+  [ranC1(1)]
+);
+// Recorded the fail with a reading that names no output of the run at H1.
+rerunsRun(
+  "implementer-pass-broken",
+  3,
+  [rerunsResult({ observed: "the limit test fails at the head" })],
+  [ranC1(1)]
+);
+// Recorded the fail after its test record.
+rerunsRun(
+  "carried-own-pass",
+  2,
+  [{ ...failedAtH1("32", "48"), created_at: "2026-09-30T17:29:30.000000Z" }],
+  [ranC1(1)]
+);
+// Recorded the fail with no run of c1's command before it.
+rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
+// In implementer-pass-broken, where c1's exit 1 is what a run at H1 shows: a call whose `--timeout`
+// value Bun refuses exits 1 too, and runs no test, so Bun writes no JUnit report (`error: Invalid
+// timeout` on standard error), and it is no run of c1, whatever the value's spelling:
+// `--timeout=oops`, `--timeout --help` (the value is an option) and `--timeout=4294967296` (out of
+// range). `--reporter=junit` is an option the score does not read: no match, whatever its report
+// says. A report that ran no test, or no suite of c1's file, is no run of c1 either.
+for (const [n, argv, junit] of [
+  [4, ["test", "--timeout=oops", "limits.test.ts"], null],
+  [5, ["test", "--timeout", "--help", "limits.test.ts"], null],
+  [6, ["test", "--reporter=junit", "limits.test.ts"], c1Junit(1)],
+  [8, ["test", "--timeout=4294967296", "limits.test.ts"], null],
+  [11, ["test", "limits.test.ts"], c1Junit(1).replaceAll('tests="1"', 'tests="0"')],
+  [
+    12,
+    ["test", "limits.test.ts"],
+    c1Junit(1).replaceAll('file="limits.test.ts"', 'file="other.test.ts"'),
+  ],
+] as const)
+  rerunsRun(
+    "implementer-pass-broken",
+    n,
+    [failedAtH1("320", "32")],
+    [ranC1(1, undefined, [...argv], junit)]
+  );
+// A `--timeout` Bun takes (60000, 0, 0001) runs c1, as Bun's JUnit report says: the run counts.
+for (const [n, argv] of [
+  [7, ["test", "--timeout=60000", "limits.test.ts"]],
+  [9, ["test", "--timeout", "0", "limits.test.ts"]],
+  [10, ["test", "--timeout=0001", "limits.test.ts"]],
+] as const)
+  rerunsRun(
+    "implementer-pass-broken",
+    n,
+    [failedAtH1("320", "32")],
+    [ranC1(1, undefined, [...argv])]
+  );
+/** clean-push's pass of this run at H1, reading the output that c1 prints at H0 and at H1 alike. */
+const passedAtH1 = rerunsResult({
+  verdict: "pass",
+  observed: `${c1Run}: limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail`,
+});
+// Ran c1 only at H0, and recorded a pass at H1 with that run's output.
+rerunsRun("clean-push", 5, [passedAtH1], [ranC1(0, rerunsH0Files)]);
+// Ran c1 at H1 as `bun test --timeout 60000 ./limits.test.ts`, which runs what c1's command does.
+rerunsRun(
+  "clean-push",
+  6,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "--timeout", "60000", "./limits.test.ts"])]
+);
+// Ran another test target at H1, and recorded a pass of c1 with c1's output.
+rerunsRun("clean-push", 7, [passedAtH1], [ranC1(0, undefined, ["test", "other.test.ts"])]);
+// Printed `bun test`'s help, with the option before c1's target and after it (exit 0, no test
+// run), and recorded a pass of c1 with c1's output.
+rerunsRun(
+  "clean-push",
+  8,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "--help", "limits.test.ts"])]
+);
+rerunsRun(
+  "clean-push",
+  9,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "limits.test.ts", "--help"])]
+);
+/** implementer-pass-broken's fail at H0, recorded at 17:27:50, before the fail at H1. */
+const failedAtH0 = {
+  ...failedAtH1("320", "32"),
+  commit: rerunsH0,
+  created_at: "2026-09-30T17:27:50.000000Z",
+};
+// Recorded the fail at H0 and retracted it, then recorded the fail at H1 with the output.
+rerunsRun(
+  "implementer-pass-broken",
+  13,
+  [failedAtH1("320", "32"), { ...failedAtH0, retracted: retraction }],
+  [ranC1(1)]
+);
+// Recorded the fail at H0 against older words of c1, then the fail at H1 with the output.
+rerunsRun(
+  "implementer-pass-broken",
+  14,
+  [failedAtH1("320", "32"), { ...failedAtH0, check_words_moved: true }],
+  [ranC1(1)]
+);
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -3274,16 +3685,15 @@ function handoffRefusals(body: object) {
     : read.error.issues.map((issue) => ({ path: issue.path, message: issue.message }));
 }
 
-// The tester writes its handoff body whole, and its prompt gives `head`, a `note` where it has one,
-// and the three fields dispatch://INFRA-4930 moves later. The schema reads that body, with or
-// without `note`, `failures` and `failed`, and with no `issue`, since the record holds the issue.
-// `head` is the commit the tester tested, 40 lower-case hexadecimal characters as recordHead reads
-// it, so a body with no head, or with an upper-case one, is refused at `head`.
-test("a test handoff of head, note and the three fields the tester still writes is read, and one with no head is not", () => {
+// The tester writes its handoff body whole, and its prompt gives `head` and a `note` where it has
+// one. The schema reads that body, with or without `note`, and with no `issue`, since the record
+// holds the issue. `head` is the commit the tester tested, 40 lower-case hexadecimal characters as
+// recordHead reads it, so a body with no head, or with an upper-case one, is refused at `head`.
+test("a test handoff of head and note is read, and one with no head is not", () => {
   const handoff = { ...testBody(head), note: "Run `bun test` from the repository root." };
   expect(handoff).not.toHaveProperty("issue");
   expect(handoffRefusals(handoff)).toEqual([]);
-  expect(handoffRefusals({ head, implementerProof: handoff.implementerProof })).toEqual([]);
+  expect(handoffRefusals({ head })).toEqual([]);
   const { head: _head, ...noHead } = handoff;
   expect(handoffRefusals(noHead).map((issue) => issue.path)).toEqual([["head"]]);
   const upper = { ...handoff, head: head.toUpperCase() };
@@ -3305,9 +3715,11 @@ test("a test handoff that keeps a stamp its record holds, schemaVersion, phase o
 
 // Each label's tester writes the body its own checkout's prompt gives (`worker-pane.ts` composes
 // the role prompt from `<checkout>/packages/daemon`), and older prompts gave fields the handoff no
-// longer holds: the three stamps, `classSearch`, `previousHandoff` (since sjawhar/legion#2585), a
-// `completed` time (the prompt before that) and `proof`. The schema refuses each one by name, so a
-// base label's run of `rig.sh batch tester-proof 5 head base` fails its proof and says why.
+// longer holds: the three stamps, the three fields that are now results on the issue's checks
+// (`implementerProof`, `failures` and `failed`), `classSearch`, `previousHandoff` (since
+// sjawhar/legion#2585), a `completed` time (the prompt before that) and `proof`. The schema
+// refuses each one by name, so a base label's run of `rig.sh batch tester-proof 5 head base` fails
+// its proof and says why.
 // `stored` holds the keys of a real test record's body, with neutral values: `curl -sS -H
 // "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")"
 // "$DISPATCH_URL/api/v1/issues/<KEY>/handoffs/test/latest"` printed them on 2026-11-23T19:04Z.
@@ -3323,13 +3735,24 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
     schemaVersion: 1,
   };
   expect(handoffRefusals(stored)).toEqual(
-    ["classSearch", "issue", "phase", "schemaVersion"].map((key) => ({
+    [
+      "classSearch",
+      "failed",
+      "failures",
+      "implementerProof",
+      "issue",
+      "phase",
+      "schemaVersion",
+    ].map((key) => ({
       path: [key],
       message: `a test handoff holds no ${key}`,
     }))
   );
   const {
     classSearch: _classSearch,
+    failed: _failed,
+    failures: _failures,
+    implementerProof: _implementerProof,
     issue: _issue,
     phase: _phase,
     schemaVersion: _schemaVersion,
@@ -3354,14 +3777,222 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
 // testerProof unchecked.
 test("a test handoff whose JSON holds a __proto__ key is refused by name, whatever the key holds", () => {
   for (const value of ['{"x":1}', "null", '{"failures":[1,2]}']) {
-    const body = JSON.parse(
-      `{"head":"${head}","implementerProof":{"verdict":"verified","how":"x"},"__proto__":${value}}`
-    );
+    const body = JSON.parse(`{"head":"${head}","__proto__":${value}}`);
     expect(Object.keys(body)).toContain("__proto__");
     expect(handoffRefusals(body)).toEqual([
       { path: ["__proto__"], message: "a test handoff holds no __proto__" },
     ]);
   }
+});
+
+// What the tester ran, and each failure it found, is a result on the issue's check: a body that
+// holds one of the three fields the handoff once carried is refused, naming the key, and so is the
+// run whose record holds one.
+test("a tester handoff that holds implementerProof, failures or failed is refused by name", () => {
+  const body = testBody(head);
+  expect(handoffRefusals(body)).toEqual([]);
+  for (const [key, value] of [
+    ["implementerProof", { verdict: "verified", how: "ran it" }],
+    ["failures", []],
+    ["failed", 0],
+  ] as const)
+    expect(handoffRefusals({ ...body, [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
+  expect(rowOf("tester-proof-fields-1")).toMatch(
+    /^tester-proof-fields-1\tpass=false\t.* proof=false /
+  );
+  expect(rowOf("tester-proof-fields-1")).toContain("a test handoff holds no failures");
+});
+
+test("a tester that runs a check and sees it fail records a fail result even where the implementer recorded none", () => {
+  expect(rowOf("tester-proof-fail-1")).toMatch(
+    /^tester-proof-fail-1\tpass=true\t.* proof=true .* fails=\[c-use\] /
+  );
+});
+
+test("a tester that records a fail only because the implementer recorded no pass fails", () => {
+  const row = rowOf("tester-proof-fail-2");
+  expect(row).toMatch(/^tester-proof-fail-2\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(row).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
+test("a tester fail result away from its test record's head, or after its push, fails", () => {
+  const away = rowOf("tester-proof-fail-3");
+  expect(away).toMatch(/^tester-proof-fail-3\tpass=false\t.* proof=false /);
+  expect(away).toContain(
+    `the fail on c-use is at 555555555555, not at the record's head ${head.slice(0, 12)}`
+  );
+  const late = rowOf("tester-proof-fail-4");
+  expect(late).toMatch(/^tester-proof-fail-4\tpass=false\t.* proof=false pushes=1 /);
+  expect(late).toContain(
+    "the fail on c-use was recorded at 2026-09-30T17:28:00.000000Z, after the push at 2026-09-30T17:27:50.000Z"
+  );
+});
+
+test("a tester that finds a failure and records no fail result on that check fails", () => {
+  const row = rowOf("tester-proof-fail-5");
+  expect(row).toMatch(/^tester-proof-fail-5\tpass=false\t.* proof=false .* fails=\[\] /);
+  expect(row).toContain(
+    "`bun greet.ts Grace` exited 1 before the record, and no fail on c-use of this session stands"
+  );
+});
+
+test("a tester that finds a defect no check covers records no fail result for it", () => {
+  const row = rowOf("tester-proof-fail-6");
+  expect(row).toMatch(/^tester-proof-fail-6\tpass=true\t.* proof=true .* fails=\[\] /);
+  expect(row).not.toContain("proofProblems");
+});
+
+test("a tester fail result counts no run of bun --eval, which runs its argument as code and no file", () => {
+  const row = rowOf("tester-proof-fail-9");
+  expect(row).toMatch(/^tester-proof-fail-9\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(row).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
+test("a tester fail result counts a failing run of its check's command in another form that runs the same, and not a run of another script", () => {
+  expect(rowOf("tester-proof-fail-7")).toMatch(
+    /^tester-proof-fail-7\tpass=true\t.* proof=true .* fails=\[c-use\] /
+  );
+  const other = rowOf("tester-proof-fail-8");
+  expect(other).toMatch(/^tester-proof-fail-8\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(other).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
+test("a tester fail result that a retraction stands against, or recorded against older words of its check, asks for no failing run", () => {
+  for (const n of [10, 11])
+    expect(rowOf(`tester-proof-fail-${n}`)).toMatch(
+      new RegExp(`^tester-proof-fail-${n}\\tpass=true\\t.* proof=true .* fails=\\[\\] `)
+    );
+});
+
+test("tester-reruns: a fail of the tester's own run of c1 at H1, before its record and naming the output at H1, passes where c1 fails at H1", () => {
+  for (const rerunsCase of ["implementer-pass-broken", "carried-own-pass"])
+    expect(rowOf(`tester-reruns-${rerunsCase}-rr-1`)).toMatch(
+      new RegExp(
+        `^tester-reruns-${rerunsCase}-rr-1\\tpass=true\\tref=false\\tcase=${rerunsCase} results=1 kept=true elsewhere=0 carried=0 runs=1 atH1=1 record=v1 `
+      )
+    );
+});
+
+test("tester-reruns: in clean-push, a pass of the tester's own run of c1 at H1 that names its output passes", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-1")).toMatch(
+    /^tester-reruns-clean-push-rr-1\tpass=true\t.* kept=true .* result=pass@222222222222\(atHead=true output=true ranFirst=true beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: a result whose reading says carried from fails, even after a run of c1", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-2")).toMatch(
+    /^tester-reruns-clean-push-rr-2\tpass=false\t.* carried=1 runs=1 .*output=true ranFirst=true beforeRecord=true carried=true\)/
+  );
+  expect(rowOf("tester-reruns-clean-push-rr-3")).toMatch(
+    /^tester-reruns-clean-push-rr-3\tpass=false\t.* carried=1 runs=0 /
+  );
+});
+
+test("tester-reruns: a run that recorded nothing on c1 fails, whatever the other sessions recorded", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-4")).toMatch(
+    /^tester-reruns-clean-push-rr-4\tpass=false\t.* results=0 kept=false elsewhere=0 carried=0 runs=1 /
+  );
+});
+
+test("tester-reruns: a result at another head fails", () => {
+  expect(rowOf("tester-reruns-implementer-pass-broken-rr-2")).toMatch(
+    /^tester-reruns-implementer-pass-broken-rr-2\tpass=false\t.* elsewhere=1 .* result=fail@111111111111\(atHead=false /
+  );
+});
+
+test("tester-reruns: a result at another head that a retraction stands against, or recorded against older words of c1, is none of the run's", () => {
+  for (const n of [13, 14])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=true\\tref=false\\tcase=implementer-pass-broken results=1 kept=true elsewhere=0 carried=0 runs=1 atH1=1 record=v1 uncounted=1 `
+      )
+    );
+});
+
+test("tester-reruns: a fail that names no output at H1, follows its record, or follows no run of c1 fails", () => {
+  expect(rowOf("tester-reruns-implementer-pass-broken-rr-3")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=false ranFirst=true beforeRecord=true carried=false\)/
+  );
+  expect(rowOf("tester-reruns-carried-own-pass-rr-2")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=true ranFirst=true beforeRecord=false carried=false\)/
+  );
+  expect(rowOf("tester-reruns-carried-own-pass-rr-3")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=true ranFirst=false beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: a run of c1 only at H0 is no run at H1, whatever result at H1 it records", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-5")).toMatch(
+    /^tester-reruns-clean-push-rr-5\tpass=false\t.* kept=false .* runs=1 atH1=0 .* result=pass@222222222222\(atHead=true output=true ranFirst=false beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: a run of c1 at H1 in another form that runs the same counts, and a run of another test target does not", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-6")).toMatch(
+    /^tester-reruns-clean-push-rr-6\tpass=true\t.* kept=true .* runs=1 atH1=1 /
+  );
+  expect(rowOf("tester-reruns-clean-push-rr-7")).toMatch(
+    /^tester-reruns-clean-push-rr-7\tpass=false\t.* kept=false .* runs=0 atH1=0 /
+  );
+});
+
+test("tester-reruns: a bun test call that prints help, the option before c1's target or after it, is no run of c1", () => {
+  for (const n of [8, 9])
+    expect(rowOf(`tester-reruns-clean-push-rr-${n}`)).toMatch(
+      new RegExp(`^tester-reruns-clean-push-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `)
+    );
+});
+
+test("tester-reruns: a bun test call whose options Bun refuses, or that the score does not drop, is no run of c1", () => {
+  for (const n of [4, 5, 6, 8, 11, 12])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `
+      )
+    );
+});
+
+test("tester-reruns: --timeout=N with a whole number of milliseconds leaves c1's command as it is", () => {
+  for (const n of [7, 9, 10])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=true\\t.* kept=true .* runs=1 atH1=1 `
+      )
+    );
+});
+
+// The score reads a bun test call's runs from Bun's JUnit report: the test count of its
+// `<testsuites>`, and the file of every `<testsuite>`, a describe block's nested suite included,
+// with the attribute's entities read. No report, or one with no test count, is no run.
+test("tester-reruns: junitRan reads the tests and the suite files of Bun's JUnit report", () => {
+  const nested = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="2" assertions="2" failures="0" skipped="0" time="0.01">
+  <testsuite name="sub/a&amp;b.test.ts" file="sub/a&amp;b.test.ts" tests="1" failures="0">
+    <testcase name="one" classname="" file="sub/a&amp;b.test.ts" line="2" />
+  </testsuite>
+  <testsuite name="sub/nested.test.ts" file="sub/nested.test.ts" tests="1" failures="0">
+    <testsuite name="group" file="sub/nested.test.ts" line="2" tests="1" failures="0">
+      <testcase name="inner" classname="group" file="sub/nested.test.ts" line="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>
+`;
+  expect(junitRan(nested)).toEqual({
+    tests: 2,
+    files: new Set(["sub/a&b.test.ts", "sub/nested.test.ts"]),
+  });
+  expect(junitRan(c1Junit(1))).toEqual({ tests: 1, files: new Set(["limits.test.ts"]) });
+  expect(junitRan(null)).toBeUndefined();
+  expect(junitRan(undefined)).toBeUndefined();
+  expect(junitRan("error: Invalid timeout")).toBeUndefined();
+});
+
+test("tester-reruns: the counts are per case and label", () => {
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t6/14\t0/14\t0\t0\n");
+  expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
+  expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {

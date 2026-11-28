@@ -180,8 +180,9 @@ you send by message alone comes back to you as a request to write it there.
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker holds the phase and
 the acceptance is yours (`skill://legion-architect`, section 6): read
-`dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
-tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
+`dispatch results --issue <issue>` at each open head, the head that step passed among them, whose
+states decide each check and whose fail results give each failure, the tester's handoff for its
+`head` and `note` where a tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
 step comes before yours
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed

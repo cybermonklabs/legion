@@ -198,9 +198,10 @@ export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
      *  the two to it. */
     retracted: "Retracted",
     /** There is a result, and Dispatch cannot tell whether a pass of the check stands - it
-     *  could not read the repository, or could not place the commit a pass was recorded at -
-     *  so the page will not say that it passed. The word says Dispatch cannot tell, which "No
-     *  result" does not: there is a result to tell about. */
+     *  could not read the repository, could not place the commit a pass was recorded at, or
+     *  holds a pass and a fail of the check at one commit - so the page will not say that it
+     *  passed. The word says Dispatch cannot tell, which "No result" does not: there is a
+     *  result to tell about. */
     unmarked: "Cannot tell",
     /** The payload carries no answer over the check's results at all, which is a server that
      *  does not send `pass_stands` - an older build behind the same load balancer as this
@@ -447,8 +448,7 @@ export const VERIFICATION_WORDS = joinWords("VERIFICATION_WORDS", {
     not_met: "Not met",
     unknown: "Unknown",
   },
-  /** Beside the result a check's state stands on: the newest pass that stands for a check that
-   *  passed, and the newest result that stands for every other. */
+  /** Beside the result a check's state stands on (`CheckStanding.stands`). */
   stands: "Counts for this check",
 } as const);
 

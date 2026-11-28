@@ -250,8 +250,9 @@ project opens one, follows in the tester's own session, on the pull request, ask
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
-role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
-handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
+role. You then read `dispatch results --issue <issue>` at each open head, the head that step passed
+among them, whose states decide each check and whose fail results give each failure, the tester's
+handoff for its `head` and `note` where a tester step comes before yours, and the reviewer's approval of the head by SHA
 where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
 is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
 carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:

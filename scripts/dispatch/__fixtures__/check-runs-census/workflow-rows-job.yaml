@@ -1,0 +1,12 @@
+name: rows-job
+
+on:
+  workflow_call:
+
+jobs:
+  third-row:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the third row
+        run: bun test   fixtures/c3.test.ts

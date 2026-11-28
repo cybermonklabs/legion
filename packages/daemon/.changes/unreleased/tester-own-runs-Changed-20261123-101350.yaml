@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  The tester's prompt says which checks are the tester's: the `before_merge` checks that CI does
+  not prove. The tester runs each of them again at each head that it tests, whoever ran it before.
+  A pass that the implementer recorded, or a result carried from an earlier head, no longer takes
+  the place of that run. The tester reads no CI and waits for none. A contract change census adds
+  no check of its own: the tester drives each entry and records a result only on one of its own
+  checks, and it reports an entry that no check covers to the architect. A check with no pass from
+  the implementer is no fail by that alone: the tester runs it as any other. It records each
+  failure as a fail result on its check (`dispatch result --verdict fail`), and its `test` handoff holds no
+  `implementerProof`, `failures` or `failed`. Every phase worker's part gives the rule to retract a
+  result of its own that observed wrongly (`dispatch result --retract <result id> --reason`).
+  The architect, the implementer and the reviewer read each failure from the fail results that
+  `dispatch results` prints, never from a `test` handoff, and the architect's acceptance reads the
+  check states at each open head. The merger no longer says that the reviewer needs a pass from the
+  implementer and from the tester: the reviewer approves the new head when each `before_merge`
+  check reads yes at it, whoever recorded the pass.
+time: 2026-11-23T10:13:50Z
+custom:
+    Issue: tester-own-runs

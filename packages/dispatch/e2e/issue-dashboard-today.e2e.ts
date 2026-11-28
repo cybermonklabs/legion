@@ -633,6 +633,22 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   expect(linking(linked.met ?? [], statement), `the met list links ${statement}`).toEqual([]);
   expect(linking(linked.passed ?? [], older), `the passed list links ${older}`).toEqual([]);
 
+  // The subject rule's controls: with two pull requests open, each open head is a subject, and a
+  // pass stands only where one stands at each (`results_pass_stands.go`'s `passStandsOf`: "one
+  // head's fail is never hidden by a pass at another"). The seed's two checks that each passed at
+  // one open head alone, the earlier and the one the page names, hold no pass that stands, so
+  // neither row reads Passed, and neither counts in the passed tile.
+  const results = (await getIssueResults(seed.key)).checks ?? [];
+  for (const id of [seed.oneHead.earlier, seed.oneHead.named]) {
+    const oneHeadCheck = results.find((check) => check.block_id === id);
+    expect(oneHeadCheck?.pass_stands?.answer, `${id}'s pass stands`).toBe("no");
+    expect(
+      oneHeadCheck === undefined ? undefined : checkStanding(oneHeadCheck).state,
+      `${id}, passed at one open head of two, reads Passed on its own row`
+    ).toBe("failed");
+    expect(counted.passed.ids, `${id} counts as passed`).not.toContain(id);
+  }
+
   // The new page's Verification view reads each statement by the same rule: that statement
   // Unknown while both its checks read Passed on their rows, and Met exactly the statements the
   // Met tile counts.
@@ -656,6 +672,20 @@ test("the four tiles count what the reads hold and open their lists", async ({ p
   await expect(card.locator("span[data-statement-state]")).toHaveText(
     VERIFICATION_WORDS.states.unknown
   );
+  // The statement the two controls serve reads Unknown at the commit the page names, never Not
+  // met: the one result there of `oneHead.named` is a pass, and a check reads a statement through
+  // a result of its own state's verdict (`CheckStanding.stands`).
+  const oneHeadCard = verificationCard(page, blockNodeId(specSlug, seed.oneHead.statement));
+  await expect(
+    oneHeadCard.locator(
+      `[data-verification-check][data-node-id="${blockNodeId(verificationSlug, seed.oneHead.named)}"]`
+    ),
+    `the Verification view does not draw ${seed.oneHead.named} Failed on its row`
+  ).toHaveAttribute("data-node-state", "failed");
+  await expect(
+    oneHeadCard,
+    `the Verification view does not draw ${seed.oneHead.statement} Unknown`
+  ).toHaveAttribute("data-statement-state", "unknown");
   for (const id of ((await getIssueCoverage(seed.key)).requirements ?? []).map(
     (requirement) => requirement.block_id
   )) {

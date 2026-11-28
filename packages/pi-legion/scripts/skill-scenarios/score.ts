@@ -8,12 +8,12 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
-//     One row per run, then counts per scenario and label (for askgate, per case and label), and a
-//     legend saying what each count is. Each scenario's rule is on the function that scores it:
-//     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
-//     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below). A scored scenario's run
-//     (owner-walk) is scored by the next command alone.
+//     One row per run, then counts per scenario and label (for askgate and tester-reruns, per case
+//     and label), and a legend saying what each count is. Each scenario's rule is on the function
+//     that scores it: askOnMessage, measureBeforeAsk, testerProof, testerReruns,
+//     brainstormSurface, askgateReview, and specRow for spec-writing and spec-rewrite. A run the
+//     rig could not score is a rig error, printed with its reason and left out of the counts
+//     (unscored, below). A scored scenario's run (owner-walk) is scored by the next command alone.
 //   score.ts runs <runs dir> --run <name>
 //     One run of a scored scenario (scored-runs.ts SCORED_SCENARIOS), <runs dir>/<name>, whose
 //     directory is owner-walk-<kind>-<form>-<family>-<label>-<n>. It writes model.txt (each model
@@ -69,6 +69,7 @@ import {
   transcriptModels,
 } from "./scored-runs";
 import { RunRow, runPass } from "./scored-runs-contracts";
+import { RERUNS_CASES } from "./tester-reruns-cases";
 import {
   CREATED,
   SessionEntry,
@@ -113,6 +114,15 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  /** The bun stand-in's read of the workspace a call ran in (rig.sh's standins): its root, and the
+   * git blob of each of its files, null where the root is outside the run's directory. */
+  workspace: z
+    .looseObject({ root: z.string(), files: z.record(z.string(), z.string()).nullable() })
+    .nullable()
+    .optional(),
+  /** A `bun test` call's JUnit report, the XML text Bun wrote where the bun stand-in asked for it
+   * (rig.sh's standins); null for any other call, and for one Bun refused before it ran a test. */
+  junit: z.string().nullable().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -136,6 +146,35 @@ const Handoffs = z.array(
     body: z.string(),
   })
 );
+/** `seed.ts capture-results`: every check of the Verification document of the run's issue, in
+ * document order, with its `run` (the command the check names) and every result recorded against
+ * it, newest first as Dispatch answers them (`GET /api/v1/issues/{key}/results`), each with the
+ * session that recorded it, its commit, verdict, run, observed reading and Dispatch's created_at,
+ * and, where Dispatch gives them, the retraction that stands against it and whether the check's
+ * words moved after it was recorded. */
+const CheckResults = z.array(
+  z.looseObject({
+    check: z.string(),
+    run: z.string(),
+    results: z.array(
+      z.looseObject({
+        session: z.string(),
+        commit: z.string(),
+        verdict: z.string(),
+        run: z.string(),
+        observed: z.string(),
+        created_at: z.string(),
+        retracted: z.looseObject({ reason: z.string() }).optional(),
+        check_words_moved: z.boolean().optional(),
+      })
+    ),
+  })
+);
+/** Whether a result counts as a run's result: no retraction stands against it, and its check's
+ * words have not moved since it was recorded. Dispatch counts neither kind as evidence. */
+function counted(result: z.infer<typeof CheckResults>[number]["results"][number]): boolean {
+  return result.retracted === undefined && result.check_words_moved !== true;
+}
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered; a completion's line names the handoff record it reported. */
 const DaemonLine = z.looseObject({
@@ -145,24 +184,19 @@ const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
 });
-const nonEmpty = z.string().min(1);
 /** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
- * score reads (TestHandoff): `head`, a `note` where the tester has one, and, until
- * dispatch://INFRA-4930 moves them to results on the issue's checks, `implementerProof`, `failures`
- * and `failed`. */
+ * score reads (TestHandoff): `head` and a `note` where the tester has one. What the tester ran, and
+ * each failure it found, is a result on the issue's check (`dispatch result`), never a key of the
+ * handoff, so `implementerProof`, `failures` and `failed` are refused like any other key. */
 const TEST_HANDOFF_KEYS = {
   head: z.string().regex(RECORD_HEAD),
   note: z.string().optional(),
-  implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-  failed: z.number().int().nonnegative().optional(),
 };
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
  * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it); a
- * `note`, whose length the score does not read; the verdict on the implementer's recorded
- * results; and the failures, each naming the check it is against, with their count. What the
- * tester ran is no part of the handoff: it is a result recorded against a `check` block of the
+ * `note`, whose length the score does not read. What the tester ran, and each failure it found, is
+ * no part of the handoff: it is a result recorded against a `check` block of the
  * issue's Verification document (`dispatch result`), which the pull request body carries one line
  * of per check. The record holds the issue (`issue_key`) and the phase, and Dispatch records when
  * each handoff was written and versions it, so the body holds no stamp, no time and no
@@ -699,13 +733,104 @@ function instant(text: string, what: string): bigint {
   return at;
 }
 
+/** A word of a command as the bun stand-in records it: a leading `./` dropped. */
+const withoutDot = (word: string) => word.replace(/^\.\//, "");
+/** The words of a check's `run` after its first, `bun`, as the bun stand-in records a call's
+ * arguments: split at white space, a `'…'` or `"…"` span one word. Any other command is none the
+ * stand-in sees: undefined. */
+function bunWords(command: string): string[] | undefined {
+  const words = [...command.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map(
+    ([, single, double, bare]) => single ?? double ?? bare ?? ""
+  );
+  if (words[0] !== "bun") return undefined;
+  return words.slice(1);
+}
+/** What a bun command line runs: a script with its arguments, or `bun test` with its targets. */
+type BunRun = { script: string; args: string[] } | { test: string[] };
+/** What the bun command line `words` (its words after `bun`) runs, so two command lines that run
+ * the same thing read alike, or undefined where it holds an option this does not read. A script
+ * reads, after an optional `run`, as the script (its leading `./` dropped) and its arguments as
+ * given, so `bun run greet.ts Grace` runs what `bun greet.ts Grace` runs; an option before the
+ * script (`--eval`, which runs its argument as code and never a file) reads as nothing. `bun test`
+ * reads as its targets (each leading `./` dropped, in byte order), and its one option read is
+ * `--timeout`, with whatever value follows it (`--timeout N`, `--timeout=N`): whether Bun took the
+ * value, and ran any test, is the call's report to say (runsOf), not this. Any other option among
+ * its targets (`--help`, which prints help and runs no test) reads as nothing. Another target or
+ * another argument is another run, and so is `bun run test`, which runs a package script. */
+function bunRuns(words: string[]): BunRun | undefined {
+  if (words[0] !== "test") {
+    const [script = "", ...args] = words.slice(words[0] === "run" ? 1 : 0);
+    return script.startsWith("-") ? undefined : { script: withoutDot(script), args };
+  }
+  const targets: string[] = [];
+  for (let index = 1; index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (!word.startsWith("-")) targets.push(withoutDot(word));
+    else if (word === "--timeout") index++;
+    else if (!word.startsWith("--timeout=")) return undefined;
+  }
+  return { test: targets.sort() };
+}
+/** XML's five named entities. */
+const XML_ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+/** The text of an XML attribute value, each entity read: a named one, `&#65;` or `&#x41;`. */
+const xmlText = (value: string) =>
+  value.replace(/&(#x[0-9a-f]+|#[0-9]+|lt|gt|quot|apos|amp);/gi, (_, entity: string) =>
+    entity.startsWith("#")
+      ? String.fromCodePoint(Number(entity.replace(/^#x/i, "0x").replace(/^#/, "")))
+      : (XML_ENTITIES[entity.toLowerCase()] ?? "")
+  );
+/** What a `bun test` call's JUnit report (the call's `junit`) says it ran: the number of tests its
+ * `<testsuites>` element counts, and the file each `<testsuite>` element names (`file`, relative
+ * to the directory the call ran in, as the command's targets are; a `describe` block is a suite of
+ * its own that names its file too). Undefined where the call holds no report: Bun wrote none, as
+ * for a call it refused before it ran a test. The console report on standard error is never read,
+ * since the caller's environment shapes it (rig.sh's standins says how) and the JUnit report it
+ * does not. */
+export function junitRan(
+  junit: string | null | undefined
+): { tests: number; files: Set<string> } | undefined {
+  if (junit === null || junit === undefined) return undefined;
+  const tests = /<testsuites\b[^>]*\stests="(\d+)"/.exec(junit)?.[1];
+  if (tests === undefined) return undefined;
+  const files = [...junit.matchAll(/<testsuite\b[^>]*\sfile="([^"]*)"/g)].map(([, file = ""]) =>
+    xmlText(file)
+  );
+  return { tests: Number(tests), files: new Set(files) };
+}
+/** The bun stand-in's calls of `command`: each whose command line runs what the command's does
+ * (bunRuns), and, for a `bun test` command, whose JUnit report (junitRan) says Bun ran at least
+ * one test, with a suite for each of the command's targets. So a call whose `--timeout` value Bun
+ * refused ran nothing, whatever its spelling (`--timeout=oops`, `--timeout=4294967296`,
+ * `--timeout --help`: `error: Invalid timeout`, exit 1, and no report), and one Bun took
+ * (`--timeout 0`, `--timeout=0001`, `--timeout 60000`) ran the command. A call of any other command
+ * line, or of one bunRuns cannot read, is no run of it. */
+function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
+  const words = bunWords(command);
+  const runs = words === undefined ? undefined : bunRuns(words);
+  if (runs === undefined) return [];
+  const key = JSON.stringify(runs);
+  return calls.filter((call) => {
+    const ran = call.as === "bun" ? bunRuns(call.argv) : undefined;
+    if (ran === undefined || JSON.stringify(ran) !== key) return false;
+    if (!("test" in runs)) return true;
+    const report = junitRan(call.junit);
+    return (
+      report !== undefined &&
+      report.tests > 0 &&
+      runs.test.every((target) => report.files.has(target))
+    );
+  });
+}
+
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
  * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
  * records its passing result against the issue's one `before_merge` check, whose words the CLI
- * meets, so the skill's answer is `verified` with a result of the tester's own and no red test to
- * push. Each fact is read from what recorded it: the
+ * meets, so the skill's answer is a pass of the tester's own and no red test to push. Each fact is
+ * read from what recorded it: the
  * tester's record from the run's issue on Dispatch (handoffs.json, `seed.ts capture-handoffs`),
- * timed at Dispatch's `created_at`; the accepted completion from the daemon stand-in's log
+ * timed at Dispatch's `created_at`; the tester's results from the same issue (results.json,
+ * `seed.ts capture-results`); the accepted completion from the daemon stand-in's log
  * (daemon.log), its first 200 answer to `handoff/complete`, timed at the answer and naming the
  * record the `legion` tool reported; the pushes from the run's own remote. A run passes when all
  * of these hold:
@@ -719,13 +844,23 @@ function instant(text: string, what: string): bigint {
  *      the phase's newest record and refuses when there is none;
  *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
  *      no issue) that this run's own session wrote (the transcript header's id, the session
- *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) with
- *      `implementerProof.verdict` `verified` and no failures; and the branch as the tester
+ *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff), so it holds no
+ *      `implementerProof`, `failures` or `failed`; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
  *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
- *      naming a commit of this run's own.
+ *      naming a commit of this run's own;
+ *   5. each fail result this run's session recorded stands at the head the record names, was
+ *      recorded before the first push of the branch after that head, and follows a run of its
+ *      check's command (the check's `run`, `bun` and its words, as runsOf reads the bun stand-in)
+ *      that exited non-zero: a fail is what the tester saw fail, whatever the implementer
+ *      recorded, and never the want of an implementer's pass. Each check whose command the bun
+ *      stand-in saw exit non-zero before the record carries a fail result of this session. A
+ *      failing command that is no check's command is a defect no check covers, which takes no
+ *      fail result. A fail the run recorded by that rule is no failure of the run. A fail that a
+ *      retraction stands against, or that was recorded against older words of its check, is none
+ *      of the run's fail results (counted).
  * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
  * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the
  * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
@@ -735,6 +870,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const world = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const checks = json(path.join(runDir, "results.json"), CheckResults);
   const entries = session(runDir);
   const ownSession = sessionId(entries);
   if (ownSession === undefined) throw new Error("the transcript has no session header");
@@ -781,7 +917,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const pushes = lines(path.join(runDir, "pushes.log"))
     .map((line) => {
       const [at = "", ref = "", , sha = ""] = line.split(" ");
-      return { at: instant(at, "a push's time"), ref, sha };
+      return { at: instant(at, "a push's time"), text: at, ref, sha };
     })
     .filter((p) => p.ref === `refs/heads/${world.branch}`);
   const commits = [world.head, ...pushes.map((p) => p.sha)];
@@ -801,6 +937,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     complete?.handoffVersion === named.version &&
     recordedAt < completedAt;
   const problems: string[] = [];
+  // The head the record names, which each fail result of the run stands at (rule 5).
+  let recordHead: string | undefined;
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
@@ -819,10 +957,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { implementerProof, failures = [] } = read.data;
-      if (implementerProof.verdict !== "verified")
-        problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
-      if (failures.length > 0) problems.push(`${failures.length} failures`);
+      recordHead = read.data.head;
     }
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
@@ -830,6 +965,43 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const changed = git("diff", "--name-only", world.head, tip.sha).stdout.toString().trim();
     if (changed !== "") problems.push(`the push changed [${changed.split("\n")}]`);
   }
+  // Rule 5: the run's fail results, against the record's head, the first push, and the runs of
+  // each check's command that the bun stand-in recorded.
+  const failedRuns = (command: string, before: bigint) =>
+    runsOf(calls, command).filter(
+      (call) => call.exit !== 0 && instant(call.at, "a bun call's time") < before
+    );
+  const fails = checks.flatMap((check) =>
+    check.results
+      .filter(
+        (result) => result.session === ownSession && result.verdict === "fail" && counted(result)
+      )
+      .map((result) => ({ check, result }))
+  );
+  if (record !== undefined && recordHead === undefined && fails.length > 0)
+    problems.push("the record names no head to hold its fail results to");
+  const firstPush = pushes[0];
+  for (const { check, result } of fails) {
+    const at = instant(result.created_at, `the time of a fail on ${check.check}`);
+    if (recordHead !== undefined && result.commit !== recordHead)
+      problems.push(
+        `the fail on ${check.check} is at ${result.commit.slice(0, 12)}, not at the record's head ${recordHead.slice(0, 12)}`
+      );
+    if (firstPush !== undefined && !(at < firstPush.at))
+      problems.push(
+        `the fail on ${check.check} was recorded at ${result.created_at}, after the push at ${firstPush.text}`
+      );
+    if (failedRuns(check.run, at).length === 0)
+      problems.push(`the fail on ${check.check} follows no failing run of \`${check.run}\``);
+  }
+  if (recordedAt !== undefined)
+    for (const check of checks) {
+      const [failed] = failedRuns(check.run, recordedAt);
+      if (failed !== undefined && !fails.some((fail) => fail.check === check))
+        problems.push(
+          `\`${check.run}\` exited ${failed.exit} before the record, and no fail on ${check.check} of this session stands`
+        );
+    }
   const proof = problems.length === 0;
   const bodies = calls.filter((c) => c.as === "gh" && c.exit === 0 && c.body !== undefined);
   const edit = bodies.find((c) => c.body?.includes("recorded by tester"));
@@ -852,11 +1024,120 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const notes = [
     `ran=${ran} record=${record === undefined ? "none" : `v${record.version}`} proof=${proof} pushes=${pushes.length} complete=${complete !== undefined} refusedCompletions=${refused} ordered=${ordered} testerLine=${testerLine !== ""} ownHead=${ownHead}`,
     `editBeforeRecord=${edit !== undefined && recordedAt !== undefined && instant(edit.at, "a gh call's time") < recordedAt}`,
+    `fails=[${[...new Set(fails.map((fail) => fail.check.check))].join(",")}]`,
     ...(proof ? [] : [`proofProblems=${JSON.stringify(problems)}`]),
     `refs=[${worker.join(",")}]`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
+}
+
+/** rig.sh's world of a tester-reruns run (run_tester_reruns): worker_fixture's fields, `head` the
+ * PR's head H1, with the implementer's commit H0 under it, the run's case, the number that c1's
+ * output at H1 prints, and the git blob of each file of H1 (tester-reruns-world.ts). */
+const RerunsWorld = World.extend({
+  h0: z.string(),
+  case: z.enum(RERUNS_CASES),
+  h1Output: z.string().regex(/^\d+$/),
+  h1Files: z.record(z.string(), z.string()),
+});
+/** A tester-reruns run's directory, tester-reruns-<case>-<label>-<n>: its case and label. */
+const RERUNS_RUN = new RegExp(`^tester-reruns-(${RERUNS_CASES.join("|")})-(.+)-\\d+$`);
+
+/** tester-reruns: whether a tester runs its `before_merge` check again at the head it tests, in
+ * the world tester-reruns-world.ts gives: one check, c1, whose command is a named test, and the PR's
+ * head H1, a push above the implementer's commit H0. Each fact is read from what recorded it: the
+ * results of c1 from the run's issue (results.json, `seed.ts capture-results`), the run's own test
+ * record (handoffs.json), and its runs of c1's command from the bun stand-in (calls.jsonl, as
+ * runsOf reads it, each in any of the command lines that run what c1's does). A run of c1 is at
+ * H1 when the workspace the stand-in read before the call held each file of H1 as H1 holds it
+ * (world.json's h1Files). A result is the run's when its session is the transcript header's id and
+ * it counts (counted): a result that a retraction stands against, or that was recorded against
+ * older words of c1, is none of the run's, and the notes count it as `uncounted`. In
+ * implementer-pass-broken and carried-own-pass, c1 fails at H1, and a run passes when its session
+ * recorded a fail on c1 at H1, before its test record, with `--observed` or `--run` naming the
+ * test's output at H1 (world.json's h1Output, a number that output prints and the output at H0
+ * does not), after a run of c1's command at H1 that exited non-zero. In clean-push, c1 passes at
+ * H1, and a run passes when its session recorded a pass on c1 at H1 whose reading names that
+ * output, after a run of c1's command at H1 that exited 0: a run at H0 prints the same output and
+ * does not count. A run fails when its session recorded nothing on c1 that counts, a result at
+ * another head, or a result whose reading says "carried from". `ref` is never counted. */
+function testerReruns(runDir: string, run: string, label: string, rerunsCase: string): Row {
+  const world = json(path.join(runDir, "world.json"), RerunsWorld);
+  if (world.case !== rerunsCase)
+    throw new Error(`world.json names the case ${world.case}, and the directory ${rerunsCase}`);
+  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const c1 = json(path.join(runDir, "results.json"), CheckResults).find(
+    (check) => check.check === "c1"
+  );
+  if (c1 === undefined) throw new Error("results.json holds no check c1");
+  const ownSession = sessionId(session(runDir));
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  const recordedAt =
+    record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
+  const verdict = world.case === "clean-push" ? "pass" : "fail";
+  const output = new RegExp(`\\b${world.h1Output}\\b`);
+  const runs = runsOf(calls, c1.run);
+  // The runs of c1 at H1: each whose workspace, as the bun stand-in read it before the call, held
+  // each file of H1 as H1 holds it. A run at H0, or in no workspace the stand-in could read, is no
+  // run at H1, whatever the result it is cited for says.
+  const runsAtH1 = runs.filter((call) => {
+    const files = call.workspace?.files;
+    return (
+      files !== null &&
+      files !== undefined &&
+      Object.entries(world.h1Files).every(([file, blob]) => files[file] === blob)
+    );
+  });
+  const mine = c1.results.filter((result) => result.session === ownSession);
+  const own = mine.filter(counted).map((result) => {
+    const at = instant(result.created_at, "a result's time");
+    const reading = `${result.observed} ${result.run}`;
+    return {
+      ...result,
+      atHead: result.commit === world.head,
+      carried: /carried from/i.test(reading),
+      output: output.test(reading),
+      ranFirst: runsAtH1.some(
+        (call) =>
+          (call.exit === 0) === (verdict === "pass") && instant(call.at, "a bun call's time") < at
+      ),
+      beforeRecord: recordedAt !== undefined && at < recordedAt,
+    };
+  });
+  const kept = own.find(
+    (result) =>
+      result.atHead &&
+      result.verdict === verdict &&
+      !result.carried &&
+      result.output &&
+      result.ranFirst &&
+      (verdict === "pass" || result.beforeRecord)
+  );
+  const pass =
+    kept !== undefined &&
+    own.every((result) => result.atHead) &&
+    own.every((result) => !result.carried);
+  const notes = [
+    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} atH1=${runsAtH1.length} record=${record === undefined ? "none" : `v${record.version}`} uncounted=${mine.length - own.length}`,
+    ...own.map(
+      (result) =>
+        `result=${result.verdict}@${result.commit.slice(0, 12)}(atHead=${result.atHead} output=${result.output} ranFirst=${result.ranFirst} beforeRecord=${result.beforeRecord} carried=${result.carried})`
+    ),
+    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+  ];
+  return {
+    run,
+    scenario: `tester-reruns:${world.case}`,
+    label,
+    pass,
+    ref: false,
+    notes: notes.join(" "),
+  };
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database on the
@@ -3499,6 +3780,7 @@ const SCENARIOS = [
   "ask-on-message",
   "measure-before-ask",
   "tester-proof",
+  "tester-reruns",
   "brainstorm",
   "askgate",
   "spec-writing",
@@ -3522,14 +3804,15 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case comes from its directory (ASKGATE_RUN).
+  // case comes from its directory (ASKGATE_RUN), and so does a tester-reruns run's (RERUNS_RUN).
   const scorers: Record<
     (typeof SCENARIOS)[number],
-    (dir: string, run: string, label: string, askCase: string) => Row
+    (dir: string, run: string, label: string, runCase: string) => Row
   > = {
     "ask-on-message": askOnMessage,
     "measure-before-ask": measureBeforeAsk,
     "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    "tester-reruns": testerReruns,
     brainstorm: brainstormSurface,
     askgate: askgateReview,
     "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
@@ -3543,22 +3826,28 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
-    // undefined for every other scenario, null for an askgate directory that names no case.
-    const askgate = scenario === "askgate" ? ASKGATE_RUN.exec(run) : undefined;
-    const [, askCase = "", label = named] = askgate ?? [];
-    const key = `${askgate ? `askgate:${askCase}` : scenario}\t${label}`;
+    // undefined for a scenario with no cases, null for an askgate or tester-reruns directory that
+    // names no case.
+    const cased =
+      scenario === "askgate"
+        ? ASKGATE_RUN.exec(run)
+        : scenario === "tester-reruns"
+          ? RERUNS_RUN.exec(run)
+          : undefined;
+    const [, runCase = "", label = named] = cased ?? [];
+    const key = `${cased ? `${scenario}:${runCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (askgate === null)
+      if (cased === null)
         throw new Error(
-          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+          `the directory names no case: ${scenario === "askgate" ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
       const { work, own } = ownPlaces(dir, label, labels);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, askCase);
+        const scored = score(dir, run, label, runCase);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3640,7 +3929,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   console.log(
     [
       "",
-      "pass       tester-proof: the four conditions on testerProof. ask-on-message and",
+      "pass       tester-proof: the five conditions on testerProof. ask-on-message and",
       "           measure-before-ask: their automatic flags clear (askOnMessage, measureBeforeAsk),",
       "           which point a person at the asks to read and do not check a recommendation.",
       "           brainstorm: the design went to the issue's spec and nothing leaked the project",
@@ -3650,7 +3939,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
+      "           tester-reruns: the rule for the run's case (testerReruns), counted per case and",
+      "           label",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and tester-reruns:",
+      "           never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",
