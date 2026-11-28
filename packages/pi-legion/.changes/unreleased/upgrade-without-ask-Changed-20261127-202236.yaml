@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The controller skill says an upgrade (a newer Legion release, worker image or other tool) takes no ask, also when it restarts the daemon or replaces pods: the controller chooses its apply window. The worker skill says such an upgrade needs no window from a person and goes ahead with no ask.
+time: 2026-11-27T20:22:36Z
+custom:
+    Issue: upgrade-without-ask
