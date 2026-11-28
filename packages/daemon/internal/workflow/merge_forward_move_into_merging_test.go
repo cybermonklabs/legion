@@ -1,6 +1,6 @@
 package workflow
 
-// The merger owes its ask only while the issue stands in merging (owedTo). So a row of the ask that
+// The merger owes its ask only while the issue stands in merging (record.MergeForwardOwedAt). So a row of the ask that
 // ends while the merger's move back has the issue outside merging sends nothing, and neither does
 // a ready of the merger's launch there. At the move back into merging the merger owes the ask
 // again, and its launch, as the claim store holds it (claims.generation), is told the ask once: a
@@ -97,7 +97,7 @@ func mergerAskedInMerging(t *testing.T, state supervise.ClaimState) *pgxpool.Poo
 }
 
 // mergerMovesOutOfMerging is the merger's move of LEGION-208 back out of merging to to, d after
-// the first read (intake.BackwardMove). The merger's ask is owed by nobody there (owedTo), and
+// the first read (intake.BackwardMove). The merger's ask is owed by nobody there (record.MergeForwardOwedAt), and
 // accepting and retro, where the merge comes next on the default steps (classify.MergeComesNext),
 // ask nobody else, so the record keeps the merger's ask.
 func mergerMovesOutOfMerging(t *testing.T, pool *pgxpool.Pool, d time.Duration, to phase.Phase) {
