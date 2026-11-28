@@ -65,6 +65,9 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 			"generation", issue.Generation, "open", issue.NextChange)
 		return nil
 	}
+	if every := e.cfg.ReviewRoundCap; every > 0 && issue.NextChanges+1 >= every {
+		return nil
+	}
 	now := e.now()
 	next := issue.Generation + 1
 	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
