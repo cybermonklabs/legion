@@ -6,8 +6,9 @@
 #
 # The guide answers for the block in two halves. This package's
 # TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads runs this copy over queued rows of
-# two projects and reads them as the release before reads them; packages/daemon/internal/textcheck's
-# TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock holds this copy to the guide's fenced block.
+# two projects and reads them with its model of the release before's decode (refusedBeforeTheRoles);
+# packages/daemon/internal/textcheck's TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock holds
+# this copy to the guide's fenced block.
 # The split keeps the guide out of this package's CI filter, as the phase entry's way back does
 # (internal/daemon/upgrade_way_back_extract.txt): an edit to the guide alone starts the text-check
 # run rather than every Go lane.
@@ -32,6 +33,10 @@ where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
     or (kind = 'supervise' and payload->>'op' = 'pause_stop')
     or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
   and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The hook prompts one project still has queued of a move that leaves or reaches step.
+delete from outbox
+where kind = 'hook_prompt' and (payload->>'from' = 'step' or payload->>'to' = 'step')
   and split_part(issue, '-', 1) = '<PROJECT>';
 -- The state events one project still has queued that name the role of a running step or a claim
 -- of a role of the deployment.

@@ -690,6 +690,11 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 // testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
 const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
 
+// tokenRunWriterAudience is a workload identity provider's full resource name whose pool id holds a
+// run of 8 or more hex digits, as a token does: a refusal names such an audience by its keys alone
+// (writerAudienceNamed).
+const tokenRunWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/writer-0a1b2c3d4e5f/providers/example-cluster"
+
 // writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
 // provider's full resource name. It spells the whole rule out, the gcp- prefix Google keeps for
 // itself included, so a refusal of a pool or provider id that starts with it says why.
@@ -726,8 +731,9 @@ func brokerHTTPSAudienceRefusal(member string) string {
 // projected pod token carries, which every pod carries and a volume_mounts entry shows to every
 // role of the pod, its refusal naming the volume and the source that carry it; and a value whose
 // https: form is the audience of any of those tokens, which a provider whose allowed audiences are
-// empty takes as the writer audience itself. The App keys are commands that fail, so a boot load
-// that got past the session store would fail on them instead.
+// empty takes as the writer audience itself. A value whose pool id holds a token's run is named by
+// the two keys alone. The App keys are commands that fail, so a boot load that got past the
+// session store would fail on them instead.
 func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
 	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
 	const account = ", impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com"
@@ -823,6 +829,25 @@ func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnot
 				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
 				"      exchange_audience: \"https:" + testWriterAudience + "\"\n"),
 			want: brokerHTTPSAudienceRefusal("exchange_audience"),
+		},
+		{
+			name: "the broker's audience, of a pool id holding a token's run",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + tokenRunWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"" + tokenRunWriterAudience + "\"\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value):" +
+				" the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
+		},
+		{
+			name: "the https: form on the broker's audience, of a pool id holding a token's run",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + tokenRunWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"https:" + tokenRunWriterAudience + "\"\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (its https: form)," +
+				" which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix:" +
+				" the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone",
 		},
 		{
 			name: "an operator's pod token in a projected volume's first source",
@@ -2234,10 +2259,21 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
 		// A shared audience is named only where it has an audience's shape: a key's, a Workload
-		// Identity pool's or a writer audience's; any other is named by the two keys alone.
+		// Identity pool's whose project is a project id, or a writer audience's whose pool id and
+		// provider id hold no token's run; any other is named by the two keys alone, a pool of a
+		// project the pool's grammar takes that is no project id among them (capitals, or 31
+		// characters), and a writer audience whose pool id holds a run of hex digits.
 		"a named audience of a pool's shape": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: example-project.svc.id.goog\n      exchange_audience: example-project.svc.id.goog\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both example-project.svc.id.goog)"},
 		"a named audience of no audience's shape": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: legion-broker\n      exchange_audience: legion-broker\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)"},
+		"a pool's audience whose project holds a capital": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: Example-project.svc.id.goog\n      exchange_audience: Example-project.svc.id.goog\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)"},
+		"a pool's audience whose project is 31 characters": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: a-project-id-of-thirty-one-char.svc.id.goog\n      exchange_audience: a-project-id-of-thirty-one-char.svc.id.goog\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)"},
+		"a named writer audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"" + testWriterAudience + "\"\n      exchange_audience: \"" + testWriterAudience + "\"\n",
+			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both " + testWriterAudience + ")"},
+		"a writer audience whose pool id holds a token's run": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: \"" + tokenRunWriterAudience + "\"\n      exchange_audience: \"" + tokenRunWriterAudience + "\"\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)"},
 	} {
 		t.Run(name, func(t *testing.T) {

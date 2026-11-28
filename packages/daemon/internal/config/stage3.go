@@ -405,7 +405,9 @@ func readSlackChannels(value *yaml.Node, key string) ([]string, error) {
 // exactly a repository Parse takes (parseRepository), whose commits a pane stamps with the issue
 // key. One repository is named once, compared as GitHub compares names, without case: a second
 // entry stamps the same commits the first does, so it is the file saying one thing twice rather
-// than a second rule. An empty list is no repository, as an absent key is.
+// than a second rule; its refusal names the repository only where a refusal may name it
+// (repositoryNamed), and the two entries' places otherwise. An empty list is no repository, as an
+// absent key is.
 func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Repository, error) {
 	names, err := readStrings(value, key)
 	if err != nil || len(names) == 0 {
@@ -417,9 +419,13 @@ func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Reposit
 		if err != nil {
 			return nil, err
 		}
-		if slices.ContainsFunc(repos, func(named ghrepo.Repository) bool {
+		earlier := slices.IndexFunc(repos, func(named ghrepo.Repository) bool {
 			return strings.EqualFold(named.String(), repo.String())
-		}) {
+		})
+		switch {
+		case earlier >= 0 && !repositoryNamed(repo.String()):
+			return nil, fmt.Errorf("%s[%d] names the repository %s[%d] names: one repository is named once, compared without case", key, index, key, earlier)
+		case earlier >= 0:
 			return nil, fmt.Errorf("%s names %s twice", key, repo)
 		}
 		repos = append(repos, repo)

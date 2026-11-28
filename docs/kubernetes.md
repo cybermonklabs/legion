@@ -1170,7 +1170,7 @@ The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, a
   `runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account: the writer token signs in to Cloud SQL only by impersonating that service account`
 
 - a value of another form:
-  `runtime.kubernetes.session_database.writer_audience "<value>" must be a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>, each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-`
+  `runtime.kubernetes.session_database.writer_audience must be a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>, each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-`
 
 - a blank value:
   `runtime.kubernetes.session_database.writer_audience must not be empty`
@@ -1180,6 +1180,7 @@ The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, a
 
 - a value that is also the audience of a token every role of a pod reads: `agent_secrets.audience`, `agent_secrets.exchange_audience`, or the `audience` of a projected `service_account_token` source of a `pod.volumes` entry:
   `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (both <value>): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise `runtime.kubernetes.agent_secrets.exchange_audience`.
+  The refusal names the value only where its pool id and its provider id hold no run of 8 hex digits and no run of 10 letters and digits that holds a digit, as a token does; otherwise it says `(the two are one value)` in place of `(both <value>)`.
   For a pod volume, the refusal names the source, such as `runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience`, and says `every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod`.
   The loader refuses such a volume whether or not a `volume_mounts` entry names it.
   All these tokens have the pod's ServiceAccount as their subject.
@@ -1188,6 +1189,7 @@ The pool and the provider are each 4 to 32 characters of `a-z`, `0-9` and `-`, a
 
 - a value whose `https:` form, `https://iam.googleapis.com/projects/<number>/…`, is the audience of such a token:
   `runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (https://iam.googleapis.com/…), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone`, and likewise for the other keys above.
+  Where the pool id or the provider id holds such a run, the refusal says `(its https: form)` in place of the value.
   A provider whose allowed audiences list is empty takes a token whose audience is its full resource name with or without the `https:` prefix (`gcloud iam workload-identity-pools providers create-oidc`, `--allowed-audiences`), so such a token is a writer token too.
 
 A deployment that sets the member makes these four things true:
@@ -3192,9 +3194,9 @@ With no such row left, it writes the five checks again as the earlier release wr
 Run it with every project's daemon on that database stopped, before the earlier image is pinned: the checks are the database's, and so are the rows they read.
 The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
 
-**A queued outbox row that names a role of the deployment must be cleared before the earlier image is pinned.**
+**A queued outbox row that names a role of the deployment, and a queued hook prompt of a move that leaves or reaches `step`, must be cleared before the earlier image is pinned.**
 Finishing or stopping an issue does not take back a row queued for it before the finish.
-An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, and holds the role a row names to Legion's six (its `claim.IsRole`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, holds the role a row names to Legion's six (its `claim.IsRole`), and holds the move a hook prompt names to two different phases of its own line, which has no `step` (its `phase.IsMovePair` over `phase.Order`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
 The block below clears those rows of one project, a statement for each kind of row.
 
 Its first statement deletes each `pod-wait-held` notice to the controller, a kind the earlier release does not know, which tells of a start that waits for its pod: the start of a role that release does not have.
@@ -3204,8 +3206,11 @@ The delivery replaces the issues of a catch-up with its own read of the tree, so
 Its third takes `worker` off each queued merge-forward review, the role of the running step that the reviewer tells beside the architect, so the earlier release sends the review and the reviewer tells the architect alone.
 Its fourth deletes each queued pause's stop (a `supervise` row whose `op` is `pause_stop`), `phase_ended` message, hook prompt, update ask, and merge-forward hold or landed whose `role` is none of Legion's six.
 Each is work for a role the earlier release has no claim of: the way back in the migration's header refuses while an issue stands at such a role's step or a claim of such a role remains, so deleting the row loses nothing that release could do.
+Its fifth deletes each queued hook prompt whose move leaves or reaches `step` (its `from` or its `to` is `step`), whatever role it goes to.
+A step of a role of the deployment that fails moves the issue back from `step`, and a move back can reach such a step, so a hook fires on such a move and prompts each role it names, Legion's own among them: the hook a deployment runs when it writes no `hooks:` key prompts the implementer, the tester and the reviewer on every fifth move back of any kind.
+Only an issue whose plan names a role of the deployment makes such a move, and it is finished or stopped before the rollback, so deleting the prompt loses nothing the earlier release could act on.
 
-Its fifth deletes each queued state event (`state_change`) that names `stepRole` or a claim of a role outside the six, which the earlier release's check of a state change refuses.
+Its sixth deletes each queued state event (`state_change`) that names `stepRole` or a claim of a role outside the six, which the earlier release's check of a state change refuses.
 Such a row holds back every later state row of its project, so Dispatch would hear no state event of the project again, the earlier release's own boot event included.
 The statement deletes the row rather than the change: a row whose one change it took out could not stand, since a state change names at least one field, and Dispatch would keep the role or the claim that a change taken out of a longer row moved.
 Dispatch reads each project's state events in sequence order (`stateMessage.unfollowed` in `packages/envoy/internal/dispatch/legion/state_message.go`).
@@ -3240,6 +3245,10 @@ where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
     or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
   and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
   and split_part(issue, '-', 1) = '<PROJECT>';
+-- The hook prompts one project still has queued of a move that leaves or reaches step.
+delete from outbox
+where kind = 'hook_prompt' and (payload->>'from' = 'step' or payload->>'to' = 'step')
+  and split_part(issue, '-', 1) = '<PROJECT>';
 -- The state events one project still has queued that name the role of a running step or a claim
 -- of a role of the deployment.
 delete from outbox
@@ -3252,7 +3261,7 @@ where kind = 'state_change' and exists (
 ```
 
 This block is the one source of its statements.
-`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, and reads each row of the project that rolls back as the release before this one reads it and each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, reads each row of the project that rolls back with `refusedBeforeTheRoles`, a model written from the code of the release before this one that refuses a row this release queues wherever that release's decode refuses it, and reads each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
 Each statement names the project, so a daemon of another project left on this release keeps its rows.
 
 #### Rolling back the release that names the variant on each step record
@@ -5379,7 +5388,7 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
   a `bucket` without a `service_account` or a `service_account` without a `bucket` (`runtime.kubernetes.repository_cache.bucket needs runtime.kubernetes.repository_cache.service_account: …`, and the other way round);
   either one blank (`… must not be empty`) or still holding a `${…}` placeholder (`… is an unfilled placeholder: …`);
   a `bucket` that is not a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots, so a `gs://` address or a capital is refused (Cloud Storage refuses the rest of its naming rules when the bucket is made);
-  a `service_account` that is no ServiceAccount's name, which Kubernetes takes only as a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, beginning and ending with a letter or a digit, in at most 253 characters, so `Legion_Cache` or `a/b` is refused (`runtime.kubernetes.repository_cache.service_account "<value>" is no ServiceAccount's name: …`);
+  a `service_account` that is no ServiceAccount's name, which Kubernetes takes only as a DNS-1123 subdomain: lowercase letters, digits, `-` and `.`, beginning and ending with a letter or a digit, in at most 253 characters, so `Legion_Cache` or `a/b` is refused (`runtime.kubernetes.repository_cache.service_account is no ServiceAccount's name: …`), and a value of a key's shape, such as `legion_cache`, is named as written (`runtime.kubernetes.repository_cache.service_account "legion_cache" is no ServiceAccount's name: …`);
   a `service_account` that is the account the issue pods run as: `pod.service_account`, or `default` while `pod.service_account` is unset (`… must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`);
   a `service_account` that is `pod.controller_service_account`, the account the daemon-launched controller's pod runs as (`… must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`);
 
@@ -6013,7 +6022,7 @@ The loader refuses each of these, naming the key, and `legion config check` show
 
 - a `canary_issues` that is not a list of non-empty strings: `runtime.kubernetes.sandbox.canary_issues must be an array of non-empty strings`.
 
-- a `canary_issues` entry that is not an issue key: `runtime.kubernetes.sandbox.canary_issues entry "<entry>" is not an issue key, such as LEGION-208`.
+- a `canary_issues` entry that is not an issue key: `runtime.kubernetes.sandbox.canary_issues entry <n> is not an issue key, such as LEGION-208`, the entry named by its place in the list, from 1, and named as written only where it has a key's shape (`runtime.kubernetes.sandbox.canary_issues entry "legion_208" is not an issue key, such as LEGION-208`).
 
 - a `canary_issues` entry named twice: `runtime.kubernetes.sandbox.canary_issues names <KEY> twice`.
 
@@ -6027,9 +6036,9 @@ The loader refuses each of these, naming the key, and `legion config check` show
 
 - a `metadata` block without `identity_provider`: `runtime.kubernetes.sandbox.microvm.metadata.identity_provider is required: the cluster's identity provider, https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
 
-- a `workload_pool` in another form: `runtime.kubernetes.sandbox.microvm.metadata.workload_pool "<value>" must be the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog`.
+- a `workload_pool` in another form: `runtime.kubernetes.sandbox.microvm.metadata.workload_pool must be the cluster's Workload Identity pool, <PROJECT_ID>.svc.id.goog`, which names the value too only where it has a key's shape (`runtime.kubernetes.sandbox.microvm.metadata.workload_pool "<value>" must be …`).
 
-- an `identity_provider` in another form: `runtime.kubernetes.sandbox.microvm.metadata.identity_provider "<value>" must be the cluster's identity provider, https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`.
+- an `identity_provider` in another form: `runtime.kubernetes.sandbox.microvm.metadata.identity_provider must be the cluster's identity provider, https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`, which names the value too only where it has a key's shape (`runtime.kubernetes.sandbox.microvm.metadata.identity_provider "<value>" must be …`).
 
 - a `scheduling.node_selector` key `sandbox.gke.io/runtime` while an issue pod runs in a microVM: `runtime.kubernetes.scheduling.node_selector must not set sandbox.gke.io/runtime while an issue pod runs in a microVM (runtime.kubernetes.sandbox): the RuntimeClass places the pod`.
 
@@ -11055,13 +11064,13 @@ each issue's pod (every role of it alike) and the image probe's.
   Its README lists what an operator supplies and how `pod` and `provider_keys` compose.
 
 - **`runtime.kubernetes.pod.service_account`** is the pods' ServiceAccount (unset, pods run as the namespace's `default` ServiceAccount).
-  It may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key and the value (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
+  It may not still hold a `${…}` placeholder, which nothing expands, as a projected token's `audience` may not, and it must be a ServiceAccount's name, a DNS-1123 subdomain, as `repository_cache.service_account` must ([Configuration](#configuration)), or the loader refuses it naming the key (`runtime.kubernetes.pod.service_account is no ServiceAccount's name: …`), and the value too only where it has a key's shape (`runtime.kubernetes.pod.service_account "<value>" is no ServiceAccount's name: …`), rather than the API server refusing every pod.
   Changing it reaches a running pod only by replacing it, which the item **A change of `runtime.kubernetes.pod.service_account`** below describes.
 
 - **`runtime.kubernetes.pod.controller_service_account`** is the fifth key of `runtime.kubernetes.pod`.
   `controller_service_account` is the ServiceAccount the daemon-launched controller's pod runs as in place of `service_account` ([Daemon-launched controller](#daemon-launched-controller), "The pod"); unset, that pod runs as `service_account` like every other pod, and every other pod — each issue pod, the image probe's and each repository cache's while `runtime.kubernetes.repository_cache.bucket` is unset — runs as `service_account` whether or not it is set.
-  It may neither be blank nor still hold a `${…}` placeholder, as `service_account` may not (`runtime.kubernetes.pod.controller_service_account "${…}" is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`), and it is refused unless `controller: daemon`, the one setting under which the daemon launches the controller's pod (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`).
-  It must be a ServiceAccount's name, a DNS-1123 subdomain, and any other value is refused with the rule that name follows (`runtime.kubernetes.pod.controller_service_account "<name>" is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`).
+  It may neither be blank nor still hold a `${…}` placeholder, as `service_account` may not (`runtime.kubernetes.pod.controller_service_account is an unfilled placeholder: put the ServiceAccount the controller's pod runs as in its place`), and it is refused unless `controller: daemon`, the one setting under which the daemon launches the controller's pod (`runtime.kubernetes.pod.controller_service_account names the ServiceAccount of the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key`).
+  It must be a ServiceAccount's name, a DNS-1123 subdomain, and any other value is refused with the rule that name follows (`runtime.kubernetes.pod.controller_service_account is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.', starting and ending with a letter or digit, in at most 253 characters`), which names the value too only where it has a key's shape (`runtime.kubernetes.pod.controller_service_account "<value>" is no ServiceAccount's name: …`).
   The controller's pod is held to it as the other pods are to `service_account`: a controller pod running as any other account, `service_account` included, is warned of at boot and replaced at the next launch of the controller (`accountDrift`), so setting, changing or dropping it moves the controller's pod, and only that pod, at its next launch, and under the secrets broker that move costs the controller's role its session name as a change of `service_account` costs each role its own (the item below).
   `legion config check` names both accounts on a line of its own when it is set (`controller service account: the controller's pod runs as <account> (runtime.kubernetes.pod.controller_service_account); every other pod runs as <account> (runtime.kubernetes.pod.service_account)`), and while `runtime.kubernetes.repository_cache.bucket` is set it names the cache's account too (`…; every other pod but a repository cache's runs as <account> (runtime.kubernetes.pod.service_account); a repository cache's pod runs as <account> (runtime.kubernetes.repository_cache.service_account)`).
 

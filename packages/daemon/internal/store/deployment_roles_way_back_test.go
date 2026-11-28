@@ -55,7 +55,7 @@ func deploymentRolesWayBackFor(t *testing.T, project string) string {
 	return strings.ReplaceAll(deploymentRolesWayBack(t), rollingBackProject, project)
 }
 
-// The release before this one, the release this rollback goes back to, is main at f47b1e17c4f2.
+// The release before this one, the release this rollback goes back to, is main at 167c7d3ed6e7.
 // Its types are not in the tree, so what it reads of a row is written here from its code: the two
 // shapes below, which it decodes strictly (record.DecodeOutboxPayload, DisallowUnknownFields), and
 // the checks refusedBeforeTheRoles makes. Every other payload of the rows below is this release's
@@ -90,6 +90,18 @@ type catchUpIssueBeforeTheRoles struct {
 var stateFieldsBeforeTheRoles = []record.StateField{record.StateFieldPhase, record.StateFieldTree, record.StateFieldSlot,
 	record.StateFieldWaitingOn, record.StateFieldClaim}
 
+// orderBeforeTheRoles is the release before's phase.Order, the seven phases of its line, which
+// holds no step.
+var orderBeforeTheRoles = []phase.Phase{phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting,
+	phase.Retro, phase.Merging}
+
+// movePairBeforeTheRoles is the release before's phase.IsMovePair, which its validateOutboxPayload
+// holds a hook prompt's move to: from and to are two different phases of its line
+// (orderBeforeTheRoles).
+func movePairBeforeTheRoles(from, to phase.Phase) bool {
+	return from != to && slices.Contains(orderBeforeTheRoles, from) && slices.Contains(orderBeforeTheRoles, to)
+}
+
 // decodedStrictly is the error of decoding payload into into with DisallowUnknownFields, as the
 // release before decodes every payload.
 func decodedStrictly(payload []byte, into any) error {
@@ -105,13 +117,19 @@ func decodedStrictly(payload []byte, into any) error {
 // worker, a key its MergeForwardMessage does not have, or a hold or a landed to a role outside
 // Legion's six, which its MergeForwardReaches names for neither; a pause's stop, a phase-ended
 // message, a hook prompt or an update ask to a role outside the six (its claim.IsRole, which holds
-// the six alone); and a state change naming the field stepRole, or a claim change of a role outside
-// the six (its stateevent.Change.Validate).
+// the six alone); a hook prompt of a move that leaves or reaches step, whatever role it goes to (its
+// phase.IsMovePair: movePairBeforeTheRoles); a task's stop, a suspension, an idle release or a
+// tree's close of a role outside the six, whose claim its outbox derives from the row's role
+// (claim.NewToken, which holds the six alone) and fails at every attempt, since its
+// permanentRefusal ends no supervise row; and a state change naming the field stepRole, or a
+// claim change of a role outside the six (its stateevent.Change.Validate).
 func refusedBeforeTheRoles(row record.OutboxRow) error {
 	var named struct {
 		Kind record.NoticeKind `json:"kind"`
 		Role claim.Role        `json:"role"`
 		Op   string            `json:"op"`
+		From phase.Phase       `json:"from"`
+		To   phase.Phase       `json:"to"`
 	}
 	if err := json.Unmarshal(row.Payload, &named); err != nil {
 		return fmt.Errorf("read the %s row %d: %w", row.Kind, row.ID, err)
@@ -149,9 +167,23 @@ func refusedBeforeTheRoles(row record.OutboxRow) error {
 		if named.Op == "pause_stop" && !claim.IsBuiltin(named.Role) {
 			return fmt.Errorf("a pause's stop names its pause and the role it stops; it names role %q", named.Role)
 		}
+		// main at 167c7d3ed6e7, daemon/outbox.go:3189-3192 (outbox.supervise) and :3991-3993
+		// (reservedTreeClose): the release before's executor of these ops derives the claim of
+		// the row's role, and its claim.NewToken (claim/token.go:96-98 there) refuses a role
+		// outside the six. Its permanentRefusal (:940) ends no supervise row, so the row is
+		// retried on its backoff for ever, with its failure logged at each attempt.
+		switch named.Op {
+		case "step_stop", "suspend", "release", "tree_close":
+			if !claim.IsBuiltin(named.Role) {
+				return fmt.Errorf("derive claim for outbox row %d: claim token: %q is not a role", row.ID, named.Role)
+			}
+		}
 	case record.OutboxKindPhaseEnded, record.OutboxKindHookPrompt, record.OutboxKindUpdateAsk:
 		if !claim.IsBuiltin(named.Role) {
 			return fmt.Errorf("a %s row goes to %q, which is none of a claim's six", row.Kind, named.Role)
+		}
+		if row.Kind == record.OutboxKindHookPrompt && !movePairBeforeTheRoles(named.From, named.To) {
+			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", named.From, named.To)
 		}
 	case record.OutboxKindStateChange:
 		var change record.StateChange
@@ -202,8 +234,12 @@ const (
 // step's role as its worker, waiting to retry, which the way back strips of its worker, and one in
 // retro. A merge-forward hold and a landed, a pause's stop, a phase-ended message, a hook prompt
 // and an update ask to checker, which the way back deletes, and each of them to one of Legion's
-// six. A state change into checker's step and one of checker's claim, which the way back deletes,
-// and one of the implementer's claim and one of a phase and a slot.
+// six. A task's stop, a suspension, an idle release and a tree's close of checker, which the way
+// back deletes, and a task's stop of the implementer. A hook prompt to the implementer on
+// step-implementing and one to the tester on reviewing-step, which the way back deletes though
+// each goes to one of Legion's six. A state change into checker's step and one of checker's
+// claim, which the way back deletes, and one of the implementer's claim and one of a phase and a
+// slot.
 func deploymentRolesWayBackRows(project string) []deploymentRolesQueued {
 	issue := project + "-311"
 	checker := deploymentRolesRole
@@ -266,6 +302,16 @@ func deploymentRolesWayBackRows(project string) []deploymentRolesQueued {
 			Generation: 3, Pause: 7}),
 		keeps("a pause's stop of the implementer", issue, record.SuperviseRequest{Op: "pause_stop", Tree: issue, Role: claim.RoleImplementer,
 			Generation: 3, Pause: 7}),
+		deletes("a task's stop of a role of the deployment", issue, record.SuperviseRequest{Op: "step_stop", Tree: issue, Role: checker,
+			Generation: 1, Reason: "task a of " + issue + " was stopped by its owner"}),
+		keeps("a task's stop of the implementer", issue, record.SuperviseRequest{Op: "step_stop", Tree: issue, Role: claim.RoleImplementer,
+			Generation: 1, Reason: "task a of " + issue + " was stopped by its owner"}),
+		deletes("a suspension of a role of the deployment", issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: checker,
+			Generation: 1, Reason: "the pod is idle"}),
+		deletes("an idle release of a role of the deployment", issue, record.SuperviseRequest{Op: "release", Tree: issue, Role: checker,
+			Generation: 1, Reason: "the pod is idle"}),
+		deletes("a tree's close of a role of the deployment", issue, record.SuperviseRequest{Op: "tree_close", Tree: issue, Role: checker,
+			Generation: 1, Linger: 1}),
 		deletes("a phase-ended message to a role of the deployment", issue, record.PhaseEnded{Role: checker, From: phase.Step,
 			To: phase.AwaitingChildren, Reason: "the admission pass stopped checker's step, while these Dispatch children of " + issue +
 				" were open: " + project + "-312 (todo)"}),
@@ -277,6 +323,12 @@ func deploymentRolesWayBackRows(project string) []deploymentRolesQueued {
 		keeps("a hook prompt to the implementer", issue, record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer,
 			From: phase.Reviewing, To: phase.Implementing, Count: 1, Counts: map[string]int{"reviewing-implementing": 1},
 			Prompt: "Read the reviewer's thread before you write anything."}),
+		deletes("a hook prompt to the implementer on step-implementing", issue, record.HookPrompt{Hook: "work-back", Role: claim.RoleImplementer,
+			From: phase.Step, To: phase.Implementing, Count: 5, Counts: map[string]int{"reviewing-implementing": 4, "step-implementing": 1},
+			Prompt: "Report to the architect what is in your way, in your own words."}),
+		deletes("a hook prompt to the tester on reviewing-step", issue, record.HookPrompt{Hook: "work-back", Role: claim.RoleTester,
+			From: phase.Reviewing, To: phase.Step, Count: 5, Counts: map[string]int{"reviewing-step": 5},
+			Prompt: "Report to the architect what is in your way, in your own words."}),
 		deletes("an update ask to a role of the deployment", issue, record.UpdateAsk{Role: checker, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a",
 			Text: "The daemon must replace the pod that runs this issue's roles."}),
 		keeps("an update ask to the tester", issue, record.UpdateAsk{Role: claim.RoleTester, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a",
@@ -403,14 +455,14 @@ func deploymentRolesWayBackProblems(t *testing.T, block string) []string {
 // The outbox's way back of the release whose deployment defines roles clears, for the project that
 // rolls back, each queued row the release before refuses at every attempt: it deletes each
 // pod-wait-held notice to the controller, each merge-forward hold or landed, pause's stop,
-// phase-ended message, hook prompt and update ask to a role of the deployment, and each state
-// change that names the role of a running step or a claim of such a role; and it takes stepRole off
-// each issue of a queued catch-up and worker off each merge-forward review. Every other row stays as
-// it was queued, a waiting row with its retry state, and the release before then takes each row
-// that stands, as this release reads each as it was queued but for what the way back took out.
-// Another project's daemon on the same database stays on this release, so each of its rows stands
-// as it was. The block is the guide's, as the extract beside this file copies it, run for LEGION as
-// an operator runs it.
+// phase-ended message, hook prompt and update ask to a role of the deployment, each hook prompt
+// of a move that leaves or reaches step, and each state change that names the role of a running
+// step or a claim of such a role; and it takes stepRole off each issue of a queued catch-up and
+// worker off each merge-forward review. Every other row stays as it was queued, a waiting row with
+// its retry state, and the release before then takes each row that stands, as this release reads
+// each as it was queued but for what the way back took out. Another project's daemon on the same
+// database stays on this release, so each of its rows stands as it was. The block is the guide's,
+// as the extract beside this file copies it, run for LEGION as an operator runs it.
 //
 // The controls come first: the release before refuses each queued row the way back deletes or
 // strips and takes each row it leaves, and takes each stripped row with its role of the deployment

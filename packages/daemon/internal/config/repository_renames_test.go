@@ -60,7 +60,9 @@ func TestRepositoryRenamesAreTheZeroValueWithoutTheKey(t *testing.T) {
 
 // Every refusal of repository_renames names the key, the entry and the value: a value that is no
 // list, an entry that is no mapping, a field neither from nor to, a missing or empty side, a side
-// Parse refuses, and each structural rule of the equivalence itself.
+// Parse refuses, and each structural rule of the equivalence itself. A repository or an owner that
+// holds a token's run in any case, as a real name can (`Python3Utilities`), is named by its place,
+// `repository_renames[<n>].from` or `.to`.
 func TestRepositoryRenamesRefusals(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"not a list", "repository_renames: sjawhar/legion\n",
@@ -95,6 +97,12 @@ func TestRepositoryRenamesRefusals(t *testing.T) {
 			"repository_renames: rename 1 (a/b -> c/d) chains onto rename 0 (c/d -> e/f) through c/d: a rename pairs two names, never a chain of three"},
 		{"one owner to two owners", "repository_renames: [{from: a/b, to: c/d}, {from: a/e, to: f/g}]\n",
 			"repository_renames: rename 1 (a/e -> f/g) and rename 0 (a/b -> c/d) move repositories of a to two owners, f and c: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said"},
+		{"a to Parse refuses, holding a token's run in any case", "repository_renames: [{from: a/b, to: acme/Python3Utilities.git}]\n",
+			`repository_renames[0].to must be "owner/name": an owner of at most 39 ASCII letters, digits, "-" and "_", beginning with a letter or digit, and a name of at most 100 ASCII letters, digits, "-", "_" and ".", other than "." and "..", not ending in ".git"`},
+		{"a repository renamed to itself, holding a token's run in any case", "repository_renames: [{from: acme/Python3Utilities, to: ACME/python3utilities}]\n",
+			"repository_renames: rename 0 (repository_renames[0].from -> repository_renames[0].to) renames a repository to itself: from and to name two repositories, compared without case"},
+		{"one owner to two owners, the owner holding a token's run in any case", "repository_renames: [{from: Python3Utilities/b, to: c/d}, {from: Python3Utilities/e, to: f/g}]\n",
+			"repository_renames: rename 1 (repository_renames[1].from -> f/g) and rename 0 (repository_renames[0].from -> c/d) move repositories of the owner of repository_renames[1].from to two owners, f and c: an owner's repositories moved to one owner, since the daemon keys the owner a pair moved a repository away from to the owner it moved to, one key per owner, so the second pair would overwrite the first with nothing said"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(writeConfigFile(t, minimalFile+tc.body), noEnv)

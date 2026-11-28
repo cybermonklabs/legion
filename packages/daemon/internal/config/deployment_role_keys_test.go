@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -172,16 +174,28 @@ func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
 // field, never as written, as TestATokenThatFitsTheRoleGrammarIsNeverPrinted holds for a role's
 // name: a word of a few a key takes (a hook's `on`, a backend, an experiment's `mode`, `unit` and a
 // variant's `plan`, a role's `github_app`, `controller`, `runtime.tmux.take_over`, dispatch_url's
-// scheme), named as written only where it has a key's shape (shapelessWord); a word the reader
-// holds to a pattern a token misses or fits (`project`, a Slack channel, a canary issue, a
-// repository, the leak check's digest, a variant's name, a bucket, a ServiceAccount, a claim, a
-// metadata member), named only where it has a key's shape; an exchange_audience that is the
-// audience itself, named only where it has an audience's shape; a word that is no move of a
-// hook's `moves`, a name two hooks or two volumes carry, a mount's volume and a label named twice,
-// each by its place; and a path that fits no grammar of its key (an overlay, an `instructions`, an
-// NFS export, a mount path, a role's `prompt_file`), never named. A key whose grammar takes a
-// lower-case token as a name (a variant's name, a bucket, a ServiceAccount, a claim) is tried with
-// the tokens of mixed case alone, which that grammar refuses.
+// scheme, a watched workflow's event), named as written only where it has a key's shape
+// (shapelessWord); a word the reader holds to a pattern a token misses or fits (`project`, a Slack
+// channel, a canary issue, a repository, the leak check's digest, a variant's name, a bucket, a
+// ServiceAccount, a claim, a metadata member), named only where it has a key's shape; a
+// repository, written where the reader takes one or as a name it already took (a list's entry
+// twice, a rename's pair, two renames that cannot stand together), and an owner of a rename, each
+// named only where it holds no token's run in any case; a watched workflow, named only where it
+// has an entry's shape, whichever of its refusals the token meets, the token beside a repository
+// or a file the reader refuses or beside an event it refuses for another fault; an
+// exchange_audience that is the audience itself, named only where it has an audience's shape, a
+// Workload Identity pool's among them only where the project before `.svc.id.goog` is a project
+// id's, and a session database writer audience's only where its pool id and provider id hold no
+// token's run, as a writer audience that a broker's token carries too is; a word that is no move of
+// a hook's `moves`, a name two hooks or two volumes carry, a mount's volume and a label named
+// twice, each by its place; and a path that fits no grammar of its key (an overlay, an
+// `instructions`, an NFS export, a mount path, a role's `prompt_file`), never named. A key whose
+// grammar takes a lower-case token as a name (a variant's name, a bucket, a ServiceAccount, a
+// claim) is tried with the tokens of mixed case alone, which that grammar refuses; a row whose
+// token stands where the reader takes a repository's name, an owner, a watched workflow's file or
+// a writer audience's id is tried with the tokens that place takes, of mixed case among them where
+// it takes capitals, since any other is refused as no such value first, as the rows of
+// parseRepository and of a watched workflow's form show.
 //
 // It reads the refusal's text for each 8-character piece of the token, as its sibling does.
 func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
@@ -190,6 +204,25 @@ func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
 	}
 	hooks := func(hooks string) string { return minimalFile + "hooks: [" + hooks + "]\n" }
 	pod := func(lines string) string { return kubernetesFile + "    pod:\n" + lines }
+	// asName, asOwner and asFile are the tokens GitHub serves as a repository's name and as an
+	// owner, and a watched workflow takes as its file; asWriterID the tokens a writer audience
+	// takes as its pool id and its provider id (ompsessions.ValidWriterAudience).
+	asName := ghrepo.IsName
+	asOwner := func(token string) bool { return repositoryShape.MatchString(token + "/a") }
+	asFile := func(token string) bool { return workflowFilePattern.MatchString(token + ".yaml") }
+	writerAudience := func(pool, provider string) string {
+		return "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/" + pool + "/providers/" + provider
+	}
+	asWriterID := func(token string) bool { return ompsessions.ValidWriterAudience(writerAudience(token, token)) }
+	// writerAudienceBeside is a session database whose writer_audience is writer and a broker whose
+	// audience is brokerAudience.
+	writerAudienceBeside := func(writer, brokerAudience string) string {
+		return withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+			" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com, writer_audience: \"" + writer + "\"}\n" +
+			"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+			"      audience: \"" + brokerAudience + "\"\n")
+	}
 	for _, token := range fakeTokens() {
 		// The first line after minimalFile is line 18; the line of the DEMO project is line 7.
 		for name, reader := range map[string]struct {
@@ -200,6 +233,10 @@ func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
 			// mixedOnly rows are tried with the tokens of mixed case alone: the key's grammar
 			// takes a lower-case token.
 			mixedOnly bool
+			// takes, where set, holds the tokens the row is tried with: the row's token stands
+			// where the reader takes a repository's name, an owner or a file (asName, asOwner,
+			// asFile).
+			takes func(token string) bool
 		}{
 			"a hook's moves": {body: hooks("{name: nudge, on: work_back, every: 1, roles: [implementer], moves: [" + token.text + "], prompt: Look again.}"),
 				place: "hooks[0].moves entry 1 "},
@@ -237,9 +274,52 @@ func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
 				place: "projects.DEMO.slack_channels entry 1 "},
 			"a project's commit_issue_trailer_repos": {body: project("commit_issue_trailer_repos: [" + token.text + "]"),
 				place: "projects.DEMO.commit_issue_trailer_repos[0] must be "},
+			"a project's commit_issue_trailer_repos, ending in .git": {body: project("commit_issue_trailer_repos: [acme/" + token.text + ".git]"),
+				place: "projects.DEMO.commit_issue_trailer_repos[0] must be "},
+			"one commit_issue_trailer_repos repository twice": {body: project("commit_issue_trailer_repos: [acme/" + token.text + ", ACME/" + token.text + "]"),
+				place: "projects.DEMO.commit_issue_trailer_repos[1] names the repository projects.DEMO.commit_issue_trailer_repos[0] names", takes: asName},
+			"two commit_issue_trailer_repos repositories a rename makes one": {body: project("commit_issue_trailer_repos: [acme/"+token.text+", acme/gadgets]") +
+				"repository_renames: [{from: acme/" + token.text + ", to: acme/gadgets}]\n",
+				place: "projects.DEMO.commit_issue_trailer_repos[0] and projects.DEMO.commit_issue_trailer_repos[1] (acme/gadgets) name one repository", takes: asName},
+			"watched_workflows that is no list": {body: project("watched_workflows: " + token.text),
+				place: "projects.DEMO.watched_workflows is a string, not a list of entries"},
+			"a watched workflow that is no string": {body: project("watched_workflows: [!x " + token.text + "]"),
+				place: "projects.DEMO.watched_workflows[0] is a scalar of another tag, not a string"},
+			"a watched workflow": {body: project("watched_workflows: [" + token.text + "]"),
+				place: "projects.DEMO.watched_workflows[0]"},
+			"a watched workflow's form": {body: project("watched_workflows: [acme/" + token.text + "]"),
+				place: "projects.DEMO.watched_workflows[0] is not "},
+			"a watched workflow's repository": {body: project("watched_workflows: [acme/" + token.text + ".git/x.yaml]"),
+				place: "projects.DEMO.watched_workflows[0]: the repository must be ", takes: asName},
+			"a watched workflow's repository, the token in its events": {body: project("watched_workflows: ['acme/wid gets/x.yaml@" + token.text + "']"),
+				place: "projects.DEMO.watched_workflows[0]: the repository must be "},
+			"a watched workflow's file, the token in its events": {body: project("watched_workflows: ['acme/widgets/x y.yaml@" + token.text + "']"),
+				place: "projects.DEMO.watched_workflows[0]: the workflow file is not "},
+			"a watched workflow's event": {body: project("watched_workflows: ['acme/widgets/x.yaml@" + token.text + "']"),
+				place: "projects.DEMO.watched_workflows[0] event 1 has no key's shape "},
+			"an empty watched event beside the token": {body: project("watched_workflows: ['acme/widgets/x.yaml@," + token.text + "']"),
+				place: `projects.DEMO.watched_workflows[0]: "@" must be followed `},
+			"one watched event twice beside the token": {body: project("watched_workflows: ['acme/widgets/x.yaml@push,push," + token.text + "']"),
+				place: `projects.DEMO.watched_workflows[0] names the event "push" twice`},
+			"one watched workflow twice": {body: project("watched_workflows: [acme/" + token.text + "/x.yaml, acme/" + token.text + "/x.yaml]"),
+				place: "projects.DEMO.watched_workflows[0] and projects.DEMO.watched_workflows[1] name one workflow", takes: asName},
+			"one watched workflow twice, the token as its file": {body: project("watched_workflows: [acme/widgets/" + token.text + ".yaml, acme/widgets/" + token.text + ".yaml]"),
+				place: "projects.DEMO.watched_workflows[0] and projects.DEMO.watched_workflows[1] name one workflow", takes: asFile},
 			"repository_renames": {body: minimalFile + "repository_renames: [{from: " + token.text + ", to: acme/widgets}]\n",
 				place: "repository_renames[0].from must be "},
+			"repository_renames' to": {body: minimalFile + "repository_renames: [{from: acme/widgets, to: " + token.text + "}]\n",
+				place: "repository_renames[0].to must be "},
+			"repository_renames' from, ending in .git": {body: minimalFile + "repository_renames: [{from: acme/" + token.text + ".git, to: acme/widgets}]\n",
+				place: "repository_renames[0].from must be "},
+			"repository_renames' to, ending in .git": {body: minimalFile + "repository_renames: [{from: acme/widgets, to: acme/" + token.text + ".git}]\n",
+				place: "repository_renames[0].to must be "},
+			"a repository renamed to itself": {body: minimalFile + "repository_renames: [{from: acme/" + token.text + ", to: Acme/" + token.text + "}]\n",
+				place: "repository_renames: rename 0 (repository_renames[0].from -> repository_renames[0].to) renames a repository to itself", takes: asName},
+			"one owner's repositories renamed to two owners": {body: minimalFile + "repository_renames: [{from: " + token.text + "/b, to: c/d}, {from: " + token.text + "/e, to: f/g}]\n",
+				place: "move repositories of the owner of repository_renames[1].from to two owners, f and c", takes: asOwner},
 			"leak_check.repository": {body: minimalFile + "leak_check: {repository: " + token.text + ", manifest_sha256: " + theManifestSHA256 + "}\n",
+				place: "leak_check.repository must be "},
+			"leak_check.repository, ending in .git": {body: minimalFile + "leak_check: {repository: acme/" + token.text + ".git, manifest_sha256: " + theManifestSHA256 + "}\n",
 				place: "leak_check.repository must be "},
 			"leak_check.manifest_sha256": {body: minimalFile + "leak_check: {repository: " + theLeakCheckRepository + ", manifest_sha256: " + token.text + "}\n",
 				place: "leak_check.manifest_sha256 must be "},
@@ -262,6 +342,19 @@ func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
 			"agent_secrets' audience twice": {body: kubernetesFile + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
 				"      audience: " + token.text + "\n      exchange_audience: " + token.text + "\n",
 				place: "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)", kubernetes: true},
+			"agent_secrets' audience twice, of a Workload Identity pool's form": {body: kubernetesFile + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: " + token.text + ".svc.id.goog\n      exchange_audience: " + token.text + ".svc.id.goog\n",
+				place: "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)", kubernetes: true},
+			"agent_secrets' audience twice, a writer audience whose pool id is the token": {body: kubernetesFile + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"" + writerAudience(token.text, "example-cluster") + "\"\n      exchange_audience: \"" + writerAudience(token.text, "example-cluster") + "\"\n",
+				place: "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)", kubernetes: true, takes: asWriterID},
+			"agent_secrets' audience twice, a writer audience whose provider id is the token": {body: kubernetesFile + "    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"" + writerAudience("legion-session-writer", token.text) + "\"\n      exchange_audience: \"" + writerAudience("legion-session-writer", token.text) + "\"\n",
+				place: "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)", kubernetes: true, takes: asWriterID},
+			"a writer audience the broker's audience carries too": {body: writerAudienceBeside(writerAudience(token.text, token.text), writerAudience(token.text, token.text)),
+				place: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (the two are one value)", kubernetes: true, takes: asWriterID},
+			"a writer audience whose https: form the broker's audience carries": {body: writerAudienceBeside(writerAudience(token.text, token.text), "https:"+writerAudience(token.text, token.text)),
+				place: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets.audience (its https: form)", kubernetes: true, takes: asWriterID},
 			"an NFS export's path": {body: pod("      volumes: [{name: nas, nfs: {server: 10.0.0.2, path: " + token.text + "}}]\n"),
 				place: "runtime.kubernetes.pod.volumes[0].nfs.path must be ", kubernetes: true},
 			"a mount's path": {body: pod("      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: " + token.text + "}]\n"),
@@ -275,7 +368,7 @@ func TestATokenWhereAWordANameOrAPathGoesIsNeverPrinted(t *testing.T) {
 			"a node selector's label twice": {body: kubernetesFile + "    scheduling: {node_selector: {" + token.text + ": a, " + token.text + ": b}}\n",
 				place: "runtime.kubernetes.scheduling.node_selector names the label at line ", kubernetes: true},
 		} {
-			if reader.mixedOnly && !token.mixed {
+			if reader.mixedOnly && !token.mixed || reader.takes != nil && !reader.takes(token.text) {
 				continue
 			}
 			t.Run(name+"/"+token.shape, func(t *testing.T) {

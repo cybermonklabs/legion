@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -70,14 +71,16 @@ const watchedWorkflowForm = `"<owner>/<repo>/<file>", optionally followed by "@"
 // controller hears (parseWatchedWorkflow). One workflow is named once: two entries whose owner and
 // repository are equal without case, as GitHub compares them, and whose files are equal with
 // case, as a repository's files are named, are the file saying one thing twice, and their events
-// belong in one entry. Each refusal names the key, the entry's place in the list and the entry.
-// The entries keep the file's order. An empty list is no workflow, as an absent key is.
+// belong in one entry. Each refusal names the key and the entry's place in the list, and the entry
+// only where it has an entry's shape (watchedWorkflowNamed); a value that is not of the kind its
+// place takes is named by its kind (watchedWorkflowsValueText). The entries keep the file's order.
+// An empty list is no workflow, as an absent key is.
 func readWatchedWorkflows(value *yaml.Node, key string) ([]WatchedWorkflow, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
 	}
 	if value.Kind != yaml.SequenceNode {
-		return nil, fmt.Errorf("%s is %s, not a list of entries, each %s", key, yamlValueText(value), watchedWorkflowForm)
+		return nil, fmt.Errorf("%s is %s, not a list of entries, each %s", key, watchedWorkflowsValueText(value), watchedWorkflowForm)
 	}
 	if len(value.Content) == 0 {
 		return nil, nil
@@ -86,7 +89,7 @@ func readWatchedWorkflows(value *yaml.Node, key string) ([]WatchedWorkflow, erro
 	for index, entry := range value.Content {
 		field := fmt.Sprintf("%s[%d]", key, index)
 		if entry.Kind != yaml.ScalarNode || entry.Tag != "!!str" {
-			return nil, fmt.Errorf("%s is %s, not a string: an entry is %s", field, yamlValueText(entry), watchedWorkflowForm)
+			return nil, fmt.Errorf("%s is %s, not a string: an entry is %s", field, watchedWorkflowsValueText(entry), watchedWorkflowForm)
 		}
 		workflow, err := parseWatchedWorkflow(field, entry.Value)
 		if err != nil {
@@ -94,8 +97,8 @@ func readWatchedWorkflows(value *yaml.Node, key string) ([]WatchedWorkflow, erro
 		}
 		for earlier, named := range workflows {
 			if named.File == workflow.File && strings.EqualFold(named.Repository.String(), workflow.Repository.String()) {
-				return nil, fmt.Errorf("%s[%d] %+q and %s %+q name one workflow: GitHub compares an owner and a repository without case, and a file with it; name the workflow once, with every event it watches",
-					key, earlier, value.Content[earlier].Value, field, entry.Value)
+				return nil, fmt.Errorf("%s and %s name one workflow: GitHub compares an owner and a repository without case, and a file with it; name the workflow once, with every event it watches",
+					watchedWorkflowNamed(fmt.Sprintf("%s[%d]", key, earlier), value.Content[earlier].Value), watchedWorkflowNamed(field, entry.Value))
 			}
 		}
 		workflows = append(workflows, workflow)
@@ -105,24 +108,29 @@ func readWatchedWorkflows(value *yaml.Node, key string) ([]WatchedWorkflow, erro
 
 // parseWatchedWorkflow is one entry of `watched_workflows`, `<owner>/<repo>/<file>`, optionally
 // followed by `@` and comma-separated events, or a refusal that begins with field, the entry's key
-// and place, and the entry. The owner and the repository are a repository ghrepo.Parse takes, the
-// file a name workflowFilePattern takes, and each event one of gitHubTriggerEvents, compared with
-// case, named once in the entry, in the entry's order; an entry with no `@` watches
-// defaultWatchedEvent alone, and an `@` with no event, or an empty one, is refused rather than
-// read as that default.
+// and place, and the entry where it has an entry's shape (watchedWorkflowNamed). The owner and the
+// repository are a repository ghrepo.Parse takes, the file a name workflowFilePattern takes, and
+// each event one of gitHubTriggerEvents, compared with case, named once in the entry, in the
+// entry's order; an entry with no `@` watches defaultWatchedEvent alone, and an `@` with no event,
+// or an empty one, is refused rather than read as that default. A refusal of an entry of no
+// entry's shape names a part of it only where that part fits its own grammar and holds no token's
+// run: the repository where a refusal may name it (parseRepository, repositoryNamed), in Parse's
+// words, and an event where it has a key's shape (keyShape), as every trigger event has; a file
+// that is no file name is never named, and an event of no key's shape is named by its place in the
+// entry (shapelessWord).
 func parseWatchedWorkflow(field, entry string) (WatchedWorkflow, error) {
-	at := fmt.Sprintf("%s %+q", field, entry)
+	at := watchedWorkflowNamed(field, entry)
 	path, events, named := strings.Cut(entry, "@")
 	parts := strings.Split(path, "/")
 	if len(parts) != 3 {
 		return WatchedWorkflow{}, fmt.Errorf("%s is not %s", at, watchedWorkflowForm)
 	}
-	repository, err := ghrepo.Parse(at+": the repository", parts[0]+"/"+parts[1])
+	repository, err := parseRepository(at+": the repository", parts[0]+"/"+parts[1])
 	if err != nil {
 		return WatchedWorkflow{}, err
 	}
 	if !workflowFilePattern.MatchString(parts[2]) {
-		return WatchedWorkflow{}, fmt.Errorf(`%s: the workflow file %+q is not a file name of .github/workflows: letters, digits, ".", "_" and "-", ending in ".yml" or ".yaml"`, at, parts[2])
+		return WatchedWorkflow{}, fmt.Errorf(`%s: the workflow file is not a file name of .github/workflows: letters, digits, ".", "_" and "-", ending in ".yml" or ".yaml"`, at)
 	}
 	workflow := WatchedWorkflow{Repository: repository, File: parts[2], Events: []string{defaultWatchedEvent}}
 	if !named {
@@ -133,8 +141,11 @@ func parseWatchedWorkflow(field, entry string) (WatchedWorkflow, error) {
 		switch {
 		case event == "":
 			return WatchedWorkflow{}, fmt.Errorf(`%s: "@" must be followed by trigger events, comma-separated, none of them empty; an entry with no "@" watches %s runs alone`, at, defaultWatchedEvent)
+		case !slices.Contains(gitHubTriggerEvents, event) && !keyShape(event):
+			return WatchedWorkflow{}, shapelessWord(fmt.Sprintf("%s event %d", at, index+1),
+				`one of GitHub's trigger events, which a workflow's "on:" names in lower case (`+gitHubTriggerEventsURL+")")
 		case !slices.Contains(gitHubTriggerEvents, event):
-			return WatchedWorkflow{}, fmt.Errorf(`%s: %+q is not one of GitHub's trigger events, which a workflow's "on:" names in lower case (%s)`, at, event, gitHubTriggerEventsURL)
+			return WatchedWorkflow{}, fmt.Errorf(`%s: %q is not one of GitHub's trigger events, which a workflow's "on:" names in lower case (%s)`, at, event, gitHubTriggerEventsURL)
 		case slices.Contains(workflow.Events[:index], event):
 			return WatchedWorkflow{}, fmt.Errorf("%s names the event %q twice", at, event)
 		}
@@ -142,20 +153,67 @@ func parseWatchedWorkflow(field, entry string) (WatchedWorkflow, error) {
 	return workflow, nil
 }
 
-// yamlValueText is a value a refusal names when it is not of the kind its key takes: a string
-// quoted, any other scalar as the file writes it, and a mapping, a list or an alias by its kind.
-func yamlValueText(node *yaml.Node) string {
-	switch {
-	case node.Kind == yaml.ScalarNode && node.Tag == "!!str":
-		return fmt.Sprintf("%+q", node.Value)
-	case node.Kind == yaml.ScalarNode && node.Value == "":
-		return "null"
-	case node.Kind == yaml.ScalarNode:
-		return node.Value
-	case node.Kind == yaml.MappingNode:
-		return "a mapping"
-	case node.Kind == yaml.SequenceNode:
-		return "a list"
+// watchedWorkflowShape reports whether a refusal may name entry, an entry of `watched_workflows`,
+// as written: `<owner>/<repo>/<file>`, its owner and repository of a repository's shape
+// (repositoryShape) and its file a name workflowFilePattern takes, optionally followed by "@" and
+// comma-separated events, each empty or of a key's shape (keyShape), as every one of
+// gitHubTriggerEvents is, the whole holding no token's run in any case (tokenShapedInAnyCase). Any
+// other entry can be a token pasted where the entry goes, and is named by its place. A token pasted
+// as the whole entry has no such three parts; the grammars of a repository and of a file take
+// capitals, as GitHub's names do, so a token of mixed case written in one of those parts
+// (`acme/<token>/x.yaml`) fits them, and only its run, read in lower case, shows it.
+func watchedWorkflowShape(entry string) bool {
+	path, events, _ := strings.Cut(entry, "@")
+	parts := strings.Split(path, "/")
+	if len(parts) != 3 || !repositoryShape.MatchString(parts[0]+"/"+parts[1]) || !workflowFilePattern.MatchString(parts[2]) || tokenShapedInAnyCase(entry) {
+		return false
 	}
-	return "an alias"
+	for event := range strings.SplitSeq(events, ",") {
+		if event != "" && !keyShape(event) {
+			return false
+		}
+	}
+	return true
+}
+
+// watchedWorkflowNamed is field, an entry's key and place, and entry, the entry there, as a
+// refusal names them: field and the entry quoted where it has an entry's shape
+// (watchedWorkflowShape), and field alone where it has none, as wordNamed names a word.
+func watchedWorkflowNamed(field, entry string) string {
+	if watchedWorkflowShape(entry) {
+		return field + " " + strconv.Quote(entry)
+	}
+	return field
+}
+
+// watchedWorkflowsValueText is a value of `watched_workflows` that is not of the kind its place
+// takes, as a refusal names it: a string quoted where it has an entry's shape
+// (watchedWorkflowShape), and any other value by its kind alone, never as written, since a string
+// of no entry's shape, a number and a scalar of another tag can each be a token pasted where the
+// list or an entry goes.
+func watchedWorkflowsValueText(node *yaml.Node) string {
+	switch node.Kind {
+	case yaml.MappingNode:
+		return "a mapping"
+	case yaml.SequenceNode:
+		return "a list"
+	case yaml.AliasNode:
+		return "an alias"
+	}
+	switch node.Tag {
+	case "!!str":
+		if watchedWorkflowShape(node.Value) {
+			return strconv.Quote(node.Value)
+		}
+		return "a string"
+	case "!!null":
+		return "null"
+	case "!!bool":
+		return "a boolean"
+	case "!!int", "!!float":
+		return "a number"
+	case "!!timestamp":
+		return "a timestamp"
+	}
+	return "a scalar of another tag"
 }

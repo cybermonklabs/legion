@@ -8,7 +8,10 @@ body: |-
     case-sensitive, so an entry spelled otherwise hears nothing. The key needs no `controller`
     setting, runtime or secrets broker. The loader refuses an entry of another shape, an `@` with
     no event, a name that is not one of GitHub's trigger events, an event named twice in one entry
-    and one workflow in two entries, naming the key, the entry's place in the list and the entry.
+    and one workflow in two entries, naming the key and the entry's place in the list, and the
+    entry only where it has an entry's shape: each part in its grammar, and no run of 8 hex digits
+    and no run of 10 letters and digits that holds a digit, either read in any case, so a token
+    pasted as an entry is named by its place alone.
     `legion config check` prints each entry of a project that names the key, with its events, and
     prints nothing new for a project that names none. A daemon before this release refuses a file
     that sets the key.

@@ -580,13 +580,34 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 
 // audienceShape reports whether a refusal may name audience, a token audience the file writes
 // where the reader holds it to no grammar (agent_secrets' audience and exchange_audience), as
-// written: one of a key's shape (keyShape, as the default audience `cipher` has), or of one of the
-// audience grammars the block holds an audience to elsewhere, a Workload Identity pool's
-// (workloadPool) or a session database writer audience's (ompsessions.ValidWriterAudience). Any
-// other audience can be a token pasted where the audience goes.
+// written: one of a key's shape (keyShape, as the default audience `cipher` has), a Workload
+// Identity pool whose project, the part before `.svc.id.goog`, is a project id
+// (gcpProjectID) holding no token's run (tokenShaped), or a session database writer audience
+// whose pool id and provider id hold none (writerAudienceNamed). Any other audience can be a token
+// pasted where the audience goes; that includes one the pool's grammar (workloadPool) still takes,
+// since that grammar takes any character but `/`, `?`, `#` and white space before the suffix, a
+// token of mixed case among them. Only the choice to print narrows: workloadPool stays the grammar
+// the block's metadata.workload_pool is held to.
 func audienceShape(audience string) bool {
-	return keyShape(audience) || workloadPool.MatchString(audience) || ompsessions.ValidWriterAudience(audience)
+	project, pool := strings.CutSuffix(audience, ".svc.id.goog")
+	return keyShape(audience) || (pool && gcpProjectID.MatchString(project) && !tokenShaped(project)) || writerAudienceNamed(audience)
 }
+
+// writerAudienceNamed reports whether a refusal may name audience as written where it is a
+// session database writer audience (ompsessions.WriterAudienceIDs): its pool id and its provider
+// id, the two parts a deployment names, hold no token's run (tokenShaped). Each id's grammar,
+// 4 to 32 characters of [a-z0-9-], takes a lower-case token, so the grammar alone
+// (ompsessions.ValidWriterAudience) is no reason to print it. The project number is left out of
+// the check: it is Google's, a run of digits in every real audience. Only the choice to print
+// narrows: ValidWriterAudience stays the rule a writer audience is held to.
+func writerAudienceNamed(audience string) bool {
+	pool, provider, writer := ompsessions.WriterAudienceIDs(audience)
+	return writer && !tokenShaped(pool) && !tokenShaped(provider)
+}
+
+// gcpProjectID is a Google Cloud project's id: a lower-case letter, then lower-case letters,
+// digits and "-", 6 to 30 characters in all, not ending in "-".
+var gcpProjectID = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 
 // pluginsKey is `runtime.kubernetes.plugins`'s own key.
 const pluginsKey = kubernetesKey + ".plugins"
@@ -1282,7 +1303,8 @@ func checkSandboxAgainstTheBlock(block *Kubernetes) error {
 // audience's https: form is refused too: a provider whose allowed audiences are left empty takes a
 // token whose audience is its full resource name "with or without the HTTPS prefix" (gcloud iam
 // workload-identity-pools providers create-oidc, --allowed-audiences). The broker's tokens are
-// checked first, then the volumes in order, and each refusal names both keys and the audience.
+// checked first, then the volumes in order, and each refusal names both keys, and the audience
+// only where a refusal may name it (writerAudienceNamed).
 func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	writer := block.SessionStore.Database.WriterAudience
 	if writer == "" {
@@ -1292,12 +1314,21 @@ func checkWriterAudienceAgainstRoleTokens(block *Kubernetes) error {
 	// prefix leaves the writer audience exactly when the audience is it or its https: form.
 	carries := func(audience string) bool { return strings.TrimPrefix(audience, "https:") == writer }
 	refusal := func(key, audience, reason string) error {
-		if audience == writer {
+		named := writerAudienceNamed(writer)
+		switch {
+		case audience == writer && named:
 			return fmt.Errorf("%s.writer_audience must differ from %s (both %s): %s, and the writer token is the launcher's alone",
 				sessionDatabaseKey, key, writer, reason)
+		case audience == writer:
+			return fmt.Errorf("%s.writer_audience must differ from %s (the two are one value): %s, and the writer token is the launcher's alone",
+				sessionDatabaseKey, key, reason)
+		}
+		form := "its https: form"
+		if named {
+			form = audience
 		}
 		return fmt.Errorf("%s.writer_audience must differ from %s (%s), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix: %s, and the writer token is the launcher's alone",
-			sessionDatabaseKey, key, audience, reason)
+			sessionDatabaseKey, key, form, reason)
 	}
 	if secrets := block.AgentSecrets; secrets != nil {
 		for _, member := range []struct{ key, audience string }{
