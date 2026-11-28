@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -878,6 +879,84 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 	requireFootnotedTree(t, "the pin's text_tree",
 		treeAt(t, handler, "/api/v1/references?"+url.Values{"to": {paragraphRef + "@v1"}}.Encode(), "node.pin.text_tree"),
 		reference, around...)
+}
+
+// The reference graph's read reads the notes of at most 16 documents in one request, as the
+// batched reference read does, and takes them in the order in which the read draws their texts:
+// the queried node's document, then the document of each edge's excerpt in the order of the
+// answer, then, last, the version that a pin names, which takes a place of its own though it is a
+// version of the node's document. A read of a document's block pinned to its first version, with
+// an edge whose excerpt is cut from each of 15 other documents, gives the node and the 15 excerpts
+// the first 16 places, so each of their trees reads the call its text holds as the footnote
+// reference its document holds outside the block. The pin's text is the seventeenth document's,
+// which has no place left: it keeps the tree of its text alone, as a text whose document cannot
+// be read does, and reads its call as text, though the version it pins defines the note.
+func TestTheReferencesReadReadsTheNotesOfAtMostSixteenDocuments(t *testing.T) {
+	t.Parallel()
+	handler, _ := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	const paragraph = "The pinned paragraph reads the note[^k1] too."
+	pinned := uploadIssueDocument(t, handler, issue.Key, "pinned.md",
+		"The pinned intro.\n\n"+paragraph+"\n\n[^k1]: The pinned note.\n")
+	paragraphID := blockIDsByText(t, handler, pinned.ID)[paragraph]
+	if paragraphID == "" {
+		t.Fatalf("the pinned document lists no block for its paragraph %q", paragraph)
+	}
+	paragraphRef := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+pinned.Slug, paragraphID)
+	// The second version rewrites the intro alone, so both versions hold the paragraph's call
+	// and the definition, and the pin names the earlier one.
+	if version := editIssueDocument(t, handler, issue.Key, pinned.Slug, []map[string]any{
+		{"op": "replace", "find": "The pinned intro.", "with": "The pinned intro, rewritten."},
+	}); version.Number != 2 {
+		t.Fatalf("the edit wrote version %d, want 2", version.Number)
+	}
+	// Each mention's words carry its index, so no two documents share a markdown, nor the entry
+	// the process keeps of its parse (footnoteParses).
+	mentions := map[string]bool{}
+	for index := 1; index <= 15; index++ {
+		words := "Mention " + strconv.Itoa(index) + " reads the note"
+		mentions[words] = false
+		uploadIssueDocument(t, handler, issue.Key, "mention-"+strconv.Itoa(index)+".md",
+			words+"[^k1] and cites "+paragraphRef+".\n\n[^k1]: The note of mention "+strconv.Itoa(index)+".\n")
+	}
+
+	read := decodeBody[graphReferencesRead](t, treesRequest(t, handler,
+		"/api/v1/references?"+url.Values{"to": {paragraphRef + "@v1"}}.Encode(), true))
+	if read.Node.Text != paragraph || read.Node.TextTree == nil {
+		t.Fatalf("the node = %#v, want the paragraph %q with its text_tree", read.Node, paragraph)
+	}
+	requireFootnotedTree(t, "the node's text_tree", json.RawMessage(read.Node.TextTree),
+		&footnotedReference{label: "k1", follows: "The pinned paragraph reads the note"}, "The pinned paragraph reads the note", " too.")
+	if len(read.Edges) != len(mentions) {
+		t.Fatalf("the read answered %d edges, want the %d mentions", len(read.Edges), len(mentions))
+	}
+	for index, edge := range read.Edges {
+		excerpt := edge.Excerpt
+		if excerpt == nil || excerpt.TextTree == nil || strings.Contains(excerpt.Text, "]:") {
+			t.Fatalf("edge %d's excerpt = %#v, want a mention's paragraph with no footnote definition, with its text_tree", index, excerpt)
+		}
+		words, _, called := strings.Cut(excerpt.Text, "[^k1]")
+		if seen, mention := mentions[words]; !called || !mention || seen {
+			t.Fatalf("edge %d's excerpt %q calls k1 after no mention's words, or after those of a mention an earlier edge answered", index, excerpt.Text)
+		}
+		mentions[words] = true
+		requireFootnotedTree(t, "edge "+strconv.Itoa(index)+"'s excerpt "+strconv.Quote(excerpt.Text), json.RawMessage(excerpt.TextTree),
+			&footnotedReference{label: "k1", follows: words}, words, " and cites ")
+	}
+
+	pin := read.Node.Pin
+	if pin == nil || pin.Version != 1 || !strings.Contains(pin.Text, "[^k1]") || pin.TextTree == nil {
+		t.Fatalf("the node's pin = %#v, want version 1's text, which calls k1, with its text_tree", pin)
+	}
+	firstVersion := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+pinned.ID+"/versions/1", nil, "alice")
+	if firstVersion.Code != http.StatusOK {
+		t.Fatalf("read version 1: status=%d body=%s", firstVersion.Code, firstVersion.Body.String())
+	}
+	if markdown := decodeBody[versionBlocksAnswer](t, firstVersion).Markdown; !strings.Contains(markdown, "[^k1]: ") {
+		t.Fatalf("version 1 is %q, which defines no k1, so its pin would read the call as text however many documents a read reads", markdown)
+	}
+	requireFootnotedTree(t, "the pin's text_tree, the seventeenth document's", json.RawMessage(pin.TextTree), nil, paragraph)
 }
 
 // "Changed" compares the current text with the pinned version's, not the history between: a text

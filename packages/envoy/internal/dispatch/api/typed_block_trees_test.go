@@ -406,6 +406,85 @@ func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *
 		&footnotedReference{label: "k1", follows: "A plain paragraph reads the note"}, "A plain paragraph reads the note", " too.")
 }
 
+// The batched reference read reads the notes of at most 16 documents in one request, so one
+// request loads and parses no more than 16 documents however many its references name. It takes
+// the documents in the order in which the request's `ref` parameters first name a block of each,
+// and a document takes a place only where a text of it that the read draws holds a call (`[^`):
+// the first document named, whose block calls no note, takes none. So the 16 documents after it
+// each have their block read with the definitions the document holds, and each block reads its
+// call as the footnote reference its document holds outside it. The seventeenth document whose
+// block calls a note has no place left: its block keeps the tree of its text alone, as a block
+// whose document cannot be read does, and reads its call as text. The places follow the order of
+// the request and nothing else, so the same request sent again answers the same trees under the
+// same ETag.
+func TestTheReferenceTargetsReadReadsTheNotesOfAtMostSixteenDocuments(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "TBL")
+	issue := createReferenceAPIIssue(t, handler, "TBL")
+	// Document 0's paragraph calls no note, and every other document's calls k1, which the
+	// document defines outside it. Each document's words carry its index, so no two documents
+	// share a markdown, nor the entry the process keeps of its parse (footnoteParses).
+	paragraphs := make([]string, 18)
+	references := make([]string, len(paragraphs))
+	for index := range paragraphs {
+		words := "Batched document " + strconv.Itoa(index)
+		paragraph := words + " reads no note."
+		markdown := paragraph + "\n"
+		if index > 0 {
+			paragraph = words + " reads the note[^k1] first."
+			markdown = paragraph + "\n\n[^k1]: The note of " + words + ".\n"
+		}
+		document := uploadIssueDocument(t, handler, issue.Key, "batched-"+strconv.Itoa(index)+".md", markdown)
+		id := blockIDsByText(t, handler, document.ID)[paragraph]
+		if id == "" {
+			t.Fatalf("document %d lists no block for its paragraph %q", index, paragraph)
+		}
+		if stored := storedBlockText(t, database, document.ID, id); strings.Contains(stored, "]:") {
+			t.Fatalf("document %d's paragraph's stored text %q holds a footnote definition, want the call alone", index, stored)
+		}
+		paragraphs[index] = paragraph
+		references[index] = refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+document.Slug, id)
+	}
+	target := referenceTargetsOf(references...)
+
+	first := treesRequest(t, handler, target, true)
+	read := decodeBody[model.ReferenceTargets](t, first).Targets
+	if len(read) != len(paragraphs) {
+		t.Fatalf("the read answered %d members, want one for each of the %d documents' paragraphs", len(read), len(paragraphs))
+	}
+	for index, member := range read {
+		what := "document " + strconv.Itoa(index) + "'s paragraph " + strconv.Quote(paragraphs[index])
+		if member.TextTree == nil {
+			t.Fatalf("%s: the member %#v carries no text_tree", what, member)
+		}
+		tree, words := json.RawMessage(member.TextTree), "Batched document "+strconv.Itoa(index)+" reads the note"
+		switch {
+		case index == 0:
+			requireFootnotedTree(t, what, tree, nil, paragraphs[index])
+		case index <= 16:
+			requireFootnotedTree(t, what, tree, &footnotedReference{label: "k1", follows: words}, words, " first.")
+		default:
+			requireFootnotedTree(t, what+", the seventeenth document that calls a note", tree, nil, paragraphs[index])
+		}
+	}
+
+	again := treesRequest(t, handler, target, true)
+	if etag, repeated := first.Header().Get("ETag"), again.Header().Get("ETag"); etag == "" || repeated != etag {
+		t.Errorf("the request sent again carries the ETag %q, and the first %q, want the first's tag again", repeated, etag)
+	}
+	repeated := decodeBody[model.ReferenceTargets](t, again).Targets
+	if len(repeated) != len(read) {
+		t.Fatalf("the request sent again answered %d members, want the %d of the first", len(repeated), len(read))
+	}
+	for index := range read {
+		if !bytes.Equal(repeated[index].TextTree, read[index].TextTree) {
+			t.Errorf("document %d's paragraph: the request sent again answers the tree\n\t%s\nwant the first's\n\t%s",
+				index, repeated[index].TextTree, read[index].TextTree)
+		}
+	}
+}
+
 // The results read answers each check's whole content as `text_tree`, as the coverage read does
 // a requirement's.
 func TestTheResultsReadCarriesAChecksContentWhole(t *testing.T) {
