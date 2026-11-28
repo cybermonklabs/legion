@@ -3,10 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { roleToken } from "@legion/contracts";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
-import { RERUNS_CASES as SCORED_CASES } from "./score";
 import type * as seedModule from "./seed";
+import { RERUNS_CASES, type RerunsCase } from "./tester-reruns-cases";
 import type * as worldModule from "./tester-reruns-world";
 
 // e2e/api.ts, which the world and seed.ts call, reads its port when it loads: set it as rig.sh's
@@ -17,7 +17,10 @@ restoreEnvironment(["DISPATCH_E2E_PORT", "PLAYWRIGHT_BASE_URL"]);
 let world: typeof worldModule;
 let seed: typeof seedModule;
 const origin = "http://127.0.0.1:18777";
-const work = temporaryDirectory("skill-scenarios-tester-reruns");
+// Every row that makes a fixture git repository makes it here, and the fixture's one `afterAll`
+// removes them all, so it is on the memory root (memoryRoot), as score.test.ts's work is: on the dev
+// box's shared disk a hook of this file ran past Bun's 5 s under a plain `bun test`.
+const work = temporaryDirectory("skill-scenarios-tester-reruns", { root: memoryRoot() });
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
@@ -44,6 +47,8 @@ interface FakeResult {
   observed: string;
   session: string;
   created_at: string;
+  retracted?: { reason: string; actor: { kind: string; id: string }; created_at: string };
+  check_words_moved?: boolean;
 }
 /** The scratch Dispatch the world and `seed.ts capture-results` talk to, held in memory: the
  * routes they call. An issue's key is its project's next number, from 1, as Dispatch numbers them;
@@ -189,23 +194,15 @@ const CASES = {
 } as const;
 
 describe("tester-reruns", () => {
-  test("the world's cases are the three this file reads, as score.ts and rig.sh name them", () => {
-    expect(Object.keys(CASES)).toEqual([...world.RERUNS_CASES]);
-    expect([...SCORED_CASES]).toEqual([...world.RERUNS_CASES]);
-    const rig = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
-    expect(/^reruns_cases=\(([^)]*)\)$/m.exec(rig)?.[1]?.split(" ")).toEqual([
-      ...world.RERUNS_CASES,
-    ]);
-  });
-
   // Each case of one repetition runs at once, with one label and one run number, on a Dispatch of
   // its own whose first issue is ACME-1: only the project tells their tester claims apart.
   test("tester-reruns: the three cases of one repetition claim three distinct role tokens", () => {
-    const cases = /^reruns_cases=\([^)]*\)$/m.exec(readFileSync(rigSh, "utf8"))?.[0] ?? "";
     const expanded = Bun.spawnSync([
       "bash",
       "-c",
-      `${cases}\n${fn("batch_runs")}\n${fn("legion_project")}\nbatch_runs tester-reruns 1 1 1800000000 head | while read -r scenario label n index start c; do printf '%s %s\\n' "$c" "$(legion_project "$scenario" "$label" "$n" "$index")"; done`,
+      `here=$1\n${fn("fail")}\n${fn("reruns_cases")}\n${fn("batch_runs")}\n${fn("legion_project")}\nbatch_runs tester-reruns 1 1 1800000000 head | while read -r scenario label n index start c; do printf '%s %s\\n' "$c" "$(legion_project "$scenario" "$label" "$n" "$index")"; done`,
+      "-",
+      import.meta.dir,
     ]);
     expect(expanded.exitCode).toBe(0);
     const rows = expanded.stdout
@@ -213,7 +210,7 @@ describe("tester-reruns", () => {
       .trim()
       .split("\n")
       .map((row) => row.split(" "));
-    expect(rows.map(([rerunsCase]) => rerunsCase)).toEqual([...world.RERUNS_CASES]);
+    expect(rows.map(([rerunsCase]) => rerunsCase)).toEqual([...RERUNS_CASES]);
     const tokens = rows.map(([, project]) => roleToken(project ?? "", "ACME-1", "tester"));
     expect(new Set(tokens).size).toBe(3);
   });
@@ -226,7 +223,7 @@ describe("tester-reruns", () => {
   const realRun = (
     runs: string,
     n: number,
-    rerunsCase: keyof typeof CASES,
+    rerunsCase: RerunsCase,
     at: "h0" | "h1",
     argv: string[],
     verdict: string,
@@ -463,8 +460,8 @@ describe("tester-reruns", () => {
     REPOSITORY_ROW_MS
   );
 
-  for (const [rerunsCase, expected] of Object.entries(CASES)) {
-    const name = rerunsCase as keyof typeof CASES;
+  for (const name of RERUNS_CASES) {
+    const expected = CASES[name];
     test(
       `tester-reruns ${name}: c1 passes at H0, and at H1 ${expected.passes ? "passes" : "fails"} with the output only H1 prints`,
       () => {
@@ -552,4 +549,61 @@ describe("tester-reruns", () => {
       REPOSITORY_ROW_MS
     );
   }
+
+  // Catches: a capture that drops a result's retraction, or whether its check's words moved, so
+  // the scorers count a result Dispatch counts as no evidence.
+  test("capture-results keeps each result's retraction and whether its check's words moved", async () => {
+    const dir = freshDir("capture");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "fixture.json");
+    writeFileSync(file, `${JSON.stringify({ issue: "ACME-1" })}\n`);
+    dispatch.artifacts.push({
+      issue: "ACME-1",
+      name: "verification.md",
+      content: ':::check{#c1 surface="cli" run="bun test limits.test.ts" when="before_merge"}\n',
+    });
+    const result = (second: number, fields: Partial<FakeResult> = {}) => ({
+      issue: "ACME-1",
+      check: "c1",
+      role: "tester",
+      verdict: "fail",
+      commit_sha: "1".repeat(40),
+      run: "bun test limits.test.ts",
+      observed: "limits.ts says 320, docs/limits.md says 32; 1 fail",
+      session: "rig-tester",
+      created_at: `2026-11-23T12:00:0${second}.000Z`,
+      ...fields,
+    });
+    const retracted = {
+      reason: "recorded at the wrong head",
+      actor: { kind: "session", id: "rig-tester" },
+      created_at: "2026-11-23T12:00:05.000Z",
+    };
+    dispatch.results.push(
+      result(1, { retracted }),
+      result(2, { check_words_moved: true }),
+      result(3, { check_words_moved: false })
+    );
+    await seed.captureResults(file, dir);
+    const captured = (second: number, fields: object) => ({
+      session: "rig-tester",
+      commit: "1".repeat(40),
+      verdict: "fail",
+      run: "bun test limits.test.ts",
+      observed: "limits.ts says 320, docs/limits.md says 32; 1 fail",
+      created_at: `2026-11-23T12:00:0${second}.000Z`,
+      ...fields,
+    });
+    expect(JSON.parse(readFileSync(path.join(dir, "results.json"), "utf8"))).toEqual([
+      {
+        check: "c1",
+        run: "bun test limits.test.ts",
+        results: [
+          captured(3, { check_words_moved: false }),
+          captured(2, { check_words_moved: true }),
+          captured(1, { retracted }),
+        ],
+      },
+    ]);
+  });
 });

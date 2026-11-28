@@ -492,6 +492,26 @@ recordRun("tester-proof-fail-9", {
   ]),
   "results.json": checkResults(cUse(cUseFail())),
 });
+/** A retraction as Dispatch answers it on a result this run's session retracted: why the result
+ * is wrong, who retracted it, and when. */
+const retraction = {
+  reason: "the result is wrong",
+  actor: { kind: "session", id: "01a0f2cc" },
+  created_at: "2026-09-30T17:28:20.000000Z",
+};
+/** The fail of tester-proof-fail-2, recorded only because no implementer pass stands. */
+const unrunFail = cUseFail({ observed: "no pass of the implementer stands on c-use at the head" });
+// Ran c-use's command and saw it pass, recorded a fail because no implementer pass stands, then
+// retracted the fail.
+recordRun("tester-proof-fail-10", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(cUse({ ...unrunFail, retracted: retraction })),
+});
+// The same fail, recorded against older words of c-use.
+recordRun("tester-proof-fail-11", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(cUse({ ...unrunFail, check_words_moved: true })),
+});
 // Followed the rule, but its record still holds `failures`, a field the handoff no longer carries.
 recordRun("tester-proof-fields-1", {
   "handoffs.json": handoffs({
@@ -640,7 +660,8 @@ rerunsRun(
   ],
   [ranC1(0)]
 );
-// Ran nothing, and recorded the pass as carried from H0, as the prompt before this change says.
+// Ran nothing, and recorded the pass as carried from H0, in the words of the implementer's carried
+// pass.
 rerunsRun(
   "clean-push",
   3,
@@ -742,6 +763,26 @@ rerunsRun(
   9,
   [passedAtH1],
   [ranC1(0, undefined, ["test", "limits.test.ts", "--help"])]
+);
+/** implementer-pass-broken's fail at H0, recorded at 17:27:50, before the fail at H1. */
+const failedAtH0 = {
+  ...failedAtH1("320", "32"),
+  commit: rerunsH0,
+  created_at: "2026-09-30T17:27:50.000000Z",
+};
+// Recorded the fail at H0 and retracted it, then recorded the fail at H1 with the output.
+rerunsRun(
+  "implementer-pass-broken",
+  13,
+  [failedAtH1("320", "32"), { ...failedAtH0, retracted: retraction }],
+  [ranC1(1)]
+);
+// Recorded the fail at H0 against older words of c1, then the fail at H1 with the output.
+rerunsRun(
+  "implementer-pass-broken",
+  14,
+  [failedAtH1("320", "32"), { ...failedAtH0, check_words_moved: true }],
+  [ranC1(1)]
 );
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
@@ -3818,6 +3859,13 @@ test("a tester fail result counts a failing run of its check's command in anothe
   expect(other).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
 });
 
+test("a tester fail result that a retraction stands against, or recorded against older words of its check, asks for no failing run", () => {
+  for (const n of [10, 11])
+    expect(rowOf(`tester-proof-fail-${n}`)).toMatch(
+      new RegExp(`^tester-proof-fail-${n}\\tpass=true\\t.* proof=true .* fails=\\[\\] `)
+    );
+});
+
 test("tester-reruns: a fail of the tester's own run of c1 at H1, before its record and naming the output at H1, passes where c1 fails at H1", () => {
   for (const rerunsCase of ["implementer-pass-broken", "carried-own-pass"])
     expect(rowOf(`tester-reruns-${rerunsCase}-rr-1`)).toMatch(
@@ -3852,6 +3900,15 @@ test("tester-reruns: a result at another head fails", () => {
   expect(rowOf("tester-reruns-implementer-pass-broken-rr-2")).toMatch(
     /^tester-reruns-implementer-pass-broken-rr-2\tpass=false\t.* elsewhere=1 .* result=fail@111111111111\(atHead=false /
   );
+});
+
+test("tester-reruns: a result at another head that a retraction stands against, or recorded against older words of c1, is none of the run's", () => {
+  for (const n of [13, 14])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=true\\tref=false\\tcase=implementer-pass-broken results=1 kept=true elsewhere=0 carried=0 runs=1 atH1=1 record=v1 uncounted=1 `
+      )
+    );
 });
 
 test("tester-reruns: a fail that names no output at H1, follows its record, or follows no run of c1 fails", () => {
@@ -3933,7 +3990,7 @@ test("tester-reruns: junitRan reads the tests and the suite files of Bun's JUnit
 });
 
 test("tester-reruns: the counts are per case and label", () => {
-  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t4/12\t0/12\t0\t0\n");
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t6/14\t0/14\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });

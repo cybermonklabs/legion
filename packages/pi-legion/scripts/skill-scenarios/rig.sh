@@ -2215,8 +2215,11 @@ run_tester_reruns() {
   seed_ts capture-results "$R/fixture.json" "$R"
 }
 
-# The cases of tester-reruns, each its own world (tester-reruns-world.ts's RERUNS_CASES).
-reruns_cases=(implementer-pass-broken carried-own-pass clean-push)
+# reruns_cases prints the cases of tester-reruns, one a line, each its own world
+# (tester-reruns-cases.ts).
+reruns_cases() {
+  bun "$here/tester-reruns-cases.ts" || fail "tester-reruns-cases.ts failed"
+}
 
 # tester_pane writes the tester's pane, $R/pane.env: worker.env (worker-pane.ts's), the batch's
 # services, the run's own Dispatch, and git, jj and gh as the tester's. The services carry the
@@ -3268,7 +3271,7 @@ cmd_score() {
 cmd_run() {
   [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = tester-reruns ]; } ||
     fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|owner-walk> <label> <n> <index> <start>, or rig.sh run tester-reruns <label> <n> <index> <start> <case>"
-  local scenario=$1 n=$3 index=$4 start=$5 reruns_case=${6:-} name owner_case=''
+  local scenario=$1 n=$3 index=$4 start=$5 reruns_case=${6:-} name owner_case='' cases
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
@@ -3288,8 +3291,9 @@ cmd_run() {
     name=$scenario-$owner_case-${P##*/}-$n
   elif [ "$scenario" = tester-reruns ]; then
     # A tester-reruns run's name carries its case too, and every case runs in one batch.
-    [[ " ${reruns_cases[*]} " == *" $reruns_case "* ]] ||
-      fail "a tester-reruns run's case is '$reruns_case', not one of ${reruns_cases[*]}"
+    cases=$(reruns_cases) || exit 1
+    grep -qxF -- "$reruns_case" <<<"$cases" ||
+      fail "a tester-reruns run's case is '$reruns_case', not one of $(paste -sd' ' <<<"$cases")"
     name=$scenario-$reruns_case-${P##*/}-$n
   else
     name=$scenario-${P##*/}-$n
@@ -3331,17 +3335,18 @@ stop_batch() {
 # batch_runs SCENARIO FIRST RUNS START LABEL... prints one line for each run of a batch, the
 # arguments `rig.sh run` takes: `<scenario> <label> <n> <index> <start>`, and a tester-reruns run's
 # case after <start>. Each label runs n from FIRST to FIRST + RUNS - 1, a tester-reruns label each
-# of its cases at each n, and <index> counts the runs of the batch from 1.
+# of its cases (reruns_cases) at each n, and <index> counts the runs of the batch from 1.
 batch_runs() {
-  local scenario=$1 first=$2 runs=$3 start=$4 label n index=0 reruns_case
+  local scenario=$1 first=$2 runs=$3 start=$4 label n index=0 reruns_case cases=''
   shift 4
+  if [ "$scenario" = tester-reruns ]; then cases=$(reruns_cases) || exit 1; fi
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do
       if [ "$scenario" = tester-reruns ]; then
-        for reruns_case in "${reruns_cases[@]}"; do
+        while read -r reruns_case; do
           index=$((index + 1))
           printf '%s %s %s %s %s %s\n' "$scenario" "$label" "$n" "$index" "$start" "$reruns_case"
-        done
+        done <<<"$cases"
       else
         index=$((index + 1))
         printf '%s %s %s %s %s\n' "$scenario" "$label" "$n" "$index" "$start"

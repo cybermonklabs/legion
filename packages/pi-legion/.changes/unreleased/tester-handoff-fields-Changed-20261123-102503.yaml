@@ -5,7 +5,8 @@ body: |-
   issue instead (`seed.ts capture-results`, which `rig.sh` runs at the end of each tester-proof
   run): each fail must stand at the head the test record names, come before the first push after
   that head, and follow a run of its check's command that failed, and each check whose command
-  failed must carry a fail.
+  failed must carry a fail. A result that a retraction stands against, or that was recorded against
+  older words of its check, is not counted.
 time: 2026-11-23T10:25:03Z
 custom:
     Issue: tester-handoff-fields

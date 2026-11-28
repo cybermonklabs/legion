@@ -7,7 +7,8 @@
 // `before_merge` check, c1, with no `ci_check`. Its run is a named test of the fixture repository,
 // `bun test limits.test.ts`, which reads limits.ts and docs/limits.md and prints the limit each
 // states. No workflow of the fixture runs c1's command or `dispatch result`. On the issue's branch,
-// the implementer's commit H0 passes c1, and the push H1 above it is the case's:
+// the implementer's commit H0 passes c1, and the push H1 above it is the case's
+// (tester-reruns-cases.ts):
 //   - implementer-pass-broken: H1 sets the limit in limits.ts to 320, a defect that makes c1's test
 //     fail, and the implementer's pass of c1 at H1 is recorded;
 //   - carried-own-pass: the tester's own pass of c1 stands at H0, and H1 changes only
@@ -27,10 +28,8 @@ import {
   createProject,
   recordCheckResult,
 } from "../../../dispatch/e2e/api";
+import { RERUNS_CASES, type RerunsCase } from "./tester-reruns-cases";
 
-/** The cases of tester-reruns, each its own world. */
-export const RERUNS_CASES = ["implementer-pass-broken", "carried-own-pass", "clean-push"] as const;
-export type RerunsCase = (typeof RERUNS_CASES)[number];
 /** c1's run: the fixture repository's named test of the name limit. */
 export const C1_RUN = "bun test limits.test.ts";
 /** The sessions that recorded the results and the handoff before the run: the implementer's, the

@@ -24,8 +24,9 @@
 //                                          its Verification document in document order, with the
 //                                          check's run and its results newest first, each with
 //                                          session, commit, verdict, run, observed and created_at,
-//                                          as score.ts's testerProof and testerReruns read them
-//                                          (results.json in <run dir>)
+//                                          and retracted and check_words_moved where Dispatch
+//                                          gives them, as score.ts's testerProof and testerReruns
+//                                          read them (results.json in <run dir>)
 //   seed.ts tester-reruns <file> <case> <repository dir> <epoch seconds>
 //                                          the project ACME and one run's own issue in it, the
 //                                          tester-reruns world of <case>, and that case's fixture
@@ -132,7 +133,8 @@ import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
 import { APPROVE, handoffsOf, PERSON, resultsOf } from "./seed-dispatch";
-import { RERUNS_CASES, rerunsIssue, rerunsResults } from "./tester-reruns-world";
+import { RERUNS_CASES } from "./tester-reruns-cases";
+import { rerunsIssue, rerunsResults } from "./tester-reruns-world";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -732,7 +734,8 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
  * /api/v1/issues/{key}/results`: each check of its Verification document in document order, with
  * its block id and its `run`, and each result recorded against it, newest first as Dispatch
  * answers them, with the session that recorded it, its commit, verdict, run, observed reading and
- * created_at. Any fixture that names the issue reads. */
+ * created_at, and, where Dispatch gives them, the retraction that stands against it and whether
+ * the check's words moved after it was recorded. Any fixture that names the issue reads. */
 export async function captureResults(file: string, runDir: string): Promise<void> {
   const { issue } = z
     .looseObject({ issue: z.string() })
@@ -748,6 +751,8 @@ export async function captureResults(file: string, runDir: string): Promise<void
       run: result.run,
       observed: result.observed,
       created_at: result.created_at,
+      retracted: result.retracted,
+      check_words_moved: result.check_words_moved,
     })),
   }));
   writeFileSync(path.join(runDir, "results.json"), `${JSON.stringify(checks)}\n`);

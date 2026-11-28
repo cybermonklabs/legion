@@ -69,6 +69,7 @@ import {
   transcriptModels,
 } from "./scored-runs";
 import { RunRow, runPass } from "./scored-runs-contracts";
+import { RERUNS_CASES } from "./tester-reruns-cases";
 import {
   CREATED,
   SessionEntry,
@@ -148,7 +149,9 @@ const Handoffs = z.array(
 /** `seed.ts capture-results`: every check of the Verification document of the run's issue, in
  * document order, with its `run` (the command the check names) and every result recorded against
  * it, newest first as Dispatch answers them (`GET /api/v1/issues/{key}/results`), each with the
- * session that recorded it, its commit, verdict, run, observed reading and Dispatch's created_at. */
+ * session that recorded it, its commit, verdict, run, observed reading and Dispatch's created_at,
+ * and, where Dispatch gives them, the retraction that stands against it and whether the check's
+ * words moved after it was recorded. */
 const CheckResults = z.array(
   z.looseObject({
     check: z.string(),
@@ -161,10 +164,17 @@ const CheckResults = z.array(
         run: z.string(),
         observed: z.string(),
         created_at: z.string(),
+        retracted: z.looseObject({ reason: z.string() }).optional(),
+        check_words_moved: z.boolean().optional(),
       })
     ),
   })
 );
+/** Whether a result counts as a run's result: no retraction stands against it, and its check's
+ * words have not moved since it was recorded. Dispatch counts neither kind as evidence. */
+function counted(result: z.infer<typeof CheckResults>[number]["results"][number]): boolean {
+  return result.retracted === undefined && result.check_words_moved !== true;
+}
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered; a completion's line names the handoff record it reported. */
 const DaemonLine = z.looseObject({
@@ -848,7 +858,9 @@ function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof 
  *      recorded, and never the want of an implementer's pass. Each check whose command the bun
  *      stand-in saw exit non-zero before the record carries a fail result of this session. A
  *      failing command that is no check's command is a defect no check covers, which takes no
- *      fail result. A fail the run recorded by that rule is no failure of the run.
+ *      fail result. A fail the run recorded by that rule is no failure of the run. A fail that a
+ *      retraction stands against, or that was recorded against older words of its check, is none
+ *      of the run's fail results (counted).
  * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
  * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the
  * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
@@ -961,7 +973,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     );
   const fails = checks.flatMap((check) =>
     check.results
-      .filter((result) => result.session === ownSession && result.verdict === "fail")
+      .filter(
+        (result) => result.session === ownSession && result.verdict === "fail" && counted(result)
+      )
       .map((result) => ({ check, result }))
   );
   if (record !== undefined && recordHead === undefined && fails.length > 0)
@@ -1018,12 +1032,6 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The cases of tester-reruns, as tester-reruns-world.ts's RERUNS_CASES and rig.sh's reruns_cases
- * name them (tester-reruns-world.test.ts holds the three equal). score.ts holds its own copy since
- * the world's module loads e2e/api.ts, which reads its Dispatch port once, when it loads: a `bun
- * test` process that loaded it through score.ts before seed.test.ts set that port would send
- * every seed.test.ts request to port 0. */
-export const RERUNS_CASES = ["implementer-pass-broken", "carried-own-pass", "clean-push"] as const;
 /** rig.sh's world of a tester-reruns run (run_tester_reruns): worker_fixture's fields, `head` the
  * PR's head H1, with the implementer's commit H0 under it, the run's case, the number that c1's
  * output at H1 prints, and the git blob of each file of H1 (tester-reruns-world.ts). */
@@ -1043,15 +1051,17 @@ const RERUNS_RUN = new RegExp(`^tester-reruns-(${RERUNS_CASES.join("|")})-(.+)-\
  * record (handoffs.json), and its runs of c1's command from the bun stand-in (calls.jsonl, as
  * runsOf reads it, each in any of the command lines that run what c1's does). A run of c1 is at
  * H1 when the workspace the stand-in read before the call held each file of H1 as H1 holds it
- * (world.json's h1Files). A result is the run's when its session is the transcript header's id. In
+ * (world.json's h1Files). A result is the run's when its session is the transcript header's id and
+ * it counts (counted): a result that a retraction stands against, or that was recorded against
+ * older words of c1, is none of the run's, and the notes count it as `uncounted`. In
  * implementer-pass-broken and carried-own-pass, c1 fails at H1, and a run passes when its session
  * recorded a fail on c1 at H1, before its test record, with `--observed` or `--run` naming the
  * test's output at H1 (world.json's h1Output, a number that output prints and the output at H0
  * does not), after a run of c1's command at H1 that exited non-zero. In clean-push, c1 passes at
  * H1, and a run passes when its session recorded a pass on c1 at H1 whose reading names that
  * output, after a run of c1's command at H1 that exited 0: a run at H0 prints the same output and
- * does not count. A run fails when its session recorded nothing on c1, a result at another head, or
- * a result whose reading says "carried from". `ref` is never counted. */
+ * does not count. A run fails when its session recorded nothing on c1 that counts, a result at
+ * another head, or a result whose reading says "carried from". `ref` is never counted. */
 function testerReruns(runDir: string, run: string, label: string, rerunsCase: string): Row {
   const world = json(path.join(runDir, "world.json"), RerunsWorld);
   if (world.case !== rerunsCase)
@@ -1083,23 +1093,22 @@ function testerReruns(runDir: string, run: string, label: string, rerunsCase: st
       Object.entries(world.h1Files).every(([file, blob]) => files[file] === blob)
     );
   });
-  const own = c1.results
-    .filter((result) => result.session === ownSession)
-    .map((result) => {
-      const at = instant(result.created_at, "a result's time");
-      const reading = `${result.observed} ${result.run}`;
-      return {
-        ...result,
-        atHead: result.commit === world.head,
-        carried: /carried from/i.test(reading),
-        output: output.test(reading),
-        ranFirst: runsAtH1.some(
-          (call) =>
-            (call.exit === 0) === (verdict === "pass") && instant(call.at, "a bun call's time") < at
-        ),
-        beforeRecord: recordedAt !== undefined && at < recordedAt,
-      };
-    });
+  const mine = c1.results.filter((result) => result.session === ownSession);
+  const own = mine.filter(counted).map((result) => {
+    const at = instant(result.created_at, "a result's time");
+    const reading = `${result.observed} ${result.run}`;
+    return {
+      ...result,
+      atHead: result.commit === world.head,
+      carried: /carried from/i.test(reading),
+      output: output.test(reading),
+      ranFirst: runsAtH1.some(
+        (call) =>
+          (call.exit === 0) === (verdict === "pass") && instant(call.at, "a bun call's time") < at
+      ),
+      beforeRecord: recordedAt !== undefined && at < recordedAt,
+    };
+  });
   const kept = own.find(
     (result) =>
       result.atHead &&
@@ -1114,7 +1123,7 @@ function testerReruns(runDir: string, run: string, label: string, rerunsCase: st
     own.every((result) => result.atHead) &&
     own.every((result) => !result.carried);
   const notes = [
-    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} atH1=${runsAtH1.length} record=${record === undefined ? "none" : `v${record.version}`}`,
+    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} atH1=${runsAtH1.length} record=${record === undefined ? "none" : `v${record.version}`} uncounted=${mine.length - own.length}`,
     ...own.map(
       (result) =>
         `result=${result.verdict}@${result.commit.slice(0, 12)}(atHead=${result.atHead} output=${result.output} ranFirst=${result.ranFirst} beforeRecord=${result.beforeRecord} carried=${result.carried})`
