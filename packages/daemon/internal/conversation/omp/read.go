@@ -82,14 +82,9 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // historical markers, a sender would also need each assistant turn's saved requestControls.
 // Read does not return those snapshots or insert their markers.
 //
-// The sender chooses native Anthropic compaction or the summary text. It needs the target's
-// compaction support, legacy replay policy, and request mode. Native replay uses the recorded
-// payload and requires the sender to place the block at the start of the retained assistant
-// turn, if there is one, and replay the file notes at their recorded boundaries.
-// For exact-tail replay, Read keeps the compaction's commit time on Native.Timestamp.
-// It keeps the saved times of retained non-tool turns on their blocks or on Native.Timestamp
-// for a native-only turn.
-// All times are Unix milliseconds, distinct from any timestamp used to invalidate signatures.
+// With ReplayAnthropicCompaction, Read replaces eligible summary text with the
+// native compaction block, inserts its file notes, then places developer messages.
+// Without it, Read returns the summary text and does not insert separate file notes.
 //
 // Read assumes that the Anthropic request does not suppress all thinking or exclude individual
 // blocks after a provider rejection. Reproducing those branches needs the current request's
@@ -174,6 +169,15 @@ type Options struct {
 	// TextOnly is true if the resolved model accepts text but not images. On
 	// both APIs it replaces historical images before the encoder shapes text.
 	TextOnly bool
+	// ReplayAnthropicCompaction is true if the resolved model and endpoint accept
+	// Anthropic compaction blocks. The default is to replay the summary as text.
+	ReplayAnthropicCompaction bool
+	// ReplayLegacyAnthropicCompaction also allows encrypted legacy blocks without
+	// a signature. Set it only when the sender enables the legacy replay edit.
+	ReplayLegacyAnthropicCompaction bool
+	// RedactAnthropicCompactionFiles applies the pin's credential-pattern
+	// redaction to native compaction file-note text when enabled for the request.
+	RedactAnthropicCompactionFiles bool
 }
 
 // Read reads a session's content.
@@ -213,8 +217,11 @@ func Read(content []byte, opts Options) (*Session, error) {
 	}
 	s.Messages, err = toRequest(built.messages, target{
 		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
-		officialAnthropic: provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
-		textOnly:          opts.TextOnly,
+		officialAnthropic:    provider == "anthropic" && !opts.NonOfficialAnthropicEndpoint,
+		textOnly:             opts.TextOnly,
+		anthropicReplay:      opts.ReplayAnthropicCompaction,
+		anthropicLegacy:      opts.ReplayLegacyAnthropicCompaction,
+		anthropicRedactFiles: opts.RedactAnthropicCompactionFiles,
 	})
 	if err != nil {
 		return nil, err

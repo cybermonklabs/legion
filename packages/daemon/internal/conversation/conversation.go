@@ -106,10 +106,6 @@ type Block struct {
 	// Detail is an Image block's detail as recorded by the session, empty when
 	// unrecorded. Read fills it. Append refuses a block that sets it.
 	Detail string
-	// Timestamp is the saved turn time in Unix milliseconds. Read fills it on
-	// blocks that can mark Anthropic compaction file-note boundaries.
-	// Append refuses a block that sets it.
-	Timestamp *float64
 }
 
 // NativeKind is the kind of provider-native history a message carries.
@@ -120,14 +116,14 @@ const (
 	// items with encrypted content, function calls, and messages. The sender selects eligible
 	// items for replay on that API and model.
 	OpenAIResponsesHistory NativeKind = "openaiResponsesHistory"
-	// AnthropicCompaction is the Anthropic API's own compaction block for a summary it wrote,
-	// which the harness can send back in place of the summary's text.
+	// AnthropicCompaction is the Anthropic API's compaction block. The sender
+	// encodes it before the assistant message's other blocks, if any.
 	AnthropicCompaction NativeKind = "anthropicCompaction"
 	// AnthropicMessageControls adds clear_at or output_config alongside the message blocks.
 	AnthropicMessageControls NativeKind = "anthropicMessage"
 )
 
-// Native is provider-native history a message carries beside its blocks.
+// Native is provider-native history or controls a message carries.
 type Native struct {
 	Kind NativeKind
 	// Provider is the provider the history came from: only that provider's requests carry it.
@@ -142,9 +138,6 @@ type Native struct {
 	Payload json.RawMessage
 	// Controls is set only for AnthropicMessageControls.
 	Controls *AnthropicControls
-	// Timestamp is the saved turn time in Unix milliseconds for Anthropic
-	// compaction replay when the sender cannot use a block's Timestamp.
-	Timestamp *float64
 }
 
 // AnthropicControls holds the message-level fields of an Anthropic system turn.
@@ -379,8 +372,6 @@ func (b Block) readOnlyField() string {
 		return "Namespace"
 	case len(b.ProviderMetadata) != 0:
 		return "ProviderMetadata"
-	case b.Timestamp != nil:
-		return "Timestamp"
 	default:
 		return ""
 	}

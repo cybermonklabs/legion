@@ -43,10 +43,6 @@ func TestAppendValidateRefusesReadOnlyBlockFields(t *testing.T) {
 		{"Namespace", func(a *Append) { a.Turns[0].Content[0].Namespace = "workspace" }},
 		{"call provider metadata", func(a *Append) { a.Turns[0].Content[0].ProviderMetadata = []byte(`{"type":"computer"}`) }},
 		{"result provider metadata", func(a *Append) { a.Turns[0].Results[0].ProviderMetadata = []byte(`{"type":"computer"}`) }},
-		{"Timestamp", func(a *Append) {
-			ms := 0.0
-			a.Turns[1].Content[0].Timestamp = &ms
-		}},
 	} {
 		t.Run(tc.field, func(t *testing.T) {
 			a := Append{

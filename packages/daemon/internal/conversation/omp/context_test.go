@@ -218,6 +218,10 @@ func TestContextPlacesNotesAfterAllRetainedToolResults(t *testing.T) {
 	if len(got) != 5 || got[2].toolCallID != "a" || got[3].toolCallID != "b" || got[4].customType != contextNotesType {
 		t.Fatalf("context = %+v, want summary, assistant, both tool results, then notes", got)
 	}
+	notes := got[4]
+	if !notes.developer || notes.attribution != "" || notes.timestamp == nil || *notes.timestamp != 1792972800000 {
+		t.Fatalf("context notes = %+v, want a developer turn at its entry time", notes)
+	}
 }
 
 func contextBeforeRequest(t *testing.T, f *fixture) *sessionContext {

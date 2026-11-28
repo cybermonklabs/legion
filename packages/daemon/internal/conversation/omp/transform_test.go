@@ -1,6 +1,7 @@
 package omp
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -393,13 +394,13 @@ func TestReadExactNativeCompactionPreservesBoundThinking(t *testing.T) {
 	f.add(userEntry("request"))
 	kept := f.add(claudeEntry("stop", `[{"type":"thinking","thinking":"plan","thinkingSignature":"c2ln"},{"type":"text","text":"answer"}]`))
 	f.add(`{"type":"compaction","summary":"Earlier work.","firstKeptEntryId":` + quote(kept) +
-		`,"preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Native summary.","exactTail":true}}}`)
-	messages := read(t, f.bytes()).Messages
-	if len(messages) != 2 || messages[0].Native == nil {
-		t.Fatalf("want native summary and retained turn, got %+v", messages)
+		`,"preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Native summary.","signature":"sig","exactTail":true}}}`)
+	s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	plan, answer := thinking("plan", "c2ln"), text("answer")
-	ms := 2.0
-	plan.Timestamp, answer.Timestamp = &ms, &ms
-	assertMessages(t, messages[1:], []conversation.Message{claude(plan, answer)})
+	want := claude(thinking("plan", "c2ln"), text("answer"))
+	want.Native = &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: "anthropic",
+		Payload: json.RawMessage(`{"provider":"anthropic","content":"Native summary.","signature":"sig","exactTail":true}`)}
+	assertMessages(t, s.Messages, []conversation.Message{want})
 }

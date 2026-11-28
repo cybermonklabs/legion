@@ -274,6 +274,8 @@ type wireBlock struct {
 	Type      string `json:"type"`
 	Text      string `json:"text,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	Encrypted string `json:"encrypted_content,omitempty"`
+	Changes   any    `json:"tool_changes,omitempty"`
 	Data      string `json:"data,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -302,6 +304,8 @@ func (request anthropicRequest) turns(t *testing.T, content []byte) []wireTurn {
 			ToolUseID string          `json:"tool_use_id"`
 			Content   json.RawMessage `json:"content"`
 			IsError   bool            `json:"is_error"`
+			Encrypted string          `json:"encrypted_content"`
+			Changes   any             `json:"tool_changes"`
 		}
 		var text string
 		if json.Unmarshal(message.Content, &text) == nil {
@@ -313,6 +317,12 @@ func (request anthropicRequest) turns(t *testing.T, content []byte) []wireTurn {
 			switch b.Type {
 			case "text":
 				turn.Blocks = append(turn.Blocks, wireBlock{Type: "text", Text: b.Text})
+			case "compaction":
+				var summary string
+				if err := json.Unmarshal(b.Content, &summary); err != nil {
+					t.Fatal(err)
+				}
+				turn.Blocks = append(turn.Blocks, wireBlock{Type: "compaction", Text: summary, Signature: b.Signature, Encrypted: b.Encrypted, Changes: b.Changes})
 			case "thinking":
 				turn.Blocks = append(turn.Blocks, wireBlock{Type: "thinking", Text: b.Thinking, Signature: b.Signature})
 			case "redacted_thinking":
@@ -475,6 +485,18 @@ func readerTurns(t *testing.T, messages []conversation.Message) []wireTurn {
 	var turns []wireTurn
 	for _, m := range messages {
 		var blocks []wireBlock
+		if m.Native != nil && m.Native.Kind == conversation.AnthropicCompaction {
+			var native struct {
+				Content   string `json:"content"`
+				Signature string `json:"signature"`
+				Encrypted string `json:"encryptedContent"`
+				Changes   any    `json:"toolChanges"`
+			}
+			if err := json.Unmarshal(m.Native.Payload, &native); err != nil {
+				t.Fatal(err)
+			}
+			blocks = append(blocks, wireBlock{Type: "compaction", Text: native.Content, Signature: native.Signature, Encrypted: native.Encrypted, Changes: native.Changes})
+		}
 		for _, b := range m.Content {
 			switch b.Type {
 			case conversation.Text:
@@ -619,6 +641,80 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 	}
 	assertBlankedOnly(t, before, resumed)
 	return got
+}
+
+func TestThePinnedOhMyPiPlacesAnthropicDevelopersWithCompaction(t *testing.T) {
+	const followUp = "A new request."
+	const developer = "The peer sent an update."
+	const notebook = "Remember the note."
+	for _, tc := range []struct {
+		name                         string
+		native, keepAssistant, notes bool
+		role                         string
+	}{
+		{name: "files before developer", native: true, keepAssistant: true, role: "system"},
+		{name: "developer directly after compaction", native: true, role: "user"},
+		{name: "summary text control", keepAssistant: true, role: "user"},
+		{name: "timed context notes", native: true, keepAssistant: true, notes: true, role: "system"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newAnthropicStandIn(t)
+			rig := newOMPRigForModel(t, conversation.AnthropicMessages, "claude-opus-5-5", model)
+			if tc.native {
+				// The pin allows a configured Bedrock Messages proxy at its own
+				// base URL to replay native compaction. No AWS connection is used.
+				config := filepath.Join(rig.home, ".omp", "agent", "models.yml")
+				appendRaw(t, config, "        compat:\n          bedrockMessagesApi: true\n          supportsServerCompaction: true\n")
+			}
+			rig.run(t, "", "Initial request.")
+			file := rig.sessionFile(t)
+			initial, err := ReadFile(file, standInEndpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fixture{last: initial.Leaf}
+			kept := ""
+			files := ""
+			if tc.keepAssistant {
+				// The retained assistant's own time precedes the compaction
+				// entry. The developer/notes entry follows the commit time.
+				kept = f.add(claudeEntry("stop", `[{"type":"thinking","thinking":"Kept plan","thinkingSignature":"c2ln"},{"type":"text","text":"Kept answer."}]`))
+				files = `,"filesText":"The retained files."`
+			}
+			f.add(`{"type":"compaction","summary":"Readable summary.","firstKeptEntryId":` + quote(kept) + `,"tokensBefore":1000,"preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"API summary.","signature":"c2ln","toolChanges":[],"exactTail":true` + files + `}}}`)
+			if tc.notes {
+				f.add(`{"type":"custom","customType":"experimental_context_notes","data":{"version":1,"text":` + quote(notebook) + `}}`)
+			} else {
+				f.add(`{"type":"custom_message","customType":"envoy-message","content":` + quote(developer) + `,"display":true}`)
+			}
+			f.lines[len(f.lines)-1] = strings.Replace(f.lines[len(f.lines)-1], "00:00:00.000Z", "00:00:00.010Z", 1)
+			f.add(claudeEntry("stop", `[{"type":"text","text":"After the developer."}]`))
+			appendRaw(t, file, string(f.bytes()))
+
+			opts := standInEndpoint
+			opts.ReplayAnthropicCompaction = tc.native
+			rig.run(t, file, followUp)
+			content := sessionContent(t, file)
+			resumed := resumedSession(t, initial, content, opts, followUp)
+			got := model.lastAnthropic(t).turns(t, content)
+			want := append(readerTurns(t, resumed.Messages), wireTurn{Role: "user", Blocks: []wireBlock{{Type: "text", Text: followUp}}})
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("pinned request = %+v\nreader and follow-up = %+v", got, want)
+			}
+			role, replayed := "", false
+			for _, turn := range got {
+				for _, block := range turn.Blocks {
+					if strings.Contains(block.Text, developer) || strings.Contains(block.Text, notebook) {
+						role = turn.Role
+					}
+					replayed = replayed || block.Type == "compaction"
+				}
+			}
+			if role != tc.role || replayed != tc.native {
+				t.Errorf("pinned developer role = %q, native replay = %t; want %q, %t", role, replayed, tc.role, tc.native)
+			}
+		})
+	}
 }
 
 // The pinned Oh My Pi, resuming a session it wrote with a tool call and signed and redacted

@@ -152,8 +152,8 @@ func TestReadRebuildsTheConversationOhMyPiResumes(t *testing.T) {
 
 // A compaction replaces everything before the entry it keeps from with its summary, in Oh My Pi's
 // template, ahead of the kept entries and everything after it; a handoff compaction's summary is in
-// the handoff template; an Anthropic compaction's native block rides on its summary; a /clear
-// boundary after the compaction drops it and all before.
+// the handoff template. Opt-in Anthropic replay replaces the text with a native block.
+// A /clear boundary after the compaction drops it and all before.
 func TestReadReplacesCompactedHistoryWithItsSummary(t *testing.T) {
 	build := func(method, preserve string, reset bool) []byte {
 		f := newFixture()
@@ -181,10 +181,17 @@ func TestReadReplacesCompactedHistoryWithItsSummary(t *testing.T) {
 	}
 
 	payload := `{"provider":"anthropic","content":"API summary","signature":"c2ln"}`
-	s = read(t, build("", `,"preserveData":{"anthropicCompaction":`+payload+`}`, false))
-	if native := s.Messages[0].Native; native == nil || native.Kind != conversation.AnthropicCompaction || native.Provider != "anthropic" || string(native.Payload) != payload {
-		t.Errorf("summary native = %+v, want the Anthropic compaction payload", native)
+	content := build("", `,"preserveData":{"anthropicCompaction":`+payload+`}`, false)
+	assertMessages(t, read(t, content).Messages, append([]conversation.Message{user(summary)}, tail...))
+	s, err := Read(content, Options{ReplayAnthropicCompaction: true})
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertMessages(t, s.Messages, append([]conversation.Message{{
+		Role: conversation.Assistant, Native: &conversation.Native{
+			Kind: conversation.AnthropicCompaction, Provider: "anthropic", Payload: json.RawMessage(payload),
+		},
+	}}, tail...))
 
 	s = read(t, build("", "", true))
 	assertMessages(t, s.Messages, []conversation.Message{user("third request"), claude(text("third answer"))})
@@ -314,10 +321,14 @@ func TestReadAppliesEntryPatchPreserveData(t *testing.T) {
 	f := newFixture()
 	f.add(claudeEntry("stop", `[{"type":"text","text":"earlier"}]`))
 	id := f.add(`{"type":"compaction","summary":"summary","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`)
-	payload := `{"provider":"anthropic","content":"native summary"}`
+	payload := `{"provider":"anthropic","content":"native summary","signature":"sig"}`
 	f.add(entryPatchRecord(`{"entryId":` + quote(id) + `,"entry":{"preserveData":{"anthropicCompaction":` + payload + `}}}`))
-	s := read(t, f.bytes())
-	if len(s.Messages) != 1 || s.Messages[0].Native == nil || string(s.Messages[0].Native.Payload) != payload {
+	s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Messages) != 1 || s.Messages[0].Role != conversation.Assistant ||
+		s.Messages[0].Native == nil || string(s.Messages[0].Native.Payload) != payload {
 		t.Fatalf("messages = %+v, want only the summary with the replacement payload", s.Messages)
 	}
 }
@@ -481,8 +492,11 @@ func TestReadRejectsMalformedNativeToolChanges(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
 			f.add(claudeEntry("stop", `[{"type":"text","text":"earlier"}]`))
-			f.add(`{"type":"compaction","summary":"Readable text.","firstKeptEntryId":"","preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Signed block","toolChanges":` + tc.raw + `}}}`)
-			s := read(t, f.bytes())
+			f.add(`{"type":"compaction","summary":"Readable text.","firstKeptEntryId":"","preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Signed block","signature":"sig","toolChanges":` + tc.raw + `}}}`)
+			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if len(s.Messages) != 1 || s.Messages[0].Native != nil ||
 				!strings.Contains(s.Messages[0].Content[0].Text, "Readable text.") {
 				t.Fatalf("messages = %+v, want just the text summary", s.Messages)
@@ -663,10 +677,12 @@ func TestReadKeepsAReminderAcrossToolResultsAndContextNotes(t *testing.T) {
 		`,"preserveData":{"anthropicCompaction":{"provider":"anthropic","content":"Summary"}}}`)
 	f.add(`{"type":"custom","customType":"experimental_context_notes","data":{"version":1,"text":"Keep the note."}}`)
 	messages := read(t, f.bytes()).Messages
-	if len(messages) != 5 || messages[0].Native == nil ||
+	summary := render(compactionSummaryTemplate, "{{summary}}", "Earlier context.")
+	if len(messages) != 5 || messages[3].Role != conversation.User ||
 		!strings.Contains(messages[3].Content[0].Text, "\nLatest notebook revision:\nKeep the note.\n") {
 		t.Fatalf("messages = %+v, want summary, continued turn, tool result, context notes, reminder", messages)
 	}
+	assertMessages(t, messages[:1], []conversation.Message{user(summary)})
 	assertMessages(t, messages[1:3], []conversation.Message{claude(text("partial"), call("call", "read", `{}`)), result("call", "read", "plum", false)})
 	assertMessages(t, messages[4:], []conversation.Message{systemText("Pick up where you stopped.")})
 }

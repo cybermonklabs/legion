@@ -1,6 +1,7 @@
 package omp
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -47,38 +48,110 @@ func TestReadCarriesResponsesBlockToolMetadata(t *testing.T) {
 	})
 }
 
-func TestReadCarriesAnthropicCompactionFileNoteTimes(t *testing.T) {
-	// The fixture entry time is midnight. The inner message times are distinct
-	// and do not monotonically increase across the compaction summary.
+func TestReadPlacesAnthropicCompactionFileNotes(t *testing.T) {
 	commit := time.Date(2026, 10, 26, 0, 0, 0, 0, time.UTC).UnixMilli()
+	const callID = "call_read"
 	f := newFixture()
 	f.add(userEntry("Earlier request"))
 	kept := f.add(strings.Replace(claudeEntry("toolUse", `[{"type":"toolCall","id":"call_read","name":"read","arguments":{}}]`), `"timestamp":2`, fmt.Sprintf(`"timestamp":%d`, commit-2), 1))
-	f.add(strings.Replace(toolResultEntry("call_read", "read", "plum", false), `"timestamp":3`, fmt.Sprintf(`"timestamp":%d`, commit+1), 1))
-	payload := fmt.Sprintf(`{"provider":"anthropic","content":"Native summary.","exactTail":true,"filesText":"Read the note.","retainedFiles":[{"text":"Read an earlier note.","after":%d}]}`, commit-3)
+	f.add(strings.Replace(toolResultEntry(callID, "read", "plum", false), `"timestamp":3`, fmt.Sprintf(`"timestamp":%d`, commit+1), 1))
+	token := "ghp_" + strings.Repeat("aB", 18)
+	payload := fmt.Sprintf(`{"provider":"anthropic","content":"Native summary.","signature":"sig","exactTail":true,"filesText":%q,"retainedFiles":[{"text":"Earlier note two.","after":%d},{"text":"Earlier note one.","after":%d},{"text":"   ","after":%d},{"text":"missing time"},{"text":"Final file note.","after":%d}]}`,
+		"Read "+token+".", commit-3, commit-4, commit-5, commit+9)
 	f.add(`{"type":"compaction","summary":"Earlier work.","firstKeptEntryId":` + quote(kept) + `,"preserveData":{"anthropicCompaction":` + payload + `}}`)
 	f.add(strings.Replace(userEntry("At the commit time."), `"timestamp":1`, fmt.Sprintf(`"timestamp":%d`, commit), 1))
 	f.add(strings.Replace(userEntry("After the commit time."), `"timestamp":1`, fmt.Sprintf(`"timestamp":%d`, commit+2), 1))
-	messages := read(t, f.bytes()).Messages
-	if len(messages) != 5 || messages[0].Native == nil || messages[2].Role != conversation.Tool {
-		t.Fatalf("history = %+v, want a summary, a retained call and result, then two prompts", messages)
-	}
-	if got := string(messages[0].Native.Payload); got != payload {
-		t.Fatalf("native payload = %s, want %s", got, payload)
-	}
-	t.Run("compaction commit", func(t *testing.T) {
-		if stamp := messages[0].Native.Timestamp; stamp == nil || *stamp != float64(commit) {
-			t.Fatalf("native timestamp = %v, want compaction commit %d", stamp, commit)
-		}
-	})
-	t.Run("saved turns", func(t *testing.T) {
-		for i, want := range map[int]int64{1: commit - 2, 3: commit, 4: commit + 2} {
-			if stamp := messages[i].Content[0].Timestamp; stamp == nil || *stamp != float64(want) {
-				t.Fatalf("message %d timestamp = %v, want %d", i, stamp, want)
+	native := conversation.Message{Role: conversation.Assistant, Native: &conversation.Native{
+		Kind: conversation.AnthropicCompaction, Provider: "anthropic", Payload: json.RawMessage(payload),
+	}}
+	for _, tc := range []struct {
+		name   string
+		redact bool
+		note   string
+	}{
+		{name: "resume", note: "Read " + token + "."},
+		{name: "redaction", redact: true, note: "Read [github_token_redacted]."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true, RedactAnthropicCompactionFiles: tc.redact})
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if messages[2].Content[0].Timestamp != nil {
-			t.Fatal("a tool result must not act as a file note boundary")
-		}
+			want := []conversation.Message{native, user("Earlier note one."), user("Earlier note two."), claude(call(callID, "read", `{}`)),
+				result(callID, "read", "plum", false), user("At the commit time."), user(tc.note), user("After the commit time.")}
+			want = append(want, user("Final file note."))
+			assertMessages(t, s.Messages, want)
+		})
+	}
+}
+
+func TestRedactCompactionFileNoteUsesPinnedASCIIBoundaries(t *testing.T) {
+	body := strings.Repeat("aB", 18)
+	github, anthropic := "GhP_"+body, "SK-ANT-"+body
+	lookalike := "sK-ant-" + body
+	homogeneous := "ghp_" + strings.Repeat("x", 36)
+	masked := "glpat-" + strings.Repeat("*", 20)
+	note := github + "," + anthropic + "K " + lookalike + " " + homogeneous + " x-" + github + " " + masked
+	want := "[github_token_redacted],[anthropic_token_redacted]K " + lookalike + " " + homogeneous + " x-" + github + " [gitlab_token_redacted]"
+	if got := redactCompactionFileNote(note); got != want {
+		t.Errorf("redacted note = %q, want %q", got, want)
+	}
+}
+
+func TestReadFlushesAnthropicFileNotesBeforeAStaleResultNote(t *testing.T) {
+	f := newFixture()
+	f.add(claudeEntry("stop", `[{"type":"text","text":"Summarized."}]`))
+	payload := `{"provider":"anthropic","content":"Native summary.","signature":"sig","exactTail":true,"filesText":"File note."}`
+	f.add(`{"type":"compaction","summary":"Readable.","firstKeptEntryId":"","preserveData":{"anthropicCompaction":` + payload + `}}`)
+	f.add(strings.Replace(toolResultEntry("orphan", "read", "orphan output", false), `"timestamp":3`, `"timestamp":1792972800001`, 1))
+	f.add(userEntry("Next request."))
+	s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMessages(t, s.Messages, []conversation.Message{
+		{Role: conversation.Assistant, Native: &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: "anthropic", Payload: json.RawMessage(payload)}},
+		user("File note."),
+		user("<stale-tool-result tool=\"read\" id=\"orphan\">\norphan output\n</stale-tool-result>"),
+		user("Next request."),
 	})
+}
+
+func TestReadReplaysLegacyAnthropicCompaction(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, state string
+		legacy, native        bool
+	}{
+		{name: "legacy enabled", provider: "anthropic", state: `,"encryptedContent":"ciphertext"`, legacy: true, native: true},
+		{name: "legacy disabled", provider: "anthropic", state: `,"encryptedContent":"ciphertext"`},
+		{name: "different provider", provider: "other", state: `,"signature":"signed"`, native: false},
+		{name: "empty signature", provider: "anthropic", state: `,"signature":""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("Earlier request"))
+			kept := f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":"first","name":"read","arguments":{}},{"type":"toolCall","id":"second","name":"read","arguments":{}}]`))
+			f.add(toolResultEntry("first", "read", "one", false))
+			f.add(toolResultEntry("second", "read", "two", false))
+			payload := `{"provider":` + quote(tc.provider) + `,"content":"Native summary.","filesText":"File note"` + tc.state + `}`
+			f.add(`{"type":"compaction","summary":"Readable.","firstKeptEntryId":` + quote(kept) + `,"preserveData":{"anthropicCompaction":` + payload + `}}`)
+			f.add(claudeEntry("stop", `[{"type":"text","text":"Done."}]`))
+			s, err := Read(f.bytes(), Options{ReplayAnthropicCompaction: true, ReplayLegacyAnthropicCompaction: tc.legacy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := claude(call("first", "read", `{}`), call("second", "read", `{}`))
+			results := []conversation.Message{result("first", "read", "one", false), result("second", "read", "two", false)}
+			var want []conversation.Message
+			if tc.native {
+				calls.Native = &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: tc.provider, Payload: json.RawMessage(payload)}
+				want = append([]conversation.Message{calls}, results...)
+				want = append(want, user("File note"))
+			} else {
+				summary := render(compactionSummaryTemplate, "{{summary}}", "Readable.")
+				want = append([]conversation.Message{user(summary), calls}, results...)
+			}
+			assertMessages(t, s.Messages, append(want, claude(text("Done."))))
+		})
+	}
 }

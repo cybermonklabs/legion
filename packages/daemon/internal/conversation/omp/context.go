@@ -244,7 +244,7 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 		}
 	}
 
-	if notes := contextNotes(path); notes != "" {
+	if notes, source := contextNotes(path); source != nil {
 		at := 0
 		if len(messages) > 0 && messages[0].native != nil && messages[0].native.Kind == conversation.AnthropicCompaction {
 			at = 1
@@ -256,7 +256,8 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 			}
 		}
 		messages = slices.Insert(messages, at, llmMessage{
-			role: "user", customType: contextNotesType, blocks: []block{{Type: "text", Text: notes}},
+			role: "user", developer: true, customType: contextNotesType,
+			timestamp: entryMillis(source.Timestamp), blocks: []block{{Type: "text", Text: notes}},
 		})
 	}
 	messages = stripDanglingToolCalls(messages)
@@ -265,8 +266,8 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 	return ctx, nil
 }
 
-// contextNotes renders the latest valid notebook revision since the last reset (context-notes.ts).
-func contextNotes(path []*entry) string {
+// contextNotes renders the latest valid notebook revision since the last reset and returns its source.
+func contextNotes(path []*entry) (string, *entry) {
 	for i := len(path) - 1; i >= 0; i-- {
 		e := path[i]
 		if e.Type == "reset_boundary" {
@@ -286,11 +287,11 @@ func contextNotes(path []*entry) string {
 			continue
 		}
 		if *text != "" {
-			return render(contextNotesTemplate, "{{notes}}", *text)
+			return render(contextNotesTemplate, "{{notes}}", *text), e
 		}
 		break
 	}
-	return ""
+	return "", nil
 }
 
 // resolveLeaf follows resolveSessionLeafId: an absent capture selects the entry itself and null
@@ -649,7 +650,7 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		synthetic := string(details["__synthetic"]) == "true"
 		return []llmMessage{{role: "toolResult", blocks: blocks, toolCallID: m.ToolCallID, toolName: stripXdPrefix(m.ToolName), isError: m.IsError,
 			synthetic: synthetic, notExecuted: synthetic && string(details["executed"]) == "false", rewriteAt: m.PrunedAt,
-			providerMetadata: m.ProviderMetadata}}, nil
+			providerMetadata: m.ProviderMetadata, timestamp: m.Timestamp}}, nil
 	case "custom":
 		return customMessages(m.CustomType, m.Content, m.Attribution, where, m.Timestamp)
 	case "bashExecution", "pythonExecution":

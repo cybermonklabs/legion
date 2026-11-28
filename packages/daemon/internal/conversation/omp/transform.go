@@ -16,13 +16,16 @@ type target struct {
 	provider, api, model string
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
-	signing           bool
-	officialAnthropic bool
-	textOnly          bool
-	prefixBinding     bool
-	demotionClass     string
-	anthropicSystem   bool
-	anthropicEffort   bool
+	signing              bool
+	officialAnthropic    bool
+	textOnly             bool
+	prefixBinding        bool
+	demotionClass        string
+	anthropicSystem      bool
+	anthropicEffort      bool
+	anthropicReplay      bool
+	anthropicLegacy      bool
+	anthropicRedactFiles bool
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -43,9 +46,10 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	ids := normalizedToolIDs{exact: map[string]string{}, responses: map[string]string{}}
 	out := make([]conversation.Message, len(messages))
 	var latestRewrite *float64
-	exactCompactionTail := t.api == conversation.AnthropicMessages && slices.ContainsFunc(messages, func(m llmMessage) bool {
-		return m.exactCompactionTail
-	})
+	var compactionFiles *anthropicCompactionFiles
+	if t.api == conversation.AnthropicMessages && t.anthropicReplay {
+		compactionFiles = &anthropicCompactionFiles{redact: t.anthropicRedactFiles}
+	}
 	for i, m := range messages {
 		if t.prefixBinding && m.rewriteAt != nil && (latestRewrite == nil || *m.rewriteAt > *latestRewrite) {
 			latestRewrite = m.rewriteAt
@@ -75,13 +79,10 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		if err != nil {
 			return nil, err
 		}
-		if exactCompactionTail {
-			setCompactionTimestamp(&out[i], m.timestamp)
-		}
 	}
 	pairingKey := toolPairingKey(messages, out)
 	deduplicateToolCalls(out, pairingKey)
-	paired := pairToolResults(messages, out, pairingKey)
+	paired := pairToolResults(messages, out, pairingKey, compactionFiles)
 	if t.api == conversation.OpenAIResponses {
 		return shapeResponsesHistory(paired), nil
 	}
@@ -131,10 +132,14 @@ func userMessage(m llmMessage, t target) (conversation.Message, error) {
 	switch t.api {
 	case conversation.AnthropicMessages:
 		msg.Content = anthropicInput(msg.Content, t.textOnly)
+		selectAnthropicCompaction(&msg, t)
 		if m.developer {
 			markAnthropicDeveloper(&msg, m.attribution, m.payload, m.stringInput, t)
 		}
 	case conversation.OpenAIResponses:
+		if msg.Native != nil && msg.Native.Kind == conversation.AnthropicCompaction {
+			msg.Native = nil
+		}
 		if msg.Native == nil {
 			msg.Native = responsesInputHistory(m.payload, t.provider)
 		}
@@ -544,7 +549,7 @@ func malformedToolCall(b block) bool {
 
 // pairToolResults preserves real results in their order inside a tool-use window.
 // At the next turn boundary it pulls forward any late results and fills missing slots.
-func pairToolResults(source []llmMessage, messages []conversation.Message, key func(string) string) []conversation.Message {
+func pairToolResults(source []llmMessage, messages []conversation.Message, key func(string) string, files *anthropicCompactionFiles) []conversation.Message {
 	calls := map[string]bool{}
 	for _, m := range messages {
 		if m.Role == conversation.Assistant {
@@ -597,6 +602,9 @@ func pairToolResults(source []llmMessage, messages []conversation.Message, key f
 			}}})
 		}
 		pending = nil
+		if len(out) > 0 && out[len(out)-1].Role == conversation.Tool {
+			out = files.flushLegacy(out)
+		}
 	}
 	for i, m := range messages {
 		switch m.Role {
@@ -605,6 +613,7 @@ func pairToolResults(source []llmMessage, messages []conversation.Message, key f
 			if truncatedThinkingOnly(source[i]) {
 				continue
 			}
+			out = files.beforeTurn(out, m, source[i])
 			var turnCalls []conversation.Block
 			for _, b := range m.Content {
 				if b.Type == conversation.ToolCall {
@@ -620,6 +629,9 @@ func pairToolResults(source []llmMessage, messages []conversation.Message, key f
 			}
 			if len(m.Content) > 0 || m.Native != nil {
 				out = append(out, m)
+				if len(turnCalls) == 0 && (m.Native == nil || m.Native.Kind != conversation.AnthropicCompaction) {
+					out = files.flushLegacy(out)
+				}
 			}
 		case conversation.Tool:
 			result := m.Content[0]
@@ -657,20 +669,23 @@ func pairToolResults(source []llmMessage, messages []conversation.Message, key f
 				if result.IsError {
 					errorAttribute = ` is-error="true"`
 				}
-				out = append(out, conversation.Message{Role: conversation.User, Content: []conversation.Block{{
+				note := conversation.Message{Role: conversation.User, Content: []conversation.Block{{
 					Type: conversation.Text,
 					Text: "<stale-tool-result tool=\"" + result.ToolName + "\" id=\"" + result.ToolCallID + "\"" + errorAttribute + ">\n" + strings.Join(texts, "\n") + "\n</stale-tool-result>",
-				}}})
+				}}}
+				out = files.beforeTurn(out, note, source[i])
+				out = append(out, note)
 			}
 		default:
 			flush()
+			out = files.beforeTurn(out, m, source[i])
 			if len(m.Content) > 0 || m.Native != nil {
 				out = append(out, m)
 			}
 		}
 	}
 	flush()
-	return out
+	return files.finish(out)
 }
 
 func pendingHas(pending []conversation.Block, id string, key func(string) string) bool {

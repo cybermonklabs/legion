@@ -2,7 +2,10 @@ package omp
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
+	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,19 +13,190 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
-// setCompactionTimestamp keeps the source time distinct from the prefix rewrite
-// time. Only non-tool turns can flush exact-tail notes.
-func setCompactionTimestamp(m *conversation.Message, timestamp *float64) {
-	if timestamp == nil || m.Role == conversation.Tool {
+// selectAnthropicCompaction chooses the wire shape before file notes and
+// developer placement. The native payload retains the opaque signed state.
+func selectAnthropicCompaction(m *conversation.Message, t target) {
+	if m.Native == nil || m.Native.Kind != conversation.AnthropicCompaction {
 		return
 	}
-	if m.Native != nil && (m.Native.Kind == conversation.AnthropicCompaction || len(m.Content) == 0) {
-		m.Native.Timestamp = timestamp
+	var state struct {
+		Signature        json.RawMessage `json:"signature"`
+		EncryptedContent json.RawMessage `json:"encryptedContent"`
+	}
+	if t.anthropicReplay && m.Native.Provider == t.provider &&
+		json.Unmarshal(m.Native.Payload, &state) == nil &&
+		(compactionString(state.Signature) != "" || t.anthropicLegacy && compactionString(state.EncryptedContent) != "") {
+		m.Role, m.Content = conversation.Assistant, nil
 		return
 	}
-	for i := range m.Content {
-		m.Content[i].Timestamp = timestamp
+	m.Native = nil
+}
+
+func compactionString(raw json.RawMessage) string {
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s
+}
+
+type compactionFileNote struct {
+	text  string
+	after float64
+}
+
+type anthropicCompactionFiles struct {
+	exact  []compactionFileNote
+	legacy string
+	redact bool
+}
+
+// beforeTurn runs after pairing any open tool call. A tool-result run never
+// advances the exact-tail clock. A native summary queues notes instead.
+func (f *anthropicCompactionFiles) beforeTurn(out []conversation.Message, m conversation.Message, source llmMessage) []conversation.Message {
+	if f == nil {
+		return out
 	}
+	if m.Native != nil && m.Native.Kind == conversation.AnthropicCompaction {
+		var state struct {
+			FilesText     json.RawMessage `json:"filesText"`
+			RetainedFiles json.RawMessage `json:"retainedFiles"`
+		}
+		_ = json.Unmarshal(m.Native.Payload, &state)
+		text := compactionString(state.FilesText)
+		f.exact = f.exact[:0]
+		if source.exactCompactionTail {
+			var retained []json.RawMessage
+			if json.Unmarshal(state.RetainedFiles, &retained) == nil {
+				for _, raw := range retained {
+					var note struct {
+						Text  *string  `json:"text"`
+						After *float64 `json:"after"`
+					}
+					if json.Unmarshal(raw, &note) == nil && note.Text != nil && note.After != nil {
+						f.exact = append(f.exact, compactionFileNote{*note.Text, *note.After})
+					}
+				}
+			}
+			if text != "" && source.timestamp != nil {
+				f.exact = append(f.exact, compactionFileNote{text, *source.timestamp})
+			}
+			slices.SortStableFunc(f.exact, func(a, b compactionFileNote) int {
+				return cmp.Compare(a.after, b.after)
+			})
+		} else {
+			f.legacy = text
+		}
+		return out
+	}
+	if source.timestamp != nil {
+		out = f.flushExact(out, *source.timestamp)
+	}
+	if m.Role == conversation.User || m.Role == anthropicDeveloper {
+		out = f.flushLegacy(out)
+	}
+	return out
+}
+
+func (f *anthropicCompactionFiles) flushExact(out []conversation.Message, before float64) []conversation.Message {
+	for len(f.exact) > 0 && f.exact[0].after < before {
+		out = f.appendNote(out, f.exact[0].text)
+		f.exact = f.exact[1:]
+	}
+	return out
+}
+
+func (f *anthropicCompactionFiles) flushLegacy(out []conversation.Message) []conversation.Message {
+	if f == nil || f.legacy == "" {
+		return out
+	}
+	out = f.appendNote(out, f.legacy)
+	f.legacy = ""
+	return out
+}
+
+func (f *anthropicCompactionFiles) finish(out []conversation.Message) []conversation.Message {
+	if f == nil {
+		return out
+	}
+	return f.flushLegacy(f.flushExact(out, math.Inf(1)))
+}
+
+func (f *anthropicCompactionFiles) appendNote(out []conversation.Message, text string) []conversation.Message {
+	if blank(text) {
+		return out
+	}
+	if f.redact {
+		text = redactCompactionFileNote(text)
+	}
+	return append(out, anthropicUserText(text))
+}
+
+// The pin uses ASCII case-insensitive matching and lookaround. In Go, /i
+// would also match Unicode case folds such as Kelvin sign. Check boundary
+// bytes separately so a separator does not hide an adjacent match.
+var compactionTokenPattern = regexp.MustCompile(
+	`[gG][hH][oOpPuUsSrR]_[A-Za-z0-9_*]{36,}|` +
+		`[gG][iI][tT][hH][uU][bB]_[pP][aA][tT]_[A-Za-z0-9_*]{36,}|` +
+		`[gG][lL][pP][aA][tT]-[A-Za-z0-9_*-]{20,}|` +
+		`[sS][kK]-[pP][rR][oO][jJ]-[A-Za-z0-9_*-]{36,}|` +
+		`[sS][kK]-[aA][nN][tT]-[A-Za-z0-9_*-]{36,}|` +
+		`[sS][kK]-[A-Za-z0-9_*-]{48,}`)
+
+func redactCompactionFileNote(text string) string {
+	var result strings.Builder
+	last := 0
+	for _, match := range compactionTokenPattern.FindAllStringIndex(text, -1) {
+		start, end := match[0], match[1]
+		if start > 0 && compactionTokenByte(text[start-1]) || end < len(text) && compactionTokenByte(text[end]) {
+			continue
+		}
+		token := text[start:end]
+		lower := strings.ToLower(token)
+		prefix, replacement := 3, "[openai_token_redacted]"
+		switch {
+		case strings.HasPrefix(lower, "github_pat_"):
+			prefix, replacement = len("github_pat_"), "[github_token_redacted]"
+		case strings.HasPrefix(lower, "gh"):
+			prefix, replacement = 4, "[github_token_redacted]"
+		case strings.HasPrefix(lower, "glpat-"):
+			prefix, replacement = len("glpat-"), "[gitlab_token_redacted]"
+		case strings.HasPrefix(lower, "sk-ant-"):
+			prefix, replacement = len("sk-ant-"), "[anthropic_token_redacted]"
+		case strings.HasPrefix(lower, "sk-proj-"):
+			prefix = len("sk-proj-")
+		}
+		var classes uint8
+		allStars := true
+		for i := prefix; i < len(token); i++ {
+			b := token[i]
+			allStars = allStars && b == '*'
+			switch {
+			case b >= 'a' && b <= 'z':
+				classes |= 1
+			case b >= 'A' && b <= 'Z':
+				classes |= 2
+			case b >= '0' && b <= '9':
+				classes |= 4
+			case b == '_' || b == '-':
+				classes |= 8
+			}
+		}
+		if !allStars && classes&(classes-1) == 0 {
+			continue
+		}
+		result.WriteString(text[last:start])
+		result.WriteString(replacement)
+		last = end
+	}
+	if last == 0 {
+		return text
+	}
+	result.WriteString(text[last:])
+	return result.String()
+}
+
+func compactionTokenByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' ||
+		b == '_' || b == '*' || b == '-'
 }
 
 // shapeAnthropicHistory applies the encoder after tool pairing. The neutral model
@@ -34,9 +208,6 @@ func shapeAnthropicHistory(messages []conversation.Message, t target) []conversa
 		switch m.Role {
 		case conversation.Assistant:
 			m.Content = anthropicToolUsesLast(m.Content)
-			if len(out) > 0 && out[len(out)-1].Role == conversation.Assistant {
-				out = append(out, anthropicUserText("Continue."))
-			}
 		case conversation.Tool:
 			result := &m.Content[0]
 			result.Content = anthropicInput(result.Content, t.textOnly)
@@ -63,7 +234,43 @@ func shapeAnthropicHistory(messages []conversation.Message, t target) []conversa
 			attachments = attachments[:0]
 		}
 	}
-	return placeAnthropicDeveloperTurns(out, t)
+	out = placeAnthropicDeveloperTurns(out, t)
+	return mergeAndSeparateAnthropicAssistants(out)
+}
+
+// The pin places developer messages before folding a compaction or inserting
+// a Continue turn. Neither repair can give a developer system authority.
+func mergeAndSeparateAnthropicAssistants(messages []conversation.Message) []conversation.Message {
+	for i := len(messages) - 2; i >= 0; i-- {
+		current, next := &messages[i], &messages[i+1]
+		if current.Role == conversation.Assistant && next.Role == conversation.Assistant &&
+			current.Native != nil && current.Native.Kind == conversation.AnthropicCompaction &&
+			len(current.Content) == 0 && next.Native == nil {
+			next.Native = current.Native
+			messages = slices.Delete(messages, i, i+1)
+		}
+	}
+	pads := 0
+	for i := 1; i < len(messages); i++ {
+		if messages[i-1].Role == conversation.Assistant && messages[i].Role == conversation.Assistant {
+			pads++
+		}
+	}
+	if pads == 0 {
+		return messages
+	}
+	out := slices.Grow(messages, pads)[:len(messages)+pads]
+	// Walk backwards so the new slots cannot overwrite an unread turn.
+	at := len(out) - 1
+	for i := len(messages) - 1; i >= 0; i-- {
+		out[at] = messages[i]
+		at--
+		if i > 0 && messages[i-1].Role == conversation.Assistant && messages[i].Role == conversation.Assistant {
+			out[at] = anthropicUserText("Continue.")
+			at--
+		}
+	}
+	return out
 }
 
 // anthropicDeveloper is an internal marker for a user projection eligible for
@@ -146,10 +353,8 @@ func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conver
 		}
 		msg.Role = conversation.User
 		var controls conversation.AnthropicControls
-		var timestamp *float64
 		if msg.Native != nil && msg.Native.Kind == conversation.AnthropicMessageControls {
 			controls = *msg.Native.Controls
-			timestamp = msg.Native.Timestamp
 			msg.Native = nil
 		}
 		if !t.anthropicSystem {
@@ -189,7 +394,6 @@ func placeAnthropicDeveloperTurns(out []conversation.Message, t target) []conver
 		}
 		if controls.ClearAt != "" || controls.Effort != "" {
 			msg.Native = anthropicMessageControls(controls)
-			msg.Native.Timestamp = timestamp
 		}
 	}
 	return out
