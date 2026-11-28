@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 const (
@@ -669,7 +670,7 @@ func useGcloud(t *testing.T, accounts ...string) gcloudStub {
 		"esac",
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
@@ -1298,7 +1299,7 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()
 	gcloud := filepath.Join(dir, "gcloud")
-	if err := os.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(gcloud, []byte("#!/bin/sh\nsleep 3600\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	expired := &oauth2.Token{AccessToken: "old", TokenType: "Bearer", Expiry: time.Now().Add(-time.Minute)}
@@ -1348,7 +1349,7 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 		"",
 	}, "\n")
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)

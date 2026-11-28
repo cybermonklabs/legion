@@ -23,6 +23,8 @@
       "!!packages/envoy/internal/dispatch/asof/testdata",
       "!!packages/envoy/internal/dispatch/pmdoc/testdata",
       "!!packages/envoy/internal/dispatch/text/testdata",
+      "!!packages/contracts/src/dashboard-pages.json",
+      "!!packages/envoy/internal/dispatch/text/dashboard-pages.json",
       "!!packages/envoy/internal/dispatch/api/testdata/golden_delivery",
       "!!packages/envoy/internal/dispatch/legion/metrics/testdata",
       "!!packages/envoy/internal/dispatch/textversions/testdata",
@@ -53,7 +55,9 @@
       "!packages/daemon/internal/capabilities/testdata/web-search-open-planner.json",
       "!packages/daemon/internal/runtime/tmux/testdata/golden/launch-baseline-no-experiment.json",
       "!packages/envoy/going/testdata/filtered-answers.json",
-      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json"
+      "!packages/envoy/internal/cipherclient/testdata/gcloud-credential-case-distinct-headers.json",
+      "!packages/envoy/internal/dispatch/api/testdata/search_split/**",
+      "!packages/envoy/internal/explaintest/testdata/**"
     ]
   },
   "linter": {

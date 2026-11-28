@@ -28,8 +28,6 @@ func versionBlocksFixture(t *testing.T, name string) []byte {
 	return body
 }
 
-// servingVersion is a Dispatch that answers version 1 of plan-1 with status and body, as the
-// fixture's Dispatch did, and plan-1 itself as plan.md of ACME-1.
 func servingVersion(t *testing.T, status int, body []byte) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,19 +182,15 @@ func TestPlanDocumentReadsTheBlocksOfThatVersion(t *testing.T) {
 		t.Fatalf("block 1 = %+v, want plan_task b with no attributes and its body", other)
 	}
 
-	// Control: a Dispatch that answers no blocks key gives ErrNoBlocks, never an empty plan.
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 4); !errors.Is(err, ErrNoBlocks) {
 		t.Fatalf("a version answered with no blocks key = %v, want ErrNoBlocks", err)
 	}
-	// A block whose range does not index the markdown it came with is refused, not sliced.
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 5); err == nil || errors.Is(err, ErrNoBlocks) || !strings.Contains(err.Error(), "block a") {
 		t.Fatalf("a block outside its markdown = %v, want an error naming block a", err)
 	}
-	// An answer for another version than the one asked for is refused.
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 6); err == nil || !strings.Contains(err.Error(), "version 7") {
 		t.Fatalf("an answer of version 7 for version 6 = %v, want an error naming both", err)
 	}
-	// Dispatch's own refusal passes through, so a caller can tell a missing version.
 	if _, err := client.PlanDocument(context.Background(), "plan-1", 9); !Missing(err) {
 		t.Fatalf("a version Dispatch does not have = %v, want its 404", err)
 	}

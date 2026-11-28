@@ -19,6 +19,7 @@ import (
 // pinned whatever range the machine running this test has: a CI runner's default range would hide
 // a band that lands inside the 16000-65535 a Legion worker pod (gVisor) has.
 func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		text  string
@@ -60,6 +61,7 @@ func TestTheGateBandLiesBelowTheEphemeralRangeItIsGiven(t *testing.T) {
 // gates against it: a StartGate that stopped reading the file and took a band of its own fails
 // here on every machine whose range does not start where that band ends.
 func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
+	t.Parallel()
 	low := fallbackEphemeralLow
 	text, err := os.ReadFile(ephemeralRangePath)
 	if fields := strings.Fields(string(text)); err == nil && len(fields) == 2 {
@@ -93,6 +95,7 @@ func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
 // Open fails, with the claim gone the second gate's hold succeeds, and with the reservation
 // listening the dial succeeds.
 func TestAClosedGateKeepsItsPort(t *testing.T) {
+	t.Parallel()
 	server, _ := Start(t)
 	gate := StartGate(t, server)
 	address, err := net.ResolveTCPAddr("tcp", gate.address)
@@ -109,7 +112,13 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Errorf("a dial of the closed gate at %s: %v, want connection refused", gate.address, err)
 	}
 
+	// A parallel test may start a child binary while the socket is open.
+	syscall.ForkLock.RLock()
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		t.Fatalf("open the other program's socket: %v", err)
 	}

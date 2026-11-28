@@ -3,8 +3,10 @@
 // spec-check command's tests. It is an ordinary package rather than a _test.go file because those
 // tests are of two packages, and neither can import the other's test helpers, the reason
 // internal/cmdtest gives for itself. Only test files import it (internal/textcheck's
-// TestOnlyTestFilesImportSpecgraphtest), and it imports the standard library alone, so the tests
-// of package specgraph can import it with no cycle.
+// TestOnlyTestFilesImportSpecgraphtest), and besides testexec, whose WriteFile writes the
+// executable entries a test then runs under the fork lock and which does not import specgraph, it
+// imports the standard library alone, so the tests of package specgraph can import it with no
+// cycle.
 package specgraphtest
 
 import (
@@ -17,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // PutTree writes each entry of files under dir: "file <bytes>" a file, "exec <bytes>" an
@@ -34,7 +38,7 @@ func PutTree(t *testing.T, dir string, files map[string]string) {
 		case "file":
 			err = os.WriteFile(full, []byte(value), 0o644)
 		case "exec":
-			err = os.WriteFile(full, []byte(value), 0o755)
+			err = testexec.WriteFile(full, []byte(value), 0o755)
 		case "link":
 			err = os.Symlink(value, full)
 		default:

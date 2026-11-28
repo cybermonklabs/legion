@@ -10,6 +10,7 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
                + at(TWO_BUILDS_JOB, "Browser-test each build's page against the first-rollout build's server"),
                ENVOY, ["./cmd/dispatch"], mode="build"),
     ceiling_run(TWO_BUILDS_JOB),
+    ceiling_run(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB)),
 ], exact=[
     two_builds_go_step(),
     two_builds_same_step(),

@@ -1,9 +1,9 @@
 import type { Locator, Page } from "@playwright/test";
 
 import type { Actor } from "../web/src/api/types";
-import { FOLD_AFTER } from "../web/src/features/issue-page/details-leaves";
 import type { MarginSection } from "../web/src/features/issue-page/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE } from "../web/src/features/issue-page/show-more-fixture";
 import { setLiveSessions } from "./agents";
 import {
   claimIssue,
@@ -28,7 +28,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 
 /**
  * What the browser rows of `issue-page-h.e2e.ts` read of Details: the locators of its panel and
- * the one seed its rows open. No other row reads this file.
+ * the one seed its rows open. The rows of `issue-page-m.e2e.ts` read its locators too.
  *
  * `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`, `openDetails`,
  * `closeDetails`); this file adds what reads the panel inside it.
@@ -112,10 +112,9 @@ export const QUESTION = "Which width does Details open at?";
 export const PINNED_FIRST_LINE = "The pinned comment's first line.";
 /** The reason bob gave for the changes he asked of THREE's spec. */
 export const CHANGES_REASON = "Name the limits";
-export { FOLD_AFTER };
 /** How many issues wait on ONE, and how many documents ONE holds: one more than Details draws
- *  before it folds a list behind Show all. */
-export const ONE_PAST_FOLD = FOLD_AFTER + 1;
+ *  of a list before the Show more under it (`PAGE_SIZE`). */
+export const ONE_PAST_PAGE = PAGE_SIZE + 1;
 
 export interface DetailsSeed {
   /** Every key `seedDetailsIssue` names, by its part in the rows. */
@@ -137,11 +136,11 @@ export interface DetailsSeed {
  * `main`'s helpers.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
- *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven
- *   documents, eleven issues it blocks, a spec approval request handed on to bob and a task list
- *   of two items, one checked, an unpinned comment, a question waiting on alice, a pinned
- *   comment whose first line starts with a mark and a pinned line of its history, and it is
- *   blocked by THREE.
+ *   component, the planner's claim, the route `role:architect`, an advanced priority,
+ *   twenty-one documents (its spec and twenty more), twenty-one issues it blocks, a spec
+ *   approval request handed on to bob and a task list of two items, one checked, an unpinned
+ *   comment, a question waiting on alice, a pinned comment whose first line starts with a mark
+ *   and a pinned line of its history, and it is blocked by THREE.
  * - **TWO** has no parent, route, label, blocker or priority, and an approval request waiting on
  *   alice, the project's default assignee.
  * - **THREE**'s spec carries bob's request for changes with the reason `CHANGES_REASON`.
@@ -207,8 +206,8 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
     route: "role:architect",
   });
   await claimIssue(one.key, asPlanner);
-  // The spec and ten documents more: eleven.
-  for (let index = 1; index < ONE_PAST_FOLD; index += 1) {
+  // The spec and `PAGE_SIZE` documents more: `ONE_PAST_PAGE`.
+  for (let index = 1; index < ONE_PAST_PAGE; index += 1) {
     await createIssueArtifact(one.key, {
       content: `Notes ${index} of ONE.\n`,
       name: `notes-${String(index).padStart(2, "0")}.md`,
@@ -216,13 +215,13 @@ export async function seedDetailsIssue(): Promise<DetailsSeed> {
   }
   const blocks: string[] = [];
   const blockTitles: string[] = [];
-  for (let index = 1; index <= ONE_PAST_FOLD; index += 1) {
+  for (let index = 1; index <= ONE_PAST_PAGE; index += 1) {
     const waiter = await createIssue({
+      blocked_by: [one.key],
       force: true,
       project: PROJECT,
       title: `Waits on ONE (${index})`,
     });
-    await patchIssue(waiter.key, { blocked_by: [one.key] });
     blocks.push(waiter.key);
     blockTitles.push(waiter.title);
   }

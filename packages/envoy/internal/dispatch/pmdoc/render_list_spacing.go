@@ -319,7 +319,7 @@ func continuesTable(block *Node) bool {
 	case "paragraph", "table":
 		return true
 	case "heading":
-		return holdsHardBreak(block.Children) && int(num(block.Attrs["level"], 1)) <= 2
+		return holdsHardBreak(block.Children) && HeadingLevel(block) <= 2
 	case "ordered_list":
 		return int(num(block.Attrs["order"], 1)) != 1
 	}

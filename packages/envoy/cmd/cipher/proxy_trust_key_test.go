@@ -18,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // unkeyedTrustDigest is the hex digits a plain SHA-256 of the trust would give the directory name:
@@ -218,7 +220,7 @@ func TestProxyTrustDirKeyRefusesAKeyItDidNotWrite(t *testing.T) {
 func writeKey(data []byte, perm os.FileMode) func(t *testing.T, path string) {
 	return func(t *testing.T, path string) {
 		t.Helper()
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err := testexec.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Chmod(path, perm); err != nil {

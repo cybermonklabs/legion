@@ -1396,10 +1396,10 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				}
 			case AnswerRegisterController:
 				registration := ControllerRegisterResponse{ClaimToken: "legion-legion-controller", Replaces: "ses_before"}
-				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, ServingFloor, ServingFloor); shaped != any(ControllerRegisterResponse{ClaimToken: registration.ClaimToken}) {
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, ServingFloor, ServingFloor); !reflect.DeepEqual(shaped, any(ControllerRegisterResponse{ClaimToken: registration.ClaimToken})) {
 					t.Errorf("a controller's registration was shaped to %+v at the floor, want it without `replaces`, which replacesContract added", shaped)
 				}
-				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
+				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); !reflect.DeepEqual(shaped, any(registration)) {
 					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
 				}
 			case AnswerAgentAction:
