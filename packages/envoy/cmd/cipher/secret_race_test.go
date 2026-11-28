@@ -12,13 +12,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
-// racingTagWrites is a secrets.Local whose first tag write lets another writer's write (race) land
+// racingTagWrites is a awstest.Local whose first tag write lets another writer's write (race) land
 // first, as a second retag of the same secret between this one's read and its write does.
 type racingTagWrites struct {
-	*secrets.Local
+	*awstest.Local
 	race  func()
 	raced bool
 }
@@ -43,7 +44,7 @@ func (r *racingTagWrites) first() {
 // loginWithOwnersLeft is a google-login secret that still holds the github-owners tag a github-app
 // type left on it, as retagging a GitHub App secret to a Google login leaves it.
 func loginWithOwnersLeft(name string) map[string]string {
-	tags := policytest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)).Tags
+	tags := awstest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)).Tags
 	tags[policy.TagGitHubOwners] = "ada"
 	return tags
 }
@@ -60,14 +61,14 @@ func loginWithOwnersLeft(name string) map[string]string {
 func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	t.Run("aws", func(t *testing.T) {
-		secret := policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
+		secret := awstest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")
-		local := secrets.NewLocal(secret)
+		local := awstest.NewLocal(secret)
 		broker := startSecretBroker(t, servedBy(local))
 		writes := &racingTagWrites{Local: local}
 		writes.race = func() {
 			if _, err := local.TagResource(context.Background(), &secretsmanager.TagResourceInput{
-				SecretId: aws.String(policytest.ID("APP_KEY")), Tags: secrets.TagList(map[string]string{policy.TagType: policy.TypeGitHubApp}),
+				SecretId: aws.String(policytest.ID("APP_KEY")), Tags: awsstore.TagList(map[string]string{policy.TagType: policy.TypeGitHubApp}),
 			}); err != nil {
 				t.Errorf("the other writer's retag: %v", err)
 			}
@@ -93,7 +94,7 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 		want := maps.Clone(secret.Tags)
 		want[policy.TagType] = policy.TypeGitHubApp
 		delete(want, policy.TagGitHubOwners)
-		if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); !maps.Equal(tags, want) {
+		if tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags); !maps.Equal(tags, want) {
 			t.Fatalf("tags after the race = %v; want the other writer's type with this retag's removal, %v, and nothing restored", tags, want)
 		}
 		if rereads, _ := broker.recorded(); len(rereads) != 1 || rereads[0] != "APP_KEY" {
@@ -167,9 +168,9 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 		{"removal read", "", []string{"--type", "none"}, 0, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin)))
+			local := awstest.NewLocal(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin)))
 			if row.args[1] == "none" {
-				local = secrets.NewLocal(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
+				local = awstest.NewLocal(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 			}
 			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
 			useAWS(t, local, testAccount, adaSignIn)

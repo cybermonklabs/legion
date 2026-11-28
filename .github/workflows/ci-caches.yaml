@@ -535,11 +535,84 @@ jobs:
           KEY: ${{ steps.go-envoy-darwin-vet.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-darwin-vet-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
+  # go-browser-binaries: what dispatch-browser.yaml's binaries job compiles, and nothing else.
+  # why: .github/ci-notes/ci-caches.md#the-go-browser-binaries-family
+  browser-binaries:
+    if: inputs.only != 'dispatch-builds'
+    runs-on: ubuntu-24.04
+    # Cold: 138 s, the builds 98 s of it (run 45468247148, job 138708870226). 20 is about eight
+    # times that.
+    timeout-minutes: 20
+    outputs:
+      go-browser-binaries-x64: ${{ steps.saved.outputs.go-browser-binaries-x64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The binaries job's Go: its restore-keys carry no Go version, and of the architecture only
+      # runner.arch, not the one whose Go setup-go installs (that Go's default GOARCH changes the
+      # key of every object), so rule 25 of check-ci-filters.sh holds this step's go-version-file,
+      # go-version, go-download-base-url and architecture to that job's, before each step the two
+      # jobs pair.
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - id: go-browser-binaries
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-browser-binaries-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-browser-binaries-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-browser-binaries-working-set"
+
+      # The binaries job's two steps' texts, in its directory (rule 25 of check-ci-filters.sh
+      # holds both sides to the texts ci_job_reads.py's BINARIES_FILLS gives).
+      - name: Build the binaries the browser suite runs, as the binaries job does
+        run: |
+          mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
+        working-directory: packages/envoy
+
+      - name: Read the connections each stack's Postgres must allow, as the binaries job does
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+
+      - name: Delete the build cache's entries the builds did not use, and the module zips
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-browser-binaries-working-set"
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-browser-binaries-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}
+
+      - name: Name the key this job saved by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.go-browser-binaries.outputs.cache-primary-key }}-${{ github.sha }}
+        run: echo "go-browser-binaries-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
   # The entries of each refilled family that the fills above replaced, deleted once each fill has
   # saved its new one.
   # why: .github/ci-notes/ci-caches.md#what-the-refill-superseded-job-deletes-and-why-it-is-a-job-of-its-own
   refill-superseded:
-    needs: [daemon, notices, envoy, envoy-test, envoy-smoke, envoy-race, envoy-darwin-vet]
+    needs: [daemon, notices, envoy, envoy-test, envoy-smoke, envoy-race, envoy-darwin-vet, browser-binaries]
     if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
     strategy:
       fail-fast: false
@@ -555,6 +628,7 @@ jobs:
           - { job: envoy-smoke, family: go-envoy-smoke, arch: x64 }
           - { job: envoy-race, family: go-envoy-race, arch: arm64 }
           - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
+          - { job: browser-binaries, family: go-browser-binaries, arch: x64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     env:

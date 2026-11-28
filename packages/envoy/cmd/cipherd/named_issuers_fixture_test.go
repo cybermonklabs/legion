@@ -12,8 +12,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -44,15 +42,12 @@ const (
 // stops at once when it is asked to; extra adds the settings a row is about.
 func namedIssuersEnv(t *testing.T, databaseURL, issuers string, extra ...string) []string {
 	t.Helper()
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	return append([]string{
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		"BROKER_K8S_OIDC_ISSUER=" + issuers,
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
 		"BROKER_SERVICES=" + namedService + "=" + namedWorker,

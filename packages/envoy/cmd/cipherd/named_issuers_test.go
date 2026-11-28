@@ -23,7 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -846,16 +846,16 @@ func TestAPersonsPodLogsInThroughTheIssuersItsLoginNames(t *testing.T) {
 	aKey, bKey, cKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key"), c.PublishKey(t, "c-key")
 	c.FailDiscovery(http.StatusServiceUnavailable)
 	store := &requesterStore{
-		path: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		rows: []secrets.LocalSecret{requesterRow(secret, person, policy.TierAgent, "ada-agent-token-value", nil)},
+		path: filepath.Join(t.TempDir(), "memory-secrets.json"),
+		rows: []memory.Secret{requesterRow(secret, person, policy.TierAgent, "ada-agent-token-value", nil)},
 	}
 	store.write(t)
 	broker := startBroker(t, brokerOptions{Env: namedIssuersEnv(t, storetest.URL(t), bothIssuers(a, b)+",c="+c.URL(),
 		"BROKER_SERVICE_LOGINS="+service+"="+account+"=a",
 		"BROKER_POD_OPERATORS="+person+"="+account,
-		// namedIssuersEnv names a store that holds no secret. The broker reads the last value a
-		// setting is given, so it reads this store, which holds ada's own secret.
-		"BROKER_FAKE_SECRETS_FILE="+store.path,
+		// namedIssuersEnv names a memory store that holds no secret. The broker reads the last
+		// value a setting is given, so it reads this store's file, which holds ada's own secret.
+		"BROKER_MEMORY_SECRETS_FILE="+store.path,
 	)})
 	if want := (map[string]any{"name": "c", "url": c.URL(), "read": false}); len(recordsWith(broker.Boot, issuerBootMessage, want)) != 1 {
 		t.Fatalf("the boot log holds no one line %q carrying %v: C must be unread for its token's 503 below:\n%s", issuerBootMessage, want, broker.Boot)

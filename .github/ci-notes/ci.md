@@ -1318,11 +1318,16 @@ envoy-refill, which build the same listener and natsd, listener-server-change an
 envoy-go-build, which build the listener, and envoy-go-checks, whose script tests run under the
 setup they had in envoy-go-build's job), go-envoy-test (envoy-go, which
 builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, the binaries, multiprocess
-and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
+the API's of that set, the multiprocess
+and visual jobs of dispatch-browser.yaml, which build the Dispatch server with cgo on out of
+that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
-dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test), go-envoy-smoke
+dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test),
+go-browser-binaries (the binaries job of dispatch-browser.yaml, whose CGO_ENABLED=0 builds of
+the Dispatch server and the real broker's commands share most of their cache keys with a cgo
+build: net and os/user build other files without cgo, so they and every package above them have
+other keys, and on a go-envoy-test entry 427 of the 1,034 packages they build were stale;
+.github/ci-notes/ci-caches.md#the-go-browser-binaries-family), go-envoy-smoke
 (envoy-smoke, whose smoke test, envoy-infra live tests and plugin build no other family holds
 together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
 envoy-go-race, envoy-go-race-api and envoy-go-race-docs, the envoy race lane, whose race objects
@@ -1342,7 +1347,7 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race and go-envoy-darwin-vet are filled on every push to main: the fill
+go-envoy, go-envoy-test, go-envoy-smoke, go-envoy-race, go-envoy-darwin-vet and go-browser-binaries are filled on every push to main: the fill
 restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
@@ -1367,7 +1372,7 @@ only when that key is missing, and ci-caches.yaml deletes the entry each such fi
 envoy-infra job says how); its save takes the key its lookup computed, since a hash of the module
 files taken after the build drifted from the lookup's and made every push build it again (run
 45088325195). What changed under it in eleven days had cost its linux vet 83 to 85%
-of what the same vet for darwin took with nothing cached. Since no entry of the five refilled
+of what the same vet for darwin took with nothing cached. Since no entry of the eight refilled
 families carries a job's key itself, every restore of them takes the newest entry by prefix, on
 main too: the key is a prefix of the fill's keys, so the dispatch-browser.yaml jobs that hold
 their restore-keys off main still find the last fill's entry. Those restore-keys were held off
@@ -3201,7 +3206,7 @@ build, beside this job and not after it (that job's comment says why).
 ## Why the two-builds jobs restore go-envoy-test
 
 Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as
-envoy-go-claim-model and dispatch-browser.yaml's binaries job do. setup-go's own cache is off,
+envoy-go-claim-model and dispatch-browser.yaml's multiprocess job do. setup-go's own cache is off,
 so without a restore their Go steps start on an empty module cache and an empty build cache.
 When the two earlier builds come out of their own cache entries, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first

@@ -28,7 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -217,7 +217,7 @@ func newLauncherAPI(t *testing.T, pool *pgxpool.Pool) *launcherAPI {
 			ciphertest.DaemonAccount: {Service: "legion-daemon", Issuers: []string{""}},
 		},
 	}
-	rules := policytest.Current(t, secrets.NewLocal())
+	rules := policytest.Current(t, memory.New())
 	provider := ciphertest.NewOAuthProvider(t, st, issuer)
 	logins := &machine.Service{
 		Store: st, Enroll: enr, Policy: rules, Audience: srv.URL, Skew: time.Minute,

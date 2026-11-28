@@ -455,7 +455,8 @@ func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {
 			"BROKER_DATABASE_URL=" + storetest.URL(t),
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + emptyMemoryFile(t),
 		}})
 		requireRefusal(t, "a broker with neither setting answered the daemon's token login",
 			refusalFromBody(tokenLoginAt(t, off.Addr, audienceToken(t, rig.cluster, rig.key, registrarAccount, podAudienceNew, "", false))),
@@ -537,7 +538,7 @@ func TestTheBrokerBuildsOnePodVerifierForTheListAndKeepsTheNATSAudienceApart(t *
 	load := func(t *testing.T, settings ...[]string) config.Config {
 		t.Helper()
 		env := map[string]string{"BROKER_DATABASE_URL": "postgres://unused", "BROKER_PUBLIC_URL": "https://secrets.internal.example"}
-		for _, setting := range slices.Concat(append([][]string{productionEnv(t)}, settings...)...) {
+		for _, setting := range slices.Concat(append([][]string{productionEnv(t, nil)}, settings...)...) {
 			name, value, _ := strings.Cut(setting, "=")
 			env[name] = value
 		}
