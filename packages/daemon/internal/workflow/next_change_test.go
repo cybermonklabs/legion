@@ -1011,6 +1011,54 @@ func TestAChangeWithNoPullRequestEndsWhenItsCheckPasses(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A change whose own pull request a person merges in its retro, before merging, is still the change
+// that opened that pull request. The merge moves the snapshot (Issue.Merge) to #44, so the
+// snapshot cannot tell #44 from the merge the change follows: read that way, a read passing the
+// carried check ended the change with no pull request, its retro unfinished, and #44's merge never
+// marked the reason merged. The change stays open until the issue reaches merging, where the merge
+// GitHub already made ends it as merged by #44.
+func TestAChangeWhosePullRequestMergesInItsRetroEndsAtItsMerge(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	rig.standIn(waitRoot, phase.Retro, "retro")
+	seedPhase(t, rig.pool, record.PhaseRow{Issue: waitRoot, Role: claim.RoleImplementer, Claim: "implementer-claim"})
+	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitRoot, Repo: waitRepo, Number: 44, Branch: claim.IssueBranch(waitRoot),
+		Base: "main", HeadSHA: headTwo, Failing: []string{}})
+	rig.fact(intake.PullRequestMerged{Repo: waitRepo, Number: 44, MergeSHA: waitLaterMerge, HeadSHA: headTwo, MergedAt: rig.now})
+	if got := rig.issue(waitRoot); got.Phase != phase.Retro || got.NextChange != changeGeneration || got.Merge.Number != 44 {
+		t.Fatalf("%s after #44 merged in its retro stands in %s with change %d open and the snapshot of #%d, want retro, change %d and #44",
+			waitRoot, got.Phase, got.NextChange, got.Merge.Number, changeGeneration)
+	}
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitLaterMerge)))
+
+	if got := rig.issue(waitRoot); got.Phase != phase.Retro || got.NextChange != changeGeneration {
+		t.Fatalf("%s after a read passing its change's check stands in %s with change %d open, want change %d still in retro: its pull request #44 merged",
+			waitRoot, got.Phase, got.NextChange, changeGeneration)
+	}
+	if ended := rig.stored(waitRoot).Ended; ended != nil {
+		t.Fatalf("the stored wait's end after the read = %+v, want none: change %d opened #44", ended, changeGeneration)
+	}
+
+	if result := rig.fact(intake.HandoffComplete{Issue: waitRoot, Role: claim.RoleImplementer, Claim: "implementer-claim", Generation: changeGeneration,
+		Summary: "retro done", Commit: headTwo}); result.Refusal != nil {
+		t.Fatalf("the change's retro completion = %+v, want it taken", result.Refusal)
+	}
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.issue(waitRoot); got.NextChange != 0 {
+		t.Fatalf("%s at its merge still has change %d open, want none", waitRoot, got.NextChange)
+	}
+	if ended := rig.stored(waitRoot).Ended; ended == nil || ended.Generation != changeGeneration || ended.PullRequest != 44 {
+		t.Fatalf("the stored wait's end = %+v, want change %d merged as #44", ended, changeGeneration)
+	}
+	if rows := rig.defectRows(waitRoot); len(rows) != 1 || !rows[0].merged {
+		t.Fatalf("the reasons = %+v, want the change's one reason merged", rows)
+	}
+}
+
 // A check's reason of a next change resolves only when that check passes (D7), not when it merely
 // stops failing: a read of the change's generation that answers the check no result leaves the
 // change open. Resolved on any state but fail, the change ended with no pull request on a check

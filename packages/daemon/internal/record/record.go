@@ -380,6 +380,12 @@ type Issue struct {
 	// NextChange is the generation of the next change of the issue that is open: one that started
 	// and has neither merged nor ended with no pull request. It is 0 while none is open.
 	NextChange uint64
+	// NextChangeFollows is the number of the merged pull request the issue's newest next change
+	// started from: Merge's number at that start (workflow's StartNextChange), 0 where none
+	// started. It tells the change's own pull request from the merge it follows: Merge moves to
+	// the change's pull request when that merges, whichever phase the change stands in, and this
+	// does not.
+	NextChangeFollows int
 	// NextChanges counts the next changes the issue has started, over its whole life.
 	NextChanges int
 	// MergerCompletionOwed says that the merger's completion of the generation that merged has not

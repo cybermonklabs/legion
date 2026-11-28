@@ -49,8 +49,9 @@ func ChangeInPlace(issue record.Issue) ChangePlace {
 // and no IssueSuspend, since the change's own roles work in that pod; the reasons are marked as
 // carried by the new generation, so the merge of this change ends them and no later reason starts
 // a second change for them; the record takes its next generation in place, at admitted with the
-// status todo, the merge snapshot, the mark of the close on checks and the count of changes
-// carried; the generation's facts are cleared with the gate kept (record.Store.ClearChangeGeneration),
+// status todo, the merge snapshot, the number of the merge the change follows
+// (Issue.NextChangeFollows), the mark of the close on checks and the count of changes carried; the
+// generation's facts are cleared with the gate kept (record.Store.ClearChangeGeneration),
 // so the change asks no person to approve the design again; and the owning architect is told.
 //
 // It raises the issue's own generation and never its tree's, so a root's next change keeps each
@@ -91,7 +92,7 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	started := issue
-	started.Generation, started.NextChange = next, next
+	started.Generation, started.NextChange, started.NextChangeFollows = next, next, issue.Merge.Number
 	started.NextChanges++
 	started.Phase, started.Hold, started.Awaiting, started.ChildrenWait = phase.Admitted, nil, nil, nil
 	started.Status = "todo"
@@ -354,16 +355,19 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 
 // changeOpenedNoPullRequest says whether the issue's open change has opened no pull request of
 // its own: the record holds none, or the one it holds is the merged pull request the change
-// follows (the merge snapshot's, Issue.Merge). The change's start deletes every row that is not
-// open (record.Store.ClearChangeGeneration), so a row the record holds after it is one the
-// change's branch opened, in whatever state. record.PullRequest.Generation is not read: it is the
-// CI settlement's generation, which names no generation of the issue.
+// follows (Issue.NextChangeFollows). The change's start deletes every row that is not open
+// (record.Store.ClearChangeGeneration), so a row the record holds after it is one the change's
+// branch opened, in whatever state. The merge snapshot (Issue.Merge) cannot say which merge the
+// change follows: a person can merge the change's own pull request before the issue reaches
+// merging, and that merge moves the snapshot to it while the change stays open until merging takes
+// the merge (changeMerged). record.PullRequest.Generation is not read: it is the CI settlement's
+// generation, which names no generation of the issue.
 func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return true, err
 	}
-	return pr.State == record.PullRequestMerged && pr.Number == issue.Merge.Number, nil
+	return pr.State == record.PullRequestMerged && pr.Number == issue.NextChangeFollows, nil
 }
 
 // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):

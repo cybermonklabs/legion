@@ -259,6 +259,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that the issue closed because the checks of its goal passed, which alone decides whether a fail recorded after the close tells the controller: the time of the close reaches a reader in the last version of close-wait.md, and a closed issue waits for nothing"},
 	{Field: "NextChange", Column: ColumnWithheld,
 		Reason: "the generation of the open next change, the guard that keeps a second change of the issue from starting while one is open and what starts its branch at the merge snapshot (record.IssueBranchOf): a reader sees the open change as the issue's own `generation` and `phase`, and close-wait.md names it with its reasons"},
+	{Field: "NextChangeFollows", Column: ColumnWithheld,
+		Reason: "the number of the merged pull request the newest next change started from, which tells that change's own pull request from the merge it follows once a person merges the change's pull request before the issue reaches merging: it is the daemon's own record of the merge a change began at, and a reader is told which pull request a change merged as by close-wait.md"},
 	{Field: "NextChanges", Column: ColumnAgents, Keys: []string{"closeWait.nextChanges"},
 		Reason: "the count of the next changes the issue has started, which a reader of a waiting issue reads beside what the close waits for, and which the notice sent at each multiple of the review round cap names too"},
 	{Field: "MergerCompletionOwed", Column: ColumnWithheld,

@@ -150,7 +150,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // stands.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, repo_before, repo_corrected_at, repo_change_pending, repo_change_reason, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), coalesce(awaiting_answered_document_at = awaiting_answered_at, false), coalesce(awaiting_answered_version, 0), coalesce(awaiting_answered_artifact, ''), coalesce(awaiting_answered_step, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, nullif(children_wait_children, '{}'), children_waited_at, members_owed, priority, resolved_known, resolved_priority, priority_from, ` +
 	`coalesce(merge_number, 0), coalesce(merge_head, ''), coalesce(merge_sha, ''), coalesce(merge_base, ''), coalesce(merge_repo, ''), merged_at, ` +
-	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation, claim_left`
+	`close_wait_since, close_wait, closed_on_checks_at, coalesce(next_change, 0), coalesce(next_change_follows, 0), next_changes, merger_completion_owed, standing_told_at, tree_generation, claim_left`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -426,12 +426,12 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		ancestry, handed_over_from, told_parent, awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact, awaiting_answered_step, view_of,
 		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, children_wait_children, children_waited_at, priority,
 		resolved_known, resolved_priority, priority_from,
-		close_wait_since, close_wait, closed_on_checks_at, next_change, next_changes, merger_completion_owed, standing_told_at, tree_generation)
+		close_wait_since, close_wait, closed_on_checks_at, next_change, next_change_follows, next_changes, merger_completion_owed, standing_told_at, tree_generation)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::integer, 0), $32, nullif($33::text, ''), nullif($34::text, ''), nullif($35::text, ''),
 		$36, $37, $38, $39, nullif($40::text[], '{}'), $41, $42,
 		$43, $44, $45,
-		$46, $47, $48, $49, $50, $51, $52, coalesce(nullif($53::bigint, 0), $7))
+		$46, $47, $48, $49, nullif($50::integer, 0), $51, $52, $53, coalesce(nullif($54::bigint, 0), $7))
 		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
@@ -453,7 +453,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		priority = excluded.priority, resolved_known = excluded.resolved_known, resolved_priority = excluded.resolved_priority,
 		priority_from = excluded.priority_from,
 		close_wait_since = excluded.close_wait_since, close_wait = excluded.close_wait, closed_on_checks_at = excluded.closed_on_checks_at,
-		next_change = excluded.next_change, next_changes = excluded.next_changes, merger_completion_owed = excluded.merger_completion_owed,
+		next_change = excluded.next_change, next_change_follows = excluded.next_change_follows, next_changes = excluded.next_changes,
+		merger_completion_owed = excluded.merger_completion_owed,
 		standing_told_at = excluded.standing_told_at,
 		tree_generation = case when issues.tree = excluded.tree then issues.tree_generation else excluded.generation end`
 	args := []any{issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
@@ -463,7 +464,7 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		answeredDocument.Artifact, string(answeredDocument.Step), issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, childrenWaitChildren, issue.ChildrenWaitedAt,
 		issue.Priority.Level(), issue.Resolved.Known, resolvedLevel, issue.Resolved.From,
-		issue.CloseWaitSince, closeWait, issue.ClosedOnChecksAt, nextChange, issue.NextChanges, issue.MergerCompletionOwed, issue.StandingToldAt,
+		issue.CloseWaitSince, closeWait, issue.ClosedOnChecksAt, nextChange, issue.NextChangeFollows, issue.NextChanges, issue.MergerCompletionOwed, issue.StandingToldAt,
 		int64(issue.TreeGeneration)}
 	// With the state events on (PublishState), the write is compared with the row it replaces:
 	// the observed columns are read with the row locked, so nothing moves them before the upsert,
@@ -803,7 +804,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &childrenWaitChildren,
 		&childrenWaitedAt, &issue.MembersOwed, &priority, &issue.Resolved.Known, &resolvedPriority, &issue.Resolved.From,
 		&issue.Merge.Number, &issue.Merge.Head, &issue.Merge.SHA, &issue.Merge.Base, &issue.Merge.Repo, &mergedAt,
-		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
+		&closeWaitSince, &closeWait, &closedOnChecksAt, &nextChange, &issue.NextChangeFollows, &issue.NextChanges, &issue.MergerCompletionOwed, &standingToldAt,
 		&treeGeneration, &claimLeft); err != nil {
 		return nil, err
 	}

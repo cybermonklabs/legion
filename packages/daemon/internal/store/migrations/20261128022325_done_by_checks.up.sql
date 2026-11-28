@@ -21,10 +21,13 @@
 -- waits; close_wait, the stored wait that close-wait.md renders, an object of each item with its
 -- state and since when it stands, the newest entry into verifying and the close's time;
 -- closed_on_checks_at, when the issue closed because its checks passed; next_change, the generation
--- of the next change that is open, null for none; next_changes, the count of next changes started;
--- merger_completion_owed, that the merger's completion of the generation that merged has not landed;
--- and standing_told_at, when the owning architect was last told what still holds the close. Every
--- row the upgrade finds reads none of them: no issue waited in verifying before this release.
+-- of the next change that is open, null for none; next_change_follows, the number of the merged
+-- pull request the newest next change started from, null where none started, which the merge of
+-- that change's own pull request leaves as it is while it moves the snapshot; next_changes, the
+-- count of next changes started; merger_completion_owed, that the merger's completion of the
+-- generation that merged has not landed; and standing_told_at, when the owning architect was last
+-- told what still holds the close. Every row the upgrade finds reads none of them: no issue waited
+-- in verifying before this release.
 --
 -- tree_generation is the tree's run: what fences each member's idle release, its suspension and its
 -- design-news credits, and the tree's architect's run. It is the root's generation on every row the
@@ -156,7 +159,7 @@
 -- drop function if exists design_news_current(text, text, bigint, bigint);
 -- drop table if exists close_reads;
 -- drop table if exists defects;
--- alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
+-- alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_change_follows, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
 -- alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 -- alter table pending_task_deliveries drop column if exists start_at;
 -- alter table outbox drop constraint if exists outbox_kind_check;
@@ -181,6 +184,7 @@ alter table issues
   add column close_wait jsonb constraint issues_close_wait_check check (jsonb_typeof(close_wait) = 'object'),
   add column closed_on_checks_at timestamptz,
   add column next_change bigint constraint issues_next_change_check check (next_change >= 1),
+  add column next_change_follows integer constraint issues_next_change_follows_check check (next_change_follows > 0),
   add column next_changes integer not null default 0 constraint issues_next_changes_check check (next_changes >= 0),
   add column merger_completion_owed boolean not null default false,
   add column standing_told_at timestamptz,

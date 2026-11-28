@@ -217,10 +217,10 @@ func TestTheMigrationAddsVerifyingAndKeepsEveryRow(t *testing.T) {
 	}
 	const fresh = `select key || ' ' || (tree_generation = generation)::text || ' ' ||
 		num_nulls(merge_number, merge_head, merge_sha, merge_base, merge_repo, merged_at, close_wait_since, close_wait,
-			closed_on_checks_at, next_change, standing_told_at) || ' ' || next_changes || ' ' || merger_completion_owed::text
+			closed_on_checks_at, next_change, next_change_follows, standing_told_at) || ' ' || next_changes || ' ' || merger_completion_owed::text
 		from issues where key <> 'LEGION-399' order by key`
 	for _, row := range rowsAsText(t, store, fresh) {
-		if !strings.HasSuffix(row, " true 11 0 false") {
+		if !strings.HasSuffix(row, " true 12 0 false") {
 			t.Errorf("issue row %q after the migration, want its tree's generation at its own generation, none of the snapshot's or the wait's columns, no next change and no completion owed", row)
 		}
 	}
