@@ -1913,6 +1913,50 @@ test("an author left in the box is taken when the panel shuts", async () => {
   }
 });
 
+// Escape is a cancel. Pressed in the Author box, it shuts the panel and drops what was typed
+// there: no author narrows the search, and the box is empty when the panel opens again. Enter in
+// that box still takes the author.
+test("Escape in the Author box drops the typed author, and Enter takes one", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    await user.click(screen.getByRole("searchbox", { name: "Author" }));
+    await user.paste("ali");
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Remove Author ali filter" }),
+      "Escape took the author"
+    ).toBeNull();
+    expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
+
+    await openFilters(user);
+    const author = screen.getByRole("searchbox", { name: "Author" });
+    expect(author).toHaveValue("");
+
+    await user.click(author);
+    await user.paste("alice");
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(search).toHaveBeenLastCalledWith(
+        "astrolabe",
+        { author: "alice", keywords_only: true },
+        aborts
+      )
+    );
+    expect(screen.getByRole("button", { name: "Remove Author alice filter" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 // A search made from an issue or a project page searches everything, as a search made from
 // anywhere does. The page's project rides under `number_project`, which the route reads a bare
 // issue number in and narrows nothing by, so the bar shows no chip claiming a narrowing.
