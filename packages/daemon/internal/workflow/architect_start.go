@@ -23,8 +23,8 @@ const (
 	// ArchitectGateRowsLabel is in the task of a root that holds design gate rows while its gate
 	// is not open.
 	ArchitectGateRowsLabel = "its design gate already stands part way"
-	// ArchitectGateOpenLabel is in the task of a root at admitted whose design gate is open
-	// (record.TreeGate.Open).
+	// ArchitectGateOpenLabel is in the task of a root at admitted whose design gate is open, as
+	// the tree was last told it (treeToldOpen).
 	ArchitectGateOpenLabel = "its design gate is open"
 	// ArchitectReadmittedLabel is in the task of a tree that ran at an earlier generation.
 	ArchitectReadmittedLabel = "ran at an earlier generation"
@@ -296,7 +296,7 @@ func ArchitectStartTask(start ArchitectStart) string {
 	switch {
 	case start.Root.Phase != phase.Admitted:
 		writeCarriedPhase(&task, start)
-	case start.Gate.Open():
+	case treeToldOpen(start.Gate):
 		writeGateOpen(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)
@@ -453,7 +453,10 @@ func writeGateAsk(task *strings.Builder, steps []record.DesignStep, again string
 // step open on an ancestor's approval (record.DesignGate.OnBasis) names that approval
 // (basisApproval) and that no person approved the root's version, never that a person approved it
 // (dispatch://INFRA-3320, R2). A changes request below the registered version is an answer to a
-// document the architect has moved past, which leaves the current version unanswered.
+// document the architect has moved past, which leaves the current version unanswered. Whether a
+// step is open is the standing the tree was last told (record.ToldStanding), as every text reads
+// it, and a person's approval of an older version that Dispatch reports current for the latest is
+// named with that version (approvedAtWords, dispatch://INFRA-6065 R3).
 func gateStanding(gate record.TreeGate) string {
 	steps := gate.Required()
 	said := make([]string, 0, len(steps))
@@ -468,7 +471,10 @@ func gateStanding(gate record.TreeGate) string {
 		case row.OnBasis():
 			said = append(said, fmt.Sprintf("its %s is registered at version %d, which no person has approved, and its %s step stands open "+
 				"on an ancestor's approval, since %s", step.Document(), row.LatestVersion, step, basisApproval(row)))
-		case record.GateOpen(row):
+		case record.ToldStanding(row) && approvedNamed(row, row.LatestVersion) < row.LatestVersion:
+			said = append(said, fmt.Sprintf("its %s is registered at version %d and a person has approved it %s",
+				step.Document(), row.LatestVersion, strings.TrimSuffix(approvedAtWords(row), ",")))
+		case record.ToldStanding(row):
 			said = append(said, fmt.Sprintf("its %s is registered at version %d and a person has approved that version",
 				step.Document(), row.LatestVersion))
 		case row.ToldChangesVersion != nil && *row.ToldChangesVersion == row.LatestVersion:
