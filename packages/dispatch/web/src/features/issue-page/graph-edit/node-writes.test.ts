@@ -2920,47 +2920,60 @@ const memoAtRankEnds: TreeAnswer = {
   }),
 };
 
+/** `memoAtRankEnds` on an issue with no conversation: the issue's children are the paragraph and
+ *  the memo right after it, at its rank. The paragraph, no callout, is the issue's first child,
+ *  so the walk moves nothing first (`memoFirst`). */
+const noConversation = without(memoAtRankEnds, ["<question>", "<message>"]);
+
 // Move down on the paragraph names the memo held at its rank right after it as `after`, on a read
 // that ends right after the memo's subtree and names a third page. The place right after the memo
 // by rank is the first child past the conversation, all of which that memo shows held, and the
 // memo goes first again, as the walk stands it. The read the answer is written into shows the
-// place before the memo moves, so no third page is read, and R7's re-read, which is held out, is
-// the one read.
+// place as it stands, with the paragraph still in it, before the paragraph and the memo move: on
+// an issue with no conversation too, where the memo is the first of the issue's children once the
+// paragraph is cut. So no third page is read, and R7's re-read, which is held out, is the one read.
 test("a Move down onto a memo held at its rank reads no page past it", async () => {
-  const cursors: (string | null)[] = [];
-  answerRequests(
-    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
-      const cursor = new URL(request.url).searchParams.get("cursor");
-      cursors.push(cursor);
-      if (cursor === null) return new Promise<never>(() => {});
-      return Response.json({ ...secondPage, nodes: [], tuples: [] });
-    })
-  );
   const parent = `issue/${KEY}`;
-  const patches = answerPatches({
-    body: { after: "<memo>", parent, placement_seq: "<seq:tree/paragraph>@2" },
-    status: 200,
-  });
-  const { client, writes } = mount(memoAtRankEnds);
-  expect(heldChildIds(client, KEY), "the issue's children").toEqual([
-    "<question>",
-    "<message>",
-    PAGED,
-    "<memo>",
-  ]);
-  let outcome: unknown;
-  await act(async () => {
-    outcome = await writes().move(PAGED, "move_down");
-  });
-  expect(outcome).toMatchObject({ status: "taken" });
-  expect(patches.calls.map((call) => call.body)).toEqual([{ after: "<memo>", parent }]);
-  expect(heldChildIds(client, KEY), "the issue's children once Move down is taken").toEqual([
-    "<memo>",
-    "<question>",
-    "<message>",
-    PAGED,
-  ]);
-  await waitFor(() => expect(cursors, "R7's re-read did not go").toContain(null));
-  await waitInAct(50);
-  expect(cursors, "the reads after Move down").toEqual([null]);
+  for (const [held, conversation] of [
+    [memoAtRankEnds, ["<question>", "<message>"]],
+    [noConversation, []],
+  ] as const) {
+    const cursors: (string | null)[] = [];
+    answerRequests(
+      http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        cursors.push(cursor);
+        if (cursor === null) return new Promise<never>(() => {});
+        return Response.json({ ...secondPage, nodes: [], tuples: [] });
+      })
+    );
+    const patches = answerPatches({
+      body: { after: "<memo>", parent, placement_seq: "<seq:tree/paragraph>@2" },
+      status: 200,
+    });
+    const { client, view, writes } = mount(held);
+    const where = conversation.length === 0 ? "with no conversation" : "after the conversation";
+    expect(heldChildIds(client, KEY), `the issue's children ${where}`).toEqual([
+      ...conversation,
+      PAGED,
+      "<memo>",
+    ]);
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await writes().move(PAGED, "move_down");
+    });
+    expect(outcome, where).toMatchObject({ status: "taken" });
+    expect(
+      patches.calls.map((call) => call.body),
+      where
+    ).toEqual([{ after: "<memo>", parent }]);
+    expect(
+      heldChildIds(client, KEY),
+      `the issue's children once Move down is taken ${where}`
+    ).toEqual(["<memo>", ...conversation, PAGED]);
+    await waitFor(() => expect(cursors, `R7's re-read did not go ${where}`).toContain(null));
+    await waitInAct(50);
+    expect(cursors, `the reads after Move down ${where}`).toEqual([null]);
+    view.unmount();
+  }
 });

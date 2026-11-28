@@ -71,12 +71,12 @@ import {
  * that names a gone sibling, which no read holds, where the loaded pages hold the parent's
  * children that stand before the place the body asked for - each child of the earlier bands where
  * the body's `after` was null, each child of the node's band otherwise. That is read on the read
- * the answer is written into, before the issue's memo moves there (`movedIn`), and on each page
- * read after it (`placement.ts`' `holdsPlace`). If no pages are needed, the next act goes out
- * within the answer's own reaction, before the write store's hold on the tree reads ends
- * (`subscribeTreeFreshness`). The editor's move keys check `NodeWrites.busy` so a key pressed
- * while an act is out waits its turn, rather than being judged on the read that act's answer is
- * about to change.
+ * the answer is written into, as it stands before the node and the issue's memo move there
+ * (`movedIn`), and on each page read after it (`placement.ts`' `holdsPlace`). If no pages are
+ * needed, the next act goes out within the answer's own reaction, before the write store's hold
+ * on the tree reads ends (`subscribeTreeFreshness`). The editor's move keys check
+ * `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather than being judged
+ * on the read that act's answer is about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -538,10 +538,12 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
  *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
  *  `memo`), goes where the walk then stands it: right after the node's subtree where the place
  *  stands before it by rank and `held` shows that place, and first among the issue's children
- *  otherwise, until a page shows the place. Whether the place is shown is read on `held`, before
- *  the memo moves: a memo moved first no longer shows the conversation held before it. Where
- *  `held` holds no such node or no such parent, the node keeps its place and takes the sequence
- *  alone, and no place is shown. */
+ *  otherwise, until a page shows the place. The place is found among the parent's children with
+ *  the node's subtree cut out, and whether it is shown is read on `held` as it stands, the node
+ *  set aside where it stands there (`siblingPlace`): a memo held at its rank right after the node
+ *  shows the place, and is first among the parent's children once the node is cut. Where `held`
+ *  holds no such node, it is answered as it stands; where it holds no such parent, the node keeps
+ *  its place and takes the answer's `placement_seq` alone. Neither shows the place. */
 function movedIn(
   held: TreeAnswer,
   node: string,
@@ -562,7 +564,8 @@ function movedIn(
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
   const place = siblingPlace({ ...held, nodes: rest }, parent.id, own, taken);
-  const { memo, shown } = place;
+  const { shown } = siblingPlace(held, parent.id, own, taken);
+  const { memo } = place;
   const to = placeIn(rest, from, place);
   const top = { ...renewed, parent: ref };
   const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
