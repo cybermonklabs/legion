@@ -80,7 +80,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 		return nil, err
 	}
 	issue = &scope.issue
-	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, tx, *issue, role)
+	row, owed, err := PhaseWorkerOwedTurn(ctx, e.store, e.cfg.RepositoryRenames, tx, *issue, role)
 	if err != nil || !owed {
 		return nil, err
 	}

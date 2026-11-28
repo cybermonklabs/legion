@@ -522,7 +522,7 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 					taskMoves(t, pool, engine, key, "w", TriggerTesterFailed, "")
 				}},
-			told: " Pull request: #45. Reason:" + handoffPartOf(t, "LEGION-208", "test", 1) +
+			told: " Pull request: sjawhar/legion#45. Reason:" + handoffPartOf(t, "LEGION-208", "test", 1) +
 				" Handoff commit: head-w. Where a later version names another head, the head this task names is still head-w. Tester's verdict: fail. Task text:",
 		},
 		{
@@ -532,7 +532,7 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 				move: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 					taskMoves(t, pool, engine, key, "w", TriggerReviewRejected, changesBody)
 				}},
-			told: " Pull request: #45. Reason:" + handoffPartOf(t, "LEGION-208", "review", 1) +
+			told: " Pull request: sjawhar/legion#45. Reason:" + handoffPartOf(t, "LEGION-208", "review", 1) +
 				" Handoff commit: head-w. Where a later version names another head, the head this task names is still head-w. " + changesBody + " Task text:",
 		},
 		{
@@ -551,7 +551,7 @@ func TestAMoveBackWhoseAgentIsBusyKeepsItsMarkThroughTheWait(t *testing.T) {
 						return engine.transition(ctx, tx, s, TriggerBackward, atStep(1), row, pr, "the owner sends the work back")
 					})
 				}},
-			told: " Pull request: #45. Reason: the owner sends the work back. Task text:",
+			told: " Pull request: sjawhar/legion#45. Reason: the owner sends the work back. Task text:",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

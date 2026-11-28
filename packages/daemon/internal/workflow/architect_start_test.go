@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -564,7 +565,7 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 			}
 			var task string
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				start, err := ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				start, err := ArchitectStartOf(ctx, tx, record.NewStore(), ghrepo.Renames{}, specGated, root)
 				task = ArchitectStartTask(start)
 				return err
 			}); err != nil {
@@ -621,7 +622,7 @@ func TestTheArchitectStartReadsWhetherAMemberOfTheTreeRuns(t *testing.T) {
 			var start ArchitectStart
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), ghrepo.Renames{}, specGated, root)
 				return err
 			}); err != nil {
 				t.Fatalf("read what the architect's first task is derived from: %v", err)
@@ -673,7 +674,7 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 			var start ArchitectStart
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), ghrepo.Renames{}, specGated, root)
 				return err
 			}); err != nil {
 				t.Fatalf("read what the architect's first task is derived from: %v", err)
@@ -734,7 +735,7 @@ func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *test
 			var start ArchitectStart
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), ghrepo.Renames{}, specGated, root)
 				return err
 			}); err != nil {
 				t.Fatalf("read what the architect's first task is derived from: %v", err)

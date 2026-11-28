@@ -46,26 +46,13 @@ func pullRequestRows(t *testing.T, pool *pgxpool.Pool, number int) int {
 	return rows
 }
 
-// A task that a later version removes closes its pull request, and its row goes in the version's
-// transaction. Task a runs its tester's step on the issue's branch, b stopped at its implementer's
-// step with its open pull request #2 on legion/LEGION-208.b, and z, the task that merges, waits on
-// both. Version 2 removes b: one row closes #2 with the comment `Task b was removed from the plan.`,
-// and the record holds no row of #2. Version 3 adds b back: b is a new task, which starts on
-// legion/LEGION-208.b.2, a branch the generation gave to no task before. GitHub's close of #2,
-// which the row asked for, finds no row, before b's implementer opens #3 there and after it: it
-// moves no task, and writes no row of b and no outbox row; and once #3 is open, b's row holds #3.
-//
-// The fault it catches is a removed task's pull request left open on GitHub with its row in the
-// record (its control: planGiven without the close and the delete, so no row closes #2 and #2's
-// row stands). A fact of #2 reaches b added back only where b also took #2's branch again, since a
-// row is keyed by its branch and its task is read from that branch (record.PullRequest.Task); the
-// generation gives a branch name once (record.Store.AssignTaskBranch). The row that reaches
-// another task without that is the one on the issue's branch
-// (TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks).
-func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
-	t.Parallel()
-	pool := migratedPool(t)
-	engine := returnEngine()
+// removedTaskRoot seeds LEGION-208 in testing with the plan a later version removes b from: a runs
+// its tester's step on the issue's branch, legion/LEGION-208, b stopped at its implementer's step,
+// and z, the task that merges, waits on both. It answers the issue and the branch the generation
+// gave b (record.Store.AssignTaskBranch), legion/LEGION-208.b, on which the caller opens b's pull
+// requests.
+func removedTaskRoot(t *testing.T, pool *pgxpool.Pool) (record.Issue, string) {
+	t.Helper()
 	root := stepRoot(t, pool, phase.Testing)
 	seedTasks(t, pool, root.Key, root.Generation,
 		planTask{id: "a", steps: []string{"tester:a"}, agents: []claim.Agent{"test-a"}, state: record.TaskRunning, place: atStep(1)},
@@ -80,14 +67,44 @@ func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
 	if bBranch != "legion/LEGION-208.b" {
 		t.Fatalf("b's branch = %q, want legion/LEGION-208.b", bBranch)
 	}
+	return root, bBranch
+}
+
+// removingB is version 2 of root's plan, which removes b from the plan removedTaskRoot seeds and
+// keeps a, and z needing a alone.
+func removingB(t *testing.T, root record.Issue) intake.PlanGiven {
+	t.Helper()
+	return laterVersion(t, root.Key, root.Generation, 2, keyed(t, "a", "", []string{"tester:a"}), keyed(t, "z", "", []string{"reviewer:z"}, "a"))
+}
+
+// A task that a later version removes closes its pull request, and its row goes in the version's
+// transaction. Task a runs its tester's step on the issue's branch, b stopped at its implementer's
+// step with its open pull request #2 on legion/LEGION-208.b, and z, the task that merges, waits on
+// both. Version 2 removes b: one row closes #2 with the comment `Task b was removed from the plan.`,
+// and the record holds no row of #2. Version 3 adds b back: b is a new task, which starts on
+// legion/LEGION-208.b.2, a branch the generation gave to no task before. GitHub's close of #2,
+// which the row asked for, finds no row, before b's implementer opens #3 there and after it: it
+// moves no task, and writes no row of b and no outbox row; and once #3 is open, b's row holds #3.
+//
+// The fault it catches is a removed task's pull request left open on GitHub with its row in the
+// record (its control: planGiven without the close and the delete, so no row closes #2 and #2's
+// row stands). A fact of #2 reaches b added back only where b also took #2's branch again, since a
+// row's task is read from its branch (record.PullRequest.Task); the
+// generation gives a branch name once (record.Store.AssignTaskBranch). The row that reaches
+// another task without that is the one on the issue's branch
+// (TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks).
+func TestARemovedTaskClosesItsPullRequest(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root, bBranch := removedTaskRoot(t, pool)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 2,
 		Branch: bBranch, Base: "main", HeadSHA: "head-b", Failing: []string{}})
 	apply := applyFacts(t, pool, engine)
 	aBlock := keyed(t, "a", "", []string{"tester:a"})
 
-	mustTake(t, "version 2", apply("version-2", laterVersion(t, root.Key, root.Generation, 2,
-		aBlock, keyed(t, "z", "", []string{"reviewer:z"}, "a"))))
-	want := record.TaskPullRequestsClose{Generation: root.Generation, Numbers: []int{2}, Comment: "Task b was removed from the plan."}
+	mustTake(t, "version 2", apply("version-2", removingB(t, root)))
+	want := record.TaskPullRequestsClose{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{2}, Comment: "Task b was removed from the plan."}
 	if closes := pullRequestCloses(t, pool); !reflect.DeepEqual(closes, []record.TaskPullRequestsClose{want}) {
 		t.Fatalf("the rows that close pull requests after version 2 removed b = %+v, want the one %+v", closes, want)
 	}
@@ -151,7 +168,7 @@ func TestARemovedTasksPullRequestOnTheIssuesBranchIsNoWaitingTasks(t *testing.T)
 		state  record.PullRequestState
 		closes []record.TaskPullRequestsClose
 	}{
-		{record.PullRequestOpen, []record.TaskPullRequestsClose{{Generation: 1, Numbers: []int{42}, Comment: "Task a was removed from the plan."}}},
+		{record.PullRequestOpen, []record.TaskPullRequestsClose{{Generation: 1, Repo: "sjawhar/legion", Numbers: []int{42}, Comment: "Task a was removed from the plan."}}},
 		{record.PullRequestClosed, []record.TaskPullRequestsClose{}},
 	} {
 		t.Run(string(tc.state), func(t *testing.T) {

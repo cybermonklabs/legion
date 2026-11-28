@@ -102,7 +102,7 @@ Merge holds, finding asks, refusals and what follows: `skill://legion-architect/
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow;
+The last merge closes an issue with no linked pull request open and nothing beneath it in the workflow;
 nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment

@@ -269,16 +269,20 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 
 // The notice that tells the architect above a child that the child left the workflow keeps its
 // first sentence, "<KEY> is <status>", and names after it what the move leaves for that architect
-// to act on (dispatch://INFRA-3178/spec R4): each of the child's pull requests that is open, in
-// number order, since the daemon closes no pull request at a move, and each recorded issue under the
+// to act on (dispatch://INFRA-3178/spec R4): each pull request of the child's set that is open, as
+// owner/name#number in the order of their repositories and numbers (dispatch://INFRA-5910 decision
+// 21, r6), since the daemon closes no pull request at a move, and each recorded issue under the
 // child that is not done, with its status and in key order, since the move ends the child alone. A
 // pull request that merged or closed, an issue under the child that is done and an issue outside the
 // child's subtree are not named, and a child with nothing to name gets the first sentence alone,
 // which every earlier reader of the notice reads. A child whose plan has a task for each of two or
-// three open pull requests names each of them.
+// three open pull requests names each of them, and a child that links an open pull request of a
+// second repository, acme/deploy#6990, names it beside its own.
 //
 // The fault it catches for several pull requests is a notice that names one of them (its control:
-// the notice read from the issue's merge pull request alone, which names #43 alone).
+// the notice read from the issue's merge pull request alone, which names #43 alone), and one that
+// names a linked pull request by its number alone, or not at all (its control: the notice read from
+// the task pull requests of the child, under which acme/deploy#6990 is not named).
 func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone(t *testing.T) {
 	t.Parallel()
 	member := func(key, parent string, at phase.Phase, status string) record.Issue {
@@ -300,25 +304,29 @@ func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone
 		// tasks is the number of the open pull request of each task of the child's plan, a task for
 		// each, none for a child with no plan rows.
 		tasks []int
-		under []record.Issue
-		kind  record.NoticeKind
-		want  string
+		// linked says the child links acme/deploy#6990, open.
+		linked bool
+		under  []record.Issue
+		kind   record.NoticeKind
+		want   string
 	}{
 		{name: "an open pull request", status: "done", pr: record.PullRequestOpen, kind: "child-closed",
-			want: "LEGION-209 is done. Its pull request #43 is open"},
+			want: "LEGION-209 is done. Its pull request sjawhar/legion#43 is open"},
 		{name: "issues under it", status: "done", under: under, kind: "child-closed",
 			want: "LEGION-209 is done. Under it, not done: LEGION-210 (in_progress), LEGION-211 (backlog), LEGION-213 (todo)"},
 		{name: "an open pull request and an issue under it", status: "triage", pr: record.PullRequestOpen, under: under[:1], kind: "child-status",
-			want: "LEGION-209 is triage. Its pull request #43 is open. Under it, not done: LEGION-210 (in_progress)"},
+			want: "LEGION-209 is triage. Its pull request sjawhar/legion#43 is open. Under it, not done: LEGION-210 (in_progress)"},
 		{name: "nothing to name beside a closed pull request", status: "backlog", pr: record.PullRequestClosed, under: under[2:3], kind: "child-status",
 			want: "LEGION-209 is backlog"},
 		{name: "nothing to name beside a merged pull request", status: "done", pr: record.PullRequestMerged, under: under[4:], kind: "child-closed",
 			want: "LEGION-209 is done"},
 		{name: "nothing to name at all", status: "icebox", kind: "child-status", want: "LEGION-209 is icebox"},
 		{name: "two open pull requests of two tasks", status: "triage", tasks: []int{43, 45}, kind: "child-status",
-			want: "LEGION-209 is triage. Its pull requests #43 and #45 are open"},
+			want: "LEGION-209 is triage. Its pull requests sjawhar/legion#43 and sjawhar/legion#45 are open"},
 		{name: "three open pull requests of three tasks", status: "backlog", tasks: []int{47, 43, 45}, kind: "child-status",
-			want: "LEGION-209 is backlog. Its pull requests #43, #45 and #47 are open"},
+			want: "LEGION-209 is backlog. Its pull requests sjawhar/legion#43, sjawhar/legion#45 and sjawhar/legion#47 are open"},
+		{name: "an open pull request and a linked one of a second repository", status: "triage", pr: record.PullRequestOpen, linked: true,
+			kind: "child-status", want: "LEGION-209 is triage. Its pull requests acme/deploy#6990 and sjawhar/legion#43 are open"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -339,11 +347,16 @@ func TestTheNoticeOfAChildsMoveNamesItsOpenPullRequestAndEachIssueUnderItNotDone
 				seedTasksAt(t, pool, "LEGION-209", 7, tasks...)
 			}
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+			seq := int64(2)
+			if tc.linked {
+				linkDeploy(t, pool, applyFacts(t, pool, engine), "LEGION-209", "LEGION-208", seq, "fix/deploy")
+				seq++
+			}
 			kind := "issue.updated"
 			if tc.status == record.DoneStatus {
 				kind = "issue.closed"
 			}
-			move := intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: kind, Status: tc.status, Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"}
+			move := intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: kind, Status: tc.status, Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"}
 			if result, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-moves", move, engine, admissionStub{}); err != nil || result.Refusal != nil {
 				t.Fatalf("ApplyFact = %#v, %v", result, err)
 			}
@@ -432,7 +445,7 @@ func TestAMergeOfTheOpenPullRequestOfAClosedChildClosesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect the rows the merge added: %v", err)
 	}
-	want := []added{{kind: "notice", notice: "pr-merged", reason: "pull request #43 merged while LEGION-209 was in done, not merging"}}
+	want := []added{{kind: "notice", notice: "pr-merged", reason: "pull request sjawhar/legion#43 merged while LEGION-209 was in done, not merging"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the rows the merge added = %+v, want the pr-merged notice alone, %+v", got, want)
 	}

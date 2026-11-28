@@ -449,11 +449,13 @@ const legionMergeState = z.enum([
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
  * until contract 59 removed the count. */
 const legionPullRequestView = z.object({
-  /** The repository (`owner/name`) the pull request is in (contract 31), which is the issue's own
-   * until a correction of the issue's repository leaves it behind: the correction moves the
-   * issue's record alone, so this keeps the repository the pull request was opened on. Where this
-   * and the issue's `repo` name two repositories, the issue has work on a repository it has left,
-   * and the daemon applies no GitHub event of that pull request to the issue any more. */
+  /** The repository (`owner/name`) the pull request is in (contract 31): the issue's own for the
+   * pull request of a task, and any repository for a pull request the issue links (entry
+   * 20261127183022 (pull-requests)). A correction of the issue's repository moves the issue's
+   * record alone (`repoBefore`), so a pull request opened before it keeps the repository it was
+   * opened on; one still open there is in neither the issue's set nor its merge, so no view serves
+   * it, the daemon applies no GitHub event of it to the issue any more, and the issue's next task
+   * names it. */
   repo: nonEmptyString.optional(),
   number: z.number().int().positive().optional(),
   head: nonEmptyString.optional(),
@@ -465,6 +467,16 @@ const legionPullRequestView = z.object({
    * repository requires (`blocked`). */
   mergeState: legionMergeState.optional(),
   reviewDecision: nonEmptyString.optional(),
+});
+
+/** `api.SetPullRequestView` — one pull request of an issue's set under `pullRequests` (entry
+ * 20261127183022 (pull-requests)): the pull request view, with `task`, the task of the issue's plan
+ * whose branch it is on, absent for a pull request the issue links that is no task's and for each
+ * pull request of an issue with no plan rows, and `linked`, whether the issue links it in Dispatch.
+ * No plugin code reads a field of it (LEGION_ANSWER_READS), so each field is optional. */
+const legionSetPullRequestView = legionPullRequestView.extend({
+  task: nonEmptyString.optional(),
+  linked: z.boolean().optional(),
 });
 
 /** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 133). It is
@@ -955,12 +967,14 @@ const legionIssue = z.object({
   repoChangePending: nonEmptyString.optional(),
   repoChangeReason: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
-   * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
+   * the controller; from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
    * waits, before its retro, for the issues beneath it, the roots that rest on its approval or its
-   * open Dispatch children. A caller whose contract (the one it states, else its pod's
-   * lowest) is below 219 is served an issue held for either of those two with no `holdReason`
-   * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
+   * open Dispatch children; and from entry 20261127183022 (pull-requests) `pull-requests` while its
+   * close waits, from merging, for a pull request of its set with no merge in hand. A caller whose
+   * contract (the one it states, else its pod's lowest) is below the contract that added a reason
+   * is served an issue held for it with no `holdReason` (the daemon's value strip
+   * `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
    * the hold took the issue out of, and is absent for an issue that is not held. The linger
    * suppression is `holdReason`'s alone:
    * the reason is absent while the issue's tree lingers or is closed, until it is re-admitted,
@@ -969,7 +983,7 @@ const legionIssue = z.object({
    * stopped, whatever its tree is doing. A caller in a pod whose plugin declares a contract
    * below 75 is served every issue without `heldFrom` (the daemon's `withoutRecordFields`), so
    * every reader takes it as optional. */
-  holdReason: z.enum(["escalated", "task-stopped", "children"]).optional(),
+  holdReason: z.enum(["escalated", "task-stopped", "children", "pull-requests"]).optional(),
   heldFrom: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   /** When this root's linger runs out, absent for every issue that is not a lingering root:
    * only a root carries a linger, and re-admission clears it. It is what keeps `holdReason`'s
@@ -1001,7 +1015,16 @@ const legionIssue = z.object({
    * is the issue's own or none. */
   priorityFrom: issueKey.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
+  /** The newest open pull request of the issue's set, the one GitHub changed last, then the
+   * higher number, and the issue's merge where none of the set is open (entry 20261127183022
+   * (pull-requests)); `mergeWait` describes it. */
   pullRequest: legionPullRequestView.optional(),
+  /** Each pull request of the issue's set, the pull request of each task of its plan and each pull
+   * request the issue links, in any repository, in the order of their repositories and numbers
+   * (entry 20261127183022 (pull-requests)). Absent where the set holds none, and a daemon below
+   * the entry serves none at all (`api.withoutPullRequests`), which is why a reader takes it as
+   * optional. */
+  pullRequests: z.array(legionSetPullRequestView).optional(),
   designGate: legionGateView.optional(),
   /** The design gate as this issue stands in it, one entry for each step that holds its tree: the
    * steps the deployment gates, in the order it gates them (contract 55), then `criteria` where
@@ -1223,7 +1246,9 @@ const legionBlockedIssue = z.object({
  * each such row as `unclassified` with no `heldBy` (the daemon's value strip
  * `withoutUnadmittedHeldWords`). `awaiting_children` came with entry 20261125161152 (gate-basis); a caller below it is
  * served each such row as `children_first`, the one word that strip stands another in for
- * (`heldReasonStandIn`).
+ * (`heldReasonStandIn`). `pull_requests`, an issue whose close waits for a pull request of its set
+ * with no merge in hand, came with entry 20261127183022 (pull-requests); a caller below it is
+ * served each such row as `unclassified` with no `heldBy`.
  * `at_work` names an issue in `accepting`, `retro` or `merging`, which keeps no admission slot;
  * `record.HeldAtWork` says which issues read it.
  */
@@ -1240,6 +1265,7 @@ export const LEGION_HELD_REASONS = [
   "accepted_ancestor",
   "children_before_retro",
   "task_stopped",
+  "pull_requests",
   "at_work",
   "unclassified",
 ] as const;

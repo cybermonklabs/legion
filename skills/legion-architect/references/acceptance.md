@@ -37,7 +37,7 @@ Read, against the goal, every check and every requirement:
 
 ## A merge hold
 
-Before every `sign_off`, read the project's merge holds, `merge-holds-md`: a line that names the pull request's repository, or `all`, and whose end is not past holds the sign-off.
+Before every `sign_off`, read the project's merge holds, `merge-holds-md`: a line that names an open pull request's repository, or `all`, and whose end is not past holds the sign-off.
 While one holds, end the turn with a WAITING line that names it, and send the controller no message about a hold: it lifts a hold by deleting its line.
 Read "A merge hold" in acceptance-steps.md before every `sign_off`: it says how to read the document and a line, and what each wake does.
 
@@ -103,7 +103,7 @@ When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the th
 
 ## The close
 
-The merge closes the issue (`done`).
+The last merge closes the issue (`done`) once no pull request it links is open, and Legion closes its tasks' other open pull requests.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger

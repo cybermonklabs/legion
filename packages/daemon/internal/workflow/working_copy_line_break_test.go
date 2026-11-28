@@ -53,7 +53,7 @@ func TestASendWritesTheWorkingCopyLineUpToItsLineBreak(t *testing.T) {
 	composed := record.Issue{Key: key, Repo: "acme/widgets", Title: "root", Phase: phase.Reviewing}
 	left, moved := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools")
 	standing := func(where dir) Standing {
-		at, err := standingText(composed, where, todaysWalk(), nil, planTold{}, nil)
+		at, err := standingText(composed, where, todaysWalk(), nil, planTold{}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,7 +62,7 @@ func TestASendWritesTheWorkingCopyLineUpToItsLineBreak(t *testing.T) {
 	// numbered is the standing of where for a task whose pull request is #42 (pullRequestPart).
 	numbered := func(where dir) Standing {
 		at := standing(where)
-		at.pull = pullRequestPart(composed, &record.PullRequest{Number: 42})
+		at.pull = pullRequestPart(composed, &record.PullRequest{Repo: "acme/widgets", Number: 42}, scopedPulls{})
 		return at
 	}
 	for _, tc := range []struct {

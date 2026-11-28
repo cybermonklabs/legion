@@ -239,7 +239,7 @@ func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
 	}
 
 	merge(2)
-	want := record.TaskPullRequestsClose{Generation: taskBranchIssue.Generation, Numbers: []int{1, 3}, Comment: "Merged in #2."}
+	want := record.TaskPullRequestsClose{Generation: taskBranchIssue.Generation, Repo: taskBranchIssue.GitHubRepo, Numbers: []int{1, 3}, Comment: "Merged in #2."}
 	closes := closeRows()
 	if len(closes) != 1 || !reflect.DeepEqual(closes[0], want) {
 		t.Fatalf("the rows that close pull requests after b's merge = %+v, want the one %+v", closes, want)

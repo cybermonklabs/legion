@@ -204,18 +204,32 @@ deliver one, and Dispatch's redelivery sweep gives up after five attempts — so
 lost, or that still waits behind the daemon's GitHub consumer, leaves the record behind only until
 the next of them:
 
-- **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
-  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch that the
-  daemon does not record open is applied as its opened webhook would be. This holds only for the
+- **An opened or reopened pull request, in any phase.** Each branch of a task of the issue's plan
+  (the issue's own branch, `legion/<KEY>`, where it has no plan) for which the record holds no
+  open or merged pull request is looked up. A pull request on that branch that the daemon does
+  not record open is applied as its opened webhook would be. This holds only for the issue's
   repository itself, not a fork, and is a reopen when the record holds the same pull request. The
   workflow records it in whatever phase the issue is. An implementing issue whose implementer
   completed moves on to its task's next step, or toward its retro where that step is the task's
-  last.
+  last. Each open pull request the record holds is read too, each in its own repository.
+
+- **The links of each running issue.** As the workflow runtime starts, the daemon also reads from
+  Dispatch the links of each issue in the workflow, and reads each linked pull request from GitHub
+  in its own repository, before it judges any close: a link that went while the daemon was down
+  is removed, a link that came is recorded, and a linked pull request that merged meanwhile is
+  applied as its merge. An issue already done is not read, so its links reopen nothing.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
-  applied, or its merge with its merge commit: the merge closes an issue waiting on it in
-  `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
-  the architect `pr-closed-unmerged`.
+  applied, or its merge with its merge commit. The issue's last merge closes an issue waiting on
+  it in `merging` while nothing holds the close, and Legion then closes the other open pull
+  requests of the issue's tasks; otherwise the merge tells the architect `pr-merged`, or
+  `pr-holds-close` for each pull request the issue links that is still open. A close without
+  merging tells the architect `pr-closed-others-open` while another pull request of the issue
+  that holds the close is open: one the issue links, or a task's own pull request. Another open
+  pull request of a task that the issue does not link holds nothing, since Legion closes it at the
+  issue's last merge. The close of the last one that holds the close first reads each branch of
+  the issue's tasks on GitHub again, judges the close again, and tells `pr-closed-unmerged` only
+  where that read finds none open that holds the close and no merge closes the issue.
 - **A head that moved.** When GitHub shows the pull request open at a head the record does not
   hold, the read applies the synchronize its webhook would have carried, under GitHub's
   `updated_at` as its clock, so the same fence decides it: a read older than the record's clock

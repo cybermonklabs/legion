@@ -51,7 +51,7 @@ func giveUpsOf(t *testing.T, pool store.TxPool, spec ConsumerSpec, handlers ...H
 // record.
 func storedGiveUp(t *testing.T, pool *pgxpool.Pool, consumer, subject string, data []byte, seq uint64, deliveries int) record.IntakeFailure {
 	t.Helper()
-	decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, data)
+	decoded, err := decodeMessage(subject, "CAPTURE", capturedRepositories, nil, data)
 	if err != nil {
 		t.Fatalf("decode the message to give up: %v", err)
 	}

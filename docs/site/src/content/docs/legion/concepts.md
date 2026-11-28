@@ -1,6 +1,6 @@
 ---
 title: Concepts
-description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the merge that closes the issue and the production check your project's production_check setting opens after it.
+description: The controller, the architect, the phase workers and the plan that picks which of them an issue runs, admission and the legion label, the design gate, handoffs, review, the architect's acceptance, the last merge that closes the issue and the production check your project's production_check setting opens after each merge.
 sidebar:
   order: 2
 ---
@@ -24,8 +24,9 @@ section can use the words without stopping to explain them.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
-- **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. Each issue targets one repository, the one Dispatch resolves for it (its
+- **GitHub** holds the code: the issue's branch, `legion/<KEY>`, the branch of each task of its
+  plan, and the pull request of each, in the issue's repository. Each issue targets one
+  repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's in its own project, else the project's default repository,
   which is set in Dispatch), which Legion records, with that repository's default branch as GitHub
   names it, when it first records the issue. The record then follows Dispatch: a later change of
@@ -37,14 +38,27 @@ section can use the words without stopping to explain them.
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
   child's when the child starts its first step in its tree, so no agent's push is the one that
   creates a branch: GitHub can refuse that push on a large repository. An issue's workspace with
-  no branch to start from starts at that default branch too. A pull request or push names its
-  repository, and counts for an issue only in the issue's own.
+  no branch to start from starts at that default branch too. A pull request or push on a branch
+  of the issue or its tasks counts for the issue only in the issue's own repository. A pull
+  request the issue links in Dispatch by its URL is a pull request of the issue too, in any
+  repository and on any branch ([Several repositories](#several-repositories)).
 
 ## Several repositories
 
-One Legion deployment can work issues across several GitHub repositories, under several owners,
-with exactly one repository per issue — never two.
-A change that spans repositories uses child issues, each in one repository.
+One Legion deployment can work issues across several GitHub repositories, under several owners.
+Each issue has one repository, the one its branches and the pull requests of its tasks are in.
+A change that spans repositories uses child issues, each in one repository, or a second pull
+request of the same issue in the other repository, linked on the issue by its URL.
+An issue may have several pull requests: the pull request of each task of its plan, and each pull
+request it links in Dispatch, in any repository.
+A pull request whose head is in a fork is none of the issue's, and neither is one that only names
+the issue in its title, body, branch or commits without a link.
+The reviewer and the merger of the issue's first task that merges and is not done review and
+merge a linked pull request that no task's branch holds, and the daemon hears the repository each
+link names.
+The work of an issue ends when no pull request of the issue is open: a linked pull request holds
+the issue's close while it is open, and the architect is told of it once, with the way out: remove
+its link, or have it merged.
 Several children may share a repository, and each child's record follows the repository Dispatch resolves for it.
 An issue may name any `owner/name`, and the account that installs a role's GitHub App decides what that role reaches.
 Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
@@ -98,8 +112,9 @@ and the clear defects Legion's agents report.
 
 No Legion agent files an issue for a problem it finds outside its own issue. The agent fixes a
 defect with a clear fix itself, in its own pull request or a separate pull request of its tree, in
-whichever repository the defect is. When its token does not reach the repository, the controller
-files the issue with the `legion` label, so Legion works it without
+whichever repository the defect is. A fix in another repository can be a second pull request of
+the agent's own issue, linked on the issue by its URL. When its token does not reach the
+repository, the controller files the issue with the `legion` label, so Legion works it without
 asking you; the controller passes no message from one agent to another. A problem that needs a
 decision of yours goes into a Dispatch ask instead, naming the
 issue it came from and where the fix belongs (the repository or layer, and saying so when it is
@@ -121,7 +136,7 @@ admission to close. The architect:
 3. asks you to approve the spec (the [design gate](#the-design-gate));
 4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
-6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
+6. accepts the issue once the step before its acceptance passes (in the default steps, the reviewer's approval), reading the evidence of the steps that ran, or sends it back; the issue's last merge then closes it. An issue whose [plan](#the-plan-of-an-issue) has no acceptance step goes on to retro without one.
 
 The architect writes no code. A child issue runs the steps its own plan names, as its root does,
 with a pull request of its own, inside the same tree.
@@ -191,7 +206,7 @@ working copy and no bookmark reaches, such as a side head, is not kept.
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where those steps come before the acceptance, and accepts the issue (on to the task's next step, or to retro where the acceptance is its last step) or sends it back to an earlier step of its task. The daemon refuses the acceptance while an issue beneath it is still in the workflow, and an open child moves it to `awaiting_children`. No worker holds this phase; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
-| `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
+| `merging` | merger | Reads each pull request of its task and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules: the task's own pull request, and each one the issue links where an approval stands at its head. The work of an issue ends when no pull request of the issue is open: the last merge closes the issue, and Legion then closes the other open pull requests of its tasks; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
 testing or review, and the change goes through the issue's steps after the implementer again: in
@@ -528,7 +543,10 @@ that wants a later push reviewed says so in its own rulesets, and GitHub holds t
 Legion uses GitHub's own review mechanisms rather than labels:
 
 - The **reviewer** submits a GitHub review: an approval of the head by its commit, or changes
-  requested. A plain comment decides nothing, and the architect is told the round is stuck. The
+  requested, on each pull request of its task, the task's own and each one the issue links, each
+  at its own head. A request for changes on any of them ends the round, and the round passes only
+  when an approval stands at the head of each. A plain comment decides nothing, and the architect
+  is told the round is stuck. The
   daemon hears of a review from GitHub's webhook, and it also reads the pull request's reviews
   with the implement App at its own start and after every handoff of the issue, so a review whose
   webhook never arrived still counts at the next of those reads. Either way the newest deciding
@@ -654,8 +672,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
 ## The merge
 
 When the issue's steps have passed — in the default steps, the reviewer has approved and the
-architect has accepted — and retro is done, the merger reads the
-pull request and merges it itself, as the implement App and at the head it read, which it names as
+architect has accepted — and retro is done, the merger reads each pull request of the task and
+merges it itself: the task's own, and each one the issue links where an approval stands at its
+head, in the order their reviews and checks allow, since Legion sets none. It merges as the
+implement App and at the head it read, which it names as
 the head GitHub must match (`gh pr merge <n> --squash --match-head-commit <head>`). On a base with
 a merge queue it enqueues the pull request instead, with GraphQL `enqueuePullRequest` and the same
 head as `expectedHeadOid`, and watches the pull request until GitHub merges it or takes it out of
@@ -704,15 +724,20 @@ head GitHub reports dirty conflicts with the base itself, which the merger merge
 state GitHub answers unknown is asked again on the merger's own backoff for up to five minutes and
 then read the same way.
 
-What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
-or by its own read: it writes `done`, whether the merger's completion arrived before that or after
-it.
+What closes the issue is the daemon's own reading of its last merged pull request, by GitHub's
+webhook or by its own read: it writes `done`, whether the merger's completion arrived before that
+or after it. The work of an issue ends when no pull request of the issue is open, so a pull
+request the issue links holds the close while it is open, and so does a link the daemon has not
+read yet or cannot read. The architect is told once of each, with the way out: remove its link,
+or have it merged. At the close Legion closes the other open pull requests of the issue's tasks,
+with a comment that the issue is done. A pull request closed without a merge holds nothing, and
+the architect is told of it: where another pull request of the issue is open, nothing moves.
 
 ## The production check
 
-The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
-left of the issue to develop. A root whose tree still runs, and a child with an issue beneath it
-still in the workflow, are the issues the merge does not close at once: the daemon records the
+The last merge closes the issue: the daemon reads the merged pull request, writes `done`, and
+nothing is left of the issue to develop. A root whose tree still runs, and a child with an issue
+beneath it still in the workflow, are the issues the merge does not close at once: the daemon records the
 merge, and the issue stays in `merging` with its workers while the issues beneath it reach their
 own merges.
 It stands there on no admission slot, as `accepting` and `retro` do, so no wait of it changes the
@@ -722,7 +747,8 @@ and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a
-production check as the issue closes, in its own session or, where the issue's plan had no tester
+production check of each merge, opened at that merge or, where its close waited for the issues
+beneath it, at the close, in its own session or, where the issue's plan had no tester
 step, a fresh one, and a project that sets `off` opens no
 check at all — a child's close retires every claim of the child and releases its pod, and a
 root's close suspends every claim of its tree for the linger, whose end retires them. The loader

@@ -83,7 +83,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 	st, pool := storeBeforeTheReviewedHead(t)
 	const (
 		reviewerTask = "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 1 " +
-			"(dispatch handoff-read --issue LEGION-208 --phase test --version 1). Tester's verdict: pass. Pull request: #42."
+			"(dispatch handoff-read --issue LEGION-208 --phase test --version 1). Tester's verdict: pass. Pull request: sjawhar/legion#42."
 		testerTask = "Continue root. Issue: LEGION-208. Phase: testing. Resume the existing phase work."
 	)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)

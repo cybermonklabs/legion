@@ -173,8 +173,13 @@ const notCarriedComment = "The issue's run started its plan again; the work of t
 // issue takes it, with its commits, again. Before its first task starts a plan of several holds
 // none of them, so each closes; the one task of a plan of one holds the issue's own branch
 // (record.StoredPlan.TasksOfBranch), so the pull request open there is kept, and the issue goes on
-// on it as it always did. An issue no earlier run of which ran a step holds no pull request of an
-// earlier run (record.Store.EarlierRunOf), and nothing of it closes.
+// on it as it always did. Each pull request of the earlier run is its own row, closed and deleted
+// by its repository and number, so two of one branch both close (dispatch://INFRA-5910 decision
+// 20); a pull request the issue links is none of them, whatever its branch: it is the issue's
+// link, which the close of the task pull requests never closes (decision 11). The row names the
+// issue's repository (record.TaskPullRequestsClose.Repo), the one every such pull request is of.
+// An issue no earlier run of which ran a step holds no pull request of an earlier run
+// (record.Store.EarlierRunOf), and nothing of it closes.
 func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	ran, err := e.store.EarlierRunOf(ctx, tx, issue)
 	if err != nil || !ran {
@@ -186,13 +191,13 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 	}
 	var closed []int
 	for _, pr := range prs {
-		if pr.State != record.PullRequestOpen || pr.Task != "" {
+		if pr.State != record.PullRequestOpen || pr.Task != "" || pr.Linked {
 			continue
 		}
 		if err := e.store.RecordBranchGiven(ctx, tx, issue.Key, issue.Generation, pr.Branch); err != nil {
 			return err
 		}
-		if err := e.store.DeletePullRequest(ctx, tx, issue.Key, pr.Branch); err != nil {
+		if err := e.store.DeletePullRequest(ctx, tx, pr.Repo, pr.Number); err != nil {
 			return err
 		}
 		closed = append(closed, pr.Number)
@@ -200,7 +205,8 @@ func (e *Engine) closeEarlierPullRequests(ctx context.Context, tx pgx.Tx, issue 
 	if len(closed) == 0 {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: closed, Comment: notCarriedComment})
+	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Repo: issue.GitHubRepo, Numbers: closed,
+		Comment: notCarriedComment})
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
@@ -451,15 +457,20 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, s TaskScope, rating r
 
 // planHold says whether issue is held by its plan rather than by a failure: its owner stopped its
 // task (record.HoldTaskStopped), or, as a parent whose last step is not the owner's acceptance, it
-// waits in place of its retro while a hold on its acceptance holds it (record.HoldForChildren). No
-// path that resumes the work of a held issue resumes such a hold: a later version of the plan or a
-// person's todo on a root ends a task's stop (startAtFirstStep, or waitForFirstStep for a task
-// stopped before its first step), and the parent's retro starts once nothing holds it
-// (StartHeldRetro). stored says whether the issue's run has plan rows: no plan holds a run that has
-// none, so a hold of either reason on such a run, which the roll-forward of a way back that left
-// its reason finds, is a plain hold that a retry releases.
+// waits in place of its retro while a hold on its acceptance holds it (record.HoldForChildren), or
+// its tasks are all done and a pull request of its set holds its close, with no merge in hand
+// (record.HoldForPullRequests, dispatch://INFRA-5910 decision 9). No path that resumes the work of
+// a held issue resumes such a hold: a later version of the plan or a person's todo on a root ends a
+// task's stop (startAtFirstStep, or waitForFirstStep for a task stopped before its first step), the
+// parent's retro starts once nothing holds it (StartHeldRetro), and the close's judge ends the hold
+// for the pull requests once none holds it (judgeClose). That last hold holds no task, whose copy
+// stands in done, so a release read for a held task (heldScope, releaseHeldRoot) finds none in it;
+// it stands here so that no reader of the hold itself retries its phase either. stored says
+// whether the issue's run has plan rows: no plan holds a run that has none, so a hold of any of
+// these reasons on such a run, which the roll-forward of a way back that left its reason finds, is
+// a plain hold that a retry releases.
 func planHold(issue record.Issue, stored bool) bool {
-	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue))
+	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldForPullRequests))
 }
 
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
@@ -467,18 +478,24 @@ func planHold(issue record.Issue, stored bool) bool {
 // (planHold), and nil for any other hold. A retry would start the role of the phase the hold is
 // from and an escalation would overwrite the reason, so each is refused with what starts the work
 // again: for a stopped task a later version of its plan (RetryOfStoppedTask), for a parent held
-// for its children why it still waits (heldParentWait's refusal).
+// for its children why it still waits (heldParentWait's refusal), and for an issue held for its
+// pull requests what ends that hold, with nothing restarted (PHASE_NOT_RESTARTED).
 func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, s TaskScope) (*intake.Refusal, error) {
 	issue, w := s.issue, s.walk
 	if issue.Phase != phase.Held || issue.Hold == nil || !planHold(issue, w.Stored) {
 		return nil, nil
 	}
-	if record.HeldForChildren(issue) {
+	switch {
+	case record.HeldForChildren(issue):
 		wait, err := e.heldParentWaitOf(ctx, tx, issue)
 		if err != nil {
 			return nil, err
 		}
 		return wait.refusal(), nil
+	case record.HeldFor(issue, record.HoldForPullRequests):
+		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the tasks of %s are all done, and its close waits for the pull requests of its set that hold it, "+
+			"so no phase of it is restarted: the merge or the close of each of them, or the removal of its link, ends the hold. This retry changed nothing.",
+			issue.Key)).Refusal, nil
 	}
 	return intake.RetryOfStoppedTask(issue.Key, w.Task, w.StoppedReason), nil
 }

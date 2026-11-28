@@ -121,16 +121,20 @@ func (s projectionStore) AllPhases(context.Context, pgx.Tx, string) (map[string]
 	return s.phases, nil
 }
 
-// PullRequestsOf is the pull request of each of issues this store holds, by issue, as the real
-// store reads them in one statement: an issue with none has no entry.
-func (s projectionStore) PullRequestsOf(_ context.Context, _ pgx.Tx, issues []string) (map[string]record.PullRequest, error) {
-	requests := make(map[string]record.PullRequest, len(issues))
+// PullRequestSetsAndMergesOf answers the set and the merge of each of issues the store holds a
+// pull request for, by key, as the real store reads them in one read: an issue it holds none for
+// has no entry. The fake's one pull request of an issue is its merge's, and the set answers that
+// same row as the issue's only one.
+func (s projectionStore) PullRequestSetsAndMergesOf(_ context.Context, _ pgx.Tx, issues []string) (map[string][]record.PullRequest, map[string]record.PullRequest, error) {
+	sets := make(map[string][]record.PullRequest, len(issues))
+	merges := make(map[string]record.PullRequest, len(issues))
 	for _, issue := range issues {
 		if pr := s.pullRequests[issue]; pr != nil {
-			requests[issue] = *pr
+			sets[issue] = []record.PullRequest{*pr}
+			merges[issue] = *pr
 		}
 	}
-	return requests, nil
+	return sets, merges, nil
 }
 
 // OpenIntakeGiveUps answers no give-up open: the projection's reading of real records is
@@ -140,7 +144,7 @@ func (projectionStore) OpenIntakeGiveUps(context.Context, pgx.Tx, string, int) (
 }
 
 // TaskPullRequestRows answers the fake's one pull request of an issue, its merge's, as the issue's
-// only task pull request row: the same row PullRequestsOf answers for it.
+// only task pull request row: the same row PullRequestSetsAndMergesOf answers for it.
 func (s projectionStore) TaskPullRequestRows(_ context.Context, _ pgx.Tx, issue string) ([]record.PullRequest, error) {
 	if pr := s.pullRequests[issue]; pr != nil {
 		return []record.PullRequest{*pr}, nil

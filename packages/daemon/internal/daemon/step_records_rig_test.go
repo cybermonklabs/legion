@@ -96,6 +96,18 @@ func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 // the first step of each walk. The walk's steps act on the first issue until on moves them.
 func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int) *stepRecordsRig {
 	t.Helper()
+	return newStepRecordsRigSeeded(t, proof, dispatch, issues, func(r *stepRecordsRig, created createdIssue) bool {
+		r.seed(created.Rank, created.LastSeq)
+		return true
+	})
+}
+
+// newStepRecordsRigSeeded is newStepRecordsRigWith whose seed of each issue is seed, called with
+// the walk on that issue and the issue as Dispatch answered its last write: it records the issue
+// in the store as the test needs it, and answers whether it recorded its architect's claim a
+// launch the boot relaunches (seedArchitect), whose architect the rig then registers.
+func newStepRecordsRigSeeded(t *testing.T, proof liveProof, dispatch *scratchDispatch, issues int, seed func(*stepRecordsRig, createdIssue) bool) *stepRecordsRig {
+	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
 	proof.cfg.Project = "SR" + randomSuffix(t)[:6]
@@ -117,6 +129,7 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
+	launched := map[string]bool{}
 	for place := range issues {
 		var created createdIssue
 		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
@@ -124,12 +137,15 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 		r.issues = append(r.issues, walkIssue{key: created.Key, title: walkTitles[place], number: int(number) + 1 + place})
 		r.on(created.Key)
 		r.github.open("legion/"+r.key, r.number)
-		r.seed(created.Rank, created.LastSeq)
+		launched[created.Key] = seed(r, created)
 	}
 	r.boot()
 	// The architect's pane is met at the boot's relaunch, so it is a live session before any
 	// restart: a restarted daemon re-observes a claim it finds live and does not launch it again.
 	for _, issue := range r.issues {
+		if !launched[issue.key] {
+			continue
+		}
 		r.on(issue.key)
 		r.worker(claim.RoleArchitect)
 	}
@@ -196,6 +212,15 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
+	r.seedArchitect()
+}
+
+// seedArchitect records the issue's lifecycle under the workflow and its architect's claim a
+// launch a previous daemon began and never recorded, which the boot relaunches.
+func (r *stepRecordsRig) seedArchitect() {
+	t := r.t
+	t.Helper()
+	ctx := context.Background()
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
@@ -1080,12 +1105,16 @@ type stepRecordsGitHub struct {
 	pulls []stepRecordsPull
 }
 
-// stepRecordsPull is one pull request of the walk: its number, the branch it is open on, and
-// whether GitHub has merged it.
+// stepRecordsPull is one pull request of the walk: its number, the branch it is open on, whether
+// GitHub has merged it, whether GitHub closed it without a merge, its repository, liveRepo where
+// empty, and the base it merges into, main where empty.
 type stepRecordsPull struct {
 	number int
 	branch string
 	merged bool
+	closed bool
+	repo   string
+	base   string
 }
 
 func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
@@ -1099,6 +1128,20 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 			answer, known = g.pullRequest(number)
 		}
 		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"+linkedDeploy+"/pulls/"):
+			// A pull request of the second repository, which only a link of the walk's issue names.
+			number, linkedReviews := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/repos/"+linkedDeploy+"/pulls/"), "/reviews")
+			n, err := strconv.Atoi(number)
+			linked, known := g.pullRequest(n)
+			switch {
+			case err != nil || !known || !g.inRepository(n, linkedDeploy):
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+			case linkedReviews:
+				_, _ = io.WriteString(w, `[]`)
+			default:
+				_, _ = io.WriteString(w, linked)
+			}
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/") && strings.Count(r.URL.Path, "/") == 3:
@@ -1130,6 +1173,42 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
+}
+
+// openIn is open of a pull request of repo, a repository other than liveRepo.
+func (g *stepRecordsGitHub) openIn(repo, branch string, number int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch, repo: repo})
+}
+
+// openOnto is open of a pull request of liveRepo onto base, a branch other than main.
+func (g *stepRecordsGitHub) openOnto(branch string, number int, base string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch, base: base})
+}
+
+// closedUnmerged is GitHub's close of pull request number with no merge: every read from now on
+// answers it closed, and the list of open pull requests leaves it out (pullRequests). A number the
+// walk never opened fails the walk's test, as merged does.
+func (g *stepRecordsGitHub) closedUnmerged(number int) {
+	g.t.Helper()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pull := g.find(number)
+	if pull == nil {
+		g.t.Fatalf("GitHub closed pull request #%d, which the walk never opened", number)
+	}
+	pull.closed = true
+}
+
+// inRepository says whether pull request number is of repo.
+func (g *stepRecordsGitHub) inRepository(number int, repo string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pull := g.find(number)
+	return pull != nil && (pull.repo == repo || pull.repo == "" && repo == liveRepo)
 }
 
 // opened says whether the walk opened pull request number (find).
@@ -1167,13 +1246,18 @@ func (g *stepRecordsGitHub) find(number int) *stepRecordsPull {
 	return nil
 }
 
-// pullRequests is each pull request as GitHub answers it now, in the order they were opened.
+// pullRequests is each pull request of liveRepo as GitHub answers it now, in the order they were
+// opened: the list GitHub answers for its open pull requests (state=open), which leaves out one it
+// closed without a merge (closedUnmerged). A merged one stays in it, as the walks have always read
+// the list.
 func (g *stepRecordsGitHub) pullRequests() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	answers := make([]string, len(g.pulls))
-	for place, pull := range g.pulls {
-		answers[place] = pull.answer()
+	answers := []string{}
+	for _, pull := range g.pulls {
+		if pull.repo == "" && !pull.closed {
+			answers = append(answers, pull.answer())
+		}
 	}
 	return answers
 }
@@ -1190,12 +1274,23 @@ func (g *stepRecordsGitHub) pullRequest(number int) (string, bool) {
 }
 
 // answer is the pull request as GitHub's REST API answers it: open at stepRecordsHead and clean
-// until it merges, closed and merged from then on.
+// until it merges, closed and merged from then on, and closed and not merged once GitHub closed it
+// without a merge.
 func (p stepRecordsPull) answer() string {
 	state, merged, mergeable := "open", false, "clean"
-	if p.merged {
+	switch {
+	case p.merged:
 		state, merged, mergeable = "closed", true, "unknown"
+	case p.closed:
+		state, mergeable = "closed", "unknown"
 	}
-	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
-		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, liveRepo)
+	repo, base := liveRepo, "main"
+	if p.repo != "" {
+		repo = p.repo
+	}
+	if p.base != "" {
+		base = p.base
+	}
+	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q,"repo":{"full_name":%q}},"updated_at":"2026-11-17T00:00:00Z"}`,
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, repo, base, repo)
 }

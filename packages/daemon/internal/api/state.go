@@ -881,14 +881,19 @@ type Issue struct {
 	RepoChangeReason string `json:"repoChangeReason,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
-	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
-	// the owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest
-	// on its approval or its open Dispatch children (record.HoldForChildren). A hold of either of
-	// the last two is no architect's to retry or escalate: a later version of the plan
-	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
-	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
-	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
-	// reason, and the view shows it again once the tree is re-admitted.
+	// it ran (record.HoldTaskStopped), `children` while a parent whose task's last step is not the
+	// owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest on
+	// its approval or its open Dispatch children (record.HoldForChildren), and `pull-requests` while
+	// its close waits, from merging, for a pull request of its set with no merge in hand
+	// (record.HoldForPullRequests). A hold of `task-stopped` or `children` is no architect's to retry
+	// or escalate: a later version of the plan starts a stopped task again, and a parent's retro
+	// starts once none of those holds it. A hold of `pull-requests` ends once no pull request of the
+	// set holds the close, which closes the issue. A caller below OwnerPlanContract is served no
+	// reason for `task-stopped` and `children`, and a caller below the contract entry that added
+	// `pull-requests` (pullRequestsContract) none for that one, held from merging all the same
+	// (withoutUnadmittedHoldReason). Absent otherwise, and absent while the issue's tree lingers or
+	// is closed: the record keeps the reason, and the view shows it again once the tree is
+	// re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
@@ -932,9 +937,23 @@ type Issue struct {
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
-	Workers     map[claim.Role]PhaseView `json:"workers"`
-	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
-	DesignGate  *GateView                `json:"designGate,omitempty"`
+	Workers map[claim.Role]PhaseView `json:"workers"`
+	// PullRequest is the newest open pull request of the issue's set (PullRequests): the one GitHub
+	// changed last (record.PullRequest.HeadUpdatedAt, a pull request with none the oldest), then the
+	// higher number, and where none of the set is open, the issue's merge, the pull request of the
+	// task that merges (record.Store.PullRequestsOf). Every caller is served it so, a caller below
+	// the contract entry that added PullRequests among them, which reads it as the issue's one pull
+	// request (dispatch://INFRA-5910 D8, decision 13). MergeWait is what its review round waits on.
+	// Absent where the record holds none of the two.
+	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
+	// PullRequests is each pull request of the issue's set (record.Store.PullRequestSetsOf,
+	// dispatch://INFRA-5910 D2): the pull request of each task of its plan, its own and each other
+	// on its branch, and each pull request the issue links, in any repository, in the order of
+	// their repositories, compared without case, and numbers. Absent where the set holds none. A
+	// caller below the contract entry that added it (pullRequestsContract) is served no
+	// `pullRequests` and reads PullRequest alone (withoutPullRequests).
+	PullRequests []SetPullRequestView `json:"pullRequests,omitempty"`
+	DesignGate   *GateView            `json:"designGate,omitempty"`
 	// GatedSteps is the tree's design gate as this issue stands in it: one entry for each step
 	// the tree is gated on (record.TreeSteps), in the order the deployment gates them with a
 	// criteria row the root's architect registered beside a deployment that gates spec and not
@@ -972,9 +991,9 @@ type Issue struct {
 	// last of them the one Check shows. Absent while none is open. A caller below the contract that
 	// added it (shaping.go's checksContract) is served no `checks` and reads Check alone.
 	Checks []CheckView `json:"checks,omitempty"`
-	// MergeWait is what the issue's review round waits on from GitHub, present only while it
-	// waits on GitHub's merge state for the pull request's head and absent for every other
-	// round (MergeWaitView).
+	// MergeWait is what the review round of PullRequest waits on from GitHub, present only while it
+	// waits on GitHub's merge state for that pull request's head and absent for every other round
+	// (MergeWaitView).
 	MergeWait *MergeWaitView `json:"mergeWait,omitempty"`
 	// MemoryGroup is the memory group of the issue's tree, read off the assignment of the
 	// experiment named `memory`, whichever spelling declared it (config.Project.ExperimentsDeclared),
@@ -1606,13 +1625,17 @@ type HandoffRecordView struct {
 }
 
 // PullRequestView is a pull request of the issue as the daemon observes it from GitHub: on the
-// issue its merge's, the pull request of the task that merges, and on each task (TaskView) that
-// task's own. ReviewDecision is the latest review round's decision (changes_requested or
-// approved), the one the workflow ends the round on when the reviewer completes, and only where
-// the reviewer's round was of this pull request's task. It shows from the review that
-// decided it until the next round opens or a new generation clears it, so a request for changes
-// stays through implementing and testing, and an approval through retro and every phase after
-// it; absent until a review in a round decides.
+// issue the newest open pull request of its set (Issue.PullRequest), under Issue.PullRequests each
+// pull request of that set, and on each task (TaskView) that task's own. ReviewDecision is the
+// latest review round's decision for this pull request (changes_requested or approved), the one
+// the workflow ends the round on when the reviewer completes: for a task's own pull request the
+// decision on the reviewer's row, and only where the reviewer's round was of this pull request's
+// task; for a pull request the issue links that is no task's own, the decision it holds itself
+// (record.PullRequest.ReviewDecision, dispatch://INFRA-5910 decision 7); and none for another pull
+// request of a task that the issue does not link, which no round reviews. It shows from the
+// review that decided it until the next round opens or a new generation clears it, so a request
+// for changes stays through implementing and testing, and an approval through retro and every
+// phase after it; absent until a review in a round decides.
 // State is whether the pull request is open, merged, or closed unmerged, always one of the three:
 // a merged root waits in merging for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
@@ -1624,12 +1647,13 @@ type HandoffRecordView struct {
 // (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
 // repository requires holds the head.
 type PullRequestView struct {
-	// Repo is the repository (owner/name) the pull request is in, which is the issue's own until
-	// a correction of the issue's repository leaves it behind: the correction moves the issue's
-	// record alone (Issue.RepoBefore), so this keeps the repository the pull request was opened
-	// on. A reader of a record whose Repo and this name two repositories reads work that stands
-	// on a repository the issue has left, and the daemon applies no GitHub event of it to the
-	// issue any more. The issue's next task says the same (daemon's addressingFragment).
+	// Repo is the repository (owner/name) the pull request is in: the issue's own for the pull
+	// request of a task, and any repository for a pull request the issue links
+	// (dispatch://INFRA-5910 D2). A correction of the issue's repository moves the issue's record
+	// alone (Issue.RepoBefore), so a pull request opened before it keeps the repository it was
+	// opened on; one still open there is in neither the issue's set nor its merge, so no view
+	// serves it, the daemon applies no GitHub event of it to the issue any more, and the issue's
+	// next task names it (daemon's addressingFragment).
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`
@@ -1663,6 +1687,31 @@ func (p PullRequestView) MarshalJSON() ([]byte, error) {
 		out.FixAttempts = &standIn
 	}
 	return json.Marshal(out)
+}
+
+// SetPullRequestView is one pull request of the issue's set as Issue.PullRequests serves it: the
+// PullRequestView every pull request of the state is, and two keys of the set's own. Task is the
+// task of the issue's plan whose branch the pull request is on in the issue's repository
+// (record.PullRequest.Task), its own pull request or another of it, and absent for a pull request
+// the issue links that is no task's and for each pull request of an issue with no plan rows.
+// Linked is whether the issue links the pull request in Dispatch (record.PullRequest.Linked).
+type SetPullRequestView struct {
+	PullRequestView
+	Task   string `json:"task,omitempty"`
+	Linked bool   `json:"linked"`
+}
+
+// MarshalJSON writes the keys of the PullRequestView and the two of the set beside them, which the
+// embedded view's own MarshalJSON, promoted, would leave off. It writes no `fixAttempts`: a caller
+// below the contract that took that key off the view is below the entry that added
+// `pullRequests` too, and is served no pull request of the set (withoutPullRequests).
+func (p SetPullRequestView) MarshalJSON() ([]byte, error) {
+	type wire PullRequestView
+	return json.Marshal(struct {
+		wire
+		Task   string `json:"task,omitempty"`
+		Linked bool   `json:"linked"`
+	}{wire: wire(p.PullRequestView), Task: p.Task, Linked: p.Linked})
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the

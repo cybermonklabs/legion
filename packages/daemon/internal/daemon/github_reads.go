@@ -181,10 +181,9 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 	if err != nil {
 		return githubrest.Client{}, githubPullRequest{}, err
 	}
-	repository := w.repositories.serving(recorded)
-	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	github, _, err := w.servedClient(ctx, recorded)
 	if err != nil {
-		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return githubrest.Client{}, githubPullRequest{}, err
 	}
 	var pull githubPullRequest
 	if err := github.WithETags(w.etags).Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
@@ -210,6 +209,18 @@ func implementClient(ctx context.Context, tokens appauth.Tokens, githubAPI strin
 		return githubrest.Client{}, err
 	}
 	return githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(githubAPI, repository), Scope: implementScope(repository)}, nil
+}
+
+// servedClient is the implement App's client (implementClient) of the repository GitHub serves
+// recorded under (repositories.serving), and that repository, which every GitHub call the daemon
+// makes of a recorded or a linked repository addresses. A failed mint names the owner it was for.
+func (w *workflowRuntime) servedClient(ctx context.Context, recorded ghrepo.Repository) (githubrest.Client, ghrepo.Repository, error) {
+	repository := w.repositories.serving(recorded)
+	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	if err != nil {
+		return githubrest.Client{}, repository, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+	}
+	return github, repository, nil
 }
 
 // implementScope is the Scope of the implement App's client of repository (implementClient): the

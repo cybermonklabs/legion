@@ -1129,6 +1129,11 @@ func (w *workflowRuntime) republishHeard(ctx context.Context) error {
 			}
 		}
 		for _, repo := range slices.Concat(w.heardMissed, recorded) {
+			// A spelling with no capital says nothing GitHub's own spelling, held already, does not
+			// (a link's, lowercased), so it replaces none.
+			if _, held := named[strings.ToLower(repo.String())]; held && repo.String() == strings.ToLower(repo.String()) {
+				continue
+			}
 			named[strings.ToLower(repo.String())] = repo
 		}
 		heard = sortedRepositories(named)
@@ -2355,20 +2360,25 @@ func sortedRepositories(named map[string]ghrepo.Repository) []ghrepo.Repository 
 }
 
 // heardRepositories is what GitHub intake hears: every repository a record of the project names,
-// as tx reads the records, and every configured rename's partner of those
+// as tx reads the records, the repository of each pull request an issue links (linkRepositories,
+// dispatch://INFRA-5910 decision 17), and every configured rename's partner of those
 // (`repository_renames`), once each, sorted. A record is heard whatever its tree's state, since a
 // root that lingers or closed comes back, by re-admission, a hand-over or an orphan's carry, on
 // the repository it keeps, with no refresh between; a fact from a repository an issue is recorded
-// on reaches only that issue (workflow's issueForBranch and ownPullRequest). A record that keeps
+// on reaches only that issue (workflow's issueForBranch and ownPullRequest), and one from a
+// repository only a link names reaches only a pull request that link names (the decoder's index
+// of the links). A record that keeps
 // no GitHub spelling of its repository, which its backfill has not filled yet (backfillLater), is
 // passed by, so it stops nothing. A rename's partner is heard in both directions, so the
 // consumer's FilterSubjects carry both subjects over a transfer: the events arrive under the name
 // GitHub now has while the records keep the name they were written under, and neither side may
 // be deaf. Each is spelled as GitHub spells it, which Envoy's subjects carry and NATS matches
 // case-sensitively, whatever spelling a record keeps for its workspace (a backfilled record keeps
-// its clone's): a record's repository as it keeps GitHub's spelling (record.Issue.GitHubRepo), and
-// a partner, for a name no record names, as the pair configures it, so a restart subscribes with
-// no read of GitHub.
+// its clone's): a record's repository as it keeps GitHub's spelling (record.Issue.GitHubRepo),
+// which wins over a link's, written lowercased as Dispatch writes it, and a partner, for a name no
+// record names, as the pair configures it, so a restart subscribes with no read of GitHub. A
+// repository only a link names is heard as the link spells it until the boot's read of that link
+// finds GitHub's spelling (readLinkedPullRequest).
 func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]ghrepo.Repository, error) {
 	issues, err := w.records.Issues(ctx, tx)
 	if err != nil {
@@ -2377,6 +2387,15 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]g
 	heard, err := repositoriesOf(issues)
 	if err != nil {
 		return nil, err
+	}
+	linked, err := w.linkRepositories(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	for name, repo := range linked {
+		if _, held := heard[name]; !held {
+			heard[name] = repo
+		}
 	}
 	// One pass over the configured pairs, not over everything heard: a deployment configures no
 	// pair at all nearly always, and this runs at every boot and consumer re-open. A partner is
@@ -2419,12 +2438,14 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx) ([]g
 // correction, as an issue no correction has reached carries none: neither has a repository the
 // issue left (record.Issue.RepoCorrection).
 //
-// A record that holds a correction has its pull request read too, in the same transaction: the
-// correction moved the issue's record alone, so a pull request opened before it keeps the
-// repository it was opened on (record.PullRequest.Repo), and one still open there is work on a
-// repository the issue no longer hears from (LeftPullRequest). The read is made for a corrected
-// record alone, which is a few issues of a project: every other launch makes the one read it
-// always made.
+// A record that holds a correction has the pull requests it left read too, in the same
+// transaction: the correction moved the issue's record alone, so a pull request opened before it
+// keeps the repository it was opened on (record.PullRequest.Repo), and one still open there is
+// work on a repository the issue no longer hears from (LeftPullRequest). It is in neither the
+// issue's tasks' pull requests nor its set, which are of the issue's own repository and its links
+// (record.Store.LeftPullRequests), so the state serves none of it and the next task is where a role
+// reads it. The read is made for a corrected record alone, which is a few issues of a project:
+// every other launch makes the one read it always made.
 //
 // The identity a launch commits as is not minted for this repository's own owner: identity maps
 // it through serving first, so a tree recorded before a transfer is authored by the App on the
@@ -2448,7 +2469,7 @@ func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghre
 
 // repositoryOf is issueRepository, and issueLaunchRepository with launch set.
 func (w *workflowRuntime) repositoryOf(ctx context.Context, key string, launch bool) (launchRepository, error) {
-	issue, pull, err := w.recordWithPullRequest(ctx, key, launch)
+	issue, left, err := w.recordWithLeftPullRequests(ctx, key, launch)
 	if err != nil {
 		return launchRepository{}, err
 	}
@@ -2473,37 +2494,40 @@ func (w *workflowRuntime) repositoryOf(ctx context.Context, key string, launch b
 	}
 	if issue.RepoCorrection != nil {
 		read.Corrected = &RepositoryCorrection{RepositoryCorrection: *issue.RepoCorrection}
-		if pull != nil && pull.State == record.PullRequestOpen && !w.repositories.same(pull.Repo, issue.Repo) {
-			read.Corrected.PullRequest = &LeftPullRequest{Repo: pull.Repo, Number: pull.Number}
+		for _, pull := range left {
+			if !w.repositories.same(pull.Repo, issue.Repo) {
+				read.Corrected.PullRequests = append(read.Corrected.PullRequests, LeftPullRequest{Repo: pull.Repo, Number: pull.Number})
+			}
 		}
 	}
 	return read, nil
 }
 
-// recordWithPullRequest is key's issue record and, where withPull is set and that record holds a
-// correction of its repository, the pull request the record holds for the issue, both nil when
-// the workflow does not record the issue and the pull request nil when no row holds one. The two
-// are read in one transaction, which is what the launch read asks for (issueLaunchRepository): a
-// correction committing between two reads would name a pull request of the repository the launch
-// works. A record no correction has reached reads no pull request at all: nothing of it is
-// rendered, and the launch costs the one read it always cost.
-func (w *workflowRuntime) recordWithPullRequest(ctx context.Context, key string, withPull bool) (*record.Issue, *record.PullRequest, error) {
+// recordWithLeftPullRequests is key's issue record and, where withLeft is set and that record holds
+// a correction of its repository, each open pull request the record holds for the issue on a
+// repository other than its own that it does not link (record.Store.LeftPullRequests), the record
+// nil when the workflow does not record the issue and the pull requests none when no row is such.
+// The two are read in one transaction, which is what the launch read asks for
+// (issueLaunchRepository): a correction committing between two reads would name a pull request of
+// the repository the launch works. A record no correction has reached reads no pull request at
+// all: nothing of it is rendered, and the launch costs the one read it always cost.
+func (w *workflowRuntime) recordWithLeftPullRequests(ctx context.Context, key string, withLeft bool) (*record.Issue, []record.PullRequest, error) {
 	var issue *record.Issue
-	var pull *record.PullRequest
+	var left []record.PullRequest
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if issue, err = w.records.Issue(ctx, tx, key); err != nil || issue == nil {
 			return err
 		}
-		if !withPull || issue.RepoCorrection == nil {
+		if !withLeft || issue.RepoCorrection == nil {
 			return nil
 		}
-		pull, err = w.records.MergePullRequest(ctx, tx, key)
+		left, err = w.records.LeftPullRequests(ctx, tx, key)
 		return err
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the record of %s: %w", key, err)
 	}
-	return issue, pull, nil
+	return issue, left, nil
 }
 
 // unrecordedRepository is the repository an issue the workflow does not record works, and its

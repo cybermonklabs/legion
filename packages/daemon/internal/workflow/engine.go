@@ -120,6 +120,12 @@ type Config struct {
 	// hearRecorded). It is told every recording and every correction, including one on a
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
+	// LinksTaken is told, inside the transaction that replaces an issue's links to pull requests
+	// (takeLinks), the issue and the whole of its links as written, each of its own repository in
+	// the issue's spelling: the daemon replaces the issue's entries in the intake decoder's index
+	// (intake.Consumers.ReplaceLinks) and hears each linked repository once the transaction has
+	// committed (store.OnCommit, daemon's linksTaken). Nil tells none.
+	LinksTaken func(ctx context.Context, issue string, links []record.PullRequestLink)
 	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
 	// write, for a follow of that issue where nothing else asked one: the record's repository
 	// moved after the fact was prepared (intake.DispatchIssue.PreparedAgainst), or the fact was
@@ -140,24 +146,24 @@ type Config struct {
 	// moves an approved issue on to its task's next step (accepting, in the default steps); and, by
 	// the gate classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
 	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line), which can
-	// turn the head conflicting with its base (dispatch://INFRA-4374 R0). It names the task whose
-	// pull request owes the read, since an issue with plan rows has one pull request per task and a
-	// read keyed by the issue alone replaces another task's; "" is the task the record judges, for
-	// an issue whose pull request the record does not name. The daemon answers it
-	// with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which is the
-	// API-only daemon and a test that drives the reads itself.
-	ReadMergeState func(issue, task string)
+	// turn the head conflicting with its base (dispatch://INFRA-4374 R0). It names the pull request
+	// that owes the read by its repository and its number (PullRequestKey), GitHub's own name of it
+	// and the record's key, since an issue can hold several pull requests, on one task's branch and
+	// in other repositories, and a read named by the issue or the task alone would read another of
+	// them (dispatch://INFRA-5910 decision 16). The daemon answers it with a ladder of reads
+	// (workflowRuntime.queueMergeStateOf); nil asks for none, which is the API-only daemon and a test
+	// that drives the reads itself.
+	ReadMergeState func(pr PullRequestKey)
 	// ReadBaseMergeStates is asked, on the commit of a push to base of repo (basePush), to read
-	// GitHub's merge state for each pull request on that base the push owes a read, by issue and
-	// task: the
-	// same reasons askMergeState reads a fact of one pull request by (mergeStateOwed:
-	// classify.MergeStateReadOwed's base-push reason, a phase after implementing on the task's
-	// line, or a review round waiting on GitHub), named
-	// all at once, so that one push makes one batch of reads of its base rather than one read of
-	// each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
-	// requests each, asked for by number). owed is
-	// never empty. Nil asks for none, as ReadMergeState's nil does.
-	ReadBaseMergeStates func(repo, base string, owed []TaskPullRequest)
+	// GitHub's merge state for each pull request on that base the push owes a read, each named by
+	// its repository and its number as ReadMergeState names one: the same reasons askMergeState
+	// reads a fact of one pull request by (mergeStateOwed: classify.MergeStateReadOwed's base-push
+	// reason, a phase after implementing on the task's line, or a review round waiting on GitHub),
+	// named all at once, so that one push makes one batch of reads of its base rather than one read
+	// of each pull request (workflowRuntime.queueBaseMergeStates, GraphQL queries of a few pull
+	// requests each, asked for by number). owed is never empty. Nil asks for none, as
+	// ReadMergeState's nil does.
+	ReadBaseMergeStates func(repo, base string, owed []PullRequestKey)
 	// HoldCatchUp is told the outbox row of a catch-up the engine wrote held, once the fact that
 	// wrote it has committed (claimReady, for an intake.ClaimReady the outbox's start row marked
 	// paced): the daemon joins that row to its wake pacing's queue, where it waits its turn with
@@ -268,6 +274,12 @@ func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 // tree and issue it records, which reads it here rather than holding a second one.
 func (e *Engine) ExperimentSource() func(uint64) (uint64, error) { return e.cfg.ExperimentSource }
 
+// RepositoryRenames is the deployment's repository equivalence (Config.RepositoryRenames), which
+// admission hands the reads of the record it makes outside the engine (PhaseFinished,
+// PhaseWorkerOwedTurn), so a link and the row it names under the two names of a configured pair
+// are one pull request there as they are here.
+func (e *Engine) RepositoryRenames() ghrepo.Renames { return e.cfg.RepositoryRenames }
+
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
 func (e *Engine) byReviewApp(login string) bool {
@@ -277,6 +289,16 @@ func (e *Engine) byReviewApp(login string) bool {
 // sameRepository is whether a and b name one repository: the same name, compared without case as
 // GitHub compares names, or the two names of a configured rename (Config.RepositoryRenames).
 func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenames.Same(a, b) }
+
+// forkHead says whether a pull request whose head lives in head (GitHub's head.repo.full_name, ""
+// once GitHub no longer has a fork) and that merges into base (the repository GitHub names it
+// merges into) is a fork's: its head is no branch of base, as sameRepository compares two names
+// (dispatch://INFRA-5910 D2). It is the one fork test of a pull request, which the open of one
+// (pullRequestOpened, base the repository its event names, or the one GitHub answers for a linked
+// pull request its read reopens) and the read of a linked one (pullRequestLinkRead, base the
+// repository GitHub answers) both read: base is never the name a link carries, which for a
+// repository GitHub renamed with no configured rename is the name it had.
+func (e *Engine) forkHead(head, base string) bool { return head == "" || !e.sameRepository(head, base) }
 
 // Apply changes workflow-owned phase state for one durable intake fact. It never performs I/O;
 // every externally visible consequence is an outbox row committed with the record change.
@@ -366,8 +388,12 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.review(ctx, tx, fact)
 	case intake.PullRequestMerged:
 		return e.merged(ctx, tx, fact)
+	case intake.PullRequestLinkReadDone:
+		return e.pullRequestLinkRead(ctx, tx, fact)
 	case intake.PullRequestClosed:
 		return e.closed(ctx, tx, fact)
+	case intake.PullRequestBranchReadDone:
+		return e.pullRequestBranchRead(ctx, tx, fact)
 	case intake.PullRequestDequeued:
 		return e.dequeued(ctx, tx, fact)
 	case intake.PullRequestReviewRequests:
@@ -556,6 +582,19 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// issue's own, so it marks no movement either, while the record still takes its priority.
 	if !fact.DaemonActor && !fact.ResolvedOnly {
 		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	// The issue's links to pull requests are Dispatch's, and an event newer than the record's names
+	// them whole wherever it names them at all (intake.DispatchIssue.LinksKnown), whatever its
+	// status does, so they are taken here, past the sequence fence and before the status fence: an
+	// edit of the links alone is the common case, and it moves no status (takeLinks). An event that
+	// names no links changes none of them, since links unknown are never links none. Where the
+	// change of links closed the issue (judgeClose), it stands done out of the workflow, and the
+	// event's status moves nothing more of it from the record read before that close.
+	if fact.LinksKnown {
+		closed, err := e.takeLinks(ctx, tx, *issue, fact.Links, true)
+		if err != nil || closed {
 			return intake.Result{}, err
 		}
 	}
@@ -1359,8 +1398,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// The round as the completion found it is what a notice is deduped against (settleRound): a
 	// round already stuck at this head before the completion was told then, and the completion
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
-	// decision, or with an approval of other code - was not stuck before it, and is told.
-	found := e.reviewRound(*issue, row, pr)
+	// decision, or with an approval of other code - was not stuck before it, and is told. The round
+	// judges the task's own pull request and each other pull request of its scope (roundPullsOn).
+	pulls, err := e.roundPullsOn(ctx, tx, s, pr)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	found := e.reviewRound(*issue, row, pulls)
 	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
@@ -1395,7 +1439,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, e.transition(ctx, tx, s, TriggerTesterPassed, record.TaskPlace{}, row, pr, "")
 		}
 	case phase.Reviewing:
-		_, err := e.settleRound(ctx, tx, s, row, pr, found, byCompletion)
+		_, err := e.settleRound(ctx, tx, s, row, pulls, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
@@ -2671,7 +2715,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
 // it. The architect, who ordered the retry, is told nothing: a notice now would read as the
 // reviewer's answer to its request. The pull request the round and the restarted worker's task
-// read is the one of the work issue is read for (pullRequestOf): of a copy read for one task of a
+// read is the one of the work issue is read for (taskPullRequest): of a copy read for one task of a
 // plan of several, that task's own.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
@@ -2750,8 +2794,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, s TaskScope, from ph
 			return "", err
 		}
 		// The retry tells nothing of a stuck round: passed as its own before, it is stuck the same way.
-		r := e.reviewRound(issue, reviewer, pr)
-		settled, err := e.settleRound(ctx, tx, s, reviewer, pr, r, "")
+		pulls, err := e.roundPullsOn(ctx, tx, s, pr)
+		if err != nil {
+			return "", err
+		}
+		r := e.reviewRound(issue, reviewer, pulls)
+		settled, err := e.settleRound(ctx, tx, s, reviewer, pulls, r, "")
 		if err != nil {
 			return "", err
 		}
@@ -3417,6 +3465,20 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if held.code != "" {
 		return e.holdBeforeRetro(ctx, tx, s, trigger, row.To, row.ToPlace, handoff, pr, reason, held)
 	}
+	// A move into done that ends the last task of a plan with no merge in hand — the end of the
+	// last step of a task that merges nothing; the merge's own close is closeMerged's — holds the
+	// issue for its pull requests while a link of its set holds its close (setHolds,
+	// holdForPullRequests). It is read before the move writes anything, since the move's arrival
+	// would post the status done.
+	if trigger != TriggerPullRequestMerged && w.Stored && row.To == phase.Done && arrivedPhase(s, row.To, row.ToPlace, record.TaskDone, nil) == phase.Done {
+		holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if len(holds) > 0 {
+			return e.holdForPullRequests(ctx, tx, s, trigger, row.To, row.ToPlace, handoff, pr, reason, holds)
+		}
+	}
 	from, written, err := e.arrive(ctx, tx, &s, trigger, row.To, row.ToPlace, nil, handoff, pr, reason)
 	if err != nil {
 		return err
@@ -3497,8 +3559,20 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
 	// phase starts (start): the phase's worker, and for accepting, whose role is the architect, a
-	// child's failed architect started again and the accepting step.
+	// child's failed architect started again and the accepting step. A last merge GitHub has made
+	// while a link of the issue's set holds its close (lastMergeHeld, dispatch://INFRA-5910
+	// decision 9) starts the merger instead, as any move into merging does (startAgent names it
+	// then): its close waits for those pull requests (closeMerged), and the merger keeps working
+	// them.
+	standing := mergedAlready
 	if mergedAlready {
+		held, err := e.lastMergeHeld(ctx, tx, s)
+		if err != nil {
+			return err
+		}
+		standing = !held
+	}
+	if standing {
 		if err := e.startStandingStep(ctx, tx, s); err != nil {
 			return err
 		}
@@ -3510,7 +3584,23 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, row.To, handoff, reason, ended)); err != nil {
+	// The move into accepting starts no worker: the architect's acceptance is the step of the issue
+	// there, and the phase-finished notice of the step before it is what tells the architect so
+	// (prompts/go/architect-common.md). That notice names each open pull request of the issue with
+	// its repository, number and head (acceptancePart, dispatch://INFRA-5910 decision 21), its
+	// task's own first, so the architect accepts the code each of them stands at.
+	notice := noticeFor(trigger, issue, from, row.To, handoff, reason, ended)
+	if row.To == phase.Accepting && notice.Kind != "" {
+		pulls, err := e.acceptancePart(ctx, tx, s, pr)
+		if err != nil {
+			return err
+		}
+		if notice.Reason != "" && pulls != "" {
+			notice.Reason = strings.TrimSuffix(notice.Reason, ".") + "."
+		}
+		notice.Reason = strings.TrimSpace(notice.Reason + pulls)
+	}
+	if err := e.notice(ctx, tx, issue.Key, notice); err != nil {
 		return err
 	}
 	// The deployment's hooks that stand on a move back fire once its start has written the agent of
@@ -3560,9 +3650,12 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 // move with the issue's phase (moveTask), and the issue's write and its mark of movement. A hold,
 // where one is given, overlays the phase the task's new place derives, which its From names, and
 // holds the task too (record.Store.HoldTask), whose hold the issue's derivation reads, for every
-// run with plan rows. s's copy is left standing where its task now stands, and the issue is written
-// where its tasks put it (putScope). The status written is the one of the phase the issue arrives
-// in (arrivedPhase), carrying the move's reason, in one row, whatever the plan's count of tasks.
+// run with plan rows; the one hold that stands over tasks that are all done, the hold for the
+// issue's pull requests (record.HoldForPullRequests, holdForPullRequests), holds no task and keeps
+// the From it is given, merging, which the derivation keeps over done tasks (derivedStanding). s's
+// copy is left standing where its task now stands, and the issue is written where its tasks put it
+// (putScope). The status written is the one of the phase the issue arrives in (arrivedPhase),
+// carrying the move's reason, in one row, whatever the plan's count of tasks: none for a hold.
 func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, s *TaskScope, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
 	hold *record.Hold, handoff record.PhaseRow, pr *record.PullRequest, reason string) (phase.Phase, record.Issue, error) {
 	issue, w := &s.issue, &s.walk
@@ -3584,14 +3677,16 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, s *TaskScope, trigger Tr
 	issue.Hold = nil
 	if hold != nil {
 		overlay := *hold
-		overlay.From = issue.Phase
-		issue.Phase, issue.Hold = phase.Held, &overlay
-		if w.Stored {
-			if err := e.store.HoldTask(ctx, tx, issue.Key, issue.Generation, w.Task, overlay.Reason); err != nil {
-				return "", record.Issue{}, err
+		if overlay.Reason != record.HoldForPullRequests {
+			overlay.From = issue.Phase
+			if w.Stored {
+				if err := e.store.HoldTask(ctx, tx, issue.Key, issue.Generation, w.Task, overlay.Reason); err != nil {
+					return "", record.Issue{}, err
+				}
+				w.State, w.HoldReason = record.TaskHeld, overlay.Reason
 			}
-			w.State, w.HoldReason = record.TaskHeld, overlay.Reason
 		}
+		issue.Phase, issue.Hold = phase.Held, &overlay
 	}
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
@@ -3679,6 +3774,33 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, s TaskScope, tr
 		return err
 	}
 	return e.tellRetroHeld(ctx, tx, s.issue, s.walk, held, trigger)
+}
+
+// holdForPullRequests is the move of s's task into done, to at place, by trigger, the end of the
+// last step of a task that merges nothing, where that end ends the issue's last task and a link of
+// its set holds its close (holds, setHolds, dispatch://INFRA-5910 decision 9): no merge is in hand
+// to wait with, so the task moves to done and the issue stands held for its pull requests from
+// merging over tasks that are all done (record.HoldForPullRequests, arrive), in place of the close.
+// The hold writes no status, since held has none, so Dispatch is not told done; it starts nothing,
+// since no merge step is left in any task's line to start a merger through, and the issue does not
+// leave the workflow. The architect is told the move, as any move tells it (noticeFor), and each
+// link that holds the close, once (tellHolds). The merge or the end of the last of those pull
+// requests, or the removal of its link, judges the close again (judgeClose), which releases the
+// hold and closes the issue (releaseHeldClose).
+func (e *Engine) holdForPullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, trigger TriggerKind, to phase.Phase, place record.TaskPlace,
+	handoff record.PhaseRow, pr *record.PullRequest, reason string, holds []heldLink) error {
+	issue, w := s.issue, s.walk
+	ended := w.endingRole(issue.Phase)
+	from, written, err := e.arrive(ctx, tx, &s, trigger, to, place, &record.Hold{From: phase.Merging, Reason: record.HoldForPullRequests}, handoff, pr, reason)
+	if err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: an issue whose tasks are all done is held for the pull requests of its set that hold its close", "issue", issue.Key,
+		"tree", issue.Tree, "task", w.Task, "holds", len(holds))
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, to, handoff, reason, ended)); err != nil {
+		return err
+	}
+	return e.tellHolds(ctx, tx, written, holds)
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design
@@ -4059,19 +4181,21 @@ func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return record.WorkerClaim(project, issue.Key, role, rows)
 }
 
-// issueForBranch is the issue a pull request on branch is recorded for (pullRequestOpened, its one
-// caller): the issue of branch's shape (claim.BranchIssue), when it is recorded on repo, as its
-// record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as sameRepository compares two
-// names — without case, as GitHub compares names, and a configured rename's two names as one
-// repository: a pull request on legion/<KEY> in another repository is never <KEY>'s. It is nil
-// where a task of the issue's plan holds no such branch, or for an issue with no plan rows the
-// branch is not its own (record.StoredPlan.HoldsBranch, the rule the merge's close reads too): a
-// person's or a fork's pull request on a name of a task's shape that no task was given, and one
-// whose row the record deleted when it let it go, delivered or reopened again, are no issue's. The
-// one task of a plan of one that has not started holds the issue's own branch only where its
-// generation gave that branch to no task (record.Store.BranchGiven), since its start then gives
-// it a branch of its own. The task of a pull request on branch is read from the branch wherever it
-// is needed (viewOfPullRequest, record.PullRequest.Task).
+// issueForBranch is the issue a pull request on branch is recorded for as a task's
+// (pullRequestOpened, its one caller, which reads the issue that links the pull request where this
+// finds none, linkingIssue): the issue of branch's shape (claim.BranchIssue), when it is recorded
+// on repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
+// sameRepository compares two names — without case, as GitHub compares names, and a configured
+// rename's two names as one repository: a pull request on legion/<KEY> in another repository is
+// never a task's of <KEY> (dispatch://INFRA-5910 decision 22). It is nil where a task of the
+// issue's plan holds no such branch, or for an issue with no plan rows the branch is not its own
+// (record.StoredPlan.HoldsBranch, the rule the merge's close reads too): a person's or a fork's
+// pull request on a name of a task's shape that no task was given, and one whose row the record
+// deleted when it let it go, delivered or reopened again, are no task's. The one task of a plan of
+// one that has not started holds the issue's own branch only where its generation gave that branch
+// to no task (record.Store.BranchGiven), since its start then gives it a branch of its own. The
+// task of a pull request on branch is read from the branch wherever it is needed
+// (scopeOfPullRequest, record.PullRequest.Task).
 func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
 	key, ok := claim.BranchIssue(branch)
 	if !ok {
@@ -4085,8 +4209,8 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 	if err != nil {
 		return nil, err
 	}
-	holds := stored.HoldsBranch(issue.Key, branch)
-	if holds && stored.HoldsBranchBeforeItsStart(issue.Key, branch) {
+	holds := stored.HoldsBranch(*issue, issue.GitHubRepo, branch)
+	if holds && stored.HoldsBranchBeforeItsStart(*issue, issue.GitHubRepo, branch) {
 		given, err := e.store.BranchGiven(ctx, tx, issue.Key, issue.Generation, branch)
 		if err != nil {
 			return nil, err
@@ -4094,57 +4218,85 @@ func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch str
 		holds = !given
 	}
 	if !holds {
-		e.logOnCommit(ctx, "workflow: a pull request on a branch no task of its issue holds is not recorded",
+		e.logOnCommit(ctx, "workflow: a pull request on a branch no task of its issue holds is no task's",
 			"issue", issue.Key, "generation", issue.Generation, "branch", branch)
 		return nil, nil
 	}
 	return issue, nil
 }
 
-// pullRequest is the recorded pull request number of repo, when its issue is recorded on repo.
-// The read is made under the name the fact carries and then, when it finds nothing, under the
-// other name of the pair that names it (pullRequestUnder): a record keeps the repository it was
-// written under until the daemon's one-time rename pass writes the pair's `to` over it, so a pull
-// request already open when its repository was transferred is recorded under the name it moved
-// from while every event after names the one it moved to. A deployment that configures no rename
-// makes exactly the one query it always made; a configured one makes the second only when the
-// first finds nothing, which is the common case — an event of a pull request this daemon does not
-// record at all.
+// linkingIssue is the issue that links pull request number of repo in Dispatch, a link the daemon
+// took (record.PullRequestLink.Refused empty), read from the links by the pull request's own
+// repository and number under both names of its configured pair (linkOf), and never through a
+// plan task: a linked pull request is the issue's in any repository and on any branch
+// (dispatch://INFRA-5910 D2). It is nil where no issue links it, where its link is refused, and
+// where the record holds no such issue.
+func (e *Engine) linkingIssue(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.Issue, error) {
+	link, err := e.linkOf(ctx, tx, repo, number)
+	if err != nil || link == nil || link.Refused != "" {
+		return nil, err
+	}
+	return e.store.Issue(ctx, tx, link.Issue)
+}
+
+// pullRequest is the recorded pull request number of repo, when it is its issue's by repo
+// (ownPullRequest). The read is made under the name the fact carries and then, when it finds
+// nothing, under the other name of the pair that names it (pullRequestUnder): a record keeps the
+// repository it was written under until the daemon's one-time rename pass writes the pair's `to`
+// over it, so a pull request already open when its repository was transferred is recorded under the
+// name it moved from while every event after names the one it moved to. A deployment that
+// configures no rename makes exactly the one query it always made; a configured one makes the
+// second only when the first finds nothing, which is the common case — an event of a pull request
+// this daemon does not record at all.
 func (e *Engine) pullRequest(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestByNumber(ctx, tx, name, number)
 	})
 }
 
-// pullRequestByBranch is the recorded pull request of repo on branch, when its issue is recorded
-// on repo. It reads under the same names as pullRequest, in the same order and for the same
-// reason.
-func (e *Engine) pullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
-	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
-		return e.store.PullRequestByBranch(ctx, tx, name, branch)
+// pullRequestsOnBranch is each open pull request of repo on branch, in number order, each one its
+// issue's by repo (ownPullRequest), read under the same names as pullRequest, in the same order
+// and for the same reason, whole. A branch can hold several open pull requests, of one task, of
+// two issues or none, and a fact that names a branch and no number, a push, applies to each of
+// them (dispatch://INFRA-5910 D1, decision 20). It reads no merged or closed row: no fact it
+// serves acts on one (push returns on a merged pull request, and its round waits on no answer).
+func (e *Engine) pullRequestsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]record.PullRequest, error) {
+	return e.pullRequestsUnder(ctx, tx, repo, func(name string) ([]record.PullRequest, error) {
+		return e.store.OpenPullRequestsOnBranch(ctx, tx, name, branch)
 	})
 }
 
-// pullRequestRow and pullRequestRowByBranch are what pullRequest and pullRequestByBranch answer,
-// read under the same names and owned by the same rule, as the pull request's row alone
-// (record.Store.PullRequestRowByNumber, PullRequestRowByBranch): with none of what it remembers of
-// its settled heads, for a fact's handling that never writes the record back and reads neither
-// its SettledHeads nor its head run's Settled.
+// pullRequestRow and pullRequestRowsOnBranch are what pullRequest and pullRequestsOnBranch answer,
+// read under the same names and owned by the same rule, as rows alone
+// (record.Store.PullRequestRowByNumber, OpenPullRequestRowsOnBranch): with none of what each
+// remembers of its settled heads, for a fact's handling that never writes the record back and reads
+// neither its SettledHeads nor its head run's Settled.
 func (e *Engine) pullRequestRow(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
 	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
 		return e.store.PullRequestRowByNumber(ctx, tx, name, number)
 	})
 }
 
-func (e *Engine) pullRequestRowByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.PullRequest, error) {
-	return e.pullRequestUnder(ctx, tx, repo, func(name string) (*record.PullRequest, error) {
-		return e.store.PullRequestRowByBranch(ctx, tx, name, branch)
+func (e *Engine) pullRequestRowsOnBranch(ctx context.Context, tx pgx.Tx, repo, branch string) ([]record.PullRequest, error) {
+	return e.pullRequestsUnder(ctx, tx, repo, func(name string) ([]record.PullRequest, error) {
+		return e.store.OpenPullRequestRowsOnBranch(ctx, tx, name, branch)
 	})
 }
 
+// pullRequestSet is the set of issue's pull requests, as rows alone in the set's order
+// (record.Store.PullRequestSetsOf, read for issue alone): each pull request of its tasks and each
+// it links, in any repository. Every reader of one issue's set reads it here.
+func (e *Engine) pullRequestSet(ctx context.Context, tx pgx.Tx, issue string) ([]record.PullRequest, error) {
+	sets, err := e.store.PullRequestSetsOf(ctx, tx, []string{issue})
+	if err != nil {
+		return nil, err
+	}
+	return sets[issue], nil
+}
+
 // pullRequestUnder is the pull request read finds under repo and then, when it finds nothing,
-// under the other name of the pair that names repo (ghrepo.Under), when its issue is recorded on
-// repo (ownPullRequest).
+// under the other name of the pair that names repo (ghrepo.Under), when it is its issue's by repo
+// (ownPullRequest).
 func (e *Engine) pullRequestUnder(ctx context.Context, tx pgx.Tx, repo string, read func(name string) (*record.PullRequest, error)) (*record.PullRequest, error) {
 	pr, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, read)
 	if err != nil || pr == nil {
@@ -4153,10 +4305,46 @@ func (e *Engine) pullRequestUnder(ctx context.Context, tx pgx.Tx, repo string, r
 	return e.ownPullRequest(ctx, tx, pr, repo)
 }
 
-// ownPullRequest is pr when the issue it is recorded for is recorded on repo, as its record keeps
-// GitHub's spelling and sameRepository compares it, and nil otherwise: a GitHub fact applies to an
-// issue only when it names the issue's repository.
+// pullRequestsUnder is pullRequestUnder for a read of several pull requests: the pull requests
+// read finds under repo and then, when it finds none, under the other name of repo's pair, each
+// kept where it is its issue's by repo (ownPullRequest), in read's order.
+func (e *Engine) pullRequestsUnder(ctx context.Context, tx pgx.Tx, repo string, read func(name string) ([]record.PullRequest, error)) ([]record.PullRequest, error) {
+	found, err := ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*[]record.PullRequest, error) {
+		prs, err := read(name)
+		if err != nil || len(prs) == 0 {
+			return nil, err
+		}
+		return &prs, nil
+	})
+	if err != nil || found == nil {
+		return nil, err
+	}
+	own := (*found)[:0]
+	for at := range *found {
+		pr, err := e.ownPullRequest(ctx, tx, &(*found)[at], repo)
+		if err != nil {
+			return nil, err
+		}
+		if pr != nil {
+			own = append(own, *pr)
+		}
+	}
+	return own, nil
+}
+
+// ownPullRequest is pr where a GitHub fact that names repo applies to it: repo is pr's own
+// repository, as its row keeps GitHub's spelling and sameRepository compares it, and pr is its
+// issue's by that repository, which is the issue's own repository (record.Issue.GitHubRepo), or
+// any repository where the issue links pr (record.PullRequest.Linked, dispatch://INFRA-5910 D2). It
+// is nil otherwise: a row of another repository that the issue does not link, one written before
+// the record carried the issue's repository, is none of the issue's.
 func (e *Engine) ownPullRequest(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, repo string) (*record.PullRequest, error) {
+	if !e.sameRepository(pr.Repo, repo) {
+		return nil, nil
+	}
+	if pr.Linked {
+		return pr, nil
+	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil || !e.sameRepository(issue.GitHubRepo, repo) {
 		return nil, err

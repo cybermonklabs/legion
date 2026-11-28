@@ -20,7 +20,7 @@ func assertStandsAtStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key st
 	if step, ok := stepAt(w, issue, standingIn(at)); !ok || step.place.Place != n || step.role != role || string(step.typ) != typ {
 		t.Fatalf("stepAt where the task stands = %+v, %t; want step %d, %s, %s", step, ok, n, role, typ)
 	}
-	text, err := standingText(issue, nil, w, nil, planTold{}, nil)
+	text, err := standingText(issue, nil, w, nil, planTold{}, "")
 	if want := fmt.Sprintf(" Step %d of %d: %s.", n, len(w.Steps), role); err != nil || !strings.Contains(text.String(), want) {
 		t.Fatalf("the standing of %s = %q, %v; want it to say%s", role, text, err, want)
 	}

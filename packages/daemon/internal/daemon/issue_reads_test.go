@@ -319,8 +319,8 @@ func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T)
 //
 // The fault it catches is a follow keyed by the issue alone: b's follow replaced a's in main's
 // batch, no line said so, and a's round stood unread until its pull request's next event (its
-// control: followOnBase queueing map[taskRead]string{{issue: issue}: pr.HeadSHA}, where the batch
-// asks for #87 alone).
+// control: followOnBase queueing one key for both pull requests, where the batch asks for #87
+// alone).
 func TestARateLimitedStartReadFollowsEveryTasksPullRequest(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)

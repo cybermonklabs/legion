@@ -132,7 +132,7 @@ func TestEveryFactTypeTheDecoderReturnsIsGivenUpAtTheBound(t *testing.T) {
 			name = "a message that does not decode"
 		}
 		t.Run(name, func(t *testing.T) {
-			decoded, decodeErr := decodeMessage(envelope.subject, spec.Project, spec.Repositories, envelope.data)
+			decoded, decodeErr := decodeMessage(envelope.subject, spec.Project, spec.Repositories, nil, envelope.data)
 			switch {
 			case envelope.fact == "" && decodeErr == nil:
 				t.Fatalf("decoded %#v, want a message that does not decode", decoded.Fact)

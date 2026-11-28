@@ -113,6 +113,13 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindPullRequestLinkRead reads from GitHub a pull request that the issue links in
+	// Dispatch, in its own repository (PullRequestLinkRead).
+	OutboxKindPullRequestLinkRead OutboxKind = "pull_request_link_read"
+	// OutboxKindPullRequestBranchRead reads from GitHub the open pull requests on each branch a
+	// task of the issue holds, before the close of the last open pull request of the issue's set
+	// that held its close is decided (PullRequestBranchRead).
+	OutboxKindPullRequestBranchRead OutboxKind = "pull_request_branch_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -134,16 +141,19 @@ const (
 // that the project's merge holds changed (merge_holds_changed), the messages of a merge forward,
 // which go to the role asked to merge (MergeForwardAsker) and to the worker of the phase the issue
 // stays in (merge_forward), and an update round's ask, which goes to any claim whose process runs
-// in the issue's pod, its architect's included (update_ask). It also runs the two reads of GitHub
-// that come before a message: the read before a merge-queue removal's
-// message (merge_queue_read), and the second read of a head a first read found conflicting, whose
-// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
-// for as long as its architect holds no role (the daemon's errNoticeWaits): a worker told that its
-// open children ended its phase, a role given the words a hook fired on a move back, told that its
-// pull request left the merge queue or that the merge holds changed, asked to merge the base
-// forward or to hold while that merge runs, or asked to get ready for the replacement of its pod
-// must hear it while that is news, not after whatever the architect that owns its issue is owed.
+// in the issue's pod, its architect's included (update_ask). It also runs the four reads of
+// GitHub that run from the outbox: the read before a merge-queue removal's message
+// (merge_queue_read), the second read of a head a first read found conflicting, whose confirmation
+// is what writes a merge forward's messages (conflict_confirm), the read of a pull request the
+// issue links in Dispatch (pull_request_link_read), and the read of the branches of the issue's
+// tasks before the close of its last open pull request is told (pull_request_branch_read). It is a
+// lane of its own because the board lane's architect notices are ordered among themselves and one
+// of them waits for as long as its architect holds no role (the daemon's errNoticeWaits): a worker
+// told that its open children ended its phase, a role given the words a hook fired on a move back,
+// told that its pull request left the merge queue or that the merge holds changed, asked to merge
+// the base forward or to hold while that merge runs, or asked to get ready for the replacement of
+// its pod must hear it while that is news, not after whatever the architect that owns its issue is
+// owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -188,7 +198,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindTaskBranch, OutboxKindTaskPullRequestsClose, OutboxKindTaskCopyRemove, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPullRequestLinkRead, OutboxKindPullRequestBranchRead},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -2162,6 +2172,11 @@ type TaskPullRequestsClose struct {
 	// recorded at, or the run started again that closes those of an earlier run. A row of a
 	// generation the issue has left finishes without acting.
 	Generation uint64 `json:"generation"`
+	// Repo is the repository of the pull requests Numbers names: the issue's own repository, which
+	// the row's writer names when it queues it, since the row closes task pull requests alone and a
+	// task's branch is a branch of that repository (dispatch://INFRA-5910 decision 11). "" is a row
+	// of the release before, which names none, and means the issue's repository (RepoOf).
+	Repo string `json:"repo,omitempty"`
 	// Numbers is the number of each pull request the row closes, in the order it closes them.
 	Numbers []int `json:"numbers"`
 	// Comment is what the row writes on each pull request before it closes it.
@@ -2169,6 +2184,23 @@ type TaskPullRequestsClose struct {
 }
 
 func (TaskPullRequestsClose) OutboxKind() OutboxKind { return OutboxKindTaskPullRequestsClose }
+
+// RepoOf is the repository of the pull requests the row closes, for a row of an issue whose
+// repository is issueRepo: Repo, and issueRepo for a row that names none (repoOrIssues).
+func (p TaskPullRequestsClose) RepoOf(issueRepo string) string {
+	return repoOrIssues(p.Repo, issueRepo)
+}
+
+// repoOrIssues is the repository a row names, repo, and its issue's, issueRepo, for a row that
+// names none: a payload that names a pull request by its number names its repository since
+// dispatch://INFRA-5910 (decision 16), and the release before read each such row in its issue's
+// repository, so a row it wrote means that one.
+func repoOrIssues(repo, issueRepo string) string {
+	if repo == "" {
+		return issueRepo
+	}
+	return repo
+}
 
 // TaskCopyRemove removes the working copy of a task that a later version of the plan of the row's
 // issue removed: the jj workspace on the task's branch beside the issue's own working copy, on the
@@ -2482,8 +2514,9 @@ func (p UpdateAsk) Message(string) string { return p.Text }
 // issue is in merging at the head the event names, and its executor reads the pull request from
 // GitHub once, retrying only a read that failed. A merged answer applies the merge, as the
 // webhook's merge would. Any other answer, or no answer from any read the executor makes, applies
-// the fact that writes the merger's message (MergeQueueRemoval), and ends this row. Number is the
-// pull request, and Head the head that left the queue.
+// the fact that writes the merger's message (MergeQueueRemoval), and ends this row. Repo and Number
+// are the pull request, its repository "" in a row of the release before, which means the issue's
+// (RepoOf), and Head the head that left the queue.
 //
 // The read and the message are two rows because no row's payload is rewritten and every retry is
 // an attempt: one row that both read and waited for the merger's session would read GitHub again
@@ -2491,16 +2524,22 @@ func (p UpdateAsk) Message(string) string { return p.Text }
 // already decided. A durable row, rather than a read held in memory, is what a restart between the
 // event and the read cannot lose, since the event is acknowledged once its transaction commits.
 type MergeQueueRead struct {
+	Repo   string `json:"repo,omitempty"`
 	Number int    `json:"number"`
 	Head   string `json:"head"`
 }
 
 func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead }
 
+// RepoOf is the repository of the pull request the row reads, for a row of an issue whose
+// repository is issueRepo: Repo, and issueRepo for a row that names none (repoOrIssues).
+func (p MergeQueueRead) RepoOf(issueRepo string) string { return repoOrIssues(p.Repo, issueRepo) }
+
 // MergeQueueRemoval tells the issue's merger, on the topic of the claim of the worker on the
 // merger's step, that the pull request
 // left the merge queue at Head. The fact the merge-queue read applies writes it when GitHub did not
-// report the pull request merged (MergeQueueRead). Number is the pull request and Head the head
+// report the pull request merged (MergeQueueRead). Repo and Number are the pull request, its
+// repository "" in a row of the release before, which means the issue's (RepoOf), and Head the head
 // that left the queue. Unread is that no read of GitHub succeeded, so the daemon does not know
 // whether GitHub merged the pull request, and the message says so. GitHub's event names no reason
 // for the removal, so the merger reads the reason on GitHub itself. The row names no role and no
@@ -2518,12 +2557,17 @@ func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead 
 // out of the workflow, its tree lingers, or its pull request is not open at Head), and when the
 // merger's claim is failed or retired. A merger with no claim yet is no end: the row waits for it.
 type MergeQueueRemoval struct {
+	Repo   string `json:"repo,omitempty"`
 	Number int    `json:"number"`
 	Head   string `json:"head"`
 	Unread bool   `json:"unread,omitempty"`
 }
 
 func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
+
+// RepoOf is the repository of the pull request that left the queue, for a row of an issue whose
+// repository is issueRepo: Repo, and issueRepo for a row that names none (repoOrIssues).
+func (p MergeQueueRemoval) RepoOf(issueRepo string) string { return repoOrIssues(p.Repo, issueRepo) }
 
 // Message is what the runner publishes for issue to its merger, where repo is the repository the
 // record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a merge
@@ -2608,9 +2652,10 @@ func (p MergeHoldsChanged) Message(issue string) string {
 // after the first read, confirms the conflict, and a MERGEABLE answer releases it, each through
 // the mergeability fact every read of the pull request applies. An UNKNOWN answer is read again,
 // a bounded number of times; when the last read still answers UNKNOWN, or no read succeeded, the
-// row applies the fact that releases the first read (intake.ConflictConfirmDone). Number is the
-// pull request, Head the head the first read found conflicting, and FirstReadAt when that first
-// read was made (PullRequest.ConflictRead.At).
+// row applies the fact that releases the first read (intake.ConflictConfirmDone). Repo and Number
+// are the pull request, its repository "" in a row of the release before, which means the issue's
+// (RepoOf), Head the head the first read found conflicting, and FirstReadAt when that first read
+// was made (PullRequest.ConflictRead.At).
 //
 // A first read a MERGEABLE read released and a later CONFLICTING read of the same head made again
 // is a new first read with a row of its own, so the head alone does not say which first read a row
@@ -2624,12 +2669,17 @@ func (p MergeHoldsChanged) Message(issue string) string {
 // restart between the two reads loses nothing, since the first read's fact is acknowledged once
 // its transaction commits.
 type ConflictConfirm struct {
+	Repo        string    `json:"repo,omitempty"`
 	Number      int       `json:"number"`
 	Head        string    `json:"head"`
 	FirstReadAt time.Time `json:"firstReadAt"`
 }
 
 func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
+
+// RepoOf is the repository of the pull request the row reads again, for a row of an issue whose
+// repository is issueRepo: Repo, and issueRepo for a row that names none (repoOrIssues).
+func (p ConflictConfirm) RepoOf(issueRepo string) string { return repoOrIssues(p.Repo, issueRepo) }
 
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
 // (PullRequest.MergeForward): the two the act on a confirmed conflict writes, the withdrawal it
@@ -2718,9 +2768,10 @@ func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool
 // workflow wrote the row (the workflow's addressRoles), so a keyed agent working that step is the
 // one told; "" for a row the release before wrote, which reaches the claim the record gives Role's
 // step when it runs. Head is the head that conflicted, Landed the head the merge left ("" before it
-// lands), Base the base branch, Phase the phase the issue stays in, PullRequest the pull request's
-// number, and Why the first of R0's reasons that held (MergeForward.Why), which the ask and the
-// hold state.
+// lands), Base the base branch, Phase the phase the issue stays in, Repo and PullRequest the pull
+// request's repository and number, its repository "" in a row of the release before, which means
+// the issue's (RepoOf), and Why the first of R0's reasons that held (MergeForward.Why), which the
+// ask and the hold state.
 //
 // SentLaunch is carried by an ask the workflow sent again at a launch of the asked role's claim
 // (workflow's askAgain): that launch. A delivered row of it records the launch on the record's ask
@@ -2742,12 +2793,17 @@ type MergeForwardMessage struct {
 	Landed      string           `json:"landed,omitempty"`
 	Base        string           `json:"base"`
 	Phase       phase.Phase      `json:"phase"`
+	Repo        string           `json:"repo,omitempty"`
 	PullRequest int              `json:"pullRequest"`
 	Why         ConflictWhy      `json:"why,omitempty"`
 	SentLaunch  uint64           `json:"sentLaunch,omitempty"`
 }
 
 func (MergeForwardMessage) OutboxKind() OutboxKind { return OutboxKindMergeForward }
+
+// RepoOf is the repository of the pull request the merge forward is of, for a row of an issue
+// whose repository is issueRepo: Repo, and issueRepo for a row that names none (repoOrIssues).
+func (p MergeForwardMessage) RepoOf(issueRepo string) string { return repoOrIssues(p.Repo, issueRepo) }
 
 // mergeForwardReason is the sentence the ask and the hold give for why, one of R0's reasons
 // (ConflictWhy), of the base branch base, and "" for any other word. validateOutboxPayload refuses
@@ -2894,6 +2950,49 @@ func (p MergeForwardMessage) readMerge() string {
 		" and `git diff --stat %s^1 %s` lists the files the base brought in; for any other new head, run `git diff %s %s`.",
 		p.Landed, p.Landed, p.Landed, p.Head, p.Landed)
 }
+
+// PullRequestLinkRead is the daemon's read of a pull request that the row's issue links in Dispatch
+// (PullRequestLink, dispatch://INFRA-5910 decision 4): Repo and Number name it, in its own
+// repository, which need not be the issue's. A link whose pull request the record holds no row of
+// is a link whose read is still owed, and the read is what records it, or what refuses the link
+// (LinkRefusal). It is a durable row rather than a read held in memory for the reason
+// MergeQueueRead is: a restart between the link and its read loses nothing. The daemon's outbox
+// runs it on the role-message lane (LaneRoleMessage).
+type PullRequestLinkRead struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
+func (PullRequestLinkRead) OutboxKind() OutboxKind { return OutboxKindPullRequestLinkRead }
+
+// PullRequestBranchRead is the daemon's read from GitHub, in the row's issue's repository and with
+// the implement App, of the open pull requests on each branch a task of the issue holds there
+// (Branches), as the per-issue read lists a task's branch (dispatch://INFRA-5910 D5). The workflow
+// queues it where Number of Repo, the last open pull request of the issue's set that held its close
+// (a link that holds it, or a task's own pull request), closed without a merge at the issue's
+// generation Generation (the workflow's closed), and decides nothing of that close in that
+// transaction: a record an earlier daemon wrote can hold a second pull request of a branch in the
+// place of the first, which is still open, and an opened the daemon never got leaves an open one
+// unknown, so the close of the last recorded one could tell the architect that the issue's pull
+// request closed, or close the issue, while another that holds the close is open. The read's fact
+// (intake.PullRequestBranchReadDone) records each pull request it finds open as its opened would
+// and then decides the close (the workflow's pullRequestBranchRead). It is a durable row for the
+// reason MergeQueueRead is: a restart between the close and the read loses nothing.
+type PullRequestBranchRead struct {
+	// Generation is the issue's generation at the close: the fact of a read queued at another
+	// generation decides nothing.
+	Generation uint64 `json:"generation"`
+	// Repo and Number name the pull request that closed, in its own repository, which need not be
+	// the issue's: a linked pull request is of the set too.
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	// Branches is each branch a task of the issue holds in the issue's repository
+	// (StoredPlan.HoldsBranch), in name order: the issue's own branch for an issue with no plan
+	// rows.
+	Branches []string `json:"branches"`
+}
+
+func (PullRequestBranchRead) OutboxKind() OutboxKind { return OutboxKindPullRequestBranchRead }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
 // RetryBackoffMost.
@@ -3175,6 +3274,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindDesignChanges:
 		value := DesignNewsReconcile{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindPullRequestLinkRead:
+		value := PullRequestLinkRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindPullRequestBranchRead:
+		value := PullRequestBranchRead{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -3708,6 +3819,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
 		}
+	case PullRequestLinkRead:
+		if value.Repo == "" || value.Number < 1 {
+			return fmt.Errorf("a linked pull request's read names the repository and the number of the pull request it reads; it names %q#%d",
+				value.Repo, value.Number)
+		}
+	case PullRequestBranchRead:
+		if value.Generation == 0 || value.Repo == "" || value.Number < 1 || len(value.Branches) == 0 || slices.Contains(value.Branches, "") {
+			return fmt.Errorf("a branch read names the generation, the pull request that closed and each branch it reads; it names generation %d, %q#%d and %q",
+				value.Generation, value.Repo, value.Number, value.Branches)
+		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
@@ -3853,6 +3974,46 @@ func designReview(decision DecisionKind) bool {
 // merger's move back will write it. No earlier release decodes them, so the way back of migration
 // 20261124023617 deletes their unsent rows.
 //
+// Three kinds are of an issue with several pull requests, its tasks' and the ones it links in
+// Dispatch (dispatch://INFRA-5910): `pr-closed-others-open`, `pr-holds-close` and
+// `pr-link-refused`, each told to the issue's architect, and each naming a pull request as
+// `owner/name#number`. The workflow writes all three.
+//
+// `pr-closed-others-open` is a pull request of the issue closed without a merge while another of
+// its set that holds the close is still open (D5): a link that holds it, or a task's own pull
+// request, open and not merged. The close moves nothing, and the reason names the closed one and
+// each pull request of the set still open, a link whose read is owed or that Legion cannot read
+// among them, and another pull request of a task that the issue does not link, which holds nothing.
+// The workflow writes it in one place (tellOthersOpen), from two: the close of a pull request
+// (closed), where another that holds the close is open; and the end of the read of the branches of
+// the issue's tasks that the close of the last open one that held it queues (PullRequestBranchRead,
+// the workflow's pullRequestBranchRead), where a pull request that holds the close is open then,
+// one that read found on those branches among them. It is written in place of
+// `pr-closed-unmerged`, which the end of that read writes where none that holds the close is open
+// and the close of the issue, judged again there, neither happens nor waits for the issues beneath
+// it.
+//
+// `pr-holds-close` is a pull request of the issue's set that holds the issue's close: a linked one
+// still open, one whose read is still owed, or one whose repository the daemon does not serve or
+// cannot read (dispatch://INFRA-5910 decisions 9 and 10). It is told once for each link
+// (PullRequestLink.ToldAt), with the way out: remove the link, or have the pull request merged. The
+// workflow writes it where it tells the links that hold a close that waits (tellHolds): the close of
+// a merge in hand (closeMerged), at the merge, at a child's leave and at each boot, and the hold of
+// an issue whose tasks are all done with no merge in hand and its judge (holdForPullRequests,
+// leaveWhereDone, judgeClose); and where it holds a link refused as unserved or unreadable
+// (refuseLink), with what Legion lacks or GitHub's answer.
+//
+// `pr-link-refused` is a link of the issue that the daemon took into no set (LinkRefusal): a
+// pull request whose head is in a fork, or that the record holds for another issue. It is told once
+// for each link, as `pr-holds-close` is. The workflow writes it where it refuses such a link
+// (refuseLink): at the fact of an issue's links (dispatchIssue's takeLinks) for a link to a pull
+// request another issue holds, at the open of a task's pull request another issue links
+// (pullRequestOpened), and at the read of a linked pull request (pullRequestLinkRead) for a fork's
+// or another issue's.
+//
+// No earlier release decodes any of the three, so the way back of migration 20261127234212 deletes
+// their unsent rows.
+//
 // `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
 // disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
 // replacement that still took a disk that may hold work.
@@ -3877,6 +4038,7 @@ var validNoticeKinds = []NoticeKind{
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
 	"task-stopped", "plan-not-taken", "retro-held",
 	"task-join-failed", "pull-request-close-refused", "parts-done", "report-refused", "merge-returned",
+	"pr-closed-others-open", "pr-holds-close", "pr-link-refused",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
 	HookPromptUndeliveredNotice,
 }

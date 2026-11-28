@@ -115,6 +115,17 @@ func newLiveProof(t *testing.T, script string) liveProof {
 // on cfg before it boots: nothing here reads more of it than the project and the store.
 func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	t.Helper()
+	return newLiveProofWith(t, natsURL, true, true)
+}
+
+// newLiveProofWith is newLiveProofOn that creates the stream the daemon's intake consumes only
+// where createStream is set, and migrates the store only where migrate is set: a run whose
+// Dispatch publishes its events on natsURL (a scratch Dispatch with its events on) reconciles the
+// stream itself, and one created beside it by another configuration is refused; and a run that
+// upgrades a store an earlier release migrated builds that store itself, which the daemon's boot
+// then migrates.
+func newLiveProofWith(t *testing.T, natsURL string, createStream, migrate bool) liveProof {
+	t.Helper()
 	cfg := workflowConfig(t, natsURL)
 	p := liveProof{t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), notices: newNoticeListener(), records: record.NewStore()}
 	p.cfg.DispatchURL = p.board.url
@@ -127,12 +138,17 @@ func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 		t.Fatal(err)
 	}
 	p.js = workflowJetStream(t, natsURL)
-	testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	if createStream {
+		testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	}
 	ctx := context.Background()
 	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(p.st.Close)
+	if !migrate {
+		return p
+	}
 	if _, err := p.st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}

@@ -17,9 +17,10 @@ var repositoryCorrectionKeys = []string{"repoBefore", "repoCorrectedAt", "repoCh
 // carries none of the four keys, which `omitempty` leaves off the wire rather than writing as
 // empty strings a strict reader would refuse.
 //
-// The issue's pull request is read beside them: its repository is the one it was opened on, which
-// a correction leaves behind, so a reader of one record reads that the issue has open work on a
-// repository it has left.
+// The pull request the issue opened before the correction, still open on the repository it left,
+// is in neither the issue's set nor its merge, so the state serves it in no view: the correction
+// is what the record shows, and the issue's next task names that pull request
+// (dispatch://INFRA-5910/comment/234a0d3e-de71-4456-bafe-c042a6191e4d).
 func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 	issues := issueViews(t, body)
@@ -44,22 +45,13 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 		}
 	}
 
-	// The pull request LEGION-210 opened before the correction is open on acme/widgets still,
-	// which this record says beside the repository the issue works: no key of its own, and no
-	// notice, say it. The daemon applies no GitHub event of that pull request to the issue any
-	// more (workflow's ownPullRequest), so a reader that compares the two names is reading a
-	// state rather than guessing at a loss.
-	pull, shown := corrected["pullRequest"].(map[string]any)
-	if !shown {
-		t.Fatalf("LEGION-210 carries no pullRequest in %s", body)
-	}
-	for field, want := range map[string]any{"repo": "acme/widgets", "number": float64(1243), "state": "open"} {
-		if pull[field] != want {
-			t.Errorf("LEGION-210's pull request %s = %v, want %v: the repository the issue left, and the pull request still open on it", field, pull[field], want)
+	// The pull request LEGION-210 opened before the correction is open on acme/widgets still. It is
+	// in neither the issue's set nor its merge (record's pullRequestRow.ofSet and ownPullRequest), so
+	// the state carries neither pullRequest nor pullRequests for it.
+	for _, field := range []string{"pullRequest", "pullRequests"} {
+		if value, carried := corrected[field]; carried {
+			t.Errorf("LEGION-210 carries %s = %v, want none: its pull request open on acme/widgets, the repository it left, is in no view", field, value)
 		}
-	}
-	if pull["repo"] == corrected["repo"] {
-		t.Errorf("LEGION-210's pull request is on %v, the repository the issue works: the fixture no longer shows a pull request left behind", pull["repo"])
 	}
 
 	// LEGION-212 still works the repository its record names: Dispatch named another one and the

@@ -152,6 +152,29 @@ func TestRepositoryCorrectionNamesThePullRequestLeftOnTheRepositoryTheIssueLeft(
 	}
 }
 
+// A correction that left two open pull requests on the repository the issue has left names each,
+// in the order of their numbers whatever the order they opened in, one sentence for each, and
+// then says once that the daemon applies the events of neither to this issue. A record keeps one
+// row for each pull request (dispatch://INFRA-5910 D1), so the read answers both
+// (record.Store.LeftPullRequests), and a merged one beside them is no work left open and is not
+// named.
+func TestRepositoryCorrectionNamesEachPullRequestLeftOnTheRepositoryTheIssueLeft(t *testing.T) {
+	t.Parallel()
+	r := newLeftPullRequestRig(t)
+	r.opens(leftRepo, 1260, record.PullRequestOpen)
+	r.opens(leftRepo, leftPullRequestNumber, record.PullRequestOpen)
+	r.opens(leftRepo, 1240, record.PullRequestMerged)
+	r.corrects(workedRepo, "release/v7.1")
+
+	const both = "The pull request acme/widgets#1251 is open on acme/widgets. " +
+		"The pull request acme/widgets#1260 is open on acme/widgets. " +
+		"The daemon does not apply GitHub events of those pull requests to this issue."
+	if task := r.task(); !strings.HasSuffix(task, correctionSentences+" "+both) {
+		t.Fatalf("the task of a corrected issue with two pull requests open on the repository it left = %q, want it to end with %q",
+			task, correctionSentences+" "+both)
+	}
+}
+
 // Where no pull request of the issue stands on a repository the issue has left, the task carries
 // no such sentence: a corrected issue with no pull request recorded at all, one whose pull request
 // was merged or closed before the correction, and one whose pull request is on the repository the

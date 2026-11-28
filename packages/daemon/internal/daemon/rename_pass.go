@@ -28,7 +28,7 @@ const (
 	renameTableLine   = "rename pass: wrote each configured rename's new name over its old one on the stored rows of a table"
 	renameLeftLine    = "rename pass: left a configured rename's stored names as they are, since GitHub does not show its transfer yet; a later boot or pod end writes them once it does"
 	renameKeptLine    = "rename pass: kept an issue's stored repository names as they are, since its workspace may still be under the old name"
-	renameDeletedLine = "rename pass: deleted an issue's pull request row, since another issue's row holds its branch under the new name"
+	renameDeletedLine = "rename pass: deleted an issue's pull request row, since another issue's row holds the same pull request, its repository and number, under the new name"
 	renameFailedLine  = "rename pass: the write of an issue's stored repository names failed; the next boot or pod end writes them again"
 	renameUnreadLine  = "rename pass: the stored rows that name a rename's old name could not be read; the next boot or pod end reads them again"
 )
@@ -314,7 +314,7 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 		if written, err = record.RenameIssueRepository(ctx, tx, issue, from, to); err != nil {
 			return err
 		}
-		wrote := written.Deleted != nil
+		wrote := len(written.Deleted) > 0
 		for _, rows := range written.Rows {
 			wrote = wrote || rows > 0
 		}
@@ -323,9 +323,9 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 		}
 		deleted := written.Deleted
 		store.OnCommit(ctx, func() {
-			if deleted != nil {
-				p.log.Warn(renameDeletedLine, "issue", deleted.Issue, "kept", deleted.Holder, "repo", deleted.Repo, "to", deleted.To,
-					"branch", deleted.Branch, "number", deleted.Number)
+			for _, one := range deleted {
+				p.log.Warn(renameDeletedLine, "issue", one.Issue, "kept", one.Holder, "repo", one.Repo, "to", one.To,
+					"branch", one.Branch, "number", one.Number)
 			}
 			p.written()
 		})
@@ -334,19 +334,26 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 	return written, err
 }
 
-// renamePass is the rename pass over the project's stored records under keep, for the pairs the
-// deployment configures (repositories.renames), each written once GitHub shows its transfer
-// (renameTransfer).
-func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
-	var renames ghrepo.Renames
-	if w.repositories != nil {
-		renames = w.repositories.renames
+// renames is the deployment's repository equivalence (repositories.renames, which is
+// cfg.RepositoryRenames), the zero value, which configures none, for a runtime that holds no
+// repository state, as a test that builds a runtime by hand leaves it: the rename pass's pairs
+// (renamePass), and the renames the reads of the record outside the engine take
+// (workflow.ArchitectStartOf, at the narrowing of a held task, rootTask).
+func (w *workflowRuntime) renames() ghrepo.Renames {
+	if w.repositories == nil {
+		return ghrepo.Renames{}
 	}
+	return w.repositories.renames
+}
+
+// renamePass is the rename pass over the project's stored records under keep, for the pairs the
+// deployment configures (renames), each written once GitHub shows its transfer (renameTransfer).
+func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
 	log := w.log
 	if log == nil {
 		log = slog.Default()
 	}
-	return renamePass{pool: w.pool, project: w.dispatchProject, renames: renames, transferred: w.renameTransfer, keep: keep, written: w.wakeLive, log: log}
+	return renamePass{pool: w.pool, project: w.dispatchProject, renames: w.renames(), transferred: w.renameTransfer, keep: keep, written: w.wakeLive, log: log}
 }
 
 // renameTransfer is whether GitHub shows that pair's transfer has happened, the rename pass's

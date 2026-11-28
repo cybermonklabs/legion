@@ -84,7 +84,7 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 	w := &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api,
-		mergeStates: newMergeStateSet(), mergeStateRunning: map[taskRead]*mergeStateRun{}, baseWake: newWakeSet[string](),
+		mergeStates: newMergeStateSet(), mergeStateRunning: map[pullRead]*mergeStateRun{}, baseWake: newWakeSet[string](),
 		etags: githubrest.NewETags(etagBytes),
 	}
 	w.engineOver(record.NewStore())
@@ -95,7 +95,7 @@ func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntim
 // facts w's reads make with it (workflowRuntime.handlers).
 func (w *workflowRuntime) engineOver(records record.Store) {
 	w.engine = workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
-		ReadMergeState: w.queueMergeState, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
+		ReadMergeState: w.queueMergeStateOf, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
 	w.handlers = []intake.Handler{w.engine}
 }
 

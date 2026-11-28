@@ -430,7 +430,7 @@ func (r *parentWaitsLive) rootComesBack() {
 	}
 	r.note("read back: %s done; %s in %s holding slot %s, out of admission.blocked, its implementer given entry %d",
 		r.child, r.key, root.Phase, slotOf(root), root.GivenEntry)
-	merged := fmt.Sprintf("These Dispatch children of %s merged during the wait: %s (pull request #%d).", r.key, r.child, r.childPR)
+	merged := fmt.Sprintf("These Dispatch children of %s merged during the wait: %s (pull request %s#%d).", r.key, r.child, liveRepo, r.childPR)
 	prompt := r.imp.takeTask(merged)
 	for _, unsaid := range []string{"merge the default branch", "full test round"} {
 		if strings.Contains(prompt.Message, unsaid) {

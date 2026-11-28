@@ -45,7 +45,7 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 	handoff := record.PhaseRow{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1, HandoffCommit: "head"}
 	reviewer := record.PhaseRow{Role: claim.RoleReviewer, Entry: 3}
 	standing := func(w Walk) Standing {
-		at, err := standingText(composed, engine.cfg.WorkspaceDir, w, rows, planTold{}, nil)
+		at, err := standingText(composed, engine.cfg.WorkspaceDir, w, rows, planTold{}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 	step, today := standing(stepWalk), standing(todaysWalk())
 	// numbered is today's standing for a task whose pull request is #42 (pullRequestPart).
 	numbered := today
-	numbered.pull = pullRequestPart(composed, &record.PullRequest{Number: 42})
+	numbered.pull = pullRequestPart(composed, &record.PullRequest{Repo: "acme/widgets", Number: 42}, scopedPulls{})
 	// titled is the issue as composed under a Dispatch title, which the continue line holds: the
 	// person's words, after the daemon's working copy line.
 	titled := func(title string) record.Issue {
@@ -133,7 +133,8 @@ func TestATaskOnABranchOfItsOwnIsSentTheWorkingCopyOfThatBranch(t *testing.T) {
 	w := Walk{Stored: true, Task: "b", Branch: "legion/LEGION-208.b", Text: "Build the widget.", Steps: steps,
 		Line: line, Places: record.LinePlaces(line, false)}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(composed, engine.cfg.WorkspaceDir, w, rows, planTold{}, &record.PullRequest{Number: 44})
+	at, err := standingText(composed, engine.cfg.WorkspaceDir, w, rows, planTold{},
+		pullRequestPart(composed, &record.PullRequest{Repo: "acme/widgets", Number: 44}, scopedPulls{}))
 	if err != nil {
 		t.Fatal(err)
 	}

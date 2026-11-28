@@ -145,6 +145,17 @@ type DispatchIssue struct {
 	// at the observation's Seq, behind the claim's own fence (record.PutDispatchClaim).
 	ClaimedBy  string
 	ClaimKnown bool
+	// Links is each pull request the observation shows the issue linking by its URL (Dispatch's
+	// external_links), in Dispatch's order, each once, and nil for none: each link whose URL is
+	// https://github.com/<owner>/<name>/pull/<number>, by the rule of Dispatch's
+	// linkedPullRequestTerms, a link into the issue's own repository among them; any other link
+	// names no pull request and is left out (pullRequestLink). LinksKnown says the observation named
+	// the links at all: an event that carries no external_links (a Dispatch release before it sent
+	// them), one whose links Dispatch did not read (a null), one whose links could not be read, and
+	// the listing's fact (ListedIssue), say nothing of them. That is never no links, so the issue's
+	// links are replaced from an observation that named them alone.
+	Links      []PullRequestLink
+	LinksKnown bool
 	// Observed is a fact made from Dispatch's view of an issue the workflow did not record when the
 	// fact was prepared (ObservedIssue), not from one event, so no actor is known to have written
 	// its state. It reaches only an issue still unrecorded when it applies, and only while no later
@@ -180,6 +191,15 @@ type DispatchIssue struct {
 	LabelSetter string
 }
 
+// PullRequestLink is one pull request an issue links in Dispatch by its URL: its repository, as
+// the URL names it, lowercased, owner/name, and its number. Dispatch writes a link under the name
+// its own renames give the repository now (refs.Renames.CanonicalURL); the decoder's index of the
+// links reads one under either name of a rename the daemon is configured with (linkIndex).
+type PullRequestLink struct {
+	Repo   string
+	Number int
+}
+
 // RepositoryRefusalKind is what refused a repository (DispatchIssue.RepositoryRefusal), which is
 // what a person can do about it: install an App on the repository, or set another one.
 type RepositoryRefusalKind uint8
@@ -211,18 +231,36 @@ func (i DispatchIssue) LabelSetByPerson() bool {
 }
 
 // ObservedIssue is issue as Dispatch's detail shows it now, as an Observed fact at the sequence
-// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers and
-// repository, with no event's type or actor, since no one event wrote that state.
-// release_children's todo child and an unrecorded issue's admission event are applied from it.
+// Dispatch has run to: its status, title, parent, rank, priority, labels, hand-over, blockers,
+// repository and links to pull requests (DetailLinks), with no event's type or actor, since no one
+// event wrote that state. release_children's todo child and an unrecorded issue's admission event
+// are applied from it.
 func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
 		parent = *issue.Parent
 	}
+	links, linksKnown := DetailLinks(issue)
 	return DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Status: issue.Status, Title: issue.Title, Parent: parent,
 		Rank: issue.Rank, Priority: dispatchPriority(issue.Priority), Resolved: dispatchResolved(issue.Resolved), HandedOver: issue.HandedOver,
-		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo,
-		Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Observed: true}
+		Labels: issue.Labels, ResolvedRepo: issue.ResolvedRepo, Blockers: issue.BlockedBy, ClaimedBy: issue.Claim.Holder(),
+		ClaimKnown: !issue.ClaimUnread, Links: links, LinksKnown: linksKnown, Observed: true}
+}
+
+// DetailLinks is each pull request the external links of issue, Dispatch's detail of it, name
+// (pullRequestLink), each once, in Dispatch's order, nil for none, and whether the detail named
+// its links at all (dispatch.Issue.LinksKnown): the links an event's decode reads from its
+// external_links (issueEventLinks), read from the detail. The boot reads each running issue's
+// links from it (the daemon's readLinksAtBoot).
+func DetailLinks(issue dispatch.Issue) ([]PullRequestLink, bool) {
+	if !issue.LinksKnown {
+		return nil, false
+	}
+	var links []PullRequestLink
+	for _, url := range issue.ExternalLinks {
+		links = appendPullRequestLink(links, url)
+	}
+	return links, true
 }
 
 // OwnStatusWrite is the event the daemon's own status write makes, as the Dispatch consumer
@@ -241,7 +279,8 @@ func OwnStatusWrite(written dispatch.Issue) DispatchIssue {
 }
 
 // ListedIssue is issue as Dispatch's issue listing shows it, as a fact at the issue's sequence, with
-// no event's type or actor: what a boot's reconcile records or prepares from.
+// no event's type or actor: what a boot's reconcile records or prepares from. The listing serves no
+// links, so it says nothing of them (DispatchIssue.LinksKnown).
 func ListedIssue(issue dispatch.IssueSummary) DispatchIssue {
 	parent := ""
 	if issue.Parent != nil {
@@ -834,11 +873,19 @@ type PullRequestOpened struct {
 	Branch  string
 	HeadSHA string
 	// HeadRepo is the repository the pull request's head branch lives in, as GitHub names it
-	// (head.repo.full_name; the listener's head_repo): Repo itself for a branch of the repository,
-	// another for a fork's, and empty when GitHub no longer has it (a deleted fork) or the source
-	// read none. The workflow records a pull request only when this is Repo, since anyone may open a
-	// fork's pull request and name its head an issue's branch or a task's.
+	// (head.repo.full_name; the listener's head_repo): the repository the pull request merges into
+	// for a branch of that repository, another for a fork's, and empty when GitHub no longer has it
+	// (a deleted fork) or the source read none. The workflow records a pull request only when this
+	// is the repository it merges into (BaseRepository), since anyone may open a fork's pull request
+	// and name its head an issue's branch or a task's.
 	HeadRepo string
+	// BaseRepo is the repository the pull request merges into, as GitHub names it now
+	// (base.repo.full_name), where the fact names the pull request by another name in Repo: the
+	// read of a pull request an issue links (the workflow's linkReadOf) names it by the name the
+	// record keys it under, its link's, which for a repository GitHub renamed with no configured
+	// rename is the name it had. Empty for an event and for every other read, whose Repo is that
+	// repository.
+	BaseRepo string
 	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
 	// base.ref), empty from a listener that predates the field; the workflow records it so a push
 	// onto that branch finds the pull request again (record.PullRequest.Base).
@@ -853,22 +900,38 @@ type PullRequestOpened struct {
 
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
+// BaseRepository is the repository the pull request merges into, as GitHub names it: BaseRepo
+// where the fact carries one, and Repo, the repository an event or a read names, otherwise.
+func (f PullRequestOpened) BaseRepository() string {
+	if f.BaseRepo != "" {
+		return f.BaseRepo
+	}
+	return f.Repo
+}
+
+// OpenedOn is the PullRequestOpened a read of GitHub that found pull open on branch of repo stands
+// for, as its webhook would have carried it, with its base, which the reads of the merge state
+// follow on before any of them has answered: the one literal of each read that applies an opened
+// (OpenedRead, and the daemon's read of a task's branch and of the branches of an issue's tasks).
+// Whether it is a reopen is each reader's to say (Reopened).
+func OpenedOn(repo, branch string, pull githubrest.PullRequest) PullRequestOpened {
+	return PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
+		HeadRepo: pull.HeadRepository(), Body: pull.Body, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt}
+}
+
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - its base, which the reads of the merge state
-// follow on before any of them has answered, and a reopen when recorded is the same pull request -
-// and the event id, under source "github", it is applied under: the project, the
-// repository and number, what the read observed, the head and GitHub's updated_at, and what the
-// workflow decides an opened by beside it, the issue's generation and its pull request record as
-// the read found it (nil for none: its number, state and clock). The id holds no read time and no
-// boot, so the same observation applied twice against the same record is one fact (ApplyFact
-// answers the second Duplicate, and Applied finds it before), whichever reader applies it - the
-// daemon's per-issue read or the implementer's completion - while a pull request that changed since,
-// or a record that changed since (a new generation removes a closed one the opened was declined
-// against), makes a new one.
+// stands for (OpenedOn), a reopen when recorded is the same pull request, and the event id, under
+// source "github", it is applied under: the project, the repository and number, what the read
+// observed, the head and GitHub's updated_at, and what the workflow decides an opened by beside
+// it, the issue's generation and its pull request record as the read found it (nil for none: its
+// number, state and clock). The id holds no read time and no boot, so the same observation applied
+// twice against the same record is one fact (ApplyFact answers the second Duplicate, and Applied
+// finds it before), whichever reader applies it - the daemon's per-issue read or the implementer's
+// completion - while a pull request that changed since, or a record that changed since (a new
+// generation removes a closed one the opened was declined against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA,
-		HeadRepo: pull.HeadRepository(), Body: pull.Body,
-		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
+	fact := OpenedOn(repo, branch, pull)
+	fact.Reopened = recorded != nil && recorded.Number == pull.Number
 	against := "none"
 	if recorded != nil {
 		against = fmt.Sprintf("%d/%s/%s", recorded.Number, recorded.State, recorded.HeadUpdatedAt.UTC().Format(time.RFC3339Nano))
@@ -1213,14 +1276,16 @@ type PullRequestDequeued struct {
 func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
 
 // MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
-// merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
-// or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know
-// whether GitHub merged it. Head is the head that left the merge queue (PullRequestDequeued). The
-// workflow writes the message that tells the issue's merger, while the issue still stands in
-// merging at Head (workflow's mergeQueueReadDone). A merged answer applies PullRequestMerged
-// instead, as the webhook's merge would.
+// merge: never decoded from an event. GitHub answered that pull request Number of Repo, a pull
+// request of Issue, is open, or closed unmerged, or, with Unread, no read of it succeeded, so the
+// daemon does not know whether GitHub merged it. Repo is the repository the read's row names
+// (record.MergeQueueRead.RepoOf), which need not be the issue's. Head is the head that left the
+// merge queue (PullRequestDequeued). The workflow writes the message that tells the issue's
+// merger, while the issue still stands in merging at Head (workflow's mergeQueueReadDone). A
+// merged answer applies PullRequestMerged instead, as the webhook's merge would.
 type MergeQueueReadDone struct {
 	Issue  string
+	Repo   string
 	Number int
 	Head   string
 	Unread bool
@@ -1230,16 +1295,18 @@ func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
-// pull request Number of Issue at the row's last attempt, or, with Unread, no read of it
-// succeeded, so no second read confirmed the first read's conflict at Head, made at FirstReadAt
-// (record.ConflictConfirm.FirstReadAt), and none released it. The workflow then clears the first
-// read while the record still holds that one, of Head and made at FirstReadAt (workflow's
-// conflictConfirmDone), so the next read that finds the head conflicting is a first read again. A
-// first read of Head made at another time is one a later read made after this row's was released,
-// with a row of its own, and it is left standing. A CONFLICTING or MERGEABLE answer applies
-// PullRequestMergeability instead, as every read of the pull request does.
+// pull request Number of Repo, a pull request of Issue, at the row's last attempt, or, with Unread,
+// no read of it succeeded, so no second read confirmed the first read's conflict at Head, made at
+// FirstReadAt (record.ConflictConfirm.FirstReadAt), and none released it. Repo is the repository
+// the row names (record.ConflictConfirm.RepoOf), which need not be the issue's. The workflow then
+// clears the first read while the record still holds that one, of Head and made at FirstReadAt
+// (workflow's conflictConfirmDone), so the next read that finds the head conflicting is a first
+// read again. A first read of Head made at another time is one a later read made after this row's
+// was released, with a row of its own, and it is left standing. A CONFLICTING or MERGEABLE answer
+// applies PullRequestMergeability instead, as every read of the pull request does.
 type ConflictConfirmDone struct {
 	Issue       string
+	Repo        string
 	Number      int
 	Head        string
 	FirstReadAt time.Time
@@ -1247,6 +1314,107 @@ type ConflictConfirmDone struct {
 }
 
 func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// PullRequestLinkReadDone is the daemon's read of a pull request that Issue links in Dispatch
+// (record.PullRequestLinkRead) ending: never decoded from an event. Repo and Number are the link,
+// the repository as the link names it (PullRequestLink), which need not be the issue's. A read
+// GitHub answered gives the pull request as GitHub shows it (LinkRead): State, open, merged or
+// closed unmerged; its head commit (HeadSHA); the repository its head lives in (HeadRepo, GitHub's
+// head.repo.full_name, "" once GitHub no longer has a fork); the repository it merges into
+// (BaseRepo, GitHub's base.repo.full_name), the pull request's own repository under the name GitHub
+// holds it under now, which a link that names a repository by a name GitHub renamed spells
+// otherwise; a HeadRepo another than BaseRepo is a fork's head (record.LinkRefusedFork); its head
+// branch (Branch), which the decoder's index of the links takes at the read's commit
+// (Consumers.SetLinkHead); its base; its merge commit (MergeSHA), only where it merged; its page
+// (URL); and GitHub's updated_at. NotFound is a read GitHub answered 404
+// (record.LinkRefusedUnreadable). Unserved is why the daemon read nothing: Repo fails the checks the
+// daemon makes of a recorded repository (record.LinkRefusedUnserved), and it names the App that is
+// not installed on it, as the architect is told. Each of the two leaves GitHub's fields empty. The
+// workflow's handler applies it (workflow's pullRequestLinkRead): it records the linked pull
+// request, or holds the link refused, and moves no phase of its own. The outbox's executor of
+// record.PullRequestLinkRead applies it for a link read after the link came, and the boot's fact
+// carries the reads the boot made (DaemonBooted.Links). Like every fact, it applies under the one
+// fact lock (ApplyFact, SerializeFacts).
+type PullRequestLinkReadDone struct {
+	Issue     string
+	Repo      string
+	Number    int
+	State     record.PullRequestState
+	HeadSHA   string
+	HeadRepo  string
+	BaseRepo  string
+	Branch    string
+	Base      string
+	MergeSHA  string
+	URL       string
+	UpdatedAt time.Time
+	NotFound  bool
+	Unserved  string
+}
+
+func (f PullRequestLinkReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// LinkRead is the PullRequestLinkReadDone a read of GitHub that found pull, the pull request
+// issue links in repo, stands for, and the event id it is applied under: the project, the issue,
+// the repository and number, and what the read observed, the state, the head and GitHub's
+// updated_at. The id holds no read time and no boot, so the same answer read twice is one fact
+// (ApplyFact answers the second Duplicate), whichever reader applies it, while a pull request that
+// changed since makes a new one. GitHub's state is closed for a merged pull request, so the merge
+// decides first (githubrest.PullRequest.IsMerged). The merge commit is kept only for a merge:
+// GitHub's merge_commit_sha of an open pull request names its test merge, which is no merge.
+func LinkRead(project, issue, repo string, pull githubrest.PullRequest) (PullRequestLinkReadDone, string) {
+	state := record.PullRequestClosed
+	switch {
+	case pull.IsMerged():
+		state = record.PullRequestMerged
+	case pull.State == "open":
+		state = record.PullRequestOpen
+	}
+	fact := PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: pull.Number, State: state, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(),
+		BaseRepo: pull.BaseRepository(), Branch: pull.Head.Ref, Base: pull.Base.Ref, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt}
+	if state == record.PullRequestMerged {
+		fact.MergeSHA = pull.MergeCommitSHA
+	}
+	return fact, fmt.Sprintf("link-read:%s:%s:%s#%d:%s:%s:%s", project, issue, repo, pull.Number, state, pull.Head.SHA, pull.UpdatedAt.UTC().Format(time.RFC3339Nano))
+}
+
+// LinkUnserved is the PullRequestLinkReadDone of the link of issue to pull request number of repo,
+// a repository the daemon does not serve (detail says why, in the notice's clause), and its event
+// id; LinkNotFound is the one of a link GitHub answered 404 for. Like LinkRead's, neither id holds
+// a read time or a boot, so the same answer read twice is one fact.
+func LinkUnserved(project, issue, repo string, number int, detail string) (PullRequestLinkReadDone, string) {
+	return PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, Unserved: detail},
+		fmt.Sprintf("link-read:%s:%s:%s#%d:unserved", project, issue, repo, number)
+}
+
+func LinkNotFound(project, issue, repo string, number int) (PullRequestLinkReadDone, string) {
+	return PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: number, NotFound: true},
+		fmt.Sprintf("link-read:%s:%s:%s#%d:not-found", project, issue, repo, number)
+}
+
+// PullRequestBranchReadDone is the daemon's read of the branches of Issue's tasks
+// (record.PullRequestBranchRead) ending: never decoded from an event. The read was queued where
+// pull request Number of Repo, the last open one of Issue's set that held its close, closed without
+// a merge at the issue's generation Generation (dispatch://INFRA-5910 D5), and it read from GitHub,
+// in the issue's repository, the open pull requests on each branch a task of the issue holds there,
+// as the per-issue read lists a task's branch. Open is each pull request it found, in number
+// order, as the opened its webhook would have carried (PullRequestOpened): its repository, number,
+// branch, base, head, head repository, page and GitHub's updated_at; whether it is a reopen is the
+// record's to say, which the workflow reads. Unread is why the read of a branch failed at its last
+// attempt, "" where each branch was read; the pull requests the other branches showed open are in
+// Open all the same. The workflow's handler records each of Open as its opened would record it and
+// then decides the close (workflow's pullRequestBranchRead). Like every fact, it applies under the
+// one fact lock (ApplyFact, SerializeFacts).
+type PullRequestBranchReadDone struct {
+	Issue      string
+	Generation uint64
+	Repo       string
+	Number     int
+	Open       []PullRequestOpened
+	Unread     string
+}
+
+func (f PullRequestBranchReadDone) namedIssue() (string, bool) { return f.Issue, true }
 
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
@@ -1280,9 +1448,10 @@ type Push struct {
 
 func (Push) namedIssue() (string, bool) { return "", false }
 
-// BasePush is a push to a branch that is no issue's (decodePush), which is the shape of a branch
-// pull requests sit on: a base. GitHub recomputes whether each head on that base still merges into
-// it and sends no event for the pull request when it does, so a head the record holds as clean can
+// BasePush is a push to a branch that is no issue's and no linked pull request's head, or the
+// deletion of a linked pull request's head (decodePush), which is the shape of a branch pull
+// requests sit on: a base. GitHub recomputes whether each head on that base still merges into it
+// and sends no event for the pull request when it does, so a head the record holds as clean can
 // already be behind or dirty; this fact is the only notice the daemon gets. The workflow finds the
 // open pull requests recorded on Branch and records that their base moved to After (workflow's
 // basePush), so the next read of each is known to be needed. Nothing in it is a decision: a push
@@ -2034,9 +2203,31 @@ func (f LingerExpired) namedIssue() (string, bool) { return f.Issue, true }
 
 // DaemonBooted records a boot of the daemon: every stored claim has its machine again, and the
 // boot replayed what its claims' terminal states owe the workflow. Boot is the boot's record id
-// (daemon_boot), which makes each boot's fact its own.
+// (daemon_boot), which makes each boot's fact its own. Links is what the boot read of the pull
+// requests the running issues link (BootLinks), nil where it read none: the workflow applies it
+// first, before sweepMerged judges any close (dispatch://INFRA-5910 decision 9).
 type DaemonBooted struct {
-	Boot int64
+	Boot  int64
+	Links *BootLinks
+}
+
+// BootLinks is what the boot read of the pull requests the running issues link, before its sweep:
+// Issues is each running issue's links as Dispatch's detail showed them (IssueLinks), so a link
+// added or removed while the daemon was down is taken before the sweep judges any close; and Reads
+// is the boot's GitHub read of each linked pull request in its own repository
+// (PullRequestLinkReadDone), applied right after, so a linked pull request that merged, closed or
+// opened while the daemon was down stands recorded before the sweep judges any close.
+type BootLinks struct {
+	Issues map[string]IssueLinks
+	Reads  []PullRequestLinkReadDone
+}
+
+// IssueLinks is one running issue's links to pull requests as the boot read them from Dispatch's
+// issue detail (DetailLinks), at Seq, that detail's last_seq: an event the record applied since, at
+// a higher sequence, keeps its own links.
+type IssueLinks struct {
+	Seq   int64
+	Links []PullRequestLink
 }
 
 func (DaemonBooted) namedIssue() (string, bool) { return "", false }

@@ -387,7 +387,7 @@ func TestABaseReadWhoseMintFailsStillTellsAPersistentNull(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go rig.w.readMergeStates(ctx)
-	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[taskRead]string{ownWork("CAPTURE-1"): "code"}, false)
+	rig.w.queueBaseRead(ghrepo.MustParse("acme/widgets"), "main", map[pullRead]string{ownWork("CAPTURE-1"): "code"}, false)
 	testwait.Eventually(t, "the review-stuck notice of the null mergeable", func() bool {
 		return len(noticeReasons(t, rig.pool, "review-stuck")) > 0
 	})

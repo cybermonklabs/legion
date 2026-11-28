@@ -689,10 +689,12 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // the correction stays in the system prompt for the life of the issue, and no claim turns them
 // off: the branch and the pull request of that issue are on the old repository for ever.
 //
-// A correction that left an open pull request behind (RepositoryCorrection.PullRequest) adds two
-// more sentences, which name that pull request and the repository it is open on. They are the
-// whole of what a role is told about it: no notice is sent, and the record is where a role reads
-// the same thing (api.Issue.PullRequest, whose repository is that pull request's own).
+// A correction that left open pull requests behind (RepositoryCorrection.PullRequests) adds, for
+// each of them, a sentence that names it and the repository it is open on, and then one that says
+// the daemon applies none of their GitHub events to the issue. They are the whole of what a role
+// is told about them: no notice is sent, and the state serves none of them, since a pull request a
+// correction left is in neither the issue's set nor its merge (record.Store.LeftPullRequests); it
+// shows the correction itself (api.Issue.RepoBefore).
 func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string,
 	corrected *RepositoryCorrection) string {
 	owner := "the architect that owns your issue is"
@@ -750,25 +752,31 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		"Your issue's branch and your issue's pull request are on %s. "+
 		"Your work on this issue is on %s now.",
 		corrected.Before, corrected.At.UTC().Format(time.RFC3339), corrected.Before, repo.String())
-	if corrected.PullRequest == nil {
+	switch len(corrected.PullRequests) {
+	case 0:
 		return fragment
+	case 1:
+		left := corrected.PullRequests[0]
+		return fragment + " " + fmt.Sprintf("The pull request %s#%d is open on %s. "+
+			"The daemon does not apply GitHub events of that pull request to this issue.", left.Repo, left.Number, left.Repo)
 	}
-	return fragment + " " + fmt.Sprintf("The pull request %s#%d is open on %s. "+
-		"The daemon does not apply GitHub events of that pull request to this issue.",
-		corrected.PullRequest.Repo, corrected.PullRequest.Number, corrected.PullRequest.Repo)
+	for _, left := range corrected.PullRequests {
+		fragment += " " + fmt.Sprintf("The pull request %s#%d is open on %s.", left.Repo, left.Number, left.Repo)
+	}
+	return fragment + " The daemon does not apply GitHub events of those pull requests to this issue."
 }
 
 // RepositoryCorrection is what a correction of an issue's repository left on its record
 // (record.Issue.RepoCorrection: the repository the issue left and the moment the daemon applied
-// that correction) and the pull request that correction left open on a repository the issue has
-// left (PullRequest), where the record holds one. A caller holds a correction or nil, and nil is
+// that correction) and the pull requests that correction left open on a repository the issue has
+// left (PullRequests), where the record holds any. A caller holds a correction or nil, and nil is
 // an issue no correction has reached.
 type RepositoryCorrection struct {
 	record.RepositoryCorrection
-	// PullRequest is the issue's recorded pull request while it is open on a repository the
-	// issue no longer works, and nil otherwise: no pull request recorded, one that is merged or
-	// closed, or one on the repository the issue works now.
-	PullRequest *LeftPullRequest
+	// PullRequests is each of the issue's recorded pull requests that is open on a repository the
+	// issue no longer works (record.Store.LeftPullRequests), in the order of their repositories and
+	// numbers, and none otherwise: no pull request recorded there, or each merged or closed.
+	PullRequests []LeftPullRequest
 }
 
 // LeftPullRequest is an issue's open pull request on a repository the issue has left: the
@@ -776,9 +784,9 @@ type RepositoryCorrection struct {
 // moves the issue's record alone, so the pull request's row keeps the repository it was opened
 // on, and the daemon matches every GitHub fact to an issue by the repository the record names
 // now (workflow's ownPullRequest and issueForBranch): no fact of this pull request reaches the
-// issue any more. That is a state a role reads — from the next task (addressingFragment) and
-// from the record (api.Issue.PullRequest beside api.Issue.RepoBefore) — rather than a loss
-// nobody sees.
+// issue any more. It is in neither the issue's set nor its merge, so the state serves none of it
+// (it shows the correction, api.Issue.RepoBefore), and a role reads it from the next task
+// (addressingFragment) rather than losing it unseen.
 type LeftPullRequest struct {
 	Repo   string
 	Number int

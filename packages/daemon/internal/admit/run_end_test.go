@@ -373,7 +373,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				}
 			}}},
 		"ConflictConfirmDone": {{name: "a second read that answers no state releases the first and keeps the step", arrange: conflictReadOfAwaiting,
-			source: "outbox", fact: intake.ConflictConfirmDone{Issue: awaiting, Number: 5, Head: "head-5", FirstReadAt: awaitingFirstRead}, keeps: awaiting,
+			source: "outbox", fact: intake.ConflictConfirmDone{Issue: awaiting, Repo: "acme/widgets", Number: 5, Head: "head-5", FirstReadAt: awaitingFirstRead}, keeps: awaiting,
 			then: func(t *testing.T, pr record.PullRequest) {
 				if pr.ConflictRead != nil || pr.MergeForward != nil {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
@@ -474,7 +474,8 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.PullRequestSynchronized{}, intake.Push{}, intake.BasePush{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestReview{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
 		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
-		intake.MergeQueueReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{}, intake.ClaimFailed{},
+		intake.MergeQueueReadDone{}, intake.PullRequestLinkReadDone{}, intake.PullRequestBranchReadDone{}, intake.PullRequestMissing{}, intake.ClaimReady{},
+		intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{}, intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.RetryOrEscalate{},
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},

@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -21,10 +24,12 @@ import (
 // branch confirms the conflict, which R0 then decides on with the base's rules this read carries,
 // and MERGEABLE releases the first read.
 //
-// Each attempt first reads the issue and its pull request record in one transaction
-// (issueRecord), and finishes the row without reading GitHub, with one line naming why, once the
-// pull request is not open at the row's head or the record no longer holds the row's first read,
-// of that head and made at the row's FirstReadAt (conflictReadLeft): a later read already
+// Each attempt first reads, in one transaction, the issue and the row of the pull request the
+// payload names by its repository and number (record.Store.PullRequestRowByNumber,
+// record.ConflictConfirm.RepoOf), a row of another issue read as none, and finishes the row without
+// reading GitHub, with one line naming why, once the pull request is not open at the row's head or
+// the record no longer holds the row's first read, of that head and made at the row's FirstReadAt
+// (conflictReadLeft): a later read already
 // confirmed or released it, a new head left it behind, or it was released and a later read of the
 // same head made a newer first read with a row of its own, and a second read of it would decide
 // nothing. Otherwise it reads the pull request once, bounded by issueRead as the per-issue read
@@ -54,12 +59,24 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil || r.queueMergeStateFollow == nil {
 		return errors.New("conflict confirm executor has no read of a pull request from GitHub")
 	}
-	recorded, err := issueRecord(ctx, r.pool, r.records, row.Issue, "")
-	if err != nil {
-		return err
+	var issue *record.Issue
+	var pr *record.PullRequest
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = r.records.Issue(ctx, tx, row.Issue); err != nil || issue == nil {
+			return err
+		}
+		if pr, err = r.records.PullRequestRowByNumber(ctx, tx, payload.RepoOf(issue.GitHubRepo), payload.Number); err != nil {
+			return err
+		}
+		if pr != nil && pr.Issue != row.Issue {
+			pr = nil
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("read the record of %s: %w", row.Issue, err)
 	}
-	issue, pr := recorded.issue, recorded.numbered(payload.Number)
-	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "repo", payload.Repo, "pullRequest", payload.Number, "head", payload.Head}
 	if left := conflictReadLeft(issue, pr, payload); left != "" {
 		r.log.Info("outbox conflict confirm finished without a read", append(attributes, "why", left)...)
 		return nil
@@ -99,11 +116,11 @@ func (r *outbox) conflictConfirm(ctx context.Context, row record.OutboxRow, payl
 		r.log.Info("outbox conflict confirm: GitHub answered unknown at the last attempt; the first read is released and the merge state reads follow the head", attributes...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("conflict-confirm-done:%s:%d", row.Issue, row.ID),
-		intake.ConflictConfirmDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, FirstReadAt: payload.FirstReadAt, Unread: failed != nil}, r.handlers...); err != nil {
-		return fmt.Errorf("apply the end of the second read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
+		intake.ConflictConfirmDone{Issue: row.Issue, Repo: pr.Repo, Number: payload.Number, Head: payload.Head, FirstReadAt: payload.FirstReadAt, Unread: failed != nil}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the end of the second read of %s's pull request %s#%d: %w", row.Issue, pr.Repo, payload.Number, err)
 	}
 	follow := followed(*pr, pull)
-	r.queueMergeStateFollow(row.Issue, &follow)
+	r.queueMergeStateFollow(&follow)
 	return nil
 }
 

@@ -38,7 +38,7 @@ root (`skill://legion-architect`, "Every turn").
 Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
 project's experiment drew into a group whose issues run the default steps takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
-require retro, and let the merge close it. If the issue already has children, adopt them without
+require retro, and let its last merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a
 complete decomposition. File each child you create under your own issue
 (`--parent "$LEGION_ISSUE"`), never below a child of yours: that child's own architect files its
@@ -64,7 +64,7 @@ Write `backlog` or `icebox` only when a person asked for that move, or as the fi
 Say why in a `dispatch comment`.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
-outside this tree is never an issue you file. A clear defect is this tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child. When it is in a repository this tree's token does not reach, it goes to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, to file. A defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, is a question for a
+outside this tree is never an issue you file. A clear defect is this tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child. A fix in another repository can be a second pull request of the same issue, opened from a branch of that repository and linked on the issue by its URL (`dispatch issue-update --issue <KEY> --external-link <url>`). When the defect is in a repository this tree's token does not reach, it goes to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, to file. A defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, is a question for a
 person (`skill://legion-worker/references/findings.md`), which you send to the architect above you.
 
 ## Gates and children
@@ -159,7 +159,7 @@ decides, the child's notices come to you
 | --- | --- |
 | A child that looks independent of the tree, or capacity | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A cross-tree conflict | Write to the other tree's architect: a Dispatch comment on its issue that mentions its role. |
-| A problem outside this tree | Never file an issue for it. Fix a clear defect in this tree, in an open pull request of the tree or in a child, in whichever repository it is. When its repository is one this tree's token does not reach, write it to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, which files it. Send a defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
+| A problem outside this tree | Never file an issue for it. Fix a clear defect in this tree, in an open pull request of the tree, in a second pull request of the issue linked on it by its URL, or in a child, in whichever repository it is. When its repository is one this tree's token does not reach, write it to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, which files it. Send a defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
 
@@ -188,7 +188,7 @@ you: Legion holds it before its retro while what refuses its sign-off still hold
 want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
-each `unmet` finding there. Before every `sign_off`, read the project's merge holds: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the project of the child's key. A line under its `Holds` heading that names the repository of the child's pull request, or `all`, and whose end is not past holds the sign-off. While one holds it, end the turn with a WAITING line naming the hold, and subscribe to nothing for it. At each change of the document the daemon sends you a `merge-holds-changed` notice, which wakes you also when the daemon released your pod. On it, read the document again: wait again while a line holds the sign-off, and go on once none does. Read the document again before you sign off on any other wake too.
+each `unmet` finding there. Before every `sign_off`, read the project's merge holds: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the project of the child's key. A line under its `Holds` heading that names the repository of an open pull request of the child, or `all`, and whose end is not past holds the sign-off. While one holds it, end the turn with a WAITING line naming the hold, and subscribe to nothing for it. At each change of the document the daemon sends you a `merge-holds-changed` notice, which wakes you also when the daemon released your pod. On it, read the document again: wait again while a line holds the sign-off, and go on once none does. Read the document again before you sign off on any other wake too.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`), a
@@ -216,9 +216,13 @@ Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: 
 the implementer on it once the task's last step passes, your sign-off where your acceptance is that
 step (on a parent, once nothing holds it, `retro-held`). Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
-reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
-the child: where the project opens a production check, it follows the close in the tester's own
-session and on the pull request, and asks nothing of you. A tester completion that rejects the
+reaches that session, and wakes the role when the daemon released its idle pod. The work of the
+child ends when no pull request of it is open: its last merge closes it, and Legion then closes
+the other open pull requests of its tasks. A pull request the child links holds that close while
+it is open, and you are told once of each such pull request (`pr-holds-close`), with the way out:
+remove its link, or have it merged. Where the project opens a production check, each merge has
+its own, in the tester's own session and on its pull request, and it asks nothing of you. A
+tester completion that rejects the
 implementer's results goes back to the implementer, or to the earlier step its completion names;
 a worker that reports
 no surface reaches the changed path gets the surface built in this tree
@@ -228,7 +232,7 @@ no surface reaches the changed path gets the surface built in this tree
 child closes, or at once when the surface folds into an open pull request of this tree and a
 backward move to `implementing` builds it there.
 
-A merge is never a human to-do: open no `dispatch ask` for it. The merger merges the pull request
+A merge is never a human to-do: open no `dispatch ask` for it. The merger merges each pull request
 itself, at the head it read and under the repository's own rules. Only what no worker can do — a
 repository setting or an App permission a person must change — reaches you, from the merger.
 
@@ -239,8 +243,8 @@ Where this child's task holds your step `acceptance:owner`, you accept it with `
 none of the steps after your acceptance in its task, its retro or its merge, and a later step that
 sends the work back to a step before your acceptance brings the child to your acceptance again. On
 a task without that step you sign off nothing,
-and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
-closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
+and the pass of its last step starts its retro, as the acceptance paragraph above says. Its last
+merge closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no
 handoff and report no phase completion, since the daemon accepts a completion only from the role
 that works the issue's current phase.

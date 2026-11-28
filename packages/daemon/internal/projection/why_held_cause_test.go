@@ -170,6 +170,15 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
 	}
 
+	// A root whose close waits for a pull request of its set (record.HoldForPullRequests), held
+	// from its merge, where it keeps no row, in a tree under an open gate.
+	pullRequestsRoot := treeRoot("LEGION-100", "needs_review", phase.Held)
+	pullRequestsRoot.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldForPullRequests}
+	heldForPullRequests := projectionStore{
+		issues:     []record.Issue{pullRequestsRoot},
+		lifecycles: []string{"LEGION-100"},
+		gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": openGate("LEGION-100", opened)},
+	}
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldTreeClosed, api.WhyBlocked}: {linked(closedTree),
@@ -223,6 +232,9 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
 			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},
+		{record.HeldPullRequests, api.WhyUnlisted}: {heldForPullRequests,
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldPullRequests},
+			"Its close waits for a pull request of its set: a pull request the issue links that is still open, whose read is still owed, or whose repository the daemon does not serve or cannot read, so the issue closes once none holds it; a retry of its hold starts none."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
 			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},

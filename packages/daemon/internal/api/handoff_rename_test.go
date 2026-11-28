@@ -130,8 +130,8 @@ func (g *transferGitHub) requests() []string {
 }
 
 // An implementer completing implementing on a tree recorded before its repository's transfer is
-// the handoff the production refusal came from. The route reads the open pull request on the
-// issue's branch (implementationPullRequest, through githubrest.OpenPullRequestOn), and that read
+// the handoff the production refusal came from. The route reads the open pull requests on the
+// issue's branch (implementationPullRequest, through githubrest.OpenPullRequestsOn), and that read
 // is a `head=<owner>:<branch>` list whose owner GitHub translates across no transfer: the path
 // redirects, the filter does not. So the owner the filter names has to be the owner GitHub holds
 // the repository under now, which is what the resolution answers from the record's own name.

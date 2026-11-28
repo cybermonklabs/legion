@@ -675,8 +675,8 @@ func TestAnAskOwedToAClaimThatExitedIsSentAgainAtItsRelaunch(t *testing.T) {
 // testing and the tester still held; then the operator's retry relaunches the implementer, the
 // ready of its new launch queues the ask once, carrying that launch and naming the implementer's
 // claim, as every merge-forward message names the claim of its role's step (workflow's askAgain,
-// record.WorkerClaim), and leaves the record's ask told the launch before until the row's
-// delivery, and the tester is still held.
+// record.WorkerClaim), and the repository of its pull request, and leaves the record's ask told
+// the launch before until the row's delivery, and the tester is still held.
 func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	r.t.Helper()
 	retired := r.machine.Claim()
@@ -704,7 +704,7 @@ func (r *freshSessionRig) relaunchSendsTheOwedAskOnce(ended string) {
 	launch := r.machine.Claim().Generation
 
 	want := []record.MergeForwardMessage{{Role: claim.RoleImplementer, Claim: r.implementer, Step: record.MergeForwardAsk, Head: owedAskHead, Base: "main",
-		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
+		Phase: phase.Testing, Repo: "acme/widgets", PullRequest: 86, Why: record.ConflictCheckNotGreen, SentLaunch: launch}}
 	if asks := r.queuedMergeForwards(); !slices.Equal(asks, want) {
 		r.t.Errorf("after the ready of the implementer's launch %d the outbox holds the merge-forward messages %+v, want %+v", launch, asks, want)
 	}
@@ -765,8 +765,10 @@ func (r *freshSessionRig) recordedAsk() record.MergeForward {
 func (r *freshSessionRig) testerHeld(when string) {
 	r.t.Helper()
 	var left string
+	hold := owedAsk
+	hold.Role, hold.Step = claim.RoleTester, record.MergeForwardHold
 	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
-		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.issue.Key, claim.RoleTester, record.MergeForwardHold, owedAskHead)
+		_, _, left, err = workflow.MergeForwardAt(ctx, r.records, tx, r.issue.Key, hold)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the rule of the tester's hold: %v", err)

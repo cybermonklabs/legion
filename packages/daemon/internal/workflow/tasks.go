@@ -85,6 +85,21 @@ func (e *Engine) lastToFinish(ctx context.Context, tx pgx.Tx, s TaskScope) (bool
 	}), nil
 }
 
+// lastMergeHeld says whether the merge of s's task is the last (lastToFinish) and a link of its
+// issue's set holds its close (setHolds, dispatch://INFRA-5910 decision 9). Of the merges GitHub has
+// made already, that is the one that still names its merger: its close waits for those pull
+// requests, and the merger keeps working them. So the move into merging on such a merge starts the
+// merger rather than the standing step (transition), and the merger is the agent of its step
+// (startAgent).
+func (e *Engine) lastMergeHeld(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+	last, err := e.lastToFinish(ctx, tx, s)
+	if err != nil || !last {
+		return false, err
+	}
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, s.issue.Key)
+	return len(holds) > 0, err
+}
+
 // tasksWaitingOn is each task of stored, the plan of a run, that needs task, itself or through
 // other tasks, and is neither done nor left, in task id order: the tasks a stop of task holds,
 // while each other task goes on. None for no plan.

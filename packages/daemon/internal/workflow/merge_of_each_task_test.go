@@ -158,7 +158,7 @@ func TestAHeldRetroReadsItsTasksPullRequest(t *testing.T) {
 		t.Fatalf("the retro starts of %s once the child left = %d, want %d: b's retro starts", root.Key, len(starts), before+1)
 	}
 	text := starts[len(starts)-1].Task
-	if !strings.Contains(text, pullRequestLabel+": #45.") || strings.Contains(text, "#42") {
+	if !strings.Contains(text, pullRequestLabel+": sjawhar/legion#45.") || strings.Contains(text, "sjawhar/legion#42") {
 		t.Fatalf("the task of b's retro = %q, want it to name b's pull request #45 and not a's #42", text)
 	}
 }
@@ -474,10 +474,10 @@ func TestAnIssueInMergingIsFinishedWhenEachTaskAtItsMergeMerged(t *testing.T) {
 		t.Helper()
 		var done, owed bool
 		onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) (err error) {
-			if done, err = PhaseFinished(ctx, engine.store, tx, issue); err != nil {
+			if done, err = PhaseFinished(ctx, engine.store, engine.RepositoryRenames(), tx, issue); err != nil {
 				return err
 			}
-			_, owed, err = PhaseWorkerOwedTurn(ctx, engine.store, tx, issue, claim.RoleMerger)
+			_, owed, err = PhaseWorkerOwedTurn(ctx, engine.store, engine.RepositoryRenames(), tx, issue, claim.RoleMerger)
 			return err
 		})
 		return done, owed

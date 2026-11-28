@@ -62,17 +62,38 @@ func TestClearGenerationResetsAnOpenPullRequestsCheckSettlement(t *testing.T) {
 		ConflictRead: &record.ConflictRead{Head: "red-tests", Base: "main", At: time.Date(2026, 9, 25, 21, 1, 0, 0, time.UTC)},
 		MergeForward: &record.MergeForward{Head: "fix", Base: "main", Phase: phase.Reviewing, Why: record.ConflictRequiresCurrent,
 			AskedAt: time.Date(2026, 9, 25, 20, 58, 0, 0, time.UTC), Landed: "red-tests"},
+		// The review decision of the old run goes with the run, and the link the issue holds to
+		// another pull request stays with its told mark cleared (dispatch://INFRA-5910 decision 23).
+		ReviewDecision: &record.ReviewDecision{State: "approved", Head: "red-tests"},
 	}
 	seedPR(t, pool, pr)
+	told := time.Date(2026, 9, 25, 21, 2, 0, 0, time.UTC)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.ReplacePullRequestLinks(t.Context(), tx, issue.Key, []record.PullRequestLink{{Repo: "acme/gadgets", Number: 7}}); err != nil {
+			return err
+		}
+		return records.SetPullRequestLinkTold(t.Context(), tx, "acme/gadgets", 7, &told)
+	})
 	clearIssueGeneration(t, pool, issue)
 	var got *record.PullRequest
+	var links []record.PullRequestLink
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		got, err = record.NewStore().MergePullRequest(t.Context(), tx, issue.Key)
+		if got, err = record.NewStore().MergePullRequest(t.Context(), tx, issue.Key); err != nil {
+			return err
+		}
+		links, err = record.NewStore().PullRequestLinksOf(t.Context(), tx, issue.Key)
 		return err
 	})
 	if got == nil {
 		t.Fatal("the open pull request is gone, want it kept")
+	}
+	if got.ReviewDecision != nil {
+		t.Fatalf("after ClearGeneration: the review decision = %+v, want none: it was the old run's", *got.ReviewDecision)
+	}
+	if len(links) != 1 || links[0].Repo != "acme/gadgets" || links[0].Number != 7 || links[0].ToldAt != nil {
+		t.Fatalf("after ClearGeneration: the links = %+v, want the one link kept with its told mark cleared", links)
 	}
 	if got.CheckedHead != "" || len(got.Failing) != 0 || len(got.Statuses) != 0 || got.Run != nil {
 		t.Fatalf("after ClearGeneration: checkedHead=%q failing=%v statuses=%v run=%+v, want \"\", none, none and nil",

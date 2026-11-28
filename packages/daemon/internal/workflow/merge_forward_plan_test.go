@@ -288,9 +288,10 @@ func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 			}
 			// The merge is worked by the merger's first agent, whose claim is the role's own token
 			// (stepToken), and every merge-forward message names the claim of its role's step
-			// (addressRoles), so the ask names the claim seededClaim gives.
+			// (addressRoles), so the ask names the claim seededClaim gives, and the repository of its
+			// pull request.
 			want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Claim: seededClaim(t, phase.Merging, claim.RoleMerger), Step: record.MergeForwardAsk,
-				Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
+				Head: conflictHead, Base: "main", Phase: phase.Merging, Repo: "sjawhar/legion", PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v after the move into merging, want %+v", got, want)
 			}
@@ -309,11 +310,12 @@ func completesImplementingAt(t *testing.T, pool *pgxpool.Pool) {
 // implementerAsked is the implementer's ask of the merge forward of conflictHead in at, for why.
 // Every merge-forward message names the claim of its role's step (addressRoles), and the
 // implementer's step of these plans is worked by its first agent, whose claim is the role's own
-// token (stepToken), so the ask names the claim seededClaim gives.
+// token (stepToken), so the ask names the claim seededClaim gives, and the repository of its pull
+// request, as heldIn's hold does.
 func implementerAsked(t *testing.T, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 	t.Helper()
 	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: seededClaim(t, at, claim.RoleImplementer), Step: record.MergeForwardAsk,
-		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+		Head: conflictHead, Base: "main", Phase: at, Repo: "sjawhar/legion", PullRequest: 42, Why: why}
 }
 
 // sentAgain is ask as askAgain queues it at launch: it carries launch
@@ -435,7 +437,7 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 		steps []string
 		want  []string
 	}{
-		{name: "a planner after the implementer", steps: []string{"implementer", "planner", "reviewer"}, want: []string{"LEGION-208"}},
+		{name: "a planner after the implementer", steps: []string{"implementer", "planner", "reviewer"}, want: []string{"sjawhar/legion#42"}},
 		{name: "control: a planner before the implementer", steps: []string{"planner", "implementer", "reviewer"}, want: []string{}},
 	} {
 		t.Run(tc.name+", a head push", func(t *testing.T) {
@@ -493,7 +495,7 @@ func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
 	// token, as is the merge's (stepToken), so each message names the claim seededClaim gives.
 	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
 		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, at, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
-			PullRequest: 42, Why: why}
+			Repo: "sjawhar/legion", PullRequest: 42, Why: why}
 	}
 	inImplementing := ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing, record.ConflictCheckNotGreen)
 	// completes is LEGION-208 on the plan steps, asked in implementing to merge the base forward

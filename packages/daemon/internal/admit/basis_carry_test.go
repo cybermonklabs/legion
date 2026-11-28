@@ -317,7 +317,7 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 			// The resumed merger is told its task's pull request, #42 above, as every start that
 			// reads the task's row is (workflow's pullRequestPart); what this test holds is that no
 			// view sentence follows.
-			want := "Working copy: branch legion/" + carryChild + ".\nContinue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Pull request: #42. Resume the existing phase work."
+			want := "Working copy: branch legion/" + carryChild + ".\nContinue " + carryChild + ". Issue: " + carryChild + ". Phase: merging. Pull request: acme/widgets#42. Resume the existing phase work."
 			if len(mergerTasks) != 1 || mergerTasks[0] != want {
 				t.Fatalf("the carried merger's tasks = %q, want one resuming merging with no view sentence: %q", mergerTasks, want)
 			}

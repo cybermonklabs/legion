@@ -420,7 +420,7 @@ func TestTheReturnStartsTheHeldPhaseOrTesting(t *testing.T) {
 			pool := migratedPool(t)
 			admission := quiet(t, 1)
 			seedStarted(t, pool, spFiller, phase.Implementing, nil)
-			heldTask := "Continue LEGION-300. Issue: LEGION-300. Phase: " + string(tc.held) + ". Handoff commit: head. Pull request: #42."
+			heldTask := "Continue LEGION-300. Issue: LEGION-300. Phase: " + string(tc.held) + ". Handoff commit: head. Pull request: acme/widgets#42."
 			waited := spWaiting(t, pool, spParent, tc.held, heldTask, reason, nil)
 			seedPullRequest(t, pool, spParent, 42, record.PullRequestOpen)
 			seedMirrorChild(t, pool, spChild, "done", spParent)
@@ -478,7 +478,7 @@ func TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld(t *testing.T) {
 	t.Run("a held testing starts its tester", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		const heldTask = "Continue LEGION-300. Issue: LEGION-300. Phase: testing. Handoff commit: head. Pull request: #42."
+		const heldTask = "Continue LEGION-300. Issue: LEGION-300. Phase: testing. Handoff commit: head. Pull request: acme/widgets#42."
 		spWaiting(t, pool, spParent, phase.Testing, heldTask, "the implementer completed implementing", nil)
 		seedPullRequest(t, pool, spParent, 42, record.PullRequestMerged)
 		seedMirrorChild(t, pool, spChild, "done", spParent)
@@ -502,7 +502,7 @@ func TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld(t *testing.T) {
 	t.Run("a held accepting tells its architect", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		spWaiting(t, pool, spParent, phase.Accepting, "Continue LEGION-300. Issue: LEGION-300. Phase: accepting. Pull request: #42.",
+		spWaiting(t, pool, spParent, phase.Accepting, "Continue LEGION-300. Issue: LEGION-300. Phase: accepting. Pull request: acme/widgets#42.",
 			"a review approved the head", nil)
 		seedPullRequest(t, pool, spParent, 42, record.PullRequestMerged)
 		seedMirrorChild(t, pool, spChild, "done", spParent)

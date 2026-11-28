@@ -1,0 +1,32 @@
+kind: Changed
+body: |-
+    An issue's pull requests are the pull request of each task of its plan and each pull request
+    the issue links in Dispatch by its URL, in any repository; a pull request whose head is in a
+    fork, and one that only names the issue in its title, body, branch or commits, is none of
+    them. The daemon keeps one record for each pull request, keyed by its repository and number,
+    so a second pull request from `legion/<KEY>` replaces none, and it logs each pull request that
+    opens on a branch where another of the issue is open (INFRA-4091). It hears each repository a
+    link names, and reads each pull request in its own repository. A merge no longer closes the
+    issue while a pull request the issue links is open: the architect is told once of each pull
+    request that holds the close (`pr-holds-close`), with the way out, remove its link or have it
+    merged, and an issue whose tasks are all done with no merge in hand is held for
+    `pull-requests`. At the last merge Legion closes the other open pull requests of the issue's
+    tasks. A pull request closed without a merge while another that holds the close is open (one
+    the issue links, or a task's own) is told as `pr-closed-others-open` and moves nothing; the
+    close of the last one that holds the close first reads each branch of the issue's tasks on
+    GitHub again, judges the close again where another pull request merged, and sends
+    `pr-closed-unmerged` only where that read finds no other open pull request that holds the close
+    and nothing merged closes the issue (INFRA-4091). A link to a fork's pull request, or to a
+    pull request another issue holds, is refused (`pr-link-refused`). The reviewer reviews each
+    open pull request of its task at its own head, the merger merges each one its review and its
+    checks allow, and each merge has its own production check. `read_record` and
+    `GET /legion/v1/state` serve `pullRequests` beside `pullRequest`, which is now the newest open
+    pull request of the issue, or the issue's merge where none of them is open (contract entry
+    20261127183022 pull-requests). The role prompts say that a fix in another repository can be a
+    second pull request of the same issue, linked on it, and that the work of an issue ends when
+    no pull request of the issue is open. Before a rollback, run the way back of migration
+    20261127234212 (docs/kubernetes.md, "Rolling back the release that keys each pull request by
+    its repository and number").
+time: 2026-11-27T19:42:42Z
+custom:
+    Issue: INFRA-5910

@@ -15,11 +15,13 @@ import (
 
 // OpenPullRequest opens a pull request of head, a branch of repo, against base on repo, whose REST
 // API github calls, with title and body (POST /repos/{owner}/{repo}/pulls), and answers its number.
-// A head that has an open pull request already, which GitHub refuses with 422 "A pull request
-// already exists", answers the number of the open one (GET /pulls?head=<owner>:<head>&state=open),
-// so an open made again opens none. Every other answer is an error naming the repository and both
-// branches and wrapping GitHub's *githubrest.Answer, GitHub's 422 for a head with no commit base
-// lacks among them.
+// A head that has an open pull request onto base already, which GitHub refuses with 422 "A pull
+// request already exists", answers the number of that one: of the pull requests open on head
+// (githubrest.Client.OpenPullRequestsOn, GET /pulls?head=<owner>:<head>&state=open), the one whose
+// base is base, since a branch can hold several, each onto a base of its own (dispatch://INFRA-5910
+// D1, decision 20). So an open made again opens none, and never answers another base's pull
+// request. Every other answer is an error naming the repository and both branches and wrapping
+// GitHub's *githubrest.Answer, GitHub's 422 for a head with no commit base lacks among them.
 //
 // The title and the body are published on GitHub as a created ref's name is, so each passes the
 // deployment's private-name rules before anything is sent, as Create's ref name does: rules, the
@@ -46,14 +48,15 @@ func OpenPullRequest(ctx context.Context, github githubrest.Client, repo ghrepo.
 	case err == nil:
 		return opened.Number, nil
 	case errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && strings.Contains(answer.Body, "A pull request already exists"):
-		open, ok, err := github.OpenPullRequestOn(ctx, repo, head)
+		open, err := github.OpenPullRequestsOn(ctx, repo, head)
 		if err != nil {
 			return 0, failed(err)
 		}
-		if !ok {
-			return 0, failed(fmt.Errorf("GitHub answered that a pull request of %s exists and lists none open: %w", head, answer))
+		at := slices.IndexFunc(open, func(pull githubrest.PullRequest) bool { return pull.Base.Ref == base })
+		if at < 0 {
+			return 0, failed(fmt.Errorf("GitHub answered that a pull request of %s exists and lists none open onto %s: %w", head, base, answer))
 		}
-		return open.Number, nil
+		return open[at].Number, nil
 	default:
 		return 0, failed(err)
 	}

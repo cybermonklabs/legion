@@ -375,7 +375,7 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("reviewer task %q does not open with the working copy it works in and then the phase it starts", task)
 	}
 	assertNamesTheHandoff(t, task, "LEGION-208", "test", 3)
-	if want := " Tester's verdict: pass. Pull request: #42." +
+	if want := " Tester's verdict: pass. Pull request: sjawhar/legion#42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
@@ -1056,7 +1056,7 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 		t.Fatalf("ApplyFact backward: %v", err)
 	}
 	task := startTask(t, pool, phase.RoleFor(phase.Reviewing))
-	for _, want := range []string{"Phase: reviewing.", "Pull request: #42.", "Reason: " + reason + "."} {
+	for _, want := range []string{"Phase: reviewing.", "Pull request: sjawhar/legion#42.", "Reason: " + reason + "."} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("task = %q, want it to carry %q", task, want)
 		}

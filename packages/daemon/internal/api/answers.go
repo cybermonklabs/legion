@@ -498,15 +498,18 @@ var stateEnumeratedFields = []EnumeratedField{
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
 	// carries a value of it. Its list grew: `children_before_retro` and `task_stopped` arrived
 	// at OwnerPlanContract, after the field, and a row of either word is served as
-	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords); and
+	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords);
 	// `awaiting_children` arrived at gateBasisContract, and a row of it is served as
 	// `children_first` below that contract, the one word the strip stands another in for
-	// (shaping.go's heldReasonStandIn).
+	// (shaping.go's heldReasonStandIn); and `pull_requests` arrived at pullRequestsContract, and a
+	// row of it is served as `unclassified` below that contract.
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
-	// which added `task-stopped` and `children`; an issue held for either is served without
-	// its `holdReason` below that contract (shaping.go's withoutUnadmittedHoldReason).
+	// which added `task-stopped` and `children`, and with an enumeration of those three until
+	// pullRequestsContract, which added `pull-requests`; an issue held for a reason its caller's
+	// contract does not name is served without its `holdReason` (shaping.go's
+	// withoutUnadmittedHoldReason).
 	{Answer: AnswerState, KeyPath: "issues.*.holdReason", Values: holdReasons},
 	// `reason` of one open give-up of the intake, why it gave the message up (api.IntakeGiveUpView,
 	// record.IntakeGiveUpReason). It arrived with `intakeGiveUps`, which is served down below that
@@ -659,10 +662,10 @@ var lineKinds = []EnumeratedValue{
 // not the owner's acceptance, held before its retro for the issues beneath it, and
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
 // it is written out value by value, sorted by value, as waitAnswers is. The gate-basis entry adds
-// `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), in its
-// own file. It names each constant rather than
-// reading record.HeldReasons, because a word added to the ladder later arrives at its own
-// contract.
+// `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), and
+// the pull-requests entry `pull_requests`, an issue whose close waits for a pull request of its
+// set (record.HeldPullRequests), each in its own file. It names each constant rather than reading
+// record.HeldReasons, because a word added to the ladder later arrives at its own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -680,9 +683,11 @@ var heldReasons = []EnumeratedValue{
 }
 
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
-// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
-// for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
-// OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
+// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting
+// before its retro for the issues beneath it, and `task-stopped`, a task its owner stopped,
+// arrived at OwnerPlanContract. The pull-requests entry adds `pull-requests`, a close that waits
+// for a pull request of the issue's set (record.HoldForPullRequests), in its own file. Written out
+// value by value, sorted by value, as waitAnswers is.
 var holdReasons = []EnumeratedValue{
 	{Value: string(record.HoldForChildren), Since: OwnerPlanContract},
 	{Value: string(record.HoldEscalated), Since: ServingFloor},
@@ -725,28 +730,34 @@ var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
 var updateStates = valuesFrom(shapedAnswersContract,
 	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered)
 
+// pullRequestStateWords is every state a recorded pull request is in, and mergeStateWords every
+// value of a pull request's `mergeState`, GitHub's own merge state for the head in GitHub's own
+// lowercase spelling, each named constant by constant, as floorRoles is: the lists below record the
+// contract each field that carries them arrived at. record.MergeStateUnread is no value of
+// `mergeState`: it is the empty state the view leaves off.
+var (
+	pullRequestStateWords = []record.PullRequestState{record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed}
+	mergeStateWords       = []record.MergeState{
+		record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
+		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
+		record.MergeStateUnknown,
+	}
+)
+
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.
-var pullRequestStates = valuesFrom(ServingFloor,
-	record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed)
+var pullRequestStates = valuesFrom(ServingFloor, pullRequestStateWords...)
 
-// mergeStates is every value of a pull request's `mergeState`, GitHub's own merge state for the
-// head in GitHub's own lowercase spelling. The field arrived at stateMachineContract and the
-// list is recorded there, so no caller below 86 is served a value of it: that caller is served
-// the pull request without the key at all (shaping.go's withoutStateMachineFields).
-// record.MergeStateUnread is no value of the field: it is the empty state the view leaves off.
-var mergeStates = valuesFrom(stateMachineContract,
-	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
-	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
-	record.MergeStateUnknown)
+// mergeStates is every value of a pull request's `mergeState`. The field arrived at
+// stateMachineContract and the list is recorded there, so no caller below 86 is served a value of
+// it: that caller is served the pull request without the key at all (shaping.go's
+// withoutStateMachineFields).
+var mergeStates = valuesFrom(stateMachineContract, mergeStateWords...)
 
 // mergeWaitStates is the same eight words at the contract `mergeWait` arrived at, which the
 // object's `mergeState` and `toldState` share: no `mergeWait` is served below that contract at
 // all (shaping.go's withoutMergeWait).
-var mergeWaitStates = valuesFrom(mergeWaitContract,
-	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
-	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
-	record.MergeStateUnknown)
+var mergeWaitStates = valuesFrom(mergeWaitContract, mergeStateWords...)
 
 // designSteps is every step of a deployment's design gate, recorded at gatedStepsContract, the
 // contract `gatedSteps` arrived at, and gatedStepStatuses every place an issue can stand in one.

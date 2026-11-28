@@ -120,10 +120,12 @@ var renamedUpdated = time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 // cybermonklabs/legion, and a configured rename (Config.RepositoryRenames) makes the two one
 // repository wherever the engine compares them — issueForBranch for a pull request opened on the
 // issue's branch, and ownPullRequest for the settlement, the review and the merge of the pull
-// request that opened under the new name. Each fact is driven three ways: under the pair, where it
-// applies; under no pair against the repository the records name, which is what it does today and
-// what the first case is held to; and under no pair against the repository it moved to, the
-// negative control, where it changes nothing at all, as any other repository's fact does
+// request that opened under the new name. The record keeps a pull request of the issue's own
+// repository in the spelling of the issue's record (putPullRequest), so the pull request opened
+// under the new name is recorded under sjawhar/legion. Each fact is driven three ways: under the
+// pair, where it applies; under no pair against the repository the records name, which is what it
+// does today and what the first case is held to; and under no pair against the repository it moved
+// to, the negative control, where it changes nothing at all, as any other repository's fact does
 // (TestAGitHubFactFromAnotherRepositoryChangesNothing).
 func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldName(t *testing.T) {
 	t.Parallel()
@@ -144,8 +146,11 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			},
 			want: func(t *testing.T, repo string, after recordSnapshot) {
 				t.Helper()
-				if pr := after.PR; pr == nil || pr.Repo != repo || pr.Number != 42 || pr.Branch != "legion/LEGION-209" || pr.State != record.PullRequestOpen {
-					t.Fatalf("LEGION-209's pull request = %+v, want #42 open on %s from its branch", pr, repo)
+				// The row is of the issue's own repository, so the record keeps it in the issue's
+				// spelling, sjawhar/legion, whichever name of the pair the open named: the record's
+				// reads of the issue's pull requests count a row of its repository by that name.
+				if pr := after.PR; pr == nil || pr.Repo != "sjawhar/legion" || pr.Number != 42 || pr.Branch != "legion/LEGION-209" || pr.State != record.PullRequestOpen {
+					t.Fatalf("LEGION-209's pull request = %+v, want #42 open on sjawhar/legion, the issue's spelling, from its branch, opened under %s", pr, repo)
 				}
 			},
 		},

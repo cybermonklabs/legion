@@ -30,7 +30,7 @@ func dispatchEventJSON(t *testing.T, eventType string, actor, payload map[string
 func decodeEvent(t *testing.T, eventType string, actor, payload map[string]any) decodedMessage {
 	t.Helper()
 	event := dispatchEventJSON(t, eventType, actor, payload)
-	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
+	decoded, err := decodeMessage("notifications.dispatch.issue.LEGION-7."+eventType, "LEGION", nil, nil, envelopeJSON(t, "dispatch-40", "dispatch", string(event)))
 	if err != nil {
 		t.Fatalf("decode %s: %v, want no poison", eventType, err)
 	}
@@ -352,7 +352,7 @@ func TestADispatchIssueEventCarriesItsClaimHolder(t *testing.T) {
 		{name: "a claim naming no actor", claim: `,\"claim\":{\"actor\":{\"kind\":\"user\",\"id\":\"\"}}`, unread: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories,
+			decoded, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, nil,
 				[]byte(strings.Replace(original, anchor, anchor+tc.claim, 1)))
 			if err != nil {
 				t.Fatalf("decode: %v, want no poison", err)

@@ -76,6 +76,15 @@ const (
 	// a gap and reads unclassified. It stands beside children_before_retro, for the same reasons;
 	// the two are never true of one issue, since an issue holds one hold reason.
 	HeldTaskStopped HeldReason = "task_stopped"
+	// HeldPullRequests is an issue held for pull-requests (HoldForPullRequests) that keeps no slot
+	// where it stands: its close waits for a pull request of its set, a linked one still open, one
+	// whose read is still owed, or one whose repository the daemon does not serve or cannot read,
+	// and no merge is in hand to wait with (dispatch://INFRA-5910 decision 9). No issue holds it,
+	// so heldBy is empty: the pull requests that hold the close are the architect's notice's to
+	// name (`pr-holds-close`). A merge that lands or a link that goes ends the hold, and the issue
+	// closes. It stands beside task_stopped, for the same reasons, and the two are never true of one
+	// issue, since an issue holds one hold reason.
+	HeldPullRequests HeldReason = "pull_requests"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
@@ -84,8 +93,9 @@ const (
 	// sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
-	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
-	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
+	// task_stopped, an issue whose close waits for its pull requests reads pull_requests, and any
+	// other hold falls to unclassified (HeldReasonOf states why at the clause). Of the issues that
+	// read it, one whose tree runs is served no `why` (projection's
 	// atWorkInSlotlessPhase), so `why` serves this word's sentence only to a member in accepting, retro or merging of
 	// a tree that runs nothing. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
@@ -118,6 +128,7 @@ var HeldReasons = []HeldReason{
 	HeldAcceptedAncestor,
 	HeldChildrenBeforeRetro,
 	HeldTaskStopped,
+	HeldPullRequests,
 	HeldAtWork,
 	HeldUnclassified,
 }
@@ -376,22 +387,25 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
 		return HeldAcceptedAncestor, []string{accepted}
 	}
-	// The two holds an owner's plan makes stand here, below every word above, each of which holds
-	// the issue whatever its own hold is, and above at_work and unclassified (each word's doc says
-	// why). A stopped task that keeps its slot is not one of them: it stands in the active set, and
-	// one that holds no slot row there is the gap unclassified reports.
+	// Three holds of the issue's own work stand here: the two holds an owner's plan makes, and the
+	// hold of the issue's close for its pull requests. They stand below every word above, each of
+	// which holds the issue whatever its own hold is, and above at_work and unclassified (each
+	// word's doc says why). A stopped task that keeps its slot is not one of them: it stands in the
+	// active set, and one that holds no slot row there is the gap unclassified reports.
 	switch {
 	case HeldForChildren(issue):
 		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
+	case HeldFor(issue, HoldForPullRequests) && !KeepsSlot(issue):
+		return HeldPullRequests, nil
 	}
 	// The issue must not stand in held. Since dispatch://INFRA-2560 a hold from accepting, retro or
 	// merging keeps no slot (KeepsSlot reads StandsAt), which makes this word reachable for a held
 	// issue, and its sentence — that the issue's workers run as they did — is false for an issue
 	// whose hold stopped its work. Such an issue reads the word of its hold above where it has one,
 	// and falls to unclassified where it has none. The stalled-tree measure is unmoved: none of
-	// these four words silences a tree (admit's silencedTree says why).
+	// these five words silences a tree (admit's silencedTree says why).
 	if !KeepsSlot(issue) && issue.Phase != phase.Held {
 		return HeldAtWork, nil
 	}

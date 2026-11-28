@@ -169,7 +169,7 @@ func TestAnApprovalOnAHeadGitHubWillNotMergeTellsTheArchitectOnce(t *testing.T) 
 		t.Fatalf("after the approval of a behind head the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request sjawhar/legion#42") ||
 		!strings.Contains(told[0].Reason, "GitHub reports that head behind") || told[0].Topic != "" {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and behind, with no role topic", told)
 	}
@@ -223,7 +223,7 @@ func TestAnApprovalOnADraftHeadGitHubLaterReportsCleanMovesOnAndTellsOnce(t *tes
 		t.Fatalf("after GitHub reported the head a draft the issue is in %s, want reviewing: GitHub would not merge the head", got)
 	}
 	told := reviewStuckNotices(t, pool)
-	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request #42") ||
+	if len(told) != 1 || !strings.Contains(told[0].Reason, "approved head "+headOne+" on pull request sjawhar/legion#42") ||
 		!strings.Contains(told[0].Reason, "GitHub reports that head draft") {
 		t.Fatalf("review-stuck notices %+v, want one naming the pull request, the head and draft", told)
 	}
@@ -505,8 +505,8 @@ func TestEveryFactThatCanChangeGitHubsAnswerAsksForAMergeStateRead(t *testing.T)
 			engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3,
 				Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 				Clock:               func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
-				ReadMergeState:      func(issue, _ string) { asked = append(asked, issue) },
-				ReadBaseMergeStates: func(_, _ string, owed []TaskPullRequest) { asked = append(asked, issuesOf(owed)...) }}, nil)
+				ReadMergeState:      func(pr PullRequestKey) { asked = append(asked, prName(pr.Repo, pr.Number)) },
+				ReadBaseMergeStates: func(_, _ string, owed []PullRequestKey) { asked = append(asked, namesOf(owed)...) }}, nil)
 
 			applyFacts(t, pool, engine)("fact", tc.fact)
 			if got := len(asked) > 0; got != tc.want {
@@ -1700,7 +1700,7 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
-		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: seededRaisedAt})
+		EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: sjawhar/legion#42.", EntryRaisedAt: seededRaisedAt})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 }

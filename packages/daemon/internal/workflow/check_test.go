@@ -685,11 +685,11 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	// restart must not repeat the notice the entry into the wait wrote, and a root can now wait for
 	// days across many boots.
 	for _, key := range []string{"LEGION-301", "LEGION-304"} {
-		if !strings.Contains(rig.logged.String(), `upgrade" issue=`+key) {
+		if !strings.Contains(rig.logged.String(), `any longer" issue=`+key) {
 			t.Fatalf("the boot's journal holds no close of %s:\n%s", key, rig.logged.String())
 		}
 	}
-	if strings.Contains(rig.logged.String(), `upgrade" issue=LEGION-302`) {
+	if strings.Contains(rig.logged.String(), `any longer" issue=LEGION-302`) {
 		t.Fatalf("the boot logged a close of the root it left waiting:\n%s", rig.logged.String())
 	}
 	if got := noticeKinds(t, rig.pool, "LEGION-302"); len(got) != 0 {

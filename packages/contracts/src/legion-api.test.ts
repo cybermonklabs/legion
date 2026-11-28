@@ -1344,8 +1344,9 @@ test("a move back may go to step and name the place it returns to", () => {
 
 // The held words are the daemon's `record.HeldReasons`, in its order: dispatch://INFRA-3320 added
 // `awaiting_children`, a parent waiting on its open children, between `root_awaiting_person` and
-// `design_gate`, and contract 219 added `children_before_retro` and `task_stopped` after
-// `accepted_ancestor`.
+// `design_gate`, contract 219 added `children_before_retro` and `task_stopped` after
+// `accepted_ancestor`, and entry 20261127183022 (pull-requests) added `pull_requests`, an issue
+// whose close waits for a pull request of its set, after `task_stopped`.
 test("the held words are the daemon's, with awaiting_children before design_gate", () => {
   expect(LEGION_HELD_REASONS).toEqual([
     "tree_closed",
@@ -1360,6 +1361,7 @@ test("the held words are the daemon's, with awaiting_children before design_gate
     "accepted_ancestor",
     "children_before_retro",
     "task_stopped",
+    "pull_requests",
     "at_work",
     "unclassified",
   ]);
@@ -1548,9 +1550,10 @@ test("the state golden carries the experiments each issue was drawn for", () => 
 // issue neither has reached carries none of the four, so each is optional, and a daemon before
 // this contract sends none of them, whose state must still parse.
 //
-// LEGION-210's pull request is open on the repository it left, which the issue's `repo` and the
-// pull request's own name together: that is how a reader of one record reads that the issue has
-// open work on a repository it no longer works.
+// LEGION-210's pull request is open on the repository it left, and the state serves it in no view
+// (dispatch://INFRA-5910/comment/234a0d3e-de71-4456-bafe-c042a6191e4d): it is in neither the
+// issue's set nor its merge, so the issue carries neither `pullRequest` nor `pullRequests`, and the
+// issue's next task names it.
 test("the state golden carries an issue's repository correction and the change still to be applied", () => {
   const state = fixture("state.json") as {
     issues: Record<string, Record<string, unknown>>;
@@ -1569,11 +1572,9 @@ test("the state golden carries an issue's repository correction and the change s
     repoBefore: "acme/widgets",
     repoCorrectedAt: "2126-09-22T07:40:00Z",
   });
-  expect({
-    repo: (corrected.pullRequest as Record<string, unknown>).repo,
-    number: (corrected.pullRequest as Record<string, unknown>).number,
-    state: (corrected.pullRequest as Record<string, unknown>).state,
-  }).toEqual({ repo: "acme/widgets", number: 1243, state: "open" });
+  expect(
+    Object.keys(corrected).filter((key) => key === "pullRequest" || key === "pullRequests")
+  ).toEqual([]);
   expect({
     repo: waiting.repo,
     repoChangePending: waiting.repoChangePending,
@@ -1728,6 +1729,60 @@ test("an issue's checks carry each of its open production checks", () => {
   ]);
 
   closed.checks = [{ ...older, role: "" }, closed.check];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// Entry 20261127183022 (pull-requests): each issue carries each pull request of its set under
+// `pullRequests`, each with its task and whether the issue links it, and `pullRequest` is the
+// newest open one of them. The state golden's LEGION-208 holds task a's #1247 and task b's #1253,
+// which GitHub changed last, so `pullRequest` is #1253. A served issue whose set holds a pull
+// request the issue links in another repository parses, and so does an issue held from merging for
+// its pull requests; a state outside the three words of `state` is refused.
+test("an issue's pullRequests carry each pull request of its set", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        phase: string;
+        heldFrom?: string;
+        holdReason?: string;
+        pullRequest?: Record<string, unknown>;
+        pullRequests?: Record<string, unknown>[];
+      }
+    >;
+  };
+  const two = state.issues["LEGION-208"];
+  if (two === undefined || two.pullRequests === undefined) {
+    throw new Error("state fixture lacks LEGION-208 or its pullRequests");
+  }
+  expect(two.pullRequests.map((pull) => [pull.number, pull.task, pull.linked])).toEqual([
+    [1247, "a", false],
+    [1253, "b", false],
+  ]);
+  expect(two.pullRequest?.number).toBe(1253);
+
+  two.pullRequests.push({
+    repo: "acme/gadgets",
+    number: 7,
+    head: "0".repeat(40),
+    state: "open",
+    linked: true,
+  });
+  two.phase = "held";
+  two.heldFrom = "merging";
+  two.holdReason = "pull-requests";
+  const parsed = LegionStateResponse.safeParse(state);
+  expect(parsed.error?.issues ?? []).toEqual([]);
+  expect(parsed.data?.issues["LEGION-208"]?.pullRequests?.at(-1)).toEqual({
+    repo: "acme/gadgets",
+    number: 7,
+    head: "0".repeat(40),
+    state: "open",
+    linked: true,
+  });
+  expect(parsed.data?.issues["LEGION-208"]?.holdReason).toBe("pull-requests");
+
+  two.pullRequests.push({ repo: "acme/gadgets", number: 8, state: "draft", linked: false });
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
@@ -2277,12 +2332,15 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2126-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-215"]?.ancestry).toEqual(["LEGION-217", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
-  // body: the operator routes are the only surface that serves it. Each issue's served `tasks`
-  // are read past: a task's `waitsFor.task` is the id of another task of the plan (contract 224),
-  // and no task view carries a pending task.
+  // body: the operator routes are the only surface that serves it. Each issue's served `tasks` and
+  // `pullRequests` are read past: a task's `waitsFor.task` is the id of another task of the plan
+  // (contract 224), a pull request of the set names the id of the task whose branch it is on
+  // (entry 20261127183022 (pull-requests)), and neither carries a pending task.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
   expect(
-    JSON.stringify(parsed, (key, value: unknown) => (key === "tasks" ? undefined : value))
+    JSON.stringify(parsed, (key, value: unknown) =>
+      key === "tasks" || key === "pullRequests" ? undefined : value
+    )
   ).not.toContain('"task"');
 
   // A cause outside the seven words, a linger that is no instant and an empty key in the chain
@@ -3631,14 +3689,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // its `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
   // claim view; contract 275's, which takes `dispatchCredential` off the state; and the issues'
   // checks' band, which serves each issue without its `checks` (`withoutChecks`). Above them
-  // stand four entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
+  // stand five entries' bands: the gate-basis entry's, which takes every root's `treeRuns` and
   // the `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`);
   // the state-seq entry's, entry 20261125174131's (dispatch://INFRA-3931), which takes `stateSeq`,
   // `stateId` and `stateRun` off the daemon block; the P0 start's, entry 20261125181047's, which
   // serves each issue without its `resolvedPriority` and `priorityFrom` and the admission without
-  // its `p0Holders` and `p0Bound`; and the repository correction's (dispatch://INFRA-3136), entry
+  // its `p0Holders` and `p0Bound`; the repository correction's (dispatch://INFRA-3136), entry
   // 20261125181104's, which serves each issue without its `repoBefore`, `repoCorrectedAt`,
-  // `repoChangePending` and `repoChangeReason`.
+  // `repoChangePending` and `repoChangeReason`; and the pull-requests entry's, which serves each
+  // issue without its `pullRequests` (`withoutPullRequests`) and leaves `pullRequest`, the newest
+  // open one, as it is.
   // So the golden's issues, rows, claim views, stranded claims and daemon block are compared
   // without them. One value strip stands above 199 as well: `caches`, the source of the
   // repository-cache-room row, arrived at contract 213, so that row is served here without its
@@ -3702,6 +3762,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         priorityFrom: _priorityFrom,
         tasks: _tasks,
         checks: _checks,
+        pullRequests: _pullRequests,
         repoBefore: _repoBefore,
         repoCorrectedAt: _repoCorrectedAt,
         repoChangePending: _repoChangePending,

@@ -370,12 +370,16 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // other body carries them on an architect, so without this body no record describes those keys
 // at their architect paths, and the value comparison reads no value there. Each issue also carries
 // a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
-// merge states, so the fourteen issues carry all eight words at both key paths. A gated step on an
-// ancestor's basis carries the `basis` its status writes it with. Every issue of the line is held,
-// so one more issue carries `awaiting_children`, a value of an issue's own `phase` above the floor
-// that no other body carries (populatedState's LEGION-240 carries the other, `step`). The project's
-// pause waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
-// where pausedState's pause waits on an architect, implementers and a reviewer alone. Its
+// merge states, so the fourteen issues carry all eight words at both key paths, and one pull
+// request of its set, a linked one of a task, whose `state` takes value i of the three states and
+// whose `mergeState` value i of the merge states, so `pullRequests` carries every word of both
+// fields. The fifteen held words stand over the fourteen issues, the last on the first issue
+// again. A gated step on an ancestor's basis carries the `basis` its status writes it with. Every
+// issue of the line is held, so one more issue carries `awaiting_children`, a value of an issue's
+// own `phase` above the floor that no other body carries (populatedState's LEGION-240 carries the
+// other, `step`). The project's pause waits on the stop of one claim of each role, so
+// `paused.waitsOn.*.role` carries every role, where pausedState's pause waits on an architect,
+// implementers and a reviewer alone. Its
 // repositories block names five live repositories, both role Apps installed on each, whose caches
 // stand in the five states a cache can be in, so `repositories.live.*.cache.state` carries every
 // word of that field, which arrived with the block at repositoriesLiveContract (answers.go's
@@ -419,8 +423,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 	heldWords := []record.HeldReason{record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff,
 		record.HeldAncestry, record.HeldRootAwaitingPerson, record.HeldAwaitingChildren, record.HeldDesignGate,
 		record.HeldDispatchBlocker, record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldChildrenBeforeRetro,
-		record.HeldTaskStopped, record.HeldAtWork, record.HeldUnclassified}
-	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren}
+		record.HeldTaskStopped, record.HeldPullRequests, record.HeldAtWork, record.HeldUnclassified}
+	holdWords := []record.HoldReason{record.HoldEscalated, record.HoldTaskStopped, record.HoldForChildren, record.HoldForPullRequests}
+	stateWords := []record.PullRequestState{record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
 	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
@@ -484,6 +489,13 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
 				MergeState: string(mergeWords[i%len(mergeWords)]),
 			},
+			PullRequests: []SetPullRequestView{{
+				PullRequestView: PullRequestView{
+					Repo: "acme/widgets", Number: 3000 + i, Head: "0c4e8a2f6b1d3957e0a4c8f2b6d1e3a5c7f9b204",
+					State: string(stateWords[i%len(stateWords)]), MergeState: string(mergeWords[i%len(mergeWords)]), ReviewDecision: "approved",
+				},
+				Task: "a", Linked: true,
+			}},
 			MergeWait: &MergeWaitView{
 				WaitsOn: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", MergeState: string(mergeWords[i%len(mergeWords)]),
 				StateReadAt: &at, HeadUpdatedAt: &at, CheckRuns: 2,
@@ -516,7 +528,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		Key: "VALUES-AWAITING", Generation: 1, Phase: phase.AwaitingChildren, Status: "in_progress",
 		Tree: "VALUES-AWAITING", Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
 	}
-	// The fourteen held words over the fourteen issues of the line, one word on each.
+	// The fifteen held words over the fourteen issues of the line, one word on each, the last on
+	// the first issue again.
 	held := make([]HeldIssue, 0, len(heldWords))
 	for i, reason := range heldWords {
 		held = append(held, HeldIssue{Issue: keys[i%len(keys)], Reason: reason})

@@ -702,7 +702,7 @@ func TestAnotherProjectsIssueEventIsNoFactBeforeItsPayloadIsRead(t *testing.T) {
 		{subject: "notifications.dispatch.issue.CAPTURE.issue.updated", data: []byte(`{`), fails: true},
 		{subject: "notifications.dispatch.issue.CAPTURE.issue.updated", data: captured, fails: true, neither: true},
 	} {
-		decoded, err := decodeMessage(row.subject, "CAPTURE", capturedRepositories, row.data)
+		decoded, err := decodeMessage(row.subject, "CAPTURE", capturedRepositories, nil, row.data)
 		switch {
 		case !row.fails && (err != nil || decoded.Fact != nil):
 			t.Errorf("decode %s of %q = %#v, %v; want no fact and no error", row.subject, row.data, decoded.Fact, err)

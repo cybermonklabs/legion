@@ -156,7 +156,7 @@ func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key,
 	var start workflow.ArchitectStart
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		start, err = workflow.ArchitectStartOf(context.Background(), tx, record.NewStore(), admission.engine.GatedSteps(), root)
+		start, err = workflow.ArchitectStartOf(context.Background(), tx, record.NewStore(), admission.engine.RepositoryRenames(), admission.engine.GatedSteps(), root)
 		if err != nil {
 			t.Fatalf("read what the architect task of %s is derived from: %v", key, err)
 		}

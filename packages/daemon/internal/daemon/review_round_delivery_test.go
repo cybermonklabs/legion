@@ -41,7 +41,7 @@ func TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons(t *testing.
 	const (
 		unreviewed = "5ab0c1d2e3f405162738495a6b7c8d9e0f1a2b3c"
 		reviewed   = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
-		before     = "Continue Workflow. Issue: LEGION-208. Phase: reviewing. Pull request: #118."
+		before     = "Continue Workflow. Issue: LEGION-208. Phase: reviewing. Pull request: acme/widgets#118."
 	)
 	for _, tc := range []struct {
 		name string

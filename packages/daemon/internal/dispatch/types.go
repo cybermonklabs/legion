@@ -293,6 +293,12 @@ type Issue struct {
 	// Claim is the issue's claim Dispatch shows, nil for none; ClaimUnread is IssueSummary's.
 	Claim       *Claim
 	ClaimUnread bool
+	// ExternalLinks is the URL of each external link the detail shows on the issue
+	// (`external_links`), in Dispatch's order, and LinksKnown whether the detail named its links at
+	// all: a Dispatch release that serves none, or a null, says nothing of them, which is never no
+	// links. Intake reads the pull requests among them (intake.ObservedIssue).
+	ExternalLinks []string
+	LinksKnown    bool
 }
 
 // ResolvedPriority is a resolved priority as a Dispatch read serves it: Priority its level, 0 for P0

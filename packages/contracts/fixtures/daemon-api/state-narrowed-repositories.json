@@ -284,10 +284,11 @@
       },
       "pullRequest": {
         "repo": "acme/widgets",
-        "number": 1247,
-        "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+        "number": 1253,
+        "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
         "state": "open",
-        "mergeState": "blocked"
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
       },
       "designGate": {
         "artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
@@ -404,12 +405,6 @@
           "pass": 1,
           "rounds": 1
         }
-      },
-      "pullRequest": {
-        "repo": "acme/widgets",
-        "number": 1243,
-        "head": "c4a7f0b36d2e18a95f7b0c43e62d1a8f94b7e305",
-        "state": "open"
       },
       "designGate": {
         "artifactId": "4e8b2a61-7d93-4c05-b1f6-8a3e5c9d2074",

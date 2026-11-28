@@ -41,7 +41,7 @@ func decodeSettlement(t *testing.T, payload map[string]any) decodedMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := decodeMessage(statusesSubject, "CAPTURE", capturedRepositories, envelopeJSON(t, "checks-statuses", "github", string(text)))
+	decoded, err := decodeMessage(statusesSubject, "CAPTURE", capturedRepositories, nil, envelopeJSON(t, "checks-statuses", "github", string(text)))
 	if err != nil {
 		t.Fatalf("decode the settlement: %v", err)
 	}

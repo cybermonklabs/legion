@@ -9,17 +9,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// The open pull request on a branch is the one whose head is that branch of the repository itself.
-// GitHub's head=<owner>:<branch> filter names an owner only, and the owner of a repository can hold
-// a fork of it under another name, whose branches may carry any name, an issue's or a task's among
-// them. A listed pull request whose head is a branch of another repository, or of one GitHub no
-// longer has (a deleted fork: head.repo is null), is not the branch's; the repository's own, in
-// whatever case GitHub spells its name, is (the control).
+// The open pull requests on a branch are the ones whose head is that branch of the repository
+// itself. GitHub's head=<owner>:<branch> filter names an owner only, and the owner of a repository
+// can hold a fork of it under another name, whose branches may carry any name, an issue's or a
+// task's among them. A listed pull request whose head is a branch of another repository, or of one
+// GitHub no longer has (a deleted fork: head.repo is null), is not the branch's; the repository's
+// own, in whatever case GitHub spells its name, is (the control).
 //
-// The fault: the read takes the first listed pull request whose head.ref is the branch, so a
-// fork's is taken as the task's, recorded, and moves the task. The control: the read without its
-// test of the head's repository.
-func TestTheOpenPullRequestOnABranchIsOneWhoseHeadIsInTheRepository(t *testing.T) {
+// The fault: the read takes each listed pull request whose head.ref is the branch, so a fork's is
+// taken as the task's, recorded, and moves the task. The control: the read without its test of
+// the head's repository.
+func TestTheOpenPullRequestsOnABranchAreTheOnesWhoseHeadIsInTheRepository(t *testing.T) {
 	const branch = "legion/LEGION-208.impl"
 	var listed string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,12 +38,12 @@ func TestTheOpenPullRequestOnABranchIsOneWhoseHeadIsInTheRepository(t *testing.T
 	)
 
 	listed = "[" + fork + "," + gone + "]"
-	if pull, found, err := client.OpenPullRequestOn(context.Background(), repository, branch); err != nil || found {
-		t.Fatalf("the open pull request on %s, with a fork's and a deleted fork's listed = #%d, %t, %v; want none: neither head is a branch of acme/widgets",
-			branch, pull.Number, found, err)
+	if pulls, err := client.OpenPullRequestsOn(context.Background(), repository, branch); err != nil || len(pulls) != 0 {
+		t.Fatalf("the open pull requests on %s, with a fork's and a deleted fork's listed = %+v, %v; want none: neither head is a branch of acme/widgets",
+			branch, pulls, err)
 	}
 	listed = "[" + fork + "," + gone + "," + own + "]"
-	if pull, found, err := client.OpenPullRequestOn(context.Background(), repository, branch); err != nil || !found || pull.Number != 2 {
-		t.Fatalf("the open pull request on %s, with acme/widgets' own listed after a fork's = #%d, %t, %v; want #2", branch, pull.Number, found, err)
+	if pulls, err := client.OpenPullRequestsOn(context.Background(), repository, branch); err != nil || len(pulls) != 1 || pulls[0].Number != 2 {
+		t.Fatalf("the open pull requests on %s, with acme/widgets' own listed after a fork's = %+v, %v; want #2 alone", branch, pulls, err)
 	}
 }

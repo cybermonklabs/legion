@@ -650,7 +650,7 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow. LEGION-208 closes once the last of them leaves the workflow.", waiting) +
+	want := fmt.Sprintf("pull request sjawhar/legion#42 merged, and LEGION-208's close is waiting for %s, still in the workflow. LEGION-208 closes once the last of them leaves the workflow.", waiting) +
 		" " + record.StatusNotTakenYet + " " + record.EndChildRule
 	if len(got) != 1 || got[0].Reason != want {
 		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)

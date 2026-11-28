@@ -116,7 +116,7 @@ func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
 	roleReport := func(token string) string { return `{"kind":"role_message","role":"` + token + `","at":` + millis + `}` }
 	decode := func(t *testing.T, id, payload string) Fact {
 		t.Helper()
-		decoded, err := decodeMessage(legionWakeSubject, "INFRA", nil, envelopeJSON(t, id, "envoy", payload))
+		decoded, err := decodeMessage(legionWakeSubject, "INFRA", nil, nil, envelopeJSON(t, id, "envoy", payload))
 		if err != nil {
 			t.Fatalf("decode the wake report %s: %v", payload, err)
 		}

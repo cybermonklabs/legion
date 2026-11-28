@@ -377,7 +377,7 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 	why := record.ConflictCheckNotGreen
 	before := []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why),
 		{Role: claim.RoleTester, Claim: seededClaim(t, phase.Testing, claim.RoleTester), Step: record.MergeForwardLanded, Head: conflictHead,
-			Landed: forwardHead, Base: "main", Phase: phase.Testing, PullRequest: 42, Why: why}}
+			Landed: forwardHead, Base: "main", Phase: phase.Testing, Repo: "sjawhar/legion", PullRequest: 42, Why: why}}
 	if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, before) {
 		t.Errorf("after the branch moved back the merge-forward messages are %+v, want %+v", got, before)
 	}

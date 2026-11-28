@@ -62,7 +62,7 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	if r.readPullRequest == nil || r.applyMergeability == nil || r.mergeStateWait == nil {
 		return errors.New("merge-queue read executor has no read of a pull request from GitHub")
 	}
-	_, pr, left, err := r.mergingAt(ctx, row.Issue, payload.Number, payload.Head)
+	_, pr, left, err := r.mergingAt(ctx, row.Issue, payload.RepoOf, payload.Number, payload.Head)
 	if err != nil {
 		return err
 	}
@@ -103,8 +103,8 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 			append(attributes, "attempts", mergeStateLadderReads, "error", failed)...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-read:%s:%d", row.Issue, row.ID),
-		intake.MergeQueueReadDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
-		return fmt.Errorf("apply the merge-queue read of %s's pull request #%d: %w", row.Issue, payload.Number, err)
+		intake.MergeQueueReadDone{Issue: row.Issue, Repo: pr.Repo, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {
+		return fmt.Errorf("apply the merge-queue read of %s's pull request %s#%d: %w", row.Issue, pr.Repo, payload.Number, err)
 	}
 	return nil
 }
@@ -145,7 +145,7 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	if err != nil {
 		return err
 	}
-	issue, pr, left, err := r.mergingAt(ctx, row.Issue, payload.Number, payload.Head)
+	issue, pr, left, err := r.mergingAt(ctx, row.Issue, payload.RepoOf, payload.Number, payload.Head)
 	if err != nil {
 		return err
 	}
@@ -305,18 +305,21 @@ func (r *outbox) endUndelivered(ctx context.Context, row record.OutboxRow, end f
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:
 // the issue, the pull request the record holds for it, and why the workflow no longer works the
-// issue's merging phase at head of pull request number, "" while it does (workflow.MergingAt).
-// The read row and the delivery row read it at every attempt, as every fence of a row is read just
-// before the row acts, and through the read the fact between them judges the issue by (workflow's
-// mergeQueueReadDone), so none of the three tells a merger of an issue another of them found gone
-// from merging. An issue the record does not hold has left merging too.
-func (r *outbox) mergingAt(ctx context.Context, key string, number int, head string) (record.Issue, *record.PullRequest, string, error) {
+// issue's merging phase at head of pull request number of the repository repoOf names, "" while it
+// does (workflow.MergingAt), repoOf being the row's RepoOf (record.MergeQueueRead.RepoOf,
+// MergeQueueRemoval.RepoOf), which names the issue's own repository for a row of the release
+// before, which names none. The read row and the delivery row read it at every attempt, as every
+// fence of a row is read just before the row acts, and through the read the fact between them
+// judges the issue by (workflow's mergeQueueReadDone), so none of the three tells a merger of an
+// issue another of them found gone from merging. An issue the record does not hold has left
+// merging too.
+func (r *outbox) mergingAt(ctx context.Context, key string, repoOf func(issueRepo string) string, number int, head string) (record.Issue, *record.PullRequest, string, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
 	var left string
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issue, pr, left, err = workflow.MergingAt(ctx, r.records, tx, key, number, head)
+		issue, pr, left, err = workflow.MergingAt(ctx, r.records, tx, key, repoOf, number, head)
 		return err
 	}); err != nil {
 		return record.Issue{}, nil, "", fmt.Errorf("read the merging phase of %s: %w", key, err)

@@ -18,8 +18,9 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort its `reason` as your role prompt says. |
-| `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
+| `pr-merged` | Merged, not closed: it waits to reach `merging` or for the issues beneath it, or it is no task's own. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
+| `pr-closed-others-open`, `pr-holds-close`, `pr-link-refused` | "The issue's pull requests" in wake-routing-steps.md. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
 | `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
 | `child-closed` | Section 2. File any new child it calls for as `skill://legion-architect/references/decomposition.md` says, and release it at once. |
@@ -37,7 +38,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
 | `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as "A full issue volume" in wake-routing-steps.md says. |
-| A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
+| A reply on an ask you follow | "A reply on an ask" in wake-routing-steps.md. |
 
 ## A capped pull request
 

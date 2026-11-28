@@ -32,7 +32,7 @@ func TestAWorkingCopyDirectoryThatHoldsAFullStopAndASpaceIsWrittenWhole(t *testi
 	engine.cfg.WorkspaceDir = func(key string, repo ghrepo.Repository) string { return root + repo.String() + "/" + key }
 	composed := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", Title: "root", Phase: phase.Reviewing}
 	left, moved := ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools")
-	at, err := standingText(composed, engine.cfg.WorkspaceDir, todaysWalk(), nil, planTold{}, nil)
+	at, err := standingText(composed, engine.cfg.WorkspaceDir, todaysWalk(), nil, planTold{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

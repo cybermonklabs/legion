@@ -1179,7 +1179,7 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		// entry was accepted. The rules read no store, so the pull request and the phase row
 		// that say so are read here, and only for a worker a rule has already named, never for
 		// every issue of the project.
-		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, tx, held.issue, held.role)
+		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, a.engine.RepositoryRenames(), tx, held.issue, held.role)
 		if err != nil {
 			return nil, err
 		}
@@ -3810,7 +3810,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		// already done. It is read here, where the owner is decided, rather than beside the start
 		// below, so the member's other roles come back as they do for any phase with no owner.
 		if len(owners) > 0 {
-			finished, err := workflow.PhaseFinished(ctx, a.store, tx, member)
+			finished, err := workflow.PhaseFinished(ctx, a.store, a.engine.RepositoryRenames(), tx, member)
 			if err != nil {
 				return err
 			}

@@ -26,7 +26,7 @@ import (
 //   - readPullRequest, which the per-issue read and the merge-state read both go through, would
 //     otherwise GET /repos/<recorded>/pulls/<n> with a token minted on the installation the
 //     repository has left;
-//   - openPullRequestOn, which also names an owner in its `head=` filter, would otherwise ask the
+//   - openPullRequestsOn, which also names an owner in its `head=` filter, would otherwise ask the
 //     old installation for heads of an owner that holds none, find nothing, and have its caller
 //     report the pull request missing to the architect.
 //
@@ -54,10 +54,10 @@ func TestThePullRequestReadsOfATreeRecordedBeforeItsTransferAddressTheRepository
 					}
 				}},
 				{name: "the listing of an issue's branch", run: func(t *testing.T, w *workflowRuntime, pr record.PullRequest) {
-					pull, found, err := w.openPullRequestOn(context.Background(), pr.Repo, pr.Branch)
-					if err != nil || !found || pull.Number != pr.Number {
-						t.Fatalf("list the open pull request = %+v, %v, %v; want #%d found on %s",
-							pull, found, err, pr.Number, pr.Branch)
+					pulls, err := w.openPullRequestsOn(context.Background(), pr.Repo, pr.Branch)
+					if err != nil || len(pulls) == 0 || pulls[0].Number != pr.Number {
+						t.Fatalf("list the open pull requests = %+v, %v; want #%d found on %s",
+							pulls, err, pr.Number, pr.Branch)
 					}
 				}},
 			} {

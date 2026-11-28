@@ -411,6 +411,10 @@ var heldSentences = map[record.HeldReason]heldSentence{
 		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs " +
 			"until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."
 	}},
+	record.HeldPullRequests: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
+		return "Its close waits for a pull request of its set: a pull request the issue links that is still open, whose read is still owed, " +
+			"or whose repository the daemon does not serve or cannot read, so the issue closes once none holds it; a retry of its hold starts none."
+	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +
 			"its workers run as they did, and no other issue holds it."

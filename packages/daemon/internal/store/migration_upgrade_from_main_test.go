@@ -127,6 +127,14 @@ func queueRowOfKind(store *Store, kind string) error {
 // 20261108000545 except the two this branch adds below it, which is what main has recorded and
 // what it leaves unrecorded. The negative control is the fix's own absence: with `claim_release`
 // out of either list, the Migrate below fails on the pending release row.
+//
+// The database also holds acme/widgets#42 twice, under two spellings of the repository, as rows of
+// two issues: main's key, one row for each issue, lets them stand. From 20261127234212 the record
+// keys a pull request by its repository and its number, the repository compared without case, so
+// the upgrade keeps the row in the spelling of its issue's repository, LEGION-208's, and deletes
+// the other. The control is that migration without its merge of the rows that collide without
+// case: its unique index on (lower(repo), number) refuses the second row (SQLSTATE 23505), and
+// Migrate fails.
 func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -170,6 +178,25 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 			t.Fatalf("queue the %s row main's daemon writes: %v", kind, err)
 		}
 	}
+	for _, spelled := range []struct{ issue, githubRepo, repo string }{
+		{"LEGION-208", "Acme/Widgets", "Acme/Widgets"},
+		{"LEGION-209", "acme/widgets", "ACME/WIDGETS"},
+	} {
+		for _, seed := range []struct {
+			sql  string
+			args []any
+		}{
+			{`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, repo, github_repo)
+				values ($1, $1, 'LEGION', 'the issue', 'reviewing', 1, 'needs_review', 'A', 1, $2, $2)`, []any{spelled.issue, spelled.githubRepo}},
+			{`insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, fix_attempts,
+				blocked_attempts, check_runs, generation, snapshot, head_counted)
+				values ($1, $2, 42, 'legion/' || $1, 'h-' || $1, now(), '[]', 0, 0, '[]', 0, '', '')`, []any{spelled.issue, spelled.repo}},
+		} {
+			if _, err := store.pool.Exec(ctx, seed.sql, seed.args...); err != nil {
+				t.Fatalf("record %s's pull request as main's daemon did: %v", spelled.issue, err)
+			}
+		}
+	}
 
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("upgrade the database main migrated: %v", err)
@@ -204,6 +231,10 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	if ended != 0 {
 		t.Fatalf("phase_ended rows after the upgrade = %d, want 20261119003157 to have deleted the one main's daemon queued", ended)
 	}
+	if got := rowsAsText(t, store, `select issue || ' ' || repo || '#' || number from pull_requests order by 1`); !slices.Equal(got,
+		[]string{"LEGION-208 Acme/Widgets#42"}) {
+		t.Fatalf("the pull requests after the upgrade = %q, want LEGION-208's row alone, in the spelling of its issue's repository", got)
+	}
 }
 
 // thisBranchsMigrationsMainLacks are the versions of this branch that main has not recorded: main
@@ -215,13 +246,14 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 // 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
 // one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
 // rewrites outbox_kind_check over the rows main's daemon left, dispatch://INFRA-3931's state events
-// (20261126163320), which main has not recorded either, rewrite it after that, and this branch's
-// checks of its merge with main at 17767e4917b1 (20261127142558), which stand above every
-// migration, rewrite it last. The upgrade applies all five whatever main's newest version is:
-// Store.apply asks each migration whether its own version is recorded.
+// (20261126163320), which main has not recorded either, rewrite it after that, this branch's
+// checks of its merge with main at 17767e4917b1 (20261127142558) rewrite it again, and
+// dispatch://INFRA-5910's pull requests by repository and number (20261127234212), which stands
+// above every migration, rewrites it last. The upgrade applies all six whatever main's newest
+// version is: Store.apply asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
-	20261127142558: true,
+	20261127142558: true, pullRequestsByRepositoryVersion: true,
 }
 
 // A daemon of this release is also deployed over a database main migrated once main recorded each
@@ -235,15 +267,16 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // admission pass moves into awaiting_children in the middle of its worker's phase, and a
 // pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
 // re-parented root (20261122154643). The upgrade applies this branch's kind lists with the merge
-// holds change (20261126110259), the state events (20261126163320) and then the merge's checks
-// (20261127142558) over those rows, and `ADD CONSTRAINT … CHECK` validates the rows the table
-// holds, so a list that left any of the eight kinds out would fail Migrate (SQLSTATE 23514) and
-// leave the daemon unable to boot. After the upgrade the outbox takes a merge_holds_changed row,
-// the kind 20261126110259 adds: the three lists stand above 20261122154643's, which does not name
-// the kind, and the merge's checks' list, which names it too, is the last word of the check. The
-// negative controls are each of the eight kinds taken out of any of the three lists, where the
-// Migrate below then fails on that pending row, and merge_holds_changed taken out of the last one,
-// where the row queued after the upgrade is refused.
+// holds change (20261126110259), the state events (20261126163320), the merge's checks
+// (20261127142558) and then the pull requests by repository and number (20261127234212) over
+// those rows, and `ADD CONSTRAINT … CHECK` validates the rows the table holds, so a list that left
+// any of the eight kinds out would fail Migrate (SQLSTATE 23514) and leave the daemon unable to
+// boot. After the upgrade the outbox takes a merge_holds_changed row, the kind 20261126110259
+// adds: the four lists stand above 20261122154643's, which does not name the kind, and the last
+// one's list, which names it too, is the last word of the check. The negative controls are each of
+// the eight kinds taken out of any of the four lists, where the Migrate below then fails on that
+// pending row, and merge_holds_changed taken out of the last one, where the row queued after the
+// upgrade is refused.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -448,9 +481,9 @@ const mainsAppliedSequence = 20261121170714
 // embeds, and no database of an earlier merge holds any of them, so each database here lacks all
 // three, above its newest. The merge of main into dispatch://INFRA-3931's branch brought its state
 // events (20261126163320), which stands above every version of main this head embeds, the merge
-// holds' 20261126110259 among them, and below this branch's 20261126234607 and 20261127142558, its
-// checks of that merge, which stands above every other version: no database here holds any of the
-// three, so each lacks them above its newest.
+// holds' 20261126110259 among them, and below this branch's 20261126234607, 20261127142558, its
+// checks of that merge, and dispatch://INFRA-5910's 20261127234212, which stands above every other
+// version: no database here holds any of the four, so each lacks them above its newest.
 // Store.Migrate asks each embedded migration whether its own version is recorded (apply) and never
 // compares it with the newest, so each upgrade applies the versions that database lacks, below its
 // newest and above it alike, and leaves every embedded version recorded once.
@@ -631,29 +664,16 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		},
 	} {
 		// No release here ever recorded a migration of this pull request's stack: each lacks
-		// those numbered at or below its newest too, and the upgrade applies them (stacksMigrations).
-		release.lacks = append(slices.Clone(release.lacks), stacksMigrationsUpTo(release.newest)...)
+		// those numbered at or below its newest too, and the upgrade applies them (stackMigrations).
+		release.lacks = append(slices.Clone(release.lacks), stackMigrationsUpTo(release.newest)...)
 		t.Run(release.name, func(t *testing.T) { upgradeFrom(t, release) })
 	}
 }
 
-// stacksMigrations are the versions cybermonklabs/legion#5169 and the pull requests it stands on
-// (#5164, #5156, #5165, #5168) add, which neither main nor INFRA-3320's branch recorded: the
-// embedded versions main at dfe2c546f21f does not hold. A database either of those left lacks
-// each of them numbered at or below its newest, and the test of the merge's databases builds it
-// so (stacksMigrationsUpTo). A migration this stack adds goes in this list, or the test builds a
-// database that holds it and the upgrade counts one migration fewer than it applies.
-var stacksMigrations = []int{
-	20261117213545, 20261117223524, 20261117224125, 20261121165047, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
-	20261123154051, 20261123200630, 20261123221142, 20261124023617, 20261126144204,
-	20261126234607, 20261127142558,
-}
-
-// stacksMigrationsUpTo is stacksMigrations numbered at or below newest.
-func stacksMigrationsUpTo(newest int) []int {
+// stackMigrationsUpTo is stackMigrations numbered at or below newest.
+func stackMigrationsUpTo(newest int) []int {
 	var below []int
-	for _, version := range stacksMigrations {
+	for _, version := range stackMigrations {
 		if version <= newest {
 			below = append(below, version)
 		}
@@ -661,28 +681,15 @@ func stacksMigrationsUpTo(newest int) []int {
 	return below
 }
 
-// migrateMainsThrough applies every embedded migration numbered up to and including version but
-// this stack's (stacksMigrations): the database main's daemon left while version was its newest.
-// A test of one of main's kind lists reads its negative control there and not on this stack's own
-// order, where a list of this stack numbered below main's version names main's kind already: the
-// last migration to write a list owns every value of it, main's included, because on a database
-// main migrated this stack's lists run late, after main's, and are the last word there.
+// migrateMainsThrough is Store.MigrateMainsThrough, failing the test on an error: the database
+// main's daemon left while version was its newest. A test of one of main's kind lists reads its
+// negative control there and not on this stack's own order, where a list of this stack numbered
+// below main's version names main's kind already: the last migration to write a list owns every
+// value of it, main's included, because on a database main migrated this stack's lists run late,
+// after main's, and are the last word there.
 func migrateMainsThrough(t *testing.T, store *Store, version int) {
 	t.Helper()
-	ctx := context.Background()
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
-	}
-	for _, migration := range all {
-		if migration.Version > version {
-			return
-		}
-		if slices.Contains(stacksMigrations, migration.Version) {
-			continue
-		}
-		if _, err := store.apply(ctx, migration); err != nil {
-			t.Fatalf("apply %s as main's run did: %v", migration.Name, err)
-		}
+	if err := store.MigrateMainsThrough(context.Background(), version); err != nil {
+		t.Fatal(err)
 	}
 }

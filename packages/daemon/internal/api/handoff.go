@@ -629,11 +629,14 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
 // the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
 // (readIssuePullRequest), records one open. So before the completion is applied, the open pull
-// request on the branch of the completion's task (position.branch: the task's own,
+// requests on the branch of the completion's task (position.branch: the task's own,
 // record.PlanTask.BranchOf, and the issue's, claim.IssueBranch, for an issue with no plan rows,
-// completionPosition), is read as the implement App, minted for the owner of the issue's
+// completionPosition) are read as the implement App, minted for the owner of the issue's
 // repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it
-// by), and it says whether the completion goes on:
+// by). A branch can hold several, each onto a base of its own (dispatch://INFRA-5910 D1, decision
+// 20), so the completion is taken on the task's own pull request among them (taskPullRequest,
+// decision 5), whether or not the issue links it, and that one says whether the
+// completion goes on:
 //
 //   - one open against the base the plan gives the task (position.base, record.StoredPlan.BaseOf),
 //     or against any base where none is read (an issue with no plan rows): when the record does
@@ -641,10 +644,14 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 //     applied first, a reopen when the record holds the same pull request closed, under the
 //     read's stable id (intake.OpenedRead). The completion then moves the issue to its task's
 //     next step. A failure to apply it is FACT_APPLY_FAILED, with the completion not applied.
-//   - one open against another base: HANDOFF_PULL_REQUEST_BASE, 409, naming the task's base and
-//     the command that sets it, and nothing is applied. Legion merges no task's work into a base
-//     the plan does not give, and the review of the task reads its pull request, which against
-//     another base shows work that is not the task's.
+//     Another open pull request on the branch is no part of the completion and is applied
+//     nothing here: its own opened webhook, or the per-issue read, records it, and it keeps its
+//     own record.
+//   - none open against the task's base, with one open against another: HANDOFF_PULL_REQUEST_BASE,
+//     409, naming the first opened of them, the task's base and the command that sets it, and
+//     nothing is applied. Legion merges no task's work into a base the plan does not give, and the
+//     review of the task reads its pull request, which against another base shows work that is
+//     not the task's.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
 //     the issue to its task's next step. The work landed, its merge told the architect
 //     (pr-merged), and the workflow runs on.
@@ -709,12 +716,12 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	// that moved rather than the pull request on it. That empty list is the production refusal
 	// this rule was changed for: every implementer handoff of a tree opened before the transfer
 	// was refused HANDOFF_NO_PULL_REQUEST below.
-	pull, found, err := github.OpenPullRequestOn(ctx, repository, branch)
+	pulls, err := github.OpenPullRequestsOn(ctx, repository, branch)
 	if err != nil {
 		logUnread(err)
 		return true
 	}
-	if !found {
+	if len(pulls) == 0 {
 		// This read is GitHub's own answer on an open pull request, so of the states that let the
 		// implementation move on (record.LetsImplementationMove) only merged still does here: a
 		// record holding the pull request open is one GitHub closed or merged since the daemon last
@@ -729,6 +736,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_PULL_REQUEST", message)
 		return false
 	}
+	pull := taskPullRequest(pulls, position.base)
 	if position.base != "" && pull.Base.Ref != position.base {
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_PULL_REQUEST_BASE", fmt.Sprintf(
 			"pull request #%d on %s is against %s, and the base of task %s is %s: set it with gh pr edit %d --base %s, then complete again.",
@@ -745,6 +753,28 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		return false
 	}
 	return true
+}
+
+// taskPullRequest is the task's own pull request among pulls, the open pull requests GitHub lists
+// on the task's branch, which holds at least one (dispatch://INFRA-5910 decision 5): of them the
+// first opened, the lowest number, whose base is base, the task's base; where none is against it,
+// or base is "" (an issue with no plan rows), the first opened of them on any base. The numbers of
+// one repository order its pull requests as GitHub opened them, and GitHub lists them newest first,
+// so the first it lists is no part of the rule.
+func taskPullRequest(pulls []githubrest.PullRequest, base string) githubrest.PullRequest {
+	first, onBase := 0, -1
+	for at, pull := range pulls {
+		if pull.Number < pulls[first].Number {
+			first = at
+		}
+		if base != "" && pull.Base.Ref == base && (onBase < 0 || pull.Number < pulls[onBase].Number) {
+			onBase = at
+		}
+	}
+	if onBase >= 0 {
+		return pulls[onBase]
+	}
+	return pulls[first]
 }
 
 // handoffPullRequestCaller is the caller kind of implementationPullRequest's GitHub calls, which
