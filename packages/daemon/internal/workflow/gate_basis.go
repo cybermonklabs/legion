@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -689,7 +688,7 @@ func ownDocumentEnded(root string, gate, updated record.DesignGate, fact intake.
 			approved, updated.LatestVersion, step, root, ended)
 	}
 	return fmt.Sprintf("Version %d of %s, the root's own document, is newer than version %d, which the step was registered at. %s %s",
-		updated.LatestVersion, own, classify.RegisteredRootVersion(gate), ended, stepClosed(root, step))
+		updated.LatestVersion, own, record.RegisteredRootVersion(gate), ended, stepClosed(root, step))
 }
 
 // basisArtifact applies an event of an ancestor's document to the steps of other roots that name
@@ -786,6 +785,69 @@ func (e *Engine) endOpenBasis(ctx context.Context, tx pgx.Tx, root record.Issue,
 	}
 	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "basis-ended", Role: claim.RoleArchitect, Version: basis.Version,
 		Ref: stepRef(basis.Issue, step), Reason: what})
+}
+
+// ResetGate writes after, the row before as the boot's reset after an earlier release's boot
+// leaves it (record.ResetGatesAfterEarlierRelease, record.ResetAfterEarlierRelease), and
+// tells each change of standing the reset makes through the paths every other move takes
+// (dispatch://INFRA-6065, R2 and R3), so the reset's write of a row goes through the engine:
+//
+//   - The row is written through putGateTold, which reads the standing the tree was last told
+//     from the stored rows, told_open among them, before the write clears it, and compares it with
+//     the row in version mode: a gate told open that reads closed after the reset is told closed
+//     once, and one whose told standing does not move is told nothing.
+//   - A basis the reset ended is told to the root's architect as basis-ended, naming the
+//     ancestor's document and the version the basis stood on, and no actor: an open one's end as
+//     endOpenBasis tells it, and a pending one's as an act on the root's own document ends a wait
+//     (tellPendingEnded, which also tells the ancestor's architect and answers a root's wait on a
+//     person in place of the notice). A root out of the workflow, or whose tree lingers
+//     (record.Stopped), has nobody to tell, so the end is only logged.
+//
+// A step the deployment does not gate holds nothing, and a carried copy's ends are its old
+// root's to tell, so neither tells an end, as an artifact event's apply tells none for them
+// (applyArtifact).
+func (e *Engine) ResetGate(ctx context.Context, tx pgx.Tx, before, after record.DesignGate) error {
+	if err := e.putGateTold(ctx, tx, after, after.LatestVersion); err != nil {
+		return err
+	}
+	step := before.Step.OrSpec()
+	if before.Basis == nil || after.Basis != nil || before.Carried || !e.gatesStep(step) {
+		return nil
+	}
+	basis := *before.Basis
+	what := resetEndedBasis(before)
+	if before.PendingOnBasis() {
+		return e.tellPendingEnded(ctx, tx, before.Issue, step, basis, what, "", endedByOwnDocument)
+	}
+	root, err := e.store.Issue(ctx, tx, before.Issue)
+	if err != nil || root == nil {
+		return err
+	}
+	if record.Stopped(*root) {
+		e.logOnCommit(ctx, "workflow: a step's basis ended with its root out of the workflow, and nobody is told", "issue", root.Key, "step", step,
+			"ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version)
+		return nil
+	}
+	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "basis-ended", Role: claim.RoleArchitect, Version: basis.Version,
+		Ref: stepRef(basis.Issue, step), Reason: what})
+}
+
+// resetEndedBasis is what ended gate's basis, open or pending, at the boot's reset after an
+// earlier release's boot (ResetGate): a version of the root's own document newer than the one the
+// step was registered at (record.RegisteredRootVersion), whose digest was owed when this release
+// last ran, and which an earlier release, which settles nothing such a version holds back, ran
+// over since.
+func resetEndedBasis(gate record.DesignGate) string {
+	step := gate.Step.OrSpec()
+	root := gate.Issue
+	newer := fmt.Sprintf("Version %d of %s, the root's own document, is newer than version %d, which the step was registered at, and its digest was owed. "+
+		"An earlier release of the Legion daemon booted on this project since, and it settles nothing such a version holds back, "+
+		"so this boot ended the basis, as the version rule ends it at once.", gate.LatestVersion, documentOf(root, step), record.RegisteredRootVersion(gate))
+	if gate.PendingOnBasis() {
+		return newer + " " + waitEnded(root, step, *gate.Basis) + " " + stepClosed(root, step)
+	}
+	return fmt.Sprintf("%s The %s step of %s stood open on the approval of version %d of %s, so it no longer does. %s",
+		newer, step, root, gate.Basis.Version, documentOf(gate.Basis.Issue, step), stepClosed(root, step))
 }
 
 // BasisChangesRequest says whether a review of an ancestor's document is the one act on it that
@@ -1012,9 +1074,9 @@ func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issu
 // its wait as the leave would have, with nobody told (endPendingUntold), and is returned as it
 // ended.
 func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate, approval record.EventMark, approver string) (record.DesignGate, error) {
-	if gate.PendingOnBasis() && !record.Stopped(root) && record.DigestOwed(gate) && gate.LatestVersion > classify.RegisteredRootVersion(gate) {
+	if gate.PendingOnBasis() && !record.Stopped(root) && record.DigestOwed(gate) && gate.LatestVersion > record.RegisteredRootVersion(gate) {
 		e.logOnCommit(ctx, "workflow: a person's approval of the ancestor's version opens no step while a newer version of the root's own document owes its digest, which ends the wait",
-			"issue", root.Key, "step", gate.Step.OrSpec(), "version", gate.LatestVersion, "registered_at", classify.RegisteredRootVersion(gate),
+			"issue", root.Key, "step", gate.Step.OrSpec(), "version", gate.LatestVersion, "registered_at", record.RegisteredRootVersion(gate),
 			"ancestor", gate.Basis.Issue, "basis", gate.Basis.ArtifactID, "basis_version", gate.Basis.Version, "ask", gate.Basis.Pending.Ask)
 		return gate, nil
 	}

@@ -312,14 +312,22 @@ func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
 
 // RecordBoot writes the row that says this daemon started and returns its id.
 // The daemon holds the id for the life of the process and stamps it on the way
-// out; a row with no stopped_at is a boot that never shut down.
+// out; a row with no stopped_at is a boot that never shut down. The same
+// transaction writes the boot's row of design_gate_verdict_boots, which says the
+// boot ran a release that knows the hash gate's columns, so a boot of this
+// release never leaves a daemon_boot row without it: a daemon_boot row with none
+// is a boot of an earlier release (record.ResetGatesAfterEarlierRelease).
 func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
 	var id int64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
 			project, at,
-		).Scan(&id)
+		).Scan(&id); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, "insert into design_gate_verdict_boots (boot) values ($1)", id)
+		return err
 	})
 	if err != nil {
 		return 0, fmt.Errorf("record the boot of %s: %w", project, err)

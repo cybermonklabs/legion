@@ -2196,8 +2196,7 @@ type DesignGate struct {
 	BasisMoves int
 	// Verdict is Dispatch's verdict on the approval of the document (GateVerdict): nil while the
 	// row is in version mode, set while it is in hash mode. The transition function moves a row
-	// between the two modes on what each fact carries, and the store's reader reads a row a
-	// daemon from before the hash gate moved by the marks (Store.GatesOf, digestAsWritten).
+	// between the two modes on what each fact carries.
 	Verdict *GateVerdict
 	// ApprovedDigest is the approved_sha256 an artifact.digest named for the approval the row
 	// holds, "" where none did. It is for a reader only: the daemon decides nothing from it, and
@@ -2232,8 +2231,7 @@ type GateVerdict struct {
 	Digest string
 	// Mark is where the fact that gave the verdict stands in Dispatch's order
 	// (design_gates.latest_digest_seq and latest_digest_at): the digest event's own mark, the
-	// review's, or a read's verdict mark. An approval or a changes request the row holds marked
-	// after it is a move of a daemon from before the hash gate (the store's digestAsWritten).
+	// review's, or a read's verdict mark.
 	Mark EventMark
 }
 
@@ -2276,9 +2274,8 @@ type GateBasis struct {
 	// request opened (OpenPendingBasis), the version that pending registration stood at. A
 	// version of that document that owes its digest raises the gate's LatestVersion and leaves
 	// the basis, so nothing else on a pending row keeps it; a step open on the basis keeps it as
-	// its ApprovedVersion too, which is where classify.RegisteredRootVersion reads it for such a
-	// step. It is 0 on a basis written before the migration that added it, and on one the store
-	// reads as unset (Store.GatesOf).
+	// its ApprovedVersion too, which is where RegisteredRootVersion reads it for such a
+	// step. It is 0 on a basis written before the migration that added it.
 	RootVersion int
 	// Pending is the open approval request the step waits on, nil for a basis that stands.
 	Pending *PendingBasis

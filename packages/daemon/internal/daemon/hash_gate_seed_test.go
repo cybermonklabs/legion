@@ -292,11 +292,11 @@ func (r *seedRig) boot() {
 // to the review's where Dispatch's runs ahead; a Dispatch that gives no sequence leaves the time
 // alone. A read of the issue that fails holds the seed on its backoff. A row in version mode whose
 // approval of an older version Dispatch reports standing opens on it and stays open on a read
-// again, a read after the issue's last_seq moved on among them, and so does a row an older daemon
-// moved after the boot's seed reads it. A read whose only change is the digest Dispatch filled is
-// a fact of its own, and so are the gate-above and pending-basis reads; a read with no digest_owed
-// puts the row back in version mode. A read that shows the approval not standing at the version
-// the seed was queued at gives the verdict false. The re-parent read names the latest version. A
+// again, a read after the issue's last_seq moved on among them. A read whose only change is the
+// digest Dispatch filled is a fact of its own, and so are the gate-above and pending-basis reads;
+// a read with no digest_owed puts the row back in version mode. A read that shows the approval
+// not standing at the version the seed was queued at gives the verdict false. The re-parent read
+// names the latest version. A
 // carried copy's read reaches the copy as its old root's event does, with its verdict's sequence
 // the review's, never the copy's own last_seq, and is never reset. The boot seeds every closed step
 // in a tree in the workflow once, and the boot catch-up replays an artifact.digest.
@@ -395,33 +395,6 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 		r.seed(seedRoot, 8)
 		if gate := r.gate(seedRoot); !record.GateOpen(gate) || len(r.readFacts()) != 1 {
 			t.Fatalf("the gate after a second read = %+v, facts %d; want it open, the same read applied once", gate, len(r.readFacts()))
-		}
-	})
-
-	t.Run("a row an older daemon moved opens on the boot's seed", func(t *testing.T) {
-		t.Parallel()
-		r := newSeedRig(t)
-		verdictMark := record.EventMark{Seq: 5, At: reviewedAt.Add(-time.Hour)}
-		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 8, ApprovedVersion: new(8),
-			ApprovedMark: verdictMark, Verdict: &record.GateVerdict{Version: 8, Current: true, Mark: verdictMark}, ToldOpen: new(true)})
-		// The release before writes an approval of 7, marked after the verdict, and none of the
-		// verdict's columns (R-old-4): the row reads in version mode, closed.
-		if _, err := r.pool.Exec(r.ctx, `update design_gates set approved_version = 7, approved_seq = 10, approved_at = $2 where issue = $1`,
-			seedRoot, reviewedAt); err != nil {
-			t.Fatalf("write the older daemon's approval: %v", err)
-		}
-		if gate := r.gate(seedRoot); gate.Verdict != nil || record.GateOpen(gate) {
-			t.Fatalf("the row the older daemon moved = %+v, want it in version mode, closed", gate)
-		}
-		r.boot()
-		seeds := gateSeedsOf(t, r.pool, seedRoot)
-		if want := (record.GateSeed{ArtifactID: seedDoc, Step: record.DesignStepSpec, Version: 8, Generation: 1}); len(seeds) != 1 || seeds[0] != want {
-			t.Fatalf("the boot's gate seeds = %+v, want %+v", seeds, want)
-		}
-		r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(10, reviewedAt, versions(7, 8))))
-		r.run(seedRoot, seeds[0])
-		if gate := r.gate(seedRoot); !record.GateOpen(gate) || gate.Verdict == nil || gate.Verdict.Version != 8 {
-			t.Fatalf("the gate after the boot's seed = %+v (verdict %+v), want it open at 8", gate, gate.Verdict)
 		}
 	})
 

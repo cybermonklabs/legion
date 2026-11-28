@@ -107,10 +107,11 @@ type GateFactResult struct {
 //     with it: that digest named the approval the row held.
 //
 // No review the row holds is marked after its verdict, nor the changes request a fact applies,
-// which the workflow records as told (RecordChangesTold): the store reads a row whose review is
-// marked after its verdict as a move of a daemon from before the hash gate (record's
-// digestAsWritten). Where a review would be, the verdict takes that review's mark, and keeps its
-// version and its answer.
+// which the workflow records as told (RecordChangesTold): where a review would be, the verdict
+// takes that review's mark, and keeps its version and its answer. A person's review of the
+// verdict's version gives the verdict itself (R3, "A review"), so a later fact of that version
+// replaces the verdict only where it comes after the newest review the row records
+// (verdictTaken), whatever mark the read that recorded the review gave its own verdict.
 //
 // A step on an ancestor's basis (record.DesignGate.Basis) tracks the root's own verdict in its
 // columns from its entry verdict on, and GateOpen does not read that verdict for a step open on
@@ -297,11 +298,12 @@ func changesRequestStands(gate record.DesignGate, version int) bool {
 }
 
 // basisEnded ends the basis of a row a fact settled at a version of the root's own document above
-// the one the basis was registered at (RegisteredRootVersion), as today's newer version ends it:
-// a step open on the basis falls back to the person's approval it kept, and a pending wait ends
-// closed. prior is the row before the fact, in hash mode.
+// the one the basis was registered at (record.RegisteredRootVersion), as today's newer version
+// ends it: a step open on the basis falls back to the person's approval it kept, and a pending
+// wait ends closed. prior is the row before the fact, in hash mode. The boot's reset after an
+// earlier release's boot ends such a basis by the same rule (record.ResetAfterEarlierRelease).
 func basisEnded(prior, gate record.DesignGate) record.DesignGate {
-	if gate.Basis == nil || prior.Basis == nil || gate.LatestVersion <= RegisteredRootVersion(prior) {
+	if gate.Basis == nil || prior.Basis == nil || gate.LatestVersion <= record.RegisteredRootVersion(prior) {
 		return gate
 	}
 	return record.EndPendingBasis(record.CloseBasis(gate))
@@ -312,41 +314,16 @@ func basisEnded(prior, gate record.DesignGate) record.DesignGate {
 // stands, as a person's approval of the root's own document ends the wait. prior is the row before
 // the fact, in hash mode.
 func pendingAnswered(prior, gate record.DesignGate) record.DesignGate {
-	if gate.PendingOnBasis() && record.GateOpen(gate) && gate.Verdict.Version >= RegisteredRootVersion(prior) {
+	if gate.PendingOnBasis() && record.GateOpen(gate) && gate.Verdict.Version >= record.RegisteredRootVersion(prior) {
 		return record.EndPendingBasis(gate)
 	}
 	return gate
 }
 
-// RegisteredRootVersion is the version of the root's own document the basis of gate was
-// registered at. A step open on the basis reads it from its ApprovedVersion, which OpenOnBasis
-// sets to that version in this release and in the release before, and which a version that owes
-// its digest leaves where it is (Departure D2), so no move of a daemon from before the hash gate
-// leaves it stale. A step pending on the basis reads record.GateBasis.RootVersion, which the store
-// reads as unset where such a daemon moved the row's version since this release wrote it. A
-// pending basis written before the migration that added that column, or read as unset, records
-// none: on a row in version mode it is the latest version, which no version of its own document
-// moved without ending the basis, and on a row in hash mode it is read at its verdict's version
-// before the fact, which is where a version-mode row entered hash mode. ApplyGateFact reads it of
-// a row in hash mode with a basis, and the workflow's telling of an end by the root's own document
-// of any row (ownDocumentEnded) and its opening of a pending step (openPendingBasis).
-func RegisteredRootVersion(gate record.DesignGate) int {
-	switch {
-	case gate.OnBasis() && gate.ApprovedVersion != nil:
-		return *gate.ApprovedVersion
-	case gate.Basis != nil && gate.Basis.RootVersion > 0:
-		return gate.Basis.RootVersion
-	case gate.Verdict == nil:
-		return gate.LatestVersion
-	}
-	return gate.Verdict.Version
-}
-
 // verdictAfterReviews gives the row's verdict the mark of each review the row holds, and of the
 // changes request toldChanges marks, that is marked after it (record.EventMark.After), keeping
-// its version and its answer, so the store never reads this release's row as a move of a daemon
-// from before the hash gate (record's digestAsWritten). A review with no mark is none of such a
-// daemon's moves, and is passed over as that reader passes it over.
+// its version and its answer, so a later fact of the verdict's version is ordered after the
+// newest review the row records (ApplyGateFact). A review with no mark is passed over.
 func verdictAfterReviews(gate record.DesignGate, toldChanges record.EventMark) record.DesignGate {
 	for _, review := range [...]record.EventMark{
 		reviewMark(gate.ApprovedVersion, gate.ApprovedMark), reviewMark(gate.ToldChangesVersion, gate.ToldChangesMark), toldChanges,

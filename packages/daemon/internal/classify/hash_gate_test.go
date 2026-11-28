@@ -95,10 +95,10 @@ func hashGateFact(t *testing.T, name string, seq int64, change func(payload map[
 		Verdict: fact.Verdict, Digest: digest, ApprovedSHA256: fact.ApprovedSHA256}
 }
 
-// assertVerdictAfterReviews holds a row to the rule the store's reader rests on (record's
-// digestAsWritten, which classify cannot call): no approval and no told changes request a row in
-// hash mode holds is marked after its verdict (record.EventMark.After), or the reader takes the row
-// for a move of a daemon from before the hash gate. A changes request the fact applied (changed
+// assertVerdictAfterReviews holds a row to the rule ApplyGateFact keeps of the verdict's mark
+// (verdictAfterReviews): no approval and no told changes request a row in hash mode holds is
+// marked after its verdict (record.EventMark.After), so a later fact of the verdict's version is
+// ordered after the newest review the row records. A changes request the fact applied (changed
 // says the fact changed the row) is recorded as told first, as the workflow records it
 // (applyArtifact, gateRegistered: RecordChangesTold).
 func assertVerdictAfterReviews(t *testing.T, gate record.DesignGate, fact GateFact, changed bool) {
@@ -115,7 +115,7 @@ func assertVerdictAfterReviews(t *testing.T, gate record.DesignGate, fact GateFa
 		mark    record.EventMark
 	}{{"approval", gate.ApprovedVersion, gate.ApprovedMark}, {"told changes request", gate.ToldChangesVersion, gate.ToldChangesMark}} {
 		if review.version != nil && review.mark != (record.EventMark{}) && review.mark.After(gate.Verdict.Mark) {
-			t.Errorf("the %s of version %d is marked %#v, after the verdict's mark %#v: the store would read the row as an older daemon's move",
+			t.Errorf("the %s of version %d is marked %#v, after the verdict's mark %#v: a later fact of that version marked before the review would replace the verdict",
 				review.name, *review.version, review.mark, gate.Verdict.Mark)
 		}
 	}
