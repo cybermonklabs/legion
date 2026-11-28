@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -465,8 +466,8 @@ func TestAnInputItCannotReadWritesNoResult(t *testing.T) {
 			git(t, dir, "commit", "-q", "-m", "a large set")
 			stub := newStub(t)
 			bin, gitLog := t.TempDir(), filepath.Join(t.TempDir(), "git.log")
-			writeFile(t, filepath.Join(bin, "git"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '"+gitLog+"'\nexec '"+realGit+"' \"$@\"\n")
-			if err := os.Chmod(filepath.Join(bin, "git"), 0o755); err != nil {
+			fakeGit := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + gitLog + "'\nexec '" + realGit + "' \"$@\"\n"
+			if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte(fakeGit), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			env := append(stub.env("store"), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))

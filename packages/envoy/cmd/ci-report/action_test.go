@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/testexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -218,8 +219,7 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 	p := newProbe(t)
 	fakes := t.TempDir()
 	for name, content := range map[string]string{"go": fakeGo, "bun": fakeBun, "agent-secrets": fakeAgentSecrets} {
-		writeFile(t, filepath.Join(fakes, name), content)
-		if err := os.Chmod(filepath.Join(fakes, name), 0o755); err != nil {
+		if err := testexec.WriteFile(filepath.Join(fakes, name), []byte(content), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
