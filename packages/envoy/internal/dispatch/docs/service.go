@@ -2819,13 +2819,13 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	}
 }
 
-// refuseClosedIssueAppend is a browser's append the gate refused because the document's issue is
-// closed and the room took the update later than closeMargin after the close (ErrIssueClosed); an
-// update the room took before then is stored (observedBeforeClose), and never reaches
-// here. The issue closed without this process hearing it - its listener redialing, which outlasts
-// the margin - and the room is closed for its issue here, as the notification would close it
-// (setRoomIssueOpen), so it stops taking edits and its browsers reconnect read-only. That runs on
-// a goroutine of its own: this is ygo's persistence worker, which the close waits for. The close
+// refuseClosedIssueAppend answers an append the gate refused because the document's issue is
+// closed (ErrIssueClosed): a browser update the room took later than closeMargin after the close
+// (an update the room took before then is stored, observedBeforeClose), or a commit's parked
+// bytes, which carry no observed time (storeParked). The room had not acted on the close yet, and
+// is closed for its issue here, as the notification would close it (setRoomIssueOpen), so it
+// stops taking edits and its browsers reconnect read-only. That runs on a goroutine of its own:
+// the caller can be ygo's persistence worker, which the close waits for. The close
 // runs whatever the room's record holds: that flag is no proof that a close was ever made, for
 // the reason setRoomIssueOpen gives (notified).
 //

@@ -879,7 +879,10 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 // already holds is skipped. The bytes are bounded by the room's pending queue (MaxPendingItems),
 // which refuses an update that would park past it, and a struct sent again parks only once, so a
 // peer that keeps sending what cannot integrate cannot grow the store past that bound per room
-// instance. An append that fails fails the room, as any of the room's appends does.
+// instance. The bytes carry no observed time, so the gate refuses them once the document's issue
+// is closed, whenever the room took them (observedBeforeClose). On that refusal (ErrIssueClosed)
+// storeParked calls refuseClosedIssueAppend for the instance that parked them, as
+// StoreUpdateContext does for a refused browser update; any other failed append fails the room.
 func (s *Service) storeParked(room string) {
 	for {
 		state := s.lockExistingState(room)
@@ -895,8 +898,12 @@ func (s *Service) storeParked(room string) {
 		if s.roomFailed(room) {
 			continue
 		}
-		ctx := withRoomCursor(context.Background(), next.cursor)
+		ctx := withRoomCursor(context.Background(), &next.instance.cursor)
 		if _, err := s.persistence.AppendParkedUpdate(ctx, room, next.update); err != nil {
+			if errors.Is(err, ErrIssueClosed) {
+				s.refuseClosedIssueAppend(room, next.instance)
+				continue
+			}
 			s.failRoom(room, fmt.Errorf("store the parked bytes of a document update: %w", err))
 		}
 	}
@@ -933,7 +940,7 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
 	if len(logged.Parked) > 0 && !published && !remote {
 		state := s.lockState(room)
-		state.parked = append(state.parked, parkedBytes{update: logged.Parked, cursor: &instance.cursor})
+		state.parked = append(state.parked, parkedBytes{update: logged.Parked, instance: instance})
 		s.unlockState(room, state)
 	}
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {
