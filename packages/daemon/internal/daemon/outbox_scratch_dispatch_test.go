@@ -494,9 +494,10 @@ func (d *scratchDispatch) start() {
 	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-10*time.Second).Before(deadline) {
 		deadline = testDeadline.Add(-10 * time.Second)
 	}
-	// Dispatch serves on the port's own socket (DISPATCH_LISTEN_FD), which the test owns from the
-	// first start to its end, so no other process can take the port before Dispatch serves it, nor
-	// between a stop and the next start.
+	// Dispatch serves on the port's own socket (DISPATCH_LISTEN_FD), which the test holds from the
+	// first start to its end, so no other socket can bind the port between a stop and the next
+	// start. The one moment another socket can bind it is the one before the listen below, when
+	// this socket sets SO_REUSEADDR (ownPort).
 	if d.socket == nil {
 		d.socket, d.port = ownPort(t)
 		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
@@ -596,8 +597,8 @@ func (d *scratchDispatch) start() {
 // holds it at that bind: one that bound it after the probe closed, or the probe itself, whose
 // descriptor a child forked before the close holds until its exec. A child holds a copy of every
 // descriptor from its fork to its exec, close-on-exec or not, and this package forks children of
-// its own while its tests run in parallel. A bind that fails takes no port and the next probe
-// chooses again.
+// its own while its tests run in parallel. A bind refused with EADDRINUSE takes no port, and the
+// next probe chooses again; any other error fails the test.
 //
 // The port the bind took is this socket's while it neither listens nor sets SO_REUSEADDR: no bind
 // of any user is given it. start sets SO_REUSEADDR on the socket before each listen (see its
