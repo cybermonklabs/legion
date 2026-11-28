@@ -185,9 +185,9 @@ func TestTheWalksOfTheListGrowInProportionToWhatTheyRead(t *testing.T) {
 
 // The list of a root that two documents make, each defining the same terms, is made in work in
 // proportion to its terms: the read of the approved documents, the definitions of each term, the
-// order in which each definition joined the list (definitionJoins) and the definition that the
-// list keeps. Each size has a root of its own, outside the roots of the server's setting, so its
-// approvals are not judged, and the walk reads that root alone.
+// order in which each definition joined the list (definitionJoins) and the join order of the
+// definitions of each term (orderDefinitions). Each size has a root of its own, outside the roots
+// of the server's setting, so its approvals are not judged, and the walk reads that root alone.
 func TestTheListOfTwoDocumentsThatDefineTheSameTermsIsMadeInWorkInProportionToItsTerms(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	sizes := []int{250, 4 * 250}
@@ -212,7 +212,7 @@ func TestTheListOfTwoDocumentsThatDefineTheSameTermsIsMadeInWorkInProportionToIt
 			if err != nil {
 				t.Fatal(err)
 			}
-			return len(approved.terms)
+			return len(approved.definitions)
 		}
 	}
 	listed := make([]int, len(reads))

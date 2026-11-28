@@ -1189,6 +1189,83 @@ func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
 	requireTerms(t, tree.handler, first.PrimaryArtifactID, specFormTerm{Term: "lease", Definition: changedLease, Document: "spec.md", Version: 2, Issue: first.Key})
 }
 
+// A request that names the document of a listed definition is judged against the definition that
+// would govern once the person approves it (R50). A's spec holds the listed definition of lease,
+// and B, which the person approved outside the root, brought a second definition of lease when it
+// moved in. One request names A's spec, whose new version drops lease, and A's Verification
+// document, which adds it. After the approval B's definition would govern and the Verification
+// document's would be a second one, so Dispatch refuses the request, and the person's approval
+// when B moves in while the request waits, naming B's definition. The control: with no B under the
+// root, the request opens, the approval passes, and the list holds the Verification document's
+// definition.
+func TestARequestThatDropsTheListedDefinitionIsJudgedAgainstTheNextOne(t *testing.T) {
+	const (
+		sirocco    = "The wind of one desert."
+		thirdLease = "The hold that one session keeps on one work unit."
+	)
+	for _, c := range []string{"B is under the root at the request", "B moves in while the request waits", "control: no B"} {
+		t.Run(c, func(t *testing.T) {
+			tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+			a := createFormIssue(t, tree.handler, tree.root, "A defines lease first", specWithTerms(termLine("lease", leaseDefinition)))
+			approveFormDocument(t, tree.handler, a.PrimaryArtifactID)
+			b := createFormIssue(t, tree.handler, tree.outside, "B defines lease outside the root", specWithTerms(termLine("lease", otherLease)))
+			approveFormDocument(t, tree.handler, b.PrimaryArtifactID)
+			if c == "B is under the root at the request" {
+				reparentFormIssue(t, tree.handler, b.Key, tree.root)
+			}
+			reviseDocument(t, tree.handler, a.PrimaryArtifactID, termLine("lease", leaseDefinition), termLine("sirocco", sirocco), 2)
+			awaitSettled(t, tree.database, a.PrimaryArtifactID)
+			verification := uploadFormDocument(t, tree.handler, a.Key, "verification.md", "# Verification\n\n## Terms\n\n"+termList([]string{termLine("lease", thirdLease)}))
+			finding := definitionFinding("verification.md", verification.ID, 1, "lease", thirdLease, "term-second-definition",
+				alreadyDefines("spec.md version 1 of "+b.Key))
+			request := requestFormApproval(t, tree.handler, a.PrimaryArtifactID, map[string]any{"include_verification": true})
+			if c == "B is under the root at the request" {
+				requireFormRefusal(t, "request of A's spec and Verification document", request, specform.ActRequest, []string{findingLine(finding)}, finding)
+				return
+			}
+			ask := requireFormRequestOpened(t, request).Ask.ID
+			if c == "B moves in while the request waits" {
+				reparentFormIssue(t, tree.handler, b.Key, tree.root)
+				requireFormRefusal(t, "approval of A's spec and Verification document", answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""),
+					specform.ActApproval, []string{findingLine(finding)}, finding)
+				return
+			}
+			if response := answerFormApproval(t, tree.handler, ask, docs.ApprovalOptionApprove, ""); response.Code != http.StatusOK {
+				t.Fatalf("control: approve A's spec and Verification document: status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			want := specFormTerm{Term: "lease", Definition: thirdLease, Document: "verification.md", Version: 1, Issue: a.Key}
+			if got, count := listedOf(t, tree.handler, a.PrimaryArtifactID, "lease"); count != 1 || got != want {
+				t.Fatalf("control: the list holds lease %d times, as %#v; want once, as %#v", count, got, want)
+			}
+		})
+	}
+}
+
+// The root's terms.md comes first, and the other definitions of its term keep their join order
+// under it: when a request of terms.md drops the term, a line of it in the form of a term line
+// outside Terms is judged against the definition that joined next. B1 was approved outside the
+// root first, and B2 was approved under the root (through a server that names no root, as before
+// the setting named it) before B1 moved in, so B2 joined first, though Dispatch created B1 first.
+// The control: before terms.md drops the term, the list holds its definition.
+func TestWhenTermsMdDropsATermTheDefinitionThatJoinedNextGoverns(t *testing.T) {
+	const thirdSession = "The time that one agent spends on one task."
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	terms := approveTermsMd(t, tree, tree.root, termsMd(termLine("session", sessionDefinition)))
+	b1 := createFormIssue(t, tree.handler, tree.outside, "B1 defines session outside the root, created first", specWithTerms(termLine("session", otherSession)))
+	approveFormDocument(t, tree.handler, b1.PrimaryArtifactID)
+	b2 := createFormIssue(t, tree.handler, tree.root, "B2 defines session under the root", specWithTerms(termLine("session", thirdSession)))
+	approveFormDocument(t, olderBuild(t, tree), b2.PrimaryArtifactID)
+	reparentFormIssue(t, tree.handler, b1.Key, tree.root)
+	if got, count := listedOf(t, tree.handler, terms.ID, "session"); count != 1 || got.Document != "terms.md" {
+		t.Fatalf("control: the list holds session %d times, as %#v; want once, from terms.md", count, got)
+	}
+	uploadFormDocument(t, tree.handler, tree.root, "terms.md", termsMd(termLine("gale", "A strong wind."))+"\n# Notes\n\n- "+termLine("session", sessionDefinition)+"\n")
+	awaitSettled(t, tree.database, terms.ID)
+	finding := termLineFinding("terms.md", terms.ID, 2, "session", sessionDefinition, "spec.md version 1 of "+b2.Key)
+	requireFormRefusal(t, "request of terms.md, which drops session", requestFormApproval(t, tree.handler, terms.ID, nil),
+		specform.ActRequest, []string{findingLine(finding)}, finding)
+}
+
 // approveRevisionThrough replaces find with with in the document of issue, which makes its
 // version number, and approves that version through handler.
 func approveRevisionThrough(t *testing.T, tree specFormTree, handler http.Handler, issue formIssue, find, with string, number int) {

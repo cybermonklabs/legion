@@ -458,7 +458,7 @@ func (f SpecForm) specFormOf(ctx context.Context, q queryer, documents []model.A
 	judge := &specFormJudge{
 		form: f, q: q, lock: act == specform.ActApproval,
 		skip: map[string]bool{}, approved: map[string]approvedSpec{},
-		defined: map[string][]requestTerm{}, proposed: map[string][]specform.Term{},
+		defined: map[string][]requestTerm{}, governing: map[string][]requestTerm{},
 	}
 	for _, document := range documents {
 		judge.skip[document.ArtifactID] = true
@@ -573,16 +573,15 @@ type specFormJudge struct {
 	// judgment under it.
 	approved map[string]approvedSpec
 	// defined is the definitions under Terms of every document of the call, under each root, each
-	// with its document: a line of the term-line form outside Terms that names one of another
-	// document is refused, whichever document comes first.
+	// with its document, in the order of the call.
 	defined map[string][]requestTerm
-	// proposed is the terms that the documents judged so far define, under each root: one call
-	// holds one definition of a term, so a later document of the call that defines it again is
-	// refused.
-	proposed map[string][]specform.Term
+	// governing is the definition of each term under each root that governs once the person
+	// approves the call (governingUnder), made at the first judgment under the root.
+	governing map[string][]requestTerm
 }
 
-// requestTerm is a definition under Terms of a document of one call, with the document.
+// requestTerm is a definition under Terms of a document of one call, or of the list, with the
+// document.
 type requestTerm struct {
 	artifactID string
 	specform.Term
@@ -619,13 +618,12 @@ func (j *specFormJudge) read(ctx context.Context, document *specFormDocument) (s
 }
 
 // judge judges the texts that read gave of document, each definition of a term among them, and
-// under a root each definition against the root's list (R50): the approved terms of the documents
-// the call does not name, and the definitions under Terms of the documents it judged before this
-// one, since one request holds one definition of each term. A line of the term-line form outside
-// Terms is no definition: it is judged against the list and against the definitions under Terms
-// of every document of the call (defined), and it adds nothing. The answer gets the root's whole
-// list with its whole record of what Dispatch could not read (approvedSpec.read): only the
-// comparisons leave out the documents that the call names.
+// under a root each definition against the definition of its term that governs once the person
+// approves the call (governingUnder), unless that one is the document's own. A line of the
+// term-line form outside Terms is no definition: it is judged against those definitions and
+// against the definitions under Terms of every other document of the call (defined), and it adds
+// nothing. The answer gets the root's whole list with its whole record of what Dispatch could not
+// read (approvedSpec.read): only the comparisons read the versions that the call names.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, extracted specform.Extracted) error {
 	context, err := j.baseContext(ctx)
 	if err != nil {
@@ -643,7 +641,11 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 			return err
 		}
 		context.SystemNames = approved.systemNames(j.skip)
-		compared = append(approved.list(j.skip), j.proposed[*document.root]...)
+		for _, governing := range j.governingUnder(*document.root, approved) {
+			if governing.artifactID != document.artifact.ID {
+				compared = append(compared, governing.Term)
+			}
+		}
 		for _, other := range j.defined[*document.root] {
 			if other.artifactID != document.artifact.ID {
 				defined = append(defined, other.Term)
@@ -677,14 +679,68 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, e
 			})
 		}
 	}
-	if document.root != nil {
-		where := listedWhere(document.artifact.Name, document.version, *document.artifact.IssueKey)
-		for _, term := range extracted.Terms {
-			term.Where = where
-			j.proposed[*document.root] = append(j.proposed[*document.root], term)
+	return nil
+}
+
+// governingUnder is the definition of each term under root that governs once the person approves
+// the call (R50), each with its document: of the term's approved definitions in join order
+// (approvedSpec.definitions), the first whose document the call does not name, or names at a
+// version that still defines the term, and then that version's definition; and of a term that no
+// such definition holds, the first definition of a document of the call, in the order of the call,
+// since each of them joins at the approval. So a request that names the document of the listed
+// definition and drops the term there is judged against the definition that joins next, and a
+// document of the call that adds the term again is refused, naming it. It is made once for the
+// call, after every document of it was read.
+func (j *specFormJudge) governingUnder(root string, approved approvedSpec) []requestTerm {
+	if governing, made := j.governing[root]; made {
+		return governing
+	}
+	named := map[string][]requestTerm{} // the definitions of the call of each key, in its order
+	var keys []string
+	for _, term := range j.defined[root] {
+		key := specform.TermKey(term.Name)
+		if _, seen := named[key]; !seen {
+			keys = append(keys, key)
+		}
+		named[key] = append(named[key], term)
+	}
+	governing := []requestTerm{}
+	listed := make(map[string]bool, len(approved.definitions))
+	for _, definitions := range approved.definitions {
+		key := specform.TermKey(definitions[0].Term)
+		listed[key] = true
+		if first, ok := firstGoverning(definitions, named[key], j.skip); ok {
+			governing = append(governing, first)
+		} else if len(named[key]) > 0 {
+			governing = append(governing, named[key][0])
 		}
 	}
-	return nil
+	for _, key := range keys {
+		if !listed[key] {
+			governing = append(governing, named[key][0])
+		}
+	}
+	j.governing[root] = governing
+	return governing
+}
+
+// firstGoverning is the first of definitions, one term's approved definitions in join order, that
+// governs once the person approves the call: one of a document that skip does not name, or the
+// definition of the version the call names (named, the call's definitions of the term) of a
+// document whose version still defines it. It answers false when the call names each of them at a
+// version that holds the term no longer.
+func firstGoverning(definitions []approvedTerm, named []requestTerm, skip map[string]bool) (requestTerm, bool) {
+	for _, definition := range definitions {
+		if !skip[definition.artifactID] {
+			return requestTerm{artifactID: definition.artifactID, Term: specform.Term{
+				Name: definition.Term, Definition: definition.Definition, Where: listedWhere(definition.Document, definition.Version, definition.Issue),
+			}}, true
+		}
+		if at := slices.IndexFunc(named, func(term requestTerm) bool { return term.artifactID == definition.artifactID }); at >= 0 {
+			return named[at], true
+		}
+	}
+	return requestTerm{}, false
 }
 
 // documentPages is each path of the dashboard that draws artifact, under the server's address, as
@@ -758,15 +814,18 @@ func lockSpecTerms(ctx context.Context, q queryer, root string) error {
 }
 
 // approvedSpec is what the approved covered documents under a root hold that a judgment reads: the
-// names of the components and interfaces they define, which are nouns of the system, the terms
-// they define, which are the root's list of terms, one definition of each term, sorted by term,
+// names of the components and interfaces they define, which are nouns of the system, every
+// definition of each term, in join order, whose first definitions are the root's list of terms,
 // and each approved version that Dispatch cannot read, which gives nothing to compare. Each keeps
-// the document that holds it, because a comparison leaves out the documents that a judgment
-// names: their named versions stand in for their approved ones. An answer leaves out none (read).
+// the document that holds it, because a comparison reads the versions that a judgment names in
+// place of their approved ones (governingUnder). An answer reads the approved versions alone
+// (read).
 type approvedSpec struct {
-	names  []approvedName
-	terms  []approvedTerm
-	unread []specFormUnread
+	names []approvedName
+	// definitions is the approved definitions of each term, in join order (orderDefinitions),
+	// the terms sorted by the term of their first definition, which governs.
+	definitions [][]approvedTerm
+	unread      []specFormUnread
 }
 
 type approvedName struct{ artifactID, name string }
@@ -803,29 +862,15 @@ func (a approvedSpec) refusingDefinitions(skip map[string]bool) []specFormUnread
 	return refusing
 }
 
-// list is the root's list of terms as Check compares a definition with it, less the terms of the
-// documents skip names. The list holds one definition of each term before those are left out, so
-// a second definition that it does not hold does not come back when skip names the document of
-// the first. Each term's Where is "<document> version <n> of <issue key>".
-func (a approvedSpec) list(skip map[string]bool) []specform.Term {
-	var list []specform.Term
-	for _, term := range a.terms {
-		if !skip[term.artifactID] {
-			list = append(list, specform.Term{Name: term.Term, Definition: term.Definition, Where: listedWhere(term.Document, term.Version, term.Issue)})
-		}
-	}
-	return list
-}
-
-// read is the root's list of terms as every answer gives it: the whole list, with the whole record
-// of the approved versions that Dispatch could not read as it made the list (specFormList). It
-// leaves out no document that a judgment names, since the list lacks the terms of such a version
-// whoever reads it. Each answer shares the record, clipped, so an append to one answer's record
-// writes nothing into another's.
+// read is the root's list of terms as every answer gives it: the definition of each term that
+// governs, with the whole record of the approved versions that Dispatch could not read as it made
+// the list (specFormList). It leaves out no document that a judgment names, since the list lacks
+// the terms of such a version whoever reads it. Each answer shares the record, clipped, so an
+// append to one answer's record writes nothing into another's.
 func (a approvedSpec) read() specFormList {
-	read := specFormList{Terms: make([]specFormTerm, len(a.terms)), Unread: slices.Clip(a.unread)}
-	for index, term := range a.terms {
-		read.Terms[index] = term.specFormTerm
+	read := specFormList{Terms: make([]specFormTerm, len(a.definitions)), Unread: slices.Clip(a.unread)}
+	for index, definitions := range a.definitions {
+		read.Terms[index] = definitions[0].specFormTerm
 	}
 	return read
 }
@@ -847,25 +892,27 @@ func listedWhere(document string, version int, issue string) string {
 //
 // The list holds one definition of each term (R50), by specform.TermKey. A term that one document
 // alone defines, or that the root's terms.md defines, has that definition. Of the definitions of a
-// term in several other documents, the list holds the one that joined it first, and each
-// definition has its own date (definitionJoins): the later of the move that last brought its
-// issue under the root and the first approval of the earliest approved version of its document
-// from which each later approved version holds the term. So a term that a later version added
-// joins at the approval of that version, and a definition that a later version changed keeps its
-// date. The move is read from the events (readParentHistory, parentHistory.arrival), which every
-// build of Dispatch writes for every move, so the build that handled a move changes no order, and
-// a rollback changes none. So a definition that the list holds is never displaced by an arrival,
-// and a change of a listed definition waits for the person's approval. Two definitions that joined
-// at one move come in the order of their approvals, then in the order in which Dispatch created
-// their documents. A reparent into the root, or an approval from before the setting named the
-// root, can put a second definition under the root, and the read of its document names the
-// definition that the list holds as a finding. When the document that the list keeps a term from
-// leaves the root, the list holds the definition that joined next: the person approved each, and a
-// move changes the tree and no text. The setting decides which issues are roots at every event: an
-// issue named today is a root for the moves before it was named too. It reads the issues under
-// root as everyReader: the judgment is the same for each person whose request or approval it
-// judges, and its findings are kept as the reason of a request that others read, so an issue
-// reserved for its author, and what is below it, gives no text to it.
+// term in several other documents, the list holds the one that joined it first, and it keeps
+// every other in join order (orderDefinitions): a judgment that names the document of the first
+// and drops the term there compares with the next one (governingUnder). Each definition has its
+// own date (definitionJoins): the later of the move that last brought its issue under the root
+// and the first approval of the earliest approved version of its document from which each later
+// approved version holds the term. So a term that a later version added joins at the approval of
+// that version, and a definition that a later version changed keeps its date. The move is read
+// from the events (readParentHistory, parentHistory.arrival), which every build of Dispatch writes
+// for every move, so the build that handled a move changes no order, and a rollback changes none.
+// So a definition that the list holds is never displaced by an arrival, and a change of a listed
+// definition waits for the person's approval. Two definitions that joined at one move come in the
+// order of their approvals, then in the order in which Dispatch created their documents. A
+// reparent into the root, or an approval from before the setting named the root, can put a second
+// definition under the root, and the read of its document names the definition that the list
+// holds as a finding. When the document that the list keeps a term from leaves the root, the list
+// holds the definition that joined next: the person approved each, and a move changes the tree and
+// no text. The setting decides which issues are roots at every event: an issue named today is a
+// root for the moves before it was named too. It reads the issues under root as everyReader: the
+// judgment is the same for each person whose request or approval it judges, and its findings are
+// kept as the reason of a request that others read, so an issue reserved for its author, and what
+// is below it, gives no text to it.
 func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string) (approvedSpec, error) {
 	issues, err := refs.IssueDescendants(ctx, q, everyReader, root)
 	if err != nil {
@@ -944,16 +991,31 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 				approved.names = append(approved.names, approvedName{artifactID: each.artifact.ID, name: text.Body})
 			}
 		}
-		documents = append(documents, approvedSpecDocument{artifact: each.artifact, version: each.version, terms: extracted.Terms})
+		documents = append(documents, approvedSpecDocument{
+			artifact: each.artifact, version: each.version, terms: extracted.Terms,
+			termsMd: *each.artifact.IssueKey == root && each.artifact.Slug == termsSlug,
+		})
 	}
-	isTermsMd := func(document int) bool {
-		return *documents[document].artifact.IssueKey == root && documents[document].artifact.Slug == termsSlug
+	definers, keys := definersOf(documents)
+	joins, older, err := definitionJoins(ctx, q, root, f.roots, documents, contestedOf(documents, definers, keys))
+	if err != nil {
+		return approvedSpec{}, err
 	}
-	// The definitions of each key, one of each document, and each key in the order it was read.
-	type definer struct {
-		document int
-		term     specform.Term
-	}
+	approved.unread = append(approved.unread, older...)
+	approved.definitions = orderDefinitions(documents, definers, keys, joins)
+	return approved, nil
+}
+
+// definer is one definition of a term among the documents that approvedSpecTexts read: the index
+// of its document, and its term line.
+type definer struct {
+	document int
+	term     specform.Term
+}
+
+// definersOf is the definitions of each key (specform.TermKey) that documents hold, one of each
+// document, its first term line of the key, and each key in the order it was read.
+func definersOf(documents []approvedSpecDocument) (map[string][]definer, []string) {
 	definers := map[string][]definer{}
 	var keys []string
 	for index, document := range documents {
@@ -969,22 +1031,36 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 			definers[key] = append(held, definer{document: index, term: term})
 		}
 	}
+	return definers, keys
+}
+
+// contestedOf is, for each document by its index, the keys of its definitions whose join order
+// definitionJoins reads: those of a key that two documents other than the root's terms.md define.
+// The root's terms.md comes first at any date, but a judgment that names it at a version that
+// drops the term compares with the next definition, so the order of the others counts too.
+func contestedOf(documents []approvedSpecDocument, definers map[string][]definer, keys []string) map[int][]string {
 	contested := map[int][]string{}
 	for _, key := range keys {
-		if len(definers[key]) > 1 && !slices.ContainsFunc(definers[key], func(d definer) bool { return isTermsMd(d.document) }) {
-			for _, d := range definers[key] {
+		others := slices.DeleteFunc(slices.Clone(definers[key]), func(d definer) bool { return documents[d.document].termsMd })
+		if len(others) > 1 {
+			for _, d := range others {
 				contested[d.document] = append(contested[d.document], key)
 			}
 		}
 	}
-	joins, older, err := definitionJoins(ctx, q, root, f.roots, documents, contested)
-	if err != nil {
-		return approvedSpec{}, err
-	}
-	approved.unread = append(approved.unread, older...)
+	return contested
+}
+
+// orderDefinitions is the definitions of each key in join order (R50), the keys sorted by the term
+// of their first definition: the root's terms.md first, then by the date each joined the list
+// (joinOrder.joined), then by the first approval of its version, then in the order in which
+// Dispatch created their documents.
+func orderDefinitions(documents []approvedSpecDocument, definers map[string][]definer, keys []string, joins map[definitionOf]joinOrder) [][]approvedTerm {
+	ordered := make([][]approvedTerm, 0, len(keys))
 	for _, key := range keys {
-		keeper := slices.MinFunc(definers[key], func(a, b definer) int {
-			if aTerms, bTerms := isTermsMd(a.document), isTermsMd(b.document); aTerms != bTerms {
+		held := slices.Clone(definers[key])
+		slices.SortFunc(held, func(a, b definer) int {
+			if aTerms, bTerms := documents[a.document].termsMd, documents[b.document].termsMd; aTerms != bTerms {
 				if aTerms {
 					return -1
 				}
@@ -995,15 +1071,19 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 			return cmp.Or(aJoin.joined().compare(bJoin.joined()), aJoin.approved.compare(bJoin.approved),
 				aArtifact.CreatedAt.Compare(bArtifact.CreatedAt), strings.Compare(aArtifact.ID, bArtifact.ID))
 		})
-		document := documents[keeper.document]
-		approved.terms = append(approved.terms, approvedTerm{artifactID: document.artifact.ID, specFormTerm: specFormTerm{
-			Term: keeper.term.Name, Definition: keeper.term.Definition, Document: document.artifact.Name, Version: document.version, Issue: *document.artifact.IssueKey,
-		}})
+		definitions := make([]approvedTerm, len(held))
+		for index, d := range held {
+			document := documents[d.document]
+			definitions[index] = approvedTerm{artifactID: document.artifact.ID, specFormTerm: specFormTerm{
+				Term: d.term.Name, Definition: d.term.Definition, Document: document.artifact.Name, Version: document.version, Issue: *document.artifact.IssueKey,
+			}}
+		}
+		ordered = append(ordered, definitions)
 	}
-	slices.SortStableFunc(approved.terms, func(a, b approvedTerm) int {
-		return strings.Compare(strings.ToLower(a.Term), strings.ToLower(b.Term))
+	slices.SortStableFunc(ordered, func(a, b []approvedTerm) int {
+		return strings.Compare(strings.ToLower(a[0].Term), strings.ToLower(b[0].Term))
 	})
-	return approved, nil
+	return ordered
 }
 
 // unreadApproved is an approved version of artifact that the parser refuses (err, a
@@ -1030,11 +1110,12 @@ func unreadApproved(artifact model.Artifact, version int, err error, older bool)
 }
 
 // approvedSpecDocument is a covered document with an approved version: the document, its latest
-// approved version, and the term lines of that version.
+// approved version, the term lines of that version, and whether it is the root's terms.md.
 type approvedSpecDocument struct {
 	artifact model.Artifact
 	version  int
 	terms    []specform.Term
+	termsMd  bool
 }
 
 // rowThen is Row, whose columns after those that a caller scans go to then, so that
@@ -1109,8 +1190,8 @@ const definitionJoinsQuery = `
 `
 
 // definitionJoins is when each definition that contested names joined the list of root: for each
-// document, by its index among documents, the keys of its terms that another document defines too
-// (approvedSpecTexts). It reads the approvals of those documents and their older approved versions
+// document, by its index among documents, the keys of its terms whose join order counts
+// (contestedOf). It reads the approvals of those documents and their older approved versions
 // in one query (definitionJoinsQuery), and the moves of their issues (readParentHistory), and
 // nothing when contested is empty. A definition joins at the first approval of the earliest
 // approved version from which each later approved version holds its term, or at the arrival of its
