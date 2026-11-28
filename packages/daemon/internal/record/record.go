@@ -2017,7 +2017,7 @@ type ProductionCheck struct {
 	// OpenedGeneration is the issue's generation when workflow.openCheck opened the check, which
 	// tells a later leave of the issue whether it ran again after that merge. It is 0 for a check
 	// that an older binary opened or wrote, since such a binary writes no generation, until the
-	// boot gives the check its issue's generation.
+	// boot gives the check one (workflow.Engine.RepairOpenChecks).
 	OpenedGeneration uint64
 }
 
@@ -2042,12 +2042,11 @@ func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 
 // CurrentLookID is the look id of the check's current look: LookID when it was made for this look
 // of this check instance (LookIDLook is Looks, and LookIDOpenedAt is the instant OpenedAt is, as
-// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns.
-// So after a rollback the record can hold the id of a look that a later look replaced: the way
-// back of docs/kubernetes.md keeps the look id of every open check, and the release before's
-// start of the next look leaves it as it was. The record can also hold the id of the check that a
-// later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look has no id
-// of its own until the boot gives it one.
+// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns,
+// so after a rollback (docs/kubernetes.md, "Rolling back the release whose look report gives its
+// look id") the record can hold the id of a look that a later look replaced, or of the check that
+// a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look has no
+// id of its own, and workflow.Engine.RepairOpenChecks says when the boot gives it one.
 func (c ProductionCheck) CurrentLookID() string {
 	if c.LookID == "" || c.LookIDLook != c.Looks || !c.LookIDOpenedAt.Equal(c.OpenedAt) {
 		return ""

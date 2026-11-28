@@ -87,9 +87,9 @@ func TestTheOperatorClaimViewWithholdsTheLookID(t *testing.T) {
 		}
 	})
 
-	// A look's task whose delivery holds no look id of its own — one the release before wrote,
-	// whose upsert names no look id and keeps the id of the delivery it replaced — still gives the
-	// look's id on its look-id line (intake.LookIDLine), and that id is withheld by the line's form.
+	// A look's task whose delivery holds no look id, or another look's — one the release before
+	// wrote after a rollback (withheldTask) — still gives the look's id on its look-id line
+	// (intake.LookIDLine), and that id is withheld by the line's form.
 	for _, tc := range []struct{ name, lookID string }{
 		{name: "a look's task whose delivery holds no look id"},
 		{name: "a look's task whose delivery holds another look's id", lookID: "ANOTHERLOOKIDOFLOOKONEABCD"},

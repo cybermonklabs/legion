@@ -35,23 +35,21 @@ import (
 // An open look that has an id of its own, of an issue out of the workflow, gets a new id and the
 // same start row where a task of that look gives no look id or another one, as
 // lookTaskGivesAnotherID reads the tasks of the look. After a rollback the release before can
-// leave such a task. The way back of docs/kubernetes.md keeps the look id of every open check and
-// takes the look id off each start row it finds queued. The release before can run such a row
-// once the issue is out of the workflow, and its one write of a delivery names no look id, so the
-// delivery holds none or keeps the id of the delivery it replaced. Or the row stays queued through
-// the roll forward. The send drops such a task and the fence finishes such a row unrun, so the
-// look would end at its bound with no task of this release. A look whose issue runs again keeps
-// its id: its checking role can hold that id from the look's task and report with it while the
-// run holds the issue (decision 7 of dispatch://INFRA-3518). Its leave, however it reaches the
-// record (the listing's reconcile after this pass among them), closes its check as not run, or as
-// replaced where a later merge opens one (leave: closeCheckOfARunThatLeft, openCheck), since this
-// pass gives the check, which the way back left with no generation, the issue's generation less
-// one (bootGeneration), so no open look of it is left that needs a task.
+// leave such a task: a delivery it writes, or a start row whose look id the way back took off
+// (docs/kubernetes.md, "Rolling back the release whose look report gives its look id", says
+// how). The send drops such a task and the fence finishes such a row unrun, so the look would end
+// at its bound with no task of this release. A look whose issue runs again keeps its id: its
+// checking role can hold that id from the look's task and report with it while the run holds the
+// issue (decision 7 of dispatch://INFRA-3518). Its leave, however it reaches the record (the
+// listing's reconcile after this pass among them), closes its check as not run, or as replaced
+// where a later merge opens one (leave: closeCheckOfARunThatLeft, openCheck), since this pass
+// gives the check, which the way back left with no generation, the issue's generation less one
+// (bootGeneration), so no open look of it is left that needs a task.
 //
 // An open check with no generation (record.ProductionCheck.OpenedGeneration is 0), which an older
-// binary opened or the way back of docs/kubernetes.md left, gets one, read from its issue as the
-// record holds it before the reconcile (bootGeneration), so a leave's test of whether the issue
-// ran again (ranAgain) reads it from the first fact on.
+// binary opened or the way back left, gets one, read from its issue as the record holds it before
+// the reconcile (bootGeneration), so a leave's test of whether the issue ran again (ranAgain)
+// reads it from the first fact on.
 //
 // Its journal names each check it changed by its issue and its look, and never the look id or the
 // task (R3 of dispatch://INFRA-3518).
@@ -168,15 +166,15 @@ func (e *Engine) lookTaskGivesAnotherID(ctx context.Context, tx pgx.Tx, issue *r
 
 // bootGeneration is the generation the boot gives an open check that has none, read from its
 // issue as the record holds it (RepairOpenChecks). A check opens only at a done, an older binary
-// closed a child's check at its re-entry, and the way back of docs/kubernetes.md closes the open
-// checks of the children that run again, so an issue in the workflow holds such a check only as a
-// root an older binary re-admitted after the check's merge: its generation less one, which is
-// below the generation it runs at however many times it was re-admitted, so its leave with no
-// merge closes the check (ranAgain). An issue out of the workflow gets its own generation: a
-// child's such check is the check of its last merge, and a root that an older binary re-admitted
-// and that then left with no merge keeps its check open, as that binary left it, and closes it at
-// its next run that leaves with no merge. 0 for an issue at no generation, which leaves the check
-// with none.
+// closed a child's check at its re-entry, and the way back (docs/kubernetes.md, "Rolling back the
+// release whose look report gives its look id") closes the open checks of the children that run
+// again, so an issue in the workflow holds such a check only as a root an older binary re-admitted
+// after the check's merge: its generation less one, which is below the generation it runs at
+// however many times it was re-admitted, so its leave with no merge closes the check (ranAgain).
+// An issue out of the workflow gets its own generation: a child's such check is the check of its
+// last merge, and a root that an older binary re-admitted and that then left with no merge keeps
+// its check open, as that binary left it, and closes it at its next run that leaves with no
+// merge. 0 for an issue at no generation, which leaves the check with none.
 func bootGeneration(issue record.Issue) uint64 {
 	if record.InWorkflow(issue) && issue.Generation > 0 {
 		return issue.Generation - 1

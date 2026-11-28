@@ -14,65 +14,20 @@
 --
 -- All five columns are nullable, and every row the migration finds holds null in each of them:
 -- no release before this one made a look id or recorded the generation of a check. The record
--- store reads a null as the empty id, look 0, the zero time and generation 0. The next boot of
--- this release gives each open look without an id of its own an id and a new task of that look,
--- and each open check with no generation its issue's generation.
+-- store reads a null as the empty id, look 0, the zero time and generation 0. At each boot of this
+-- release, workflow.Engine.RepairOpenChecks gives a look id and a new task of that look to each
+-- open look that needs one, and a generation to each open check that has none; its doc says
+-- which look needs one.
 --
 -- The release before this one names each column it reads and writes in production_checks (the
 -- record store's productionCheckColumns and PutProductionCheck) and in pending_task_deliveries
--- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these. Its
--- upsert of a new check leaves opened_generation of the check it replaces in place, so the way
--- back below clears that column, and the next boot of this release writes each open check's
--- generation again.
---
--- The way back keeps the look id of every open check. Whether a look needs a new id depends on
--- the state of its issue at the roll forward, and the way back runs before it, so it cannot know
--- that state: a cleared id would lose the report of a root that runs again then (decision 7 of
--- dispatch://INFRA-3518), whether it ran again when the way back ran or a person re-admitted it
--- after. The release before's one write of a delivery names no look id, so it leaves a new
--- delivery with no look id, or with the look id of the delivery it replaces. It writes a task of
--- a look only when it starts a new look (its startLook counts the look up), or when it runs a
--- start row that this release queued and the way back stripped of lookId, whose text is this
--- release's and gives the id the row carried; a start row gives its task once
--- (supervise.Claim.DeliveredRows). So a delivery it writes holds no look id, or an id that its
--- task does not give. At the roll forward this release sends a look's task only while the id its
--- delivery holds is the look's current id (record.LookHolds), and its boot
--- (workflow.Engine.RepairOpenChecks) gives a new look id and a new task of the look to each open
--- look with no look id of its own, and to each open look of an issue out of the workflow where a
--- task of the look, pending on the checking role's claim or a start of the look queued for that
--- role, gives no look id or another one, unless a task of the look gives the current id. A look
--- has no look id of its own where the record holds an id made for another look or check
--- (ProductionCheck.CurrentLookID), which the release before's start of the next look and its
--- upsert of the check a later merge opens leave in place. A look of an issue that runs again
--- keeps its id, its checking role reports with it, and its leave closes the check, since the boot
--- gives the check, which the way back left with no generation, the issue's generation less one
--- (bootGeneration). The operator claim view withholds the id of every look-id line of a task's
--- text, whatever id the delivery holds (api's withheldTask), so a delivery that holds no id shows
--- none.
---
--- This release also writes the keys lookId and lookReissue into supervise rows
--- (record.SuperviseRequest.LookID and LookReissue), and queues supervise rows of the op
--- retire_look, which end a look's task when its look ends. The release before this one knows no
--- such key and no such op, and decodes an outbox payload strictly (record.DecodeOutboxPayload,
--- DisallowUnknownFields), so each such row would fail to decode there on every attempt. A start
--- stripped of the two keys runs under the release before as a start of its look. Its task, and
--- the task of a delivery a claim holds, still give the look id and ask for look_id, which the
--- earlier plugin's strict handoff_complete refuses, so the checking role sends its report again
--- without it. A retire_look row has nothing the release before can run, and is deleted. The
--- release before closes a child's check at the child's re-entry, and no leave of a run closes a
--- check under it, so the open check of a child that runs again, which this release keeps open,
--- is closed not_run, as the release before would have closed it at the re-entry.
+-- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these.
 --
 -- There is no down file. This directory keeps none: migrations here are forward-only and no
 -- .down.sql file exists. The release's whole way back is the section of docs/kubernetes.md
--- "Rolling back the release whose look report gives its look id", whose block is the last
--- paragraph of this header (migrations.WayBack), run with every daemon of the database stopped
--- and before the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1,
--- once for each project that rolls back. Daemons of several projects can share the database, and
--- each runs only its own project's rows (split_part(issue, '-', 1)), so each statement names the
--- project, <PROJECT>, which the operator replaces with its key, and leaves the rows and the
--- checks of every project that stays on this release. It drops no column and deletes no version
--- row, so the roll forward finds the five columns and applies nothing. internal/textcheck's
+-- "Rolling back the release whose look report gives its look id", which says what its block does
+-- and why, and when and how an operator runs it. That block is the last paragraph of this header
+-- (migrations.WayBack). internal/textcheck's
 -- TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide holds the guide's block and this one to one
 -- text, and internal/store's
 -- TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain and

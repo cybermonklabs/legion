@@ -57,29 +57,31 @@
 #   upgrade                        c-upgrade: each part writes into the store, with the daemon
 #                                  stopped, what a daemon of the release before leaves there, its
 #                                  tester registered on that release's contract, and boots the daemon
-#                                  on it: the boot gives each open look with no look id of its own an
-#                                  id and a new task, keeping its number and the check open — an open
-#                                  look (part 1), the last look (part 2), a look whose tester the
-#                                  operator holds and resumes after the boot (part 3), an id made for
-#                                  the previous look, which the way back keeps while the checked root
-#                                  is out of the workflow, as it keeps every look id, and which the
-#                                  release before's wake leaves in place when it starts the next look
-#                                  (part 4), a look beside a start row of it that release queued,
-#                                  which runs after the boot's row and, in the reverse order, before
-#                                  it, and finishes without acting (part 6), an id made for the check
-#                                  a later merge replaced (part 7) and a task written with no
-#                                  check_opened_at (part 8) — and a look that ended at the operator's
-#                                  hold is left to its next look (part 5); no text that release left
-#                                  reaches a connection, the look's new task does once the tester
-#                                  registers on this change's contract, and a report with its look id
-#                                  is taken, one with a stale id refused 409. The way back keeps every
-#                                  look id, so parts 9 and 10 run on a root whose look's id it kept:
-#                                  with the root out of the workflow and its tester holding this
-#                                  change's task of the look in a delivery that holds no look id, the
-#                                  boot gives the look a new id and a new task, and a report with the
-#                                  kept id is refused 409 and records nothing (part 9); while the root
-#                                  runs again, the boot keeps the id and sends no task of the look,
-#                                  and the tester's report with that id is taken (part 10)
+#                                  on it: the boot gives a look id and a new task to the open look of
+#                                  each part listed next, none of which has a look id of its own
+#                                  (workflow.Engine.RepairOpenChecks says which looks get one),
+#                                  keeping its number and the check open — an open look (part 1),
+#                                  the last look (part 2), a look whose tester the operator holds and
+#                                  resumes after the boot (part 3), an id made for the previous look,
+#                                  which the release before's wake leaves in place when it starts the
+#                                  next look after a rollback (part 4), a look beside a start row
+#                                  of it that release queued, which runs after the boot's row and,
+#                                  in the reverse order, before it, and finishes without acting
+#                                  (part 6), an id made for the check a later merge replaced (part 7)
+#                                  and a task written with no check_opened_at (part 8) — and a look
+#                                  that ended at the operator's hold is left to its next look
+#                                  (part 5); no text that release left reaches a connection, the
+#                                  look's new task does once the tester registers on this change's
+#                                  contract, and a report with its look id is taken, one with a stale
+#                                  id refused 409. Parts 9 and 10 run on a root whose look id the way
+#                                  back kept ("Rolling back the release whose look report gives its
+#                                  look id" in docs/kubernetes.md): with the root out of the workflow
+#                                  and its tester holding this change's task of the look in a
+#                                  delivery that holds no look id, the boot gives the look a new id
+#                                  and a new task, and a report with the kept id is refused 409 and
+#                                  records nothing (part 9); while the root runs again, the boot
+#                                  keeps the id and sends no task of the look, and the tester's
+#                                  report with that id is taken (part 10)
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
 #                                  of an answer to a report, each read before a look's task is sent,

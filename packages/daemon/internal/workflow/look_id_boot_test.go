@@ -121,8 +121,9 @@ func (task lookBootTask) openedAt(check record.ProductionCheck) *time.Time {
 }
 
 // seedLookBootTask records the claim of check's role on issue with task pending on it, as the
-// claim store holds a delivery: the release before writes a look's task with no look id of its
-// own, and its write of a task over another keeps the look id of the task it replaces.
+// claim store holds a delivery that this release or the release before wrote
+// (docs/kubernetes.md, "Rolling back the release whose look report gives its look id", says what
+// the release before writes).
 func seedLookBootTask(t *testing.T, pool *pgxpool.Pool, issue record.Issue, check record.ProductionCheck, task lookBootTask) {
 	t.Helper()
 	token := seedPhaseWorker(t, pool, issue.Key, check.Role, "")

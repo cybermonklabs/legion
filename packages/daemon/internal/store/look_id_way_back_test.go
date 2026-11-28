@@ -32,11 +32,9 @@ import (
 //   - opened_generation goes null on each check, which the release before's upsert of a new check
 //     would leave in place.
 //   - Every look id stays, with the look and the check instance it was made for, on each check,
-//     open or closed: a root's in the workflow, a done issue's and a parked one's among them.
-//     Whether a look needs a new id depends on the state of its issue at the roll forward, which
-//     the block runs before, and a cleared id would lose the report of a root that runs again then
-//     (decision 7 of dispatch://INFRA-3518). The roll forward's boot gives a new look id to each
-//     open look that needs one (workflow.Engine.RepairOpenChecks).
+//     open or closed: a root's in the workflow, a done issue's and a parked one's among them. The
+//     guide's section named below says why, and workflow.Engine.RepairOpenChecks which open look
+//     the roll forward's boot gives a new look id.
 //
 // OTHER's rows, of the same shapes, stay as they are. A second run changes nothing. The control is
 // the state before the block, which the same reads hold to the fixtures.

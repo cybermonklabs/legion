@@ -4827,9 +4827,9 @@ func (s *Postgres) QueuedLookStarts(ctx context.Context, tx pgx.Tx, issue string
 // production check look the task was queued for and that look's id (check_look, check_opened_at,
 // look_id; zero and "" for a task of no look, and "" for a look task an older daemon queued): a
 // look's task whose look no longer holds (LookHolds) is no work to the ready of a phase worker
-// (workflow's readyWorkerTask), and an open look whose checking role holds a task of it with
-// another look id gets a new task at the boot (workflow's RepairOpenChecks). The id is read for
-// those two tests alone, and nothing logs it.
+// (workflow's readyWorkerTask), and the boot reads it to judge whether an open look gets a new
+// look id and a new task (workflow.Engine.RepairOpenChecks). The id is read for those two tests
+// alone, and nothing logs it.
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go

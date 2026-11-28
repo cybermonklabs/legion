@@ -315,11 +315,11 @@ const lookIDWithheld = "<look id withheld>"
 // withheldTask is the text of d as the operator claim view writes it: every occurrence of the look
 // id its delivery holds (supervise.Delivery.LookID) replaced by lookIDWithheld, and the id that
 // each look-id line of the text gives too (withheldLookIDLines). The second covers a look's task
-// whose delivery holds no look id of its own, or another look's: a delivery the release before
-// wrote names no look id and keeps the id of the delivery it replaced, while its text, a start
-// this release queued, gives the look's id. A task that names no look has no such line and stays
-// as it is. The rest of the text stays, so an operator still reads which check, which look and
-// which wake the task is of.
+// whose delivery holds no look id, or another look's, while its text gives the look's id: a
+// delivery the release before wrote after a rollback (docs/kubernetes.md, "Rolling back the
+// release whose look report gives its look id"). A task that names no look has no such line and
+// stays as it is. The rest of the text stays, so an operator still reads which check, which look
+// and which wake the task is of.
 func withheldTask(d supervise.Delivery) string {
 	task := d.Task
 	if d.LookID != "" {

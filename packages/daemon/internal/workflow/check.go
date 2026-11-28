@@ -163,7 +163,7 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 // crypto/rand's Text, 26 base32 characters, 130 bits, made afresh for each look and never derived
 // from the check's OpenedAt, which every state shows) with the look and the check instance it was
 // made for (LookIDLook, LookIDOpenedAt), so CurrentLookID names it. startLook gives each look it
-// starts one, and the boot gives one to an open look that has none (RepairOpenChecks).
+// starts one, and the boot gives a new one to each open look that RepairOpenChecks names.
 func giveLookID(check *record.ProductionCheck) {
 	check.LookID, check.LookIDLook, check.LookIDOpenedAt = rand.Text(), check.Looks, check.OpenedAt
 }

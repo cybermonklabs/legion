@@ -1537,9 +1537,9 @@ type SuperviseRequest struct {
 	// checking role and which travels to the claim's delivery (supervise.RequestDeliver.LookID).
 	// Only a start of a look carries one, and a start of a look that an older daemon queued
 	// carries none. A release before this key refuses a row that carries it
-	// (DisallowUnknownFields), so the way back of
-	// migrations/20261127171352_production_check_look_id.up.sql takes it off every supervise row
-	// of the project that rolls back.
+	// (DisallowUnknownFields), so the way back (docs/kubernetes.md, "Rolling back the release
+	// whose look report gives its look id") takes it off every supervise row of the project that
+	// rolls back.
 	LookID string `json:"lookId,omitempty"`
 	// LookReissue marks the start of a look that is open already: the start the boot queues as
 	// the look's new task with a new look id (workflow.Engine.RepairOpenChecks). It comes only with
