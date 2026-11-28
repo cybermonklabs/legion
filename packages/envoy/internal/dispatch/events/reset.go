@@ -9,8 +9,9 @@ import (
 // event at cursor (nil when no row holds it): a reader of the log by a global id cursor compares
 // them with what it read for its cursor to tell an event log that was reset (EventLogWasReset).
 // Its readers are the event stream relay (api's resetCursor), an events subscription (api's
-// feedEvents, through eventSubscriptionCheck, which reads the same two in a statement of its own)
-// and the keyword fill (textversions), each with its own cursor.
+// feedEvents, through eventSubscriptionCheck, which reads the same two in a statement of its own),
+// the keyword fill (textversions) and the Legion facts' loop (legionfacts' eventLogReset), each
+// with its own cursor.
 //
 // Both come from one statement, so they describe one log. A `truncate events restart identity`
 // (e2e/seed.ts) takes an ACCESS EXCLUSIVE lock, and a statement holds its ACCESS SHARE lock on

@@ -90,6 +90,10 @@ const PassRetry = 10 * time.Second
 // first time in a row: each such pass after it doubles the wait, up to PassRetry.
 const horizonRetry = 250 * time.Millisecond
 
+// resetLine is the line, at WARN, of a pass that found the event log reset under its horizon or
+// its events cursor (eventLogReset), with the horizon it had read and whether the cursor moved.
+const resetLine = "dispatch: the event log was reset under the Legion facts' loop; it forgot its horizon and reads the new log from its first event"
+
 // feedPage is the most rows one transaction reads of each feed. A pass whose page was full reads
 // the next one at once, in a transaction of its own, so a backlog is worked through in bounded
 // steps that each commit their progress.
@@ -285,10 +289,33 @@ func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff)
 // commit woke it among them, says so, and the loop asks for another soon, which reads it once the
 // horizon has passed it (runPass). The moment the pass computes at is read after the horizon, so
 // no event the pass reads is newer than the moment its rows are of.
+//
+// Before it reads the feed it checks the event log under it (eventLogReset), as every reader of
+// the log by a global id does: a log reset and refilled below the horizon or the events cursor, as
+// e2e/seed.ts resets it between browser scenarios, holds events the feed would pass over. The
+// pass forgets the horizon (events.Horizon.Reset) and reads it again, and moves an events cursor
+// that stands in the old log to the new log's start (restartEventsFeed), so the feed reads every
+// event of the new log.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error) {
 	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
 		return nil, false, err
+	}
+	staleHorizon, staleCursor, err := eventLogReset(ctx, deps.Pool, safe)
+	if err != nil {
+		return nil, false, err
+	}
+	if staleHorizon || staleCursor {
+		deps.Horizon.Reset()
+		if staleCursor {
+			if err := restartEventsFeed(ctx, deps.Pool); err != nil {
+				return nil, false, err
+			}
+		}
+		slog.Warn(resetLine, "horizon", safe, "cursor_moved", staleCursor)
+		if safe, err = deps.Horizon.SafeOrAwait(ctx); err != nil {
+			return nil, false, err
+		}
 	}
 	now := sched.now()
 	changed := []string{}
@@ -455,6 +482,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 
 	moved := feedCursors{
 		events:       read.events.position,
+		eventsAt:     read.events.at,
 		observations: read.observations.position,
 		changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 	}
