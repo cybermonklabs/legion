@@ -118,7 +118,7 @@ export function coverageStatements(
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
  *
- * A retracted result is no evidence, as the server counts it (`results_comparison.go`'s
+ * A retracted result is no evidence, as the server counts it (`results_pass_stands.go`'s
  * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
  * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
@@ -180,7 +180,7 @@ export interface CheckStanding {
  * Each result is read against the commit the server names for its own check - the basis the
  * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
  * `unknown`) - as the server's `standingCommit` and `passStandsOf` read it
- * (`results_comparison.go`), and never against one commit the page names for every check: two
+ * (`results_pass_stands.go`), and never against one commit the page names for every check: two
  * checks of one issue compare with different commits, a `before_merge` check with the pull
  * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
  * check's basis reads Passed whatever newer result another check holds at another commit, as its
@@ -295,12 +295,13 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
 
 /**
  * The one commit the page names for the issue's results (root R17): the commit of the newest
- * result recorded against any check of the issue that still stands, against the words its check
- * has now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
- * result names no commit here; nor does one recorded against words its check no longer has
- * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
- * standing; and a result recorded with no commit at all names none either. It is `undefined`
- * where no result names one.
+ * result recorded against any check of the issue that still stands, speaks for its check now, and
+ * names one. A result nobody withdrew is the evidence the page reads, so a withdrawn result names
+ * no commit here; nor does one that does not speak for its check now (`speaksForTheCheckNow`),
+ * whether recorded against words its check no longer has (`check_words_moved`) or counted for
+ * nothing by the server (`not_counted`), since the server's `standingCommit`
+ * (`results_pass_stands.go`) gives neither any standing; and a result recorded with no commit at
+ * all names none either. It is `undefined` where no result names one.
  *
  * The Verification view's body names it, and every statement's state is read at it (R6): each
  * check of a statement is read there by `stateAtCommit`, which Dashboard's two tiles read too, so
@@ -311,7 +312,7 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
 export function namedCommit(checks: readonly CheckStateReads[]): string | undefined {
   const named = checks.flatMap((check) =>
     standingResults(check).filter(
-      (result) => result.commit_sha !== "" && result.check_words_moved !== true
+      (result) => result.commit_sha !== "" && speaksForTheCheckNow(result)
     )
   );
   return newestFirst(named)[0]?.commit_sha;
