@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -53,6 +52,8 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	route := "role:" + routed
 
 	rig := newRoleRig(t)
+	database, frozen := frozenDatabaseClock(t, rig.database)
+	rig.database = database
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	recv := rig.receiver(t, holder)
@@ -73,9 +74,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
 
-	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
 	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the route holder was forwarded %v past the lease while both unnamed mentions are owed a resend, want nothing: one key serves one mention, so neither copy can carry the key the mention a resend pins here would repeat",
 			keysOf(got))
@@ -87,7 +86,7 @@ func TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if !waitsFromScan(due, before, after) {
+	if !waitsFromScan(due, frozen, frozen) {
 		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 	_, _, reached := eventState(t, rig.database, comment.ID)
@@ -140,6 +139,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	route := "role:" + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+mentioned)
@@ -164,8 +164,7 @@ func TestAForwardCarriesTheKeyOfAnUnnamedMentionPastItsLease(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	waitFor(t, "the forward the mention's key covers", func() bool { return len(recv.received()) > 0 })
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever a resend pins it: the one-target forward waits for no owed resend, the key standing for that mention",
 			holder, forwards, want, target)

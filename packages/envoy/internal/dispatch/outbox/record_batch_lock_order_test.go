@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -57,7 +56,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	broker := events.NewBroker()
 	route := "role:" + role
 	seedIssue(t, database, key, &route)
-	claim := roleClaimStub{holder: holder, lastSeen: time.Now().UnixMilli()}
+	claim := liveClaim(holder)
 	deps := Deps{Store: database, Publisher: &recordingPublisher{}, Broker: broker,
 		RoleClaims: claim, Sessions: claim}
 	event := appendEvent(t, database, broker, model.Event{
@@ -66,7 +65,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	})
 	outbox := holding(t, deps)
 
-	at := time.Now()
+	at := fixtureTime
 	page := graphstore.PageNode(graphstore.RolePageID(role), graphWriter, at, event.ID)
 	roleNode := graphstore.RoleNode(role, graphWriter, at, event.ID)
 	if page.Kind >= roleNode.Kind {
@@ -187,13 +186,11 @@ const recordStatement = "%with hold as%recorded as (%update events e set%"
 func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, holds []*recordHold, scanned <-chan scanEnd) ([]*recordHold, scanEnd) {
 	t.Helper()
 	var queued []*recordHold
-	// Its one bound is the test binary's deadline less testwait's margin, as every wait's; it
-	// reads every 2 ms, bounding nothing. A give-up prints how many holds the record had queued
-	// behind and whether it was queued behind one at the last read.
-	reading := testwait.UntilPolling(t, 2*time.Millisecond, "the scan to return as the record queues behind each hold in turn", func() (pollReading[scanEnd], bool) {
+	var end scanEnd
+	testwait.Until(t, "the scan to return as the record queues behind each hold in turn", func() (string, bool) {
 		select {
-		case end := <-scanned:
-			return pollReading[scanEnd]{value: end}, true
+		case end = <-scanned:
+			return "", true
 		default:
 		}
 		behind := holdsTheRecordWaitsOn(t, ctx, database, holds)
@@ -205,10 +202,9 @@ func followTheRecord(t *testing.T, ctx context.Context, database *store.Store, h
 		default:
 			t.Fatalf("the record queued behind %d holds at once, which one statement cannot do", len(behind))
 		}
-		return pollReading[scanEnd]{text: fmt.Sprintf("the scan had not returned; the record had queued behind %d of the %d holds in turn, and behind %d at the last read",
-			len(queued), len(holds), len(behind))}, false
+		return fmt.Sprintf("the record queued behind %d of %d holds; %d at the last read", len(queued), len(holds), len(behind)), false
 	})
-	return queued, reading.value
+	return queued, end
 }
 
 // holdsTheRecordWaitsOn is every hold still held that the record's backend is queued behind. It

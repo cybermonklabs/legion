@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptLane is every message the stream holds on role's kept lane, in stream order, each with the
@@ -24,8 +25,7 @@ import (
 // (bus.KeptAttemptMsgID).
 func keptLane(t *testing.T, client *bus.Client, role string) []bus.StoredMessage {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	var lane []bus.StoredMessage
 	for seq := uint64(1); ; {
 		stored, err := client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
@@ -69,8 +69,7 @@ func expiryNoticeOf(t *testing.T, role string, stored bus.StoredMessage) bus.Kep
 func expire(t *testing.T, client *bus.Client, role string, stored bus.StoredMessage) bus.KeptCopyExpiry {
 	t.Helper()
 	notice := expiryNoticeOf(t, role, stored)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := client.PublishKeptCopyExpiry(ctx, notice); err != nil {
 		t.Fatalf("store the expiry notice of role %s's copy %d: %v", role, stored.Sequence, err)
 	}
@@ -633,9 +632,9 @@ func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	deps, registry := rig.countingDeps(t)
 	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrUnavailable}
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, deps).passKeptExpiries(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	if body := failureReasons(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
 		t.Fatalf("/metrics body = %q, want the unavailable keep counted as failed once", body)

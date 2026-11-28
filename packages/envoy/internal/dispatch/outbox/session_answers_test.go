@@ -30,7 +30,7 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 
 	askID := seedAsk(t, database, "T-1", asker, "Which database backs the queue?")
-	at := time.Now().UTC().Truncate(time.Microsecond)
+	at := databaseNow(t, database).UTC()
 	answer := model.AskAnswer{User: "alice", Selected: []string{"Postgres"}, Text: new("Postgres, for the pool."), At: at}
 	encoded, err := json.Marshal(answer)
 	if err != nil {
@@ -96,7 +96,8 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 		t.Fatalf("the routed comment reached %v, want the role's topic and not the asker's", topics)
 	}
 
-	items, err := sessionanswers.List(ctx, database.Pool, asker.ID, time.Now().Add(-72*time.Hour))
+	since := at.Add(-72 * time.Hour)
+	items, err := sessionanswers.List(ctx, database.Pool, asker.ID, since)
 	if err != nil {
 		t.Fatalf("read the asker's answers: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 	if want := "dispatch://T-1/ask/" + askID; current.Ref == nil || *current.Ref != want || current.Href != "/issues/T-1/asks/"+askID {
 		t.Fatalf("answer place = %v %q, want %s", current.Ref, current.Href, want)
 	}
-	if other, err := sessionanswers.List(ctx, database.Pool, "session-nobody", time.Now().Add(-72*time.Hour)); err != nil || len(other) != 0 || other == nil {
+	if other, err := sessionanswers.List(ctx, database.Pool, "session-nobody", since); err != nil || len(other) != 0 || other == nil {
 		t.Fatalf("a session nothing reached = %#v, %v; want an empty list", other, err)
 	}
 }

@@ -45,18 +45,16 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	})
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
-	start := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	firstPass := time.Since(start)
 	_, _, reached := eventState(t, rig.database, comment.ID)
 	attempts, due := nextAttempt(t, rig.database, comment.ID)
 	sentFirst := slices.Contains(reached, contracts.LegacyAgentSubject(author))
 	var reread time.Duration
 	if due != nil {
-		reread = time.Until(*due)
+		reread = due.Sub(databaseNow(t, rig.database))
 	}
-	t.Logf("R17 FIRST PASS (%v): ses-u copy sent=%v reached=%v published=%v attempts=%d next re-read in %v",
-		firstPass, sentFirst, reached, publishedAt(t, rig.database, comment.ID) != nil, attempts, reread.Round(10*time.Millisecond))
+	t.Logf("R17 FIRST PASS: ses-u copy sent=%v reached=%v published=%v attempts=%d next re-read in %v",
+		sentFirst, reached, publishedAt(t, rig.database, comment.ID) != nil, attempts, reread.Round(10*time.Millisecond))
 
 	// The sender's resolution lands: ses-r claimed the role, the attempt is pinned to it and sent.
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -109,7 +107,6 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(500 * time.Millisecond)
 	// The sender finds no holder and fails the attempt, as it does within a round trip.
 	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
 		firstID, target); err != nil {

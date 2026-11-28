@@ -19,11 +19,14 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -57,16 +60,15 @@ func (publishOnly) Connected() bool { return true }
 
 func (publishOnly) ConnectionChanged() <-chan struct{} { return nil }
 
-// deadlineWindow is a test publisher's window of a deadline, as bus.Client.WindowUntil makes one:
-// a send at or past deadline answers bus.ErrWindowDeadline and is not sent. A nil
-// deadline is none.
+// deadlineWindow is the window of a stand-in publisher that uses real-time fences.
+// Tests with a fake hold use a bus.Client with its window clock set to the hold's clock.
 type deadlineWindow struct {
 	bus.Sender
 	deadline func() time.Time
 }
 
 func (w deadlineWindow) passed() bool {
-	return w.deadline != nil && !time.Now().Before(w.deadline())
+	return w.deadline != nil && !clock.Real().Now().Before(w.deadline())
 }
 
 func (w deadlineWindow) PublishAsync(item contracts.Envelope) <-chan error {
@@ -90,11 +92,20 @@ func (w deadlineWindow) PublishStoredAsync(subject string, item contracts.Envelo
 	return w.Sender.PublishStoredAsync(subject, item, msgID)
 }
 
+// fixtureTime dates test data that does not need a live clock.
+var fixtureTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// Stub fences switch between these two deadlines without waiting for time to pass.
+var (
+	passedDeadline = time.Unix(0, 0).UTC()
+	openDeadline   = time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC)
+)
+
 // unfenced is a publisher hold whose deadline never comes, for a test that scans without one. The
 // record's back-offs need the hold's row too (recordBatch): holding gives an outbox one.
 type unfenced struct{}
 
-func (unfenced) Deadline() time.Time { return time.Now().Add(time.Hour) }
+func (unfenced) Deadline() time.Time { return openDeadline }
 
 // errMentionPending is what publish returns when the event's destinations held a copy back for a
 // mention still being sent - a mentioned session's own (destinations.leftToMention), or a role
@@ -160,7 +171,11 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		default:
 			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
-		if err := <-answer; err != nil && !errors.Is(err, bus.ErrRefused) {
+		answerErr, err := testwait.ReceiveInHelper("publish", "the answer to "+dest.subject, answer)
+		if err != nil {
+			return err
+		}
+		if err := answerErr; err != nil && !errors.Is(err, bus.ErrRefused) {
 			failures = append(failures, fmt.Errorf("%s %q: %w", dest.label, dest.id, err))
 		}
 	}
@@ -1219,7 +1234,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	// author-route publish must leave the event unpublished so the outbox
 	// retries, rather than losing the removed session's only notice for good.
 	publisher := &recordingPublisher{failTopic: "notifications.agent.planner"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue-topic publication despite the failing author route", func() bool {
@@ -1230,6 +1245,7 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1724,13 +1740,14 @@ func TestRunRetriesEventWhenRequiredRoleRouteFails(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Retry role delivery"},
 	})
 	publisher := &recordingPublisher{failTopic: "notifications.role.legion-controller-x"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue topic publication despite a failing role route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the role route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1761,13 +1778,14 @@ func TestRunRetriesEventWhenRequiredAuthorRouteFails(t *testing.T) {
 		}},
 	})
 	publisher := &recordingPublisher{failTopic: "notifications.agent.writer"}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	waitFor(t, "issue topic publication despite a failing author route", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) == nil
 	})
 	publisher.setFailTopic("")
+	retryNow(event.ID)
 	waitFor(t, "retried publication once the author route succeeds", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
@@ -1793,13 +1811,14 @@ func TestRunRetriesFailedIssuePublication(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Retry me"},
 	})
 	publisher := &recordingPublisher{failures: 1, attempt: make(chan struct{}, 1)}
-	stop := run(t, database, publisher, broker)
+	stop, retryNow := startRetryTest(t, outboxOn(database, publisher, broker))
 	defer stop()
 
 	testwait.Receive(t, "the initial publication attempt", publisher.attempt)
 	if publishedAt(t, database, event.ID) != nil {
 		t.Fatal("event was marked published after failed issue publication")
 	}
+	retryNow(event.ID)
 	waitFor(t, "the back-off's retry publication", func() bool {
 		return len(publisher.all()) == 1 && publishedAt(t, database, event.ID) != nil
 	})
@@ -1844,7 +1863,8 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	// test binary's deadline less testwait's margin turns that into a named failure instead of a
 	// package timeout.
 	ctx := testwait.Context(t)
-	holding(t, Deps{Store: database, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
+	frozenStore, frozen := frozenDatabaseClock(t, database)
+	holding(t, Deps{Store: frozenStore, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
 	if ctx.Err() != nil {
 		t.Fatal("scan did not return before the test binary's deadline: the failed rows keep refilling every batch")
 	}
@@ -1863,6 +1883,9 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("the first failing event counted %d attempts, want 1", attempts)
+	}
+	if want := frozen.Add(retry.Delay(1)); !first.Equal(want) {
+		t.Fatalf("the first failing event retries at %s, want %s", first, want)
 	}
 	var held, heldAttempts int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -1949,7 +1972,8 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 		Payload:  model.Message{ID: "message-1", IssueKey: new("T-1"), Body: "Retry me"},
 	})
 	publisher := &blockingFailPublisher{started: make(chan struct{}), release: make(chan struct{})}
-	stop := run(t, database, publisher, broker)
+	outbox := outboxOn(database, publisher, broker)
+	stop, atRest := runResting(t, outbox, clocktest.New(time.Time{}))
 	defer stop()
 
 	testwait.Receive(t, "the initial outbox scan starting", publisher.started)
@@ -1957,7 +1981,7 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 		broker.Publish(model.Event{})
 	}
 	close(publisher.release)
-	time.Sleep(100 * time.Millisecond)
+	atRest("the holder to rest after its overflowed subscription is replaced")
 	if calls := publisher.calls.Load(); calls > 70 {
 		t.Fatalf("overflowed subscription caused %d scans, want a bounded number", calls)
 	}
@@ -2036,29 +2060,29 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runTheOutbox(t, outboxOn(database, publisher, broker))
+	return runOn(t, outboxOn(database, publisher, broker))
 }
 
 // outboxOn is the outbox run runs: on database, publishing through publisher, its LISTEN
 // connection on database's pool and every role's holder held (withHeldRoles). The attempt test
 // builds it here to set a hook (restReading) before Run starts; a test that needs other Deps, as
-// the idle test does, builds its own with New. Either runs it with runTheOutbox.
+// the idle test does, builds its own with New. Either runs it with runOn.
 func outboxOn(database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
 	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it (runTheOutbox). A test that needs more of
+// runDeps runs New(deps) until the returned func stops it (runOn). A test that needs more of
 // Deps than run's store, publisher and broker - a metrics counter among them - builds it itself
 // and calls this.
 func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
-	return runTheOutbox(t, New(deps))
+	return runOn(t, New(deps))
 }
 
-// runTheOutbox runs outbox until the returned func stops it, which waits for Run to return through
+// runOn runs outbox until the returned func stops it, which waits for Run to return through
 // the shared wait, with no span of its own. (runOutbox, beside the throughput test, runs one as
 // cmd/dispatch wires it.)
-func runTheOutbox(t *testing.T, outbox *Outbox) func() {
+func runOn(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -2066,6 +2090,24 @@ func runTheOutbox(t *testing.T, outbox *Outbox) func() {
 	return func() {
 		cancel()
 		testwait.Receive(t, "the outbox's Run to return once its context ended", done)
+	}
+}
+
+// runResting installs the timer clock and rest reader before starting Run.
+func runResting(t *testing.T, outbox *Outbox, timers *clocktest.Fake) (stop func(), atRest func(string)) {
+	t.Helper()
+	outbox.clock = timers
+	atRest = restReading(t, outbox)
+	return runOn(t, outbox), atRest
+}
+
+// notify coalesces hook calls while a wake is already buffered.
+func notify(wake chan<- struct{}) func() {
+	return func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -2129,7 +2171,7 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 		return id
 	}
 	inFollowTransaction(t, database, func(tx pgx.Tx) error {
-		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, fixtureTime, graphstore.NoEvent)
 		return err
 	})
 	return id
@@ -2139,7 +2181,7 @@ func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) 
 	t.Helper()
 	inFollowTransaction(t, database, func(tx pgx.Tx) error {
 		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
-			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+			model.Actor{Kind: "session", ID: sessionID}, fixtureTime, graphstore.NoEvent)
 		return err
 	})
 }
@@ -2207,49 +2249,24 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // test process used 15-28 CPU-s over 377-504 s of wall (0.05 of a core), so go test's default of
 // GOMAXPROCS (four on CI's runner) would leave the waits mostly serial.
 //
-// Every test calls t.Parallel but two kinds, which run before the rest, one at a time:
-//   - those that change something the whole process shares, the default logger
-//     (logtest.SetDefault, slog.SetDefault);
-//   - those whose subject is a bound on the product's own timing, each with a "Not parallel:"
-//     line naming that bound, which it waits on through waitWithin
-//     (TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce and
-//     TestAnOutboxThatLosesNATSReleasesThePublisher): measured on a machine eight other tests
-//     load, such a bound fails a correct product.
+// Tests run in parallel unless they change shared process state (for example the
+// default logger), or their "Not parallel:" comment gives another reason.
 //
-// A parallel test's wait is bounded by the test binary's deadline alone (waitFor, testwait.Until,
-// testwait.UntilPolling, testwait.Receive, testwait.Context), so the load of the tests beside it
-// only makes the same reading come later, but for these bounds, each kept on purpose because it
-// tells a correct outbox from a broken one, and each set from the product's own value it tells
-// apart, with the slack that leaves for load:
-//   - TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack: half the 64 s
-//     back-off a scan that read past the owner would wait for (32 s);
-//   - TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds and
-//     TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents: 60 s
-//     (hangGuard), against the 10 min acknowledgement wait a held batch would add;
-//   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
-//     notification and the scan it wakes must arm the back-off's timer, millisecond work;
-//   - TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold: its client must read connected
-//     before natsLossGrace (3 s) after serve began, and the test sets it 200 ms in, so 2.8 s of
-//     slack; natsLossGrace is a constant of the package, not a field a test can lengthen, and
-//     the test's subject is the holder's reading at the grace's end;
-//   - TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain: the pass's return, sent half
-//     a second after the watcher's first probe answered, probeTimeout (2 s) after the pass began,
-//     must come after the watcher read that answer, microsecond work, and before the next probe
-//     is due, probeTimeout after the first: 1.5 s of slack; probeTimeout is a constant of the
-//     package, and the test's subject is the watcher's reading of a return between two probes;
-//   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
-//     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
-//     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows
-//     that put a mention back in flight. The product reads such a claim live for
-//     model.DeliveryClaimLapse, 60 s, and the test scans or passes at once after the write:
-//     millisecond work against 60 s.
+// A test's wait for a fact is bounded by the test binary's deadline alone (waitFor,
+// testwait.Until, testwait.Receive, testwait.Context). Publisher renewal, loss,
+// takeover and retry rows read the work done at deadlines on a fake clock. In
+// TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce neither timer clock moves:
+// the standby takes the hold on the release notification, not a timer.
 //
-// The quiet windows are not on that list: a sleep after which a test asserts nothing happened
-// (window_test.go, order_test.go, lease_test.go, publisher_test.go, the owner lane and attempt
-// tests) is a lower bound on quiet, which load can only shorten, so it can let a defect through
-// on a loaded run but never fail a correct outbox. Each is set inside a product wait the test
-// holds open past any run - forwardAckWait, a back-off, a timer it never arms - so its end
-// cannot run into the next send.
+// The remaining wall-clock dependencies are:
+//   - The rows that put a mention back in flight set claimed_at to the database's now().
+//     The product reads the claim as live for model.DeliveryClaimLapse (60 s), and these
+//     rows scan or pass at once after writing it. The agedUnnamedAttempts rows instead read
+//     from a frozen database clock.
+//
+// TestTheOutboxDoesNotScanWhileIdle keeps a named 12 s span to catch a periodic
+// scan on the wall clock that the outbox's timer state cannot expose. Its back-off
+// is due on the database's clock, and the test moves the retry timer itself.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const outboxTestParallelism = 8
@@ -2262,30 +2279,10 @@ func TestMain(m *testing.M) {
 }
 
 // waitFor waits until condition holds. Its one bound is the test binary's deadline less testwait's
-// margin (testwait.Until): no caller tests how soon a publication, a settle or a hand-over comes,
-// and a fixed patience fails on a correct product once eight of these tests share four cores. A
-// test whose subject is how soon something happens uses waitWithin and does not run in parallel.
+// margin (testwait.Until). Use the product's clock or a causal witness for timing verdicts.
 func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
 	testwait.Until(t, what, func() (struct{}, bool) { return struct{}{}, condition() })
-}
-
-// pollReading is one poll's value with what a give-up prints of it: testwait.UntilPolling prints
-// the last reading with %+v, which calls String. A poll whose value is a zero until it holds - a
-// time, a scan's end - carries in text what it read so far, so a wait that gives up names it.
-type pollReading[T any] struct {
-	value T
-	text  string
-}
-
-func (r pollReading[T]) String() string { return r.text }
-
-// waitWithin waits at most bound for condition, and fails t once bound has passed. It is for a test
-// whose subject is that bound - the product's own timer or grace - and such a test does not call
-// t.Parallel, so the bound is measured on a machine no other test of this package loads.
-func waitWithin(t *testing.T, bound time.Duration, what string, condition func() bool) {
-	t.Helper()
-	testwait.WithinPolling(t, bound, testwait.Poll, what, condition)
 }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

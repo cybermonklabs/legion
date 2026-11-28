@@ -56,7 +56,7 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 	})
 	// The first mention's sender resolved its role to no session and failed the attempt, which
 	// settles it: no send of it is owed, and it names no session for any copy to be keyed by.
-	// The second is a send a sender claimed just now, and it can be pinned to this very holder.
+	// The second stays live through the test and can be pinned to this very holder.
 	seedDelivery(t, rig.database, commentID, settledTarget, "", "failed")
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 
@@ -64,8 +64,7 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, liveTarget, "steer"))
 	prefixed := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
-	waitFor(t, "the forward the live mention's key covers", func() bool { return len(recv.received()) > 0 })
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever its sender pins it: the settled mention of %s is no unpinned attempt of this comment, so that one key stands for the one mention still owed. A copy under %q is a key that host never claimed, and the mention a sender pins here would land beside it",
 			holder, forwards, want, liveTarget, settledTarget, prefixed)
@@ -99,6 +98,7 @@ func TestAForwardCarriesTheKeyOfALapsedUnnamedMentionBesideASettledOne(t *testin
 	route := "role:" + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+settled)
@@ -126,8 +126,7 @@ func TestAForwardCarriesTheKeyOfALapsedUnnamedMentionBesideASettledOne(t *testin
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, lapsedTarget, "steer"))
 	prefixed := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
-	waitFor(t, "the forward the lapsed mention's key covers", func() bool { return len(recv.received()) > 0 })
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever the resend pins it: the settled mention of %s is no unpinned attempt of this comment, so that one key stands for the resend still owed. A copy under %q is a key that host never claimed, and the resend a sweep pins here would land beside it",
 			holder, forwards, want, lapsedTarget, settledTarget, prefixed)
@@ -184,8 +183,7 @@ func TestAForwardGoesUnkeyedOnceTheOneUnnamedMentionHasSettled(t *testing.T) {
 
 	want := contracts.RoleForwardDedupePrefix + fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	waitFor(t, "the forward the settled mention holds back no longer", func() bool { return len(recv.received()) > 0 })
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q: the comment's one unnamed mention has settled, so nothing is owed for the forward to wait on and no send of this comment will ever carry %q, which a copy keyed by that mention would claim at this host",
 			holder, forwards, want, mentionKey)

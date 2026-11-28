@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -26,6 +29,147 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// stagedAhead leaves a row live for the whole test, until the test makes it due.
+const stagedAhead = 24 * time.Hour
+
+// bareOutbox runs a synchronous fallback pass with the supplied dependencies and real hold clock.
+func bareOutbox(deps Deps, instance uuid.UUID) *Outbox {
+	return &Outbox{deps: deps, instance: instance}
+}
+
+// stagePublisherHold keeps the database row live while the holder's clock stands still.
+func stagePublisherHold(t *testing.T, database *store.Store, holder uuid.UUID) {
+	t.Helper()
+	tag, err := database.Pool.Exec(t.Context(), `
+		update duty_holds set expires_at = now() + $3::interval where name = $1 and holder = $2
+	`, publisherHold, holder, stagedAhead)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("stage %s's publisher hold: updated %d rows, error %v", holder, tag.RowsAffected(), err)
+	}
+}
+
+// standbyWaits counts waits reached after the LISTEN catch-up wake has drained. Read it
+// before moving a lapse timer: an earlier wait can be canceled and its timer re-armed
+// relative to the new fake time instead of firing at the deadline the test read.
+func standbyWaits(o *Outbox) func() int64 {
+	var mu sync.Mutex
+	var listening bool
+	var waits atomic.Int64
+	o.afterListening = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if !listening {
+			listening = true
+			// OnConnected may have sent its wake and the standby consumed it before
+			// this callback. Ensure it enters another wait after listening is recorded.
+			o.signalStandby()
+		}
+	}
+	o.afterStandbyWait = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if listening && len(o.standbyWake) == 0 {
+			waits.Add(1)
+		}
+	}
+	return waits.Load
+}
+
+func requireHoldLive(t *testing.T, hold *duty.Hold, what string) {
+	t.Helper()
+	select {
+	case <-hold.Lost():
+		t.Fatalf("the publisher hold was lost %s", what)
+	default:
+	}
+}
+
+// advanceRenewal moves one tick, on the database first, and waits for confirmation
+// before the caller can move the fake again.
+func advanceRenewal(t *testing.T, fake *clocktest.Fake, move func(time.Time), hold *duty.Hold, check func()) {
+	t.Helper()
+	next := fake.Now().Add(publisherHoldOptions.Renew)
+	fake.AwaitArmedAt(t, "the holder's next renewal tick", next)
+	move(next)
+	deadline := next.Add(publisherHoldOptions.TTL - publisherHoldOptions.Margin)
+	waitFor(t, "the publisher hold's renewal confirmed", func() bool {
+		requireHoldLive(t, hold, "before its renewal was confirmed")
+		check()
+		return hold.Deadline().Equal(deadline)
+	})
+}
+
+// recordAttemptMoment records the same database transaction moment that the back-off uses.
+func recordAttemptMoment(t *testing.T, database *store.Store) func(id int64) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `
+		create table test_outbox_attempts (id bigint primary key, attempted_at timestamptz not null);
+		create function test_outbox_attempt() returns trigger language plpgsql as $$
+		begin
+			insert into test_outbox_attempts values (new.id, now())
+				on conflict (id) do update set attempted_at = excluded.attempted_at;
+			return new;
+		end $$;
+		create trigger test_outbox_attempt after update on events for each row
+			when (new.attempt_count > old.attempt_count) execute function test_outbox_attempt();
+	`); err != nil {
+		t.Fatalf("record the database moment of each failed attempt: %v", err)
+	}
+	return func(id int64) {
+		t.Helper()
+		var attempt int
+		var attemptedAt, due time.Time
+		if err := database.Pool.QueryRow(t.Context(), `
+			select e.attempt_count, a.attempted_at, e.next_attempt_at
+			from events e join test_outbox_attempts a using (id) where e.id = $1
+		`, id).Scan(&attempt, &attemptedAt, &due); err != nil {
+			t.Fatalf("read event %d's failed attempt and back-off: %v", id, err)
+		}
+		if want := attemptedAt.Add(retry.Delay(attempt)); attempt != 1 || !due.Equal(want) {
+			t.Fatalf("event %d has attempt %d due at %s, want attempt 1 due at %s (attempt's database moment + retry delay)",
+				id, attempt, due, want)
+		}
+	}
+}
+
+// startRetryTest holds the retry timer until the caller has repaired the failed destination.
+func startRetryTest(t *testing.T, outbox *Outbox) (stop func(), retryNow func(id int64)) {
+	t.Helper()
+	database := outbox.deps.Store
+	check := recordAttemptMoment(t, database)
+	timers := clocktest.New(time.Time{})
+	stop, atRest := runResting(t, outbox, timers)
+	return stop, func(id int64) {
+		t.Helper()
+		atRest("the holder resting after recording the failed attempt")
+		check(id)
+		plantRetry(t, database, timers, id)
+	}
+}
+
+// plantRetry makes the failed event and any rows it blocked due on the database, then fires the
+// retry timer that the resting holder already armed. Updating an event does not wake the holder.
+func plantRetry(t *testing.T, database *store.Store, timers *clocktest.Fake, ids ...int64) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `update events set next_attempt_at = now() where id = any($1)`, ids); err != nil {
+		t.Fatalf("make events %v due: %v", ids, err)
+	}
+	waitFor(t, fmt.Sprintf("the holder's armed retry timer for events %v", ids), func() bool {
+		return fireNext(timers)
+	})
+}
+
+// fireNext moves to precisely the earliest pending deadline, if there is one.
+func fireNext(timers *clocktest.Fake) bool {
+	_, moved := timers.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 {
+			return now, false
+		}
+		return armed[0], true
+	})
+	return moved
+}
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
 // and its own NATS client, which counts every envelope it sends.
@@ -66,6 +210,12 @@ func (c *sendCounter) of(event int64) (total, most int) {
 	return total, most
 }
 
+func (c *sendCounter) forSubject(event int64, subject string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sends[fmt.Sprint(event)+" "+subject]
+}
+
 // countingClient is a bus client whose windows count every envelope they send.
 type countingClient struct {
 	*bus.Client
@@ -86,22 +236,27 @@ func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 	return s.Sender.PublishAsync(item)
 }
 
+func (s countingSender) Request(subject string, item contracts.Envelope, opts bus.RequestOptions) <-chan error {
+	s.counter.add(item)
+	return s.Sender.Request(subject, item, opts)
+}
+
 // startProcess runs an outbox on database's own outbox pool, publishing through a client of its own
 // connected to url, until the test ends or stop is called.
 func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter) *process {
 	t.Helper()
-	return startProcessWith(t, name, database, url, counter, nil)
+	return startProcessWith(t, name, database, url, counter, nil, nil)
 }
 
-// startProcessWith is startProcess whose outbox is given the Deps that with sets on top of
-// startProcess's, from the process's own NATS client; a nil with sets nothing.
-func startProcessWith(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, with func(client *bus.Client, deps *Deps)) *process {
+// startProcessWith connects with options, lets with amend the process's Deps, and calls set
+// on the constructed outbox before starting Run. Either callback can be nil.
+func startProcessWith(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, with func(*bus.Client, *Deps), set func(*Outbox), options ...bus.ConnectOption) *process {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{url})
+	client, err := bus.ConnectOwningStream([]string{url}, options...)
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open %s's outbox pool: %v", name, err)
@@ -117,6 +272,9 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 		with(client, &deps)
 	}
 	p.outbox = New(deps)
+	if set != nil {
+		set(p.outbox)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
@@ -145,24 +303,6 @@ func publishing(processes ...*process) []string {
 		}
 	}
 	return names
-}
-
-// waitForOnePublisher waits until exactly one of processes publishes, and returns it.
-func waitForOnePublisher(t *testing.T, processes ...*process) *process {
-	t.Helper()
-	var holder *process
-	waitFor(t, "exactly one outbox publishing", func() bool {
-		holder = nil
-		count := 0
-		for _, p := range processes {
-			if p.outbox.Publishing() {
-				holder = p
-				count++
-			}
-		}
-		return count == 1
-	})
-	return holder
 }
 
 // writeMessage commits one message event on issue T-1 through p's store and broker, as a request to
@@ -239,16 +379,6 @@ func restReading(t *testing.T, outbox *Outbox) func(what string) {
 	}
 }
 
-// backOffDue is how long the back-off of the row below is due in, and the one bound the row puts
-// on the outbox's own work: the insert's notification must reach the holder, and the scan it
-// wakes must read next_attempt_at, inside it. A scan later than that finds the back-off already
-// due and publishes it there and then, arming no wait at all, which the row catches where it
-// requires exactly one wait armed between the insert and the publish - so it still fails on what
-// happened rather than on a clock, but it would be failing for the machine's slowness and not
-// the outbox's, which is why this is ten seconds against the single-digit milliseconds that work
-// takes on an idle pod.
-const backOffDue = 10 * time.Second
-
 // An idle outbox scans nothing: no claim runs while no event is written and no retry falls due.
 // An event another process commits - which reaches this one only through the database, not its
 // broker - is claimed at once by the LISTEN on dispatch_events, and a back-off is claimed when it
@@ -260,13 +390,18 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "T-1", nil)
-	publisher := &recordingPublisher{}
-	outbox := New(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker(), Listen: database.Pool.Listener})
-	// Every wait the outbox arms its one retry timer for, with the moment it was armed and the
-	// claims the outbox had made by then: the sequence this row reads, in place of a wall clock.
+	holdClock := clocktest.New(time.Time{})
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithWindowClock(holdClock))
+	if err != nil {
+		t.Fatalf("connect the outbox's NATS client: %v", err)
+	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	outbox := New(Deps{Store: database, Publisher: client, Broker: events.NewBroker(), Listen: database.Pool.Listener})
+	timers := clocktest.New(time.Time{})
+	outbox.holdClock, outbox.clock = holdClock, timers
 	type armedWait struct {
 		wait   time.Duration
-		at     time.Time
 		claims int64
 	}
 	var armedMu sync.Mutex
@@ -274,7 +409,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	outbox.afterRetryArmed = func(wait time.Duration) {
 		armedMu.Lock()
 		defer armedMu.Unlock()
-		armed = append(armed, armedWait{wait: wait, at: time.Now(), claims: outbox.claims.Load()})
+		armed = append(armed, armedWait{wait: wait, claims: outbox.claims.Load()})
 	}
 	// armedWaits copies what has been armed so far, so nothing reads the slice unlocked.
 	armedWaits := func() []armedWait {
@@ -283,18 +418,20 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		return slices.Clone(armed)
 	}
 	atRest := restReading(t, outbox)
-	t.Cleanup(runTheOutbox(t, outbox))
+	t.Cleanup(runOn(t, outbox))
 
 	waitFor(t, "the outbox taking the publisher hold", outbox.Publishing)
+	stagePublisherHold(t, database, outbox.instance)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
 	// that they are over rather than allowing them a span of time.
 	atRest("the outbox resting after the hold's first scan and the LISTEN connection's catch-up")
 	idleFrom := outbox.claims.Load()
-	// A lower bound on quiet, not an upper bound on work: the row asserts nothing scanned in this
-	// window, and load can only make an idle outbox quieter, never busier.
-	time.Sleep(12 * time.Second)
+	testwait.Span(t, 12*time.Second, "a periodic scan could use a wall-clock timer that no outbox state exposes; there is no later action whose effect proves it did not run")
 	if claims := outbox.claims.Load() - idleFrom; claims != 0 {
 		t.Fatalf("an idle outbox ran %d claims in 12 s, want 0", claims)
+	}
+	if armed := timers.Armed(); len(armed) != 0 {
+		t.Fatalf("the idle outbox armed timers for %v, want none", armed)
 	}
 
 	// Committed on another process's pool, and published to no broker this outbox hears.
@@ -302,14 +439,11 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "fresh", IssueKey: new("T-1"), Body: "fresh"},
 	})
-	// A local clock for the readings below alone: no assertion reads it.
-	committed := time.Now()
 	// The 12 s window above showed this outbox scans on nothing periodic, so a claim at all after
 	// this commit is the notification's.
 	waitFor(t, "the event another process committed claimed", func() bool {
 		return outbox.claims.Load() != idleFrom
 	})
-	t.Logf("the event another process committed was claimed %s after its commit", time.Since(committed).Round(time.Millisecond))
 	// The claim above is this event's own scan, so a wait that never ends here is a publication
 	// that never happens at all.
 	waitFor(t, "the other process's event published", func() bool { return publishedAt(t, database, fresh.ID) != nil })
@@ -318,65 +452,49 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// start the batch that follows it and the scan has still to arm whatever comes of that.
 	atRest("the outbox resting after the other process's event")
 
-	// A back-off due in backOffDue, committed by the other process: its insert wakes the outbox,
-	// whose scan finds nothing due and arms its one retry timer to the back-off's own moment, and
-	// the timer's scan is the one that publishes it. The waits armed earlier in this row are not
-	// this one's.
+	// The other process's insert wakes the holder, which arms its retry to the back-off's due time.
 	armedBefore := len(armedWaits())
 	// The waits this back-off's own scan armed, read afresh each time: the slice only grows.
 	waitsSince := func() []armedWait { return armedWaits()[armedBefore:] }
-	// due is the moment the database computed for this back-off; every assertion about it below is
-	// made against that value, on the database's own clock.
-	backedOff, due := appendBackedOffEvent(t, other, backOffDue)
-	// A local clock for the readings below alone: no assertion reads it.
-	inserted := time.Now()
-	// The polling's one bound is the test binary's deadline less testwait's margin, as every
-	// wait's, and it reads every 5 ms, bounding nothing: a coarser poll would only read the same
-	// sequence later. A give-up prints the waits armed since the insert, as read by the last poll.
-	reading := testwait.UntilPolling(t, 5*time.Millisecond, fmt.Sprintf("the back-off due in %s published", backOffDue), func() (pollReading[time.Time], bool) {
-		// Read oldest first, so nothing is judged against a reading younger than itself: the waits,
-		// then the claims (never fewer than the waits' own count), then the database's answer,
-		// whose now() is therefore no earlier than the moment those claims were read.
-		since := waitsSince()
-		claims := outbox.claims.Load()
-		at, beforeDue := backOffState(t, database, backedOff.ID)
-		if at != nil {
-			return pollReading[time.Time]{value: *at}, true
-		}
-		// Nothing else wakes the outbox until the timer fires: no claim since the wait was armed,
-		// while the database says the back-off is still ahead on its own clock.
-		if len(since) > 0 && beforeDue {
-			if made := claims - since[0].claims; made != 0 {
-				t.Fatalf("the outbox made %d claims in the %s since it armed a %s wait for the back-off, %s after the insert and before the back-off fell due, want none",
-					made, time.Since(since[0].at).Round(time.Millisecond), since[0].wait.Round(time.Millisecond),
-					since[0].at.Sub(inserted).Round(time.Millisecond))
-			}
-		}
-		armedText := make([]string, 0, len(since))
-		for _, each := range since {
-			armedText = append(armedText, fmt.Sprintf("a %s wait %s after the insert, at %d claims",
-				each.wait.Round(time.Millisecond), each.at.Sub(inserted).Round(time.Millisecond), each.claims))
-		}
-		return pollReading[time.Time]{text: fmt.Sprintf("not published %s after its insert, the outbox at %d claims, having armed %d waits since it: %v",
-			time.Since(inserted).Round(time.Millisecond), claims, len(since), armedText)}, false
-	})
-	published := reading.value
-	publishedAfter := time.Since(inserted)
+	backedOff, _ := appendBackedOffEvent(t, other, stagedAhead)
+	waitFor(t, "the retry timer armed for the inserted back-off", func() bool { return len(waitsSince()) > 0 })
+	atRest("the holder resting with the back-off's timer armed")
 	since := waitsSince()
-	if len(since) != 1 {
-		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, want 1: %v", len(since), since)
+	if len(since) != 1 || since[0].wait <= 0 || since[0].wait > stagedAhead {
+		t.Fatalf("the outbox armed %v for the inserted back-off, want one positive wait no longer than %s", since, stagedAhead)
 	}
-	// The wait is a value the database computed from its own next_attempt_at, not an elapsed time
-	// this test measured, so a loaded runner can only make it smaller: the only way past
-	// backOffDue is a wait armed for something that is not this back-off. The lower end is the
-	// cheaper half of the same statement: nextRetry clamps a back-off already due to zero, so a
-	// wait of zero is a timer armed to fire at once, which is not the timer this row is about.
-	// A scan so late that the back-off is already due does not arm even that - it publishes the
-	// back-off in that scan and arms nothing - and the assertion above, exactly one wait armed,
-	// is what catches that.
-	if since[0].wait <= 0 || since[0].wait > backOffDue {
-		t.Fatalf("the outbox armed a %s wait for a back-off due in %s, want one above zero and no more than %s",
-			since[0].wait, backOffDue, backOffDue)
+	var left int64
+	if err := database.Pool.QueryRow(t.Context(), `
+		select (extract(epoch from next_attempt_at - now()) * 1000000)::bigint from events where id = $1
+	`, backedOff.ID).Scan(&left); err != nil {
+		t.Fatalf("read the back-off's remaining time: %v", err)
+	}
+	if remaining := time.Duration(left) * time.Microsecond; since[0].wait < remaining {
+		t.Fatalf("the outbox armed a %s retry for a back-off with %s still left, want at least that", since[0].wait, remaining)
+	}
+	deadline := timers.Now().Add(since[0].wait)
+	timers.AwaitArmedAt(t, "the timer covering the back-off", deadline)
+	var due time.Time
+	crossDeadline(timers, deadline, func() {
+		if at, beforeDue := backOffState(t, database, backedOff.ID); at != nil || !beforeDue {
+			t.Fatalf("one tick before retry the back-off is published at %v, still ahead: %v; want unpublished and ahead", at, beforeDue)
+		}
+		makeDue(t, other, backedOff)
+		if err := database.Pool.QueryRow(t.Context(), `select next_attempt_at from events where id = $1`, backedOff.ID).Scan(&due); err != nil {
+			t.Fatalf("read the planted back-off deadline: %v", err)
+		}
+		if made := outbox.claims.Load() - since[0].claims; made != 0 {
+			t.Fatalf("the outbox made %d claims before the back-off's timer fired, want none", made)
+		}
+	})
+	var published *time.Time
+	waitFor(t, "the back-off published by its retry timer", func() bool {
+		published = publishedAt(t, database, backedOff.ID)
+		return published != nil
+	})
+	atRest("the holder resting once its retry published the event")
+	if got := len(waitsSince()); got != 1 {
+		t.Fatalf("the outbox armed %d waits between the back-off's insert and its publish, want 1", got)
 	}
 	// Exact where a margin was a guess: the publication time and the moment the back-off fell due
 	// are both the database's own values, so no clock is compared with another and no load can
@@ -384,14 +502,8 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// was not yet due.
 	if published.Before(due) {
 		t.Fatalf("the back-off was published at %s, %s before the %s the database made it due, want no sooner than due",
-			published, due.Sub(published).Round(time.Millisecond), due)
+			published, due.Sub(*published).Round(time.Millisecond), due)
 	}
-	// A reading for the record, not an assertion: the publishing batch starts another batch, so
-	// the scan the timer woke claims more than once.
-	t.Logf("the outbox armed a %s wait %s after the insert, the back-off was published %s after it and %s after the database made it due, and the outbox made %d claims from the arming to the publish",
-		since[0].wait.Round(time.Millisecond), since[0].at.Sub(inserted).Round(time.Millisecond),
-		publishedAfter.Round(time.Millisecond), published.Sub(due).Round(time.Millisecond),
-		outbox.claims.Load()-since[0].claims)
 }
 
 // appendBackedOffEvent commits an event on database whose next attempt is due after wait on the
@@ -443,55 +555,102 @@ func backOffState(t *testing.T, database *store.Store, eventID int64) (published
 func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 	t.Parallel()
 	_, url := testnats.Start(t)
-	database := storetest.Open(t)
+	epoch := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
+	fake := clocktest.New(epoch)
+	database, move := databaseMoment(t, storetest.Open(t), fake)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	first := startProcess(t, "first", database, url, counter)
-	second := startProcess(t, "second", storetest.SecondProcess(t, database), url, counter)
-	waitForOnePublisher(t, first, second)
-
-	var written []model.Event
-	deadline := time.Now().Add(10 * time.Second)
-	for sample := 0; time.Now().Before(deadline); sample++ {
-		if names := publishing(first, second); len(names) != 1 {
-			t.Fatalf("sample %d: publishing %v, want exactly one outbox", sample, names)
-		}
-		if sample%10 == 0 {
-			writer := []*process{first, second}[(sample/10)%2]
-			written = append(written, writeMessage(t, writer, fmt.Sprintf("message %d", sample)))
-		}
-		time.Sleep(50 * time.Millisecond)
+	start := func(name string, database *store.Store, tracer *statementTracer) (*process, func() int64) {
+		var rests func() int64
+		p := startProcessWith(t, name, database, url, counter, func(_ *bus.Client, deps *Deps) {
+			deps.Store = tracedStore(t, deps.Store, tracer)
+		}, func(o *Outbox) {
+			o.holdClock, o.clock = fake, fake
+			rests = standbyWaits(o)
+		}, bus.WithWindowClock(fake))
+		return p, rests
 	}
-	for _, event := range written {
-		waitForPublished(t, database, counter, event)
+	firstSQL, secondSQL := &statementTracer{}, &statementTracer{}
+	first, _ := start("first", database, firstSQL)
+	waitFor(t, "the first process holding the publisher hold", first.outbox.Publishing)
+	second, standbyRest := start("second", storetest.SecondProcess(t, database), secondSQL)
+	hold := first.outbox.hold.Load()
+	waitFor(t, "the standby's initial refused take and drained LISTEN wake", func() bool {
+		return standbyRest() > 0 || second.outbox.Publishing()
+	})
+	requireExclusive := func() {
+		t.Helper()
+		if names := publishing(first, second); !slices.Equal(names, []string{"first"}) {
+			t.Fatalf("at %s, publishing %v, want only the first outbox", fake.Now(), names)
+		}
+	}
+	requireExclusive()
+	lapse := epoch.Add(publisherHoldOptions.TTL)
+	fake.AwaitArmedAt(t, "the standby's timer to the first take's database lapse", lapse)
+	takes := func() int { return len(secondSQL.matching("insert into duty_holds")) }
+	initial := takes()
+	if initial == 0 {
+		t.Fatal("the standby did not try the live publisher hold before waiting")
+	}
+	rest := standbyRest()
+	for tick := 1; tick <= 10; tick++ {
+		requireExclusive()
+		if fake.Now().Add(publisherHoldOptions.Renew).Equal(lapse) {
+			fake.AwaitArmedCountAt(t, "the renewal tick and standby lapse armed for the same moment", lapse, 2)
+		}
+		advanceRenewal(t, fake, move, hold, requireExclusive)
+		if fake.Now().Equal(lapse) {
+			waitFor(t, "the standby refused the publisher hold again after its lapse timer fired", func() bool {
+				requireExclusive()
+				return standbyRest() > rest
+			})
+			if got := takes() - initial; got != 1 {
+				t.Fatalf("the standby tried the hold %d times at its lapse timer, want one refused take", got)
+			}
+		}
+		for writer, p := range []*process{first, second} {
+			event := writeMessage(t, p, fmt.Sprintf("message %d from writer %d", tick, writer))
+			waitForPublished(t, database, counter, event)
+		}
+		requireExclusive()
+	}
+	if got := len(firstSQL.matching("update duty_holds set expires_at")); got != 10 {
+		t.Fatalf("the holder sent %d renewals, want 10", got)
 	}
 }
 
 // A process that stops gracefully releases the publisher hold, and the other takes it over at once
 // rather than when the hold would have lapsed.
 //
-// Not parallel: its subject is that bound. The stopped holder's row lapses no sooner than
-// TTL - Renew after the stop, since its last renewal came at most Renew before it, so a standby
-// that waited for the lapse takes the hold no sooner than that; half of it tells "at once" from
-// "at the lapse" with the most slack either way, on a machine no other test of the package loads.
+// Not parallel: neither process's timer clock moves; only a wake can let the standby try before
+// its lapse timer.
 func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	first := startProcess(t, "first", database, url, counter)
-	second := startProcess(t, "second", storetest.SecondProcess(t, database), url, counter)
-	holder := waitForOnePublisher(t, first, second)
-	standby := first
-	if holder == first {
-		standby = second
+	first := startProcessWith(t, "first", database, url, counter, nil, func(o *Outbox) {
+		o.clock = clocktest.New(time.Time{})
+	})
+	waitFor(t, "the first outbox taking the publisher hold", first.outbox.Publishing)
+	timers := clocktest.New(time.Time{})
+	var waits func() int64
+	standby := startProcessWith(t, "second", storetest.SecondProcess(t, database), url, counter, nil, func(o *Outbox) {
+		o.clock = timers
+		waits = standbyWaits(o)
+	})
+	waitFor(t, "the standby resting after the LISTEN catch-up", func() bool { return waits() > 0 })
+	// The lapse timer is pending before release; the release wake stops it, not a clock move.
+	start, armed := timers.Now(), timers.Armed()
+	if len(armed) != 1 || !armed[0].After(start) || !first.outbox.Publishing() || standby.outbox.Publishing() {
+		t.Fatalf("before release: standby timers %v, publishers %v; want a pending lapse and only first publishing", armed, publishing(first, standby))
 	}
 
-	holder.stop()
-	stopped := time.Now()
-	atOnce := (publisherHoldOptions.TTL - publisherHoldOptions.Renew) / 2
-	waitWithin(t, atOnce, "the standby publishing once the holder stopped", standby.outbox.Publishing)
-	t.Logf("the standby took the publisher hold %s after the holder stopped", time.Since(stopped).Round(time.Millisecond))
+	first.stop()
+	waitFor(t, "the standby publishing on the release wake alone", standby.outbox.Publishing)
+	if !timers.Now().Equal(start) {
+		t.Fatal("the standby's clock moved during the hand-over")
+	}
 	event := writeMessage(t, standby, "after the hand-over")
 	waitForPublished(t, database, counter, event)
 }
@@ -554,20 +713,97 @@ func requireTakenOverAfterCut(t *testing.T, recorder *logtest.Recorder, cut, wor
 	}
 }
 
-// requireNoTakeBackWhileSilent is what a row checks once the other process published after the
-// holder's NATS connection went silent, while the proxy stays frozen: silent gave the publisher
-// hold up for NATS lost, and once working has stopped, which releases the hold, silent does not
-// take it in the 2 s that follow. While working holds and renews the hold no take can succeed
-// (duty's takeHold takes only a lapsed row or the taker's own), so only a free hold shows what
-// silent does: its connection still reports itself connected, and the probe it makes first
-// (answering, probeBeforeHold) is what keeps it off. The hold is read every 25 ms, and the first
-// read that finds it held fails the row. recorder is the default logger the row installed before
-// it started either process.
-func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, silent, working *process) {
+// probeClock distinguishes an unpinned window's flush from its preceding connection wait.
+// Both arm probeTimeout; advancing on the first alone can strand the flush on a later deadline.
+type probeClock struct {
+	clock.Clock
+	fake *clocktest.Fake
+
+	mu          sync.Mutex
+	startedAt   time.Time
+	waits       int
+	confirmedAt time.Time
+	retry       atomic.Pointer[standbyRetryCheck]
+}
+
+type standbyRetryCheck struct {
+	at      time.Time
+	checked chan struct{}
+}
+
+func (c *probeClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	timed, cancel := c.Clock.WithTimeout(ctx, d)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.fake.Now()
+	if ctx != context.Background() {
+		c.confirmedAt = now
+	} else if d == probeTimeout {
+		if !now.Equal(c.startedAt) {
+			c.startedAt, c.waits = now, 0
+		}
+		c.waits++
+	}
+	return timed, cancel
+}
+
+// awaitConfirmedReadFlush waits for the read to enter the bus's confirmed flush, which
+// derives its timeout from the read's context instead of starting at context.Background.
+func (c *probeClock) awaitConfirmedReadFlush(t *testing.T) {
+	t.Helper()
+	at := c.fake.Now()
+	waitFor(t, "the held read entering its confirmed flush", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.confirmedAt.Equal(at)
+	})
+}
+
+func (c *probeClock) flushingSince(at time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.startedAt.Equal(at) && c.waits >= 2
+}
+
+func (c *probeClock) setOutbox(o *Outbox) {
+	o.clock = c.fake
+	o.afterStandbyWait = func() {
+		// Keep the retry armed even if a queued release notification would cancel it.
+		if retry := c.retry.Load(); retry != nil && c.fake.Now().Equal(retry.at) {
+			<-retry.checked
+		}
+	}
+}
+
+// requireNoTakeBackWhileSilent follows the standby's failed probe after working stops. Until
+// then the working process's live database row could prevent a take even without a probe.
+func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, silent, working *process, probes *probeClock) {
 	t.Helper()
 	requireReleasedForNATSLost(t, recorder, silent)
 	working.stop()
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return silent.outbox.hold.Load() != nil }) {
+	fake := probes.fake
+	now := fake.Now()
+	probeEnd := now.Add(probeTimeout)
+	waitFor(t, "the silent standby probing or taking the free publisher hold", func() bool {
+		return silent.outbox.hold.Load() != nil || probes.flushingSince(now)
+	})
+	requireSilentStandby(t, silent, working)
+	fake.AwaitArmedAt(t, "the silent standby's flush probe", probeEnd)
+	retry := &standbyRetryCheck{at: probeEnd, checked: make(chan struct{})}
+	probes.retry.Store(retry)
+	defer close(retry.checked)
+	fake.Set(probeEnd)
+	retryAt := probeEnd.Add(holdRetry)
+	waitFor(t, "the silent standby arming a retry instead of taking the free publisher hold", func() bool {
+		requireSilentStandby(t, silent, working)
+		return slices.ContainsFunc(fake.Armed(), retryAt.Equal)
+	})
+	requireSilentStandby(t, silent, working)
+}
+
+func requireSilentStandby(t *testing.T, silent, working *process) {
+	t.Helper()
+	if silent.outbox.hold.Load() != nil {
 		t.Fatalf("%s took the publisher hold while its NATS connection stays silent, after %s released it", silent.name, working.name)
 	}
 }
@@ -576,27 +812,39 @@ func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, sile
 // for natsLossGrace, and the other process, whose NATS works, takes the hold and publishes what is
 // written after the cut.
 //
-// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of
-// it, and it swaps the default logger (logtest.SetDefault).
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
 	proxy := testnats.StartProxy(t, url)
-	proxied := proxy.URL()
+	timers, holdClock := clocktest.New(time.Time{}), clocktest.New(time.Time{})
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	cut := startProcess(t, "cut", database, proxied, counter)
+	cut := startProcessWith(t, "cut", database, proxy.URL(), counter, nil, func(o *Outbox) {
+		o.clock, o.holdClock = timers, holdClock
+	}, bus.WithWindowClock(holdClock))
 	waitFor(t, "the first process taking the publisher hold", cut.outbox.Publishing)
-	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
+	stagePublisherHold(t, database, cut.outbox.instance)
+	var waits func() int64
+	working := startProcessWith(t, "working", storetest.SecondProcess(t, database), url, counter, nil, func(o *Outbox) {
+		o.clock = clocktest.New(time.Time{})
+		waits = standbyWaits(o)
+	})
+	waitFor(t, "the working standby waiting for the release", func() bool { return waits() > 0 })
 
 	proxy.Cut()
-	downAt := time.Now()
-	waitWithin(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold", func() bool {
+	graceEnd := timers.Now().Add(natsLossGrace)
+	timers.AwaitArmedAt(t, "the cut holder's NATS loss grace", graceEnd)
+	crossDeadline(timers, graceEnd, func() {
+		if !cut.outbox.Publishing() || working.outbox.Publishing() {
+			t.Fatalf("before NATS loss grace ended, publishing %v, want only the cut holder", publishing(cut, working))
+		}
+	})
+	waitFor(t, "the cut process releasing the publisher hold at the end of the grace", func() bool {
 		return cut.outbox.hold.Load() == nil
 	})
-	t.Logf("the cut process released the publisher hold %s after the cut", time.Since(downAt).Round(time.Millisecond))
 	event := writeMessage(t, working, "after the cut")
 	requireTakenOverAfterCut(t, recorder, cut, working, event)
 }
@@ -617,41 +865,106 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	silent := startProcess(t, "silent", database, proxy.URL(), counter)
+	fake := clocktest.New(time.Time{})
+	ack := clocktest.New(time.Time{})
+	probes := &probeClock{Clock: clocktest.WithNow(fake, clock.Real().Now), fake: fake}
+	silent := startProcessWith(t, "silent", database, proxy.URL(), counter, nil, probes.setOutbox,
+		bus.WithWindowClock(probes), bus.WithPublishAcknowledgementClock(ack))
 	waitFor(t, "the first process taking the publisher hold", silent.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
 	proxy.Freeze()
 	t.Cleanup(proxy.Restore)
-	frozenAt := time.Now()
 	event := writeMessage(t, working, "after the silence")
+	requireStillHeld := func(what string) {
+		t.Helper()
+		if !silent.outbox.Publishing() || working.outbox.Publishing() ||
+			!silent.outbox.deps.Publisher.Connected() || publishedAt(t, database, event.ID) != nil {
+			t.Fatalf("before %s ended, publishing %v, silent client connected %t, event published at %v; want the connected silent holder and no publication",
+				what, publishing(silent, working), silent.outbox.deps.Publisher.Connected(), publishedAt(t, database, event.ID))
+		}
+	}
+	ackEnd := ack.Now().Add(windowAckWait)
+	ack.AwaitArmedAt(t, "the silent holder waiting for the batch acknowledgement", ackEnd)
+	crossDeadline(ack, ackEnd, func() { requireStillHeld("the acknowledgement wait") })
+	probeEnd := fake.Now().Add(probeTimeout)
+	fake.AwaitArmedAt(t, "the silent holder's probe after the batch sends go unanswered", probeEnd)
+	crossDeadline(fake, probeEnd, func() { requireStillHeld("the probe") })
 	waitFor(t, "the working process publishing the event", func() bool {
 		return working.outbox.Publishing() && publishedAt(t, database, event.ID) != nil
 	})
-	t.Logf("the working process published the event %s after the silence", time.Since(frozenAt).Round(time.Millisecond))
-	requireNoTakeBackWhileSilent(t, recorder, silent, working)
+	requireNoTakeBackWhileSilent(t, recorder, silent, working, probes)
 }
 
-// A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to
-// change, and for nothing else: the events the holder writes and publishes do not make it try the
-// hold. 100 events written one after another while the holder holds send at most the few takes and
-// lapse reads the standby's timer to the holder's lapse makes over that span (each renewal moves the
-// lapse 6 s on), not one take and one read per event, which would put a write on duty_holds for
-// every event on every standby.
+// A killed holder cannot notify the standby. The standby must arm its own timer
+// to the lapse it reads and try again when that timer fires.
+func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *testing.T) {
+	t.Parallel()
+	database, frozen := frozenDatabaseClock(t, storetest.Open(t))
+	ctx := testwait.Context(t)
+	killed := uuid.New()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into duty_holds (name, holder, expires_at) values ($1, $2, $3)
+	`, publisherHold, killed, frozen.Add(stagedAhead)); err != nil {
+		t.Fatalf("write the killed holder's last renewal: %v", err)
+	}
+	outbox := New(Deps{
+		Store: database, Publisher: &recordingPublisher{}, Broker: events.NewBroker(), Listen: database.Pool.Listener,
+	})
+	timers := clocktest.New(time.Time{})
+	outbox.clock = timers
+	waits := standbyWaits(outbox)
+	stop := runOn(t, outbox)
+	defer stop()
+	deadline := timers.Now().Add(stagedAhead)
+	timers.AwaitArmedAt(t, "the standby's timer to the killed holder's lapse", deadline)
+	if outbox.Publishing() {
+		t.Fatal("the standby took the publisher hold while the killed holder's row was live")
+	}
+	waitFor(t, "the standby waiting for the dead holder's lapse after the LISTEN catch-up", func() bool {
+		if outbox.Publishing() {
+			t.Fatal("the standby took the publisher hold while the killed holder's row was live")
+		}
+		return waits() > 0
+	})
+	// Change only the row. An UPDATE does not send the hold-release notification.
+	if _, err := database.Pool.Exec(ctx, `
+		update duty_holds set expires_at = now() where name = $1 and holder = $2
+	`, publisherHold, killed); err != nil {
+		t.Fatalf("lapse the killed holder's row: %v", err)
+	}
+	crossDeadline(timers, deadline, func() {
+		timers.AwaitArmedAt(t, "the lapse timer still armed one tick short", deadline)
+		if outbox.Publishing() {
+			t.Fatal("the standby took the hold before its lapse timer fired")
+		}
+	})
+	waitFor(t, "the standby taking the lapsed hold when its timer fires", outbox.Publishing)
+	if holder := holdingProcess(t, database); holder != outbox.instance {
+		t.Fatalf("the hold names %s after the lapse timer fired, want the standby %s", holder, outbox.instance)
+	}
+}
+
+// A standby waits for the hold to be released or to lapse, or for its NATS connection
+// to change. With those wakes excluded, 100 commits must cause no take or expiry read.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	t.Parallel()
 	_, url := testnats.Start(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	holder := startProcess(t, "holder", database, url, counter)
+	holdClock := clocktest.New(time.Time{})
+	holder := startProcessWith(t, "holder", database, url, counter, nil, func(o *Outbox) {
+		o.holdClock = holdClock
+	}, bus.WithWindowClock(holdClock))
 	waitFor(t, "the holder taking the publisher hold", holder.outbox.Publishing)
+	stagePublisherHold(t, database, holder.outbox.instance)
 
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect the standby's NATS client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	tracer := &statementTracer{}
 	standby := New(Deps{
 		Store:     tracedStore(t, storetest.SecondProcess(t, database), tracer),
@@ -659,13 +972,10 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		Broker:    events.NewBroker(),
 		Listen:    database.Pool.Listener,
 	})
-	t.Cleanup(runTheOutbox(t, standby))
-	// Counted from the standby's first try: its LISTEN connection's catch-up wake, which comes as it
-	// starts, lands inside the count and is allowed for below.
-	waitFor(t, "the standby trying the publisher hold once", func() bool {
-		return len(tracer.matching("insert into duty_holds")) > 0
-	})
-	started := time.Now()
+	standby.clock = clocktest.New(time.Time{})
+	waits := standbyWaits(standby)
+	t.Cleanup(runOn(t, standby))
+	waitFor(t, "the standby waiting with no LISTEN catch-up wake pending", func() bool { return waits() > 0 })
 	takes, reads := len(tracer.matching("insert into duty_holds")), len(tracer.matching("from duty_holds where name"))
 	var last model.Event
 	for index := range 100 {
@@ -677,18 +987,8 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	}
 	takes = len(tracer.matching("insert into duty_holds")) - takes
 	reads = len(tracer.matching("from duty_holds where name")) - reads
-	// The standby's own timer to the holder's lapse fires about once each TTL - Renew, as each
-	// renewal moves the lapse on, and tries the hold each time; with the catch-up wake and one try
-	// in flight that is the span over TTL - Renew, plus two. On a loaded machine the 100 writes take
-	// longer and the timer fires more often, so the allowance is read from the span this run took,
-	// not fixed: a standby that tried the hold for every event would send about 100.
-	span := time.Since(started)
-	allowed := int(span/(publisherHoldOptions.TTL-publisherHoldOptions.Renew)) + 2
-	t.Logf("while 100 events were written and published over %s, the standby sent %d takes of the hold and %d reads of its lapse (at most %d each)",
-		span.Round(time.Millisecond), takes, reads, allowed)
-	if takes > allowed || reads > allowed {
-		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events over %s, want at most %d of each: its timer to the lapse alone",
-			takes, reads, span.Round(time.Millisecond), allowed)
+	if takes != 0 || reads != 0 {
+		t.Fatalf("the standby sent %d takes and %d lapse reads while the holder wrote 100 events, want zero of each", takes, reads)
 	}
 }
 
@@ -710,9 +1010,9 @@ func (p *fenceAfterFirstSend) PublishAsync(item contracts.Envelope) <-chan error
 
 func (p *fenceAfterFirstSend) Deadline() time.Time {
 	if p.passed.Load() {
-		return time.Now().Add(-time.Second)
+		return passedDeadline
 	}
-	return time.Now().Add(time.Hour)
+	return openDeadline
 }
 
 // A batch checks the publisher hold's deadline before every send: once a send has met it the
@@ -779,6 +1079,11 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	database := storetest.Open(t)
 	publisher := &reconnectedQuietly{}
 	outbox := New(Deps{Store: database, Publisher: publisher})
+	epoch := time.Time{}
+	timers := clocktest.New(epoch)
+	outbox.clock = timers
+	waiting := make(chan struct{}, 1)
+	outbox.afterServeWait = notify(waiting)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hold, _ := outbox.tryHold(ctx)
@@ -789,15 +1094,21 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 
 	ended := make(chan holdEnd, 1)
 	go func() { ended <- outbox.serve(ctx, hold) }()
-	time.Sleep(200 * time.Millisecond)
-	if outbox.claims.Load() != 0 {
-		t.Fatal("the holder scanned while its client read disconnected")
-	}
-	publisher.connected.Store(true)
-	// The holder reads its client's status as the grace ends, natsLossGrace after serve began,
-	// however late a loaded machine runs that: wait for what it does then - a scan, or the end of
-	// serving - rather than for a span of time. Serve ending afterwards for any reason but ctx is
-	// caught below, where it must end with stopping.
+	testwait.Receive(t, "the disconnected holder entering its serve wait", waiting)
+	deadline := epoch.Add(natsLossGrace)
+	timers.AwaitArmedAt(t, "the end of the NATS loss grace", deadline)
+	crossDeadline(timers, deadline, func() {
+		select {
+		case end := <-ended:
+			t.Fatalf("serve ended %s before the grace expired", end)
+		default:
+		}
+		if outbox.claims.Load() != 0 {
+			t.Fatal("the holder scanned while its client read disconnected")
+		}
+		publisher.connected.Store(true)
+	})
+	// Wait for what the holder does at the grace deadline, without another clock move.
 	var stopped *holdEnd
 	waitFor(t, "the holder scanning or ending its serve once the grace ends", func() bool {
 		select {
@@ -822,47 +1133,36 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 // its Lost is closed, it sends no renewal across the first tick that follows, and the other's row
 // is left alone. This is also the one path that touches the hold not at all, so its deadline says
 // nothing about when the process stopped publishing: the line that ends the turn has to date the
-// stop at serve's return rather than at a deadline still minutes ahead. That makes it the one
+// stop at serve's return rather than at a deadline still seconds ahead. That makes it the one
 // path in this package's rows where the line's two bounds, stopped and stopped_by, are not both
 // that deadline but bracket the store that turned Publishing() false, so this is the row that
 // holds their order.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
 	tracer := &statementTracer{}
-	outbox := New(Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}})
-
-	// The row takes the hold with duty.TryHold under options of its own rather than through
-	// outbox.tryHold, which uses publisherHoldOptions. What it tests is what publish does and
-	// logs when a recordBatch finds the hold another's before any renewal has noticed, and
-	// that property is not the publisher hold's production numbers; binding the row's slack to
-	// those numbers made every change of them a change of this row's flakiness. Halving Renew
-	// from 2 s to 1 s left the take, the seed, the append and a whole scan one second to run in
-	// before the guard below reports a correct product as a defect - on a runner that, by this
-	// change's own evidence, stalled for 3.1 s.
-	//
-	// These numbers leave seconds instead, inside what duty.TryHold accepts (0 <= Margin < TTL
-	// and 0 < Renew < TTL - Margin): the first renewal tick falls five seconds after the take, so
-	// the take, the seed, the append and a whole scan have those five seconds to run in before
-	// any renewal of this hold can reach the record path, and the deadline - the take plus
-	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds is also short
-	// enough for the count below to wait that tick out and see whether the lost hold's renewal
-	// stopped. The hold is the outbox's own, under its token and instance, so the batch that
-	// records under it finds the row another's exactly as it would in production.
-	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token}
-	taken := time.Now()
-	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
+	// Time reads are distinct but no renewal can fall due while the record runs.
+	renewals := steppingClock{clocktest.New(time.Time{})}
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithWindowClock(renewals))
 	if err != nil {
-		t.Fatalf("take the publisher hold under the row's own options: %v", err)
+		t.Fatalf("connect the outbox's NATS client: %v", err)
 	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	outbox := New(Deps{Store: tracedStore(t, database, tracer), Publisher: client})
+	outbox.holdClock = renewals
+	hold, _ := outbox.tryHold(ctx)
 	if hold == nil {
 		t.Fatal("the outbox did not take the publisher hold")
 	}
+	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	deadline := hold.Deadline()
 	other := uuid.New()
 	holdRow(t, database, other)
@@ -871,17 +1171,13 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "recorded under another's hold"},
 	})
 
-	began := time.Now()
+	began := renewals.Now()
 	if end := outbox.publish(ctx, hold); end != holdLost {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
-	returned := time.Now()
-	// A publish slow enough to outrun the first renewal would reach holdLost by that renewal
-	// finding the row another's instead, where loseLocked pulls the deadline back to the moment
-	// it closed Lost and stopped is that deadline, so say which path ran rather than let the
-	// assertions below fail as if the product were wrong.
-	if elapsed := returned.Sub(taken); elapsed >= recordPath.Renew {
-		t.Fatalf("publish took %s, past the first renewal of the row's own hold: the row is about a record finding the hold another's before any renewal does", elapsed)
+	returned := renewals.Now()
+	if got := len(tracer.matching("update duty_holds set expires_at")); got != 0 {
+		t.Fatalf("%d renewals ran before the record found the hold another's, want none", got)
 	}
 	select {
 	case <-hold.Lost():
@@ -900,16 +1196,8 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// timeIn has already found that record, and it fails the row itself when a key it is asked
 	// for is missing, so there is nothing left for a second !ok to catch.
 	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
-	// The four comparisons below hold the whole order a reader of the log depends on:
-	// began <= stopped <= stopped_by <= returned, with stopped_by still short of the deadline.
-	// began is read just ahead of publish and returned just after it, so the pair is held inside
-	// the turn itself, which is what separates serve's return from a deadline minutes further on;
-	// a stopped that is too early - a zero value, or one dated before this turn began - would
-	// pass every bound from the future and is caught by the first. The middle comparison is the
-	// reason this row reads stopped_by at all: this is the one path here where the two are not
-	// the same capped value, so the two clocks read in the wrong order, or the two attributes
-	// swapped, leave an upper bound earlier than the lower one and fail here; two reads that land
-	// on the same nanosecond pass, and leave bounds that are still honest to the clock.
+	// On the stepping clock, began < stopped < stopped_by < returned, and stopped_by
+	// is short of the hold's deadline. A wrong order cannot hide in equal timestamps.
 	//
 	// What no comparison here can catch is which side of o.hold.Store(nil) each clock was read
 	// on. Moving the second read above the store, and leaving it after the first, keeps the two
@@ -918,38 +1206,34 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// placement: publish's doc comment records it, and the one reader that compares /healthz with
 	// stopped_by, the two-process row, sees only turns that end at the hold's deadline, where
 	// stopped_by is the deadline wherever the read sits.
-	if stopped.Before(began) {
+	if !began.Before(stopped) {
 		t.Errorf("the line dates the stop at %s, before publish was called at %s",
 			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
 	}
-	if stoppedBy.Before(stopped) {
+	if !stopped.Before(stoppedBy) {
 		t.Errorf("the line bounds the stop above by %s, before the %s it bounds it below by",
 			stoppedBy.Format(time.RFC3339Nano), stopped.Format(time.RFC3339Nano))
 	}
-	if returned.Before(stoppedBy) {
+	if !stoppedBy.Before(returned) {
 		t.Errorf("the line bounds the stop above by %s, after the turn ended at %s",
 			stoppedBy.Format(time.RFC3339Nano), returned.Format(time.RFC3339Nano))
 	}
 	if !stoppedBy.Before(deadline) {
-		t.Errorf("the line bounds the stop above by %s, at or past the loss deadline of %s this path leaves minutes ahead",
+		t.Errorf("the line bounds the stop above by %s, at or past the loss deadline of %s",
 			stoppedBy.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
 	}
 
-	// This count is the whole of the proof that the renewal of the hold just lost stopped when
-	// publish released it: nothing else in the row watches that renewal. Its window starts here,
-	// with publish returned and the stop asserted, and runs past that hold's first renewal tick
-	// at taken + Renew, which no earlier part of the row reaches: a renewal still running sends
-	// its one statement there - that is what a duty.Hold whose Release does not stop the renewal,
-	// and whose renew does not return when Lost closes, does - and nothing else in this process
-	// renews a hold, so a statement in the window could only be this one's. Half a Renew of slack
-	// past the tick, so a statement a loaded runner was slow to start still lands inside the
-	// window rather than after it.
-	renewalsBefore := len(tracer.matching("update duty_holds set expires_at"))
-	window := recordPath.Renew + recordPath.Renew/2
-	time.Sleep(time.Until(taken.Add(window)))
-	if got := len(tracer.matching("update duty_holds set expires_at")) - renewalsBefore; got != 0 {
-		t.Fatalf("%s after the hold was taken - past the first tick of its renewal at %s - %d renewals of the lost hold were sent, want none: publish left its renewal running", window, recordPath.Renew, got)
+	if armed := renewals.Armed(); len(armed) != 0 {
+		t.Fatalf("the lost hold left timers armed at %v, want no renewal tick or loss timer", armed)
 	}
+}
+
+// steppingClock makes successive time reads distinguishable without reaching a renewal.
+type steppingClock struct{ *clocktest.Fake }
+
+func (c steppingClock) Now() time.Time {
+	c.Advance(time.Nanosecond)
+	return c.Fake.Now()
 }
 
 // heldRelease is a pgx tracer that holds the hold's release statement until the test lets it go,
@@ -1035,6 +1319,8 @@ func loggedMessages(recorder *logtest.Recorder) []string {
 // already in the log while the release's own statement is still running, and its stopped
 // attribute names the moment the process stopped publishing rather than the moment it was
 // written.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
@@ -1044,6 +1330,9 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	held := newHeldRelease()
 	defer held.let()
 	outbox := New(Deps{Store: tracedStore(t, database, held), Publisher: &recordingPublisher{}})
+	fake := clocktest.New(time.Time{})
+	outbox.holdClock = fake
+	firstTick := fake.Now().Add(publisherHoldOptions.Renew)
 	hold, _ := outbox.tryHold(ctx)
 	if hold == nil {
 		t.Fatal("the outbox did not take the publisher hold")
@@ -1055,12 +1344,9 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `delete from duty_holds where name = $1`, publisherHold); err != nil {
 		t.Fatalf("take the hold's row away: %v", err)
 	}
-	select {
-	case <-hold.Lost():
-	case <-time.After(2 * publisherHoldOptions.Renew):
-		t.Fatalf("the hold was not lost within %v of its row going", 2*publisherHoldOptions.Renew)
-	}
-	lostAt := time.Now()
+	fake.AwaitArmedAt(t, "the first renewal after taking the publisher hold", firstTick)
+	crossDeadline(fake, firstTick, func() { requireHoldLive(t, hold, "before its first renewal") })
+	testwait.Receive(t, "the hold lost at its first renewal after its row went", hold.Lost())
 
 	testwait.Receive(t, "the holder running the release", held.started)
 	if _, ok := timeIn(t, recorder, "lost the publisher hold", "stopped"); !ok {
@@ -1075,9 +1361,11 @@ func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
 	if !ok {
 		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
 	}
-	if stopped.After(lostAt) || lostAt.Sub(stopped) > time.Second {
-		t.Errorf("the line dates the stop at %s, and the hold reported itself lost at %s",
-			stopped.Format(time.RFC3339Nano), lostAt.Format(time.RFC3339Nano))
+	deadline := hold.Deadline()
+	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
+	if !deadline.Equal(firstTick) || !stopped.Equal(deadline) || !stoppedBy.Equal(deadline) {
+		t.Errorf("the lost hold's deadline is %s and the line dates the stop at %s through %s, want all at the first renewal %s",
+			deadline, stopped, stoppedBy, firstTick)
 	}
 }
 
@@ -1167,7 +1455,7 @@ func TestAFallbackPassWhoseClaimFailedBacksTheHolderOff(t *testing.T) {
 	held, release := store.HoldsConnection(store.WithTransactionTracking(context.Background()))
 	defer release()
 
-	full, failed, _ := publishFallbackCopies(held, deps, unfenced{}, outbox.instance)
+	full, failed, _ := outbox.publishFallbackCopies(held, unfenced{})
 
 	if full || !failed {
 		t.Fatalf("a pass whose claim failed reports full=%v failed=%v, want a failure and no full claim", full, failed)
@@ -1225,6 +1513,8 @@ func failedClaims(logged *lockedBuffer) int {
 // read at all, because nextRetry reads comment_fallback_copies too: a read of it that fails arms
 // the timer by itself, its error path answering retry.BaseDelay, whatever serve made of the
 // pass's failure.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -1242,16 +1532,20 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	served := make(chan holdEnd, 1)
-	started := time.Now()
+	fake := clocktest.New(time.Time{})
+	outbox.clock = fake
 	go func() { served <- outbox.serve(ctx, hold) }()
 
+	deadline := fake.Now().Add(retry.BaseDelay)
+	fake.AwaitArmedAt(t, "the back-off after the failed fallback claim", deadline)
+	crossDeadline(fake, deadline, func() {
+		if claims := failedClaims(&logged); claims != 1 {
+			t.Fatalf("%d failed claims one tick before retry.BaseDelay, want only the first pass", claims)
+		}
+	})
 	waitFor(t, "a second pass of the claim that keeps failing", func() bool {
 		return failedClaims(&logged) >= 2
 	})
-	if waited := time.Since(started); waited < retry.BaseDelay {
-		t.Fatalf("the holder passed again %s after it started, want it to wait retry.BaseDelay = %s rather than spin",
-			waited, retry.BaseDelay)
-	}
 	cancel()
 	if end := testwait.Receive(t, "serve returning once its context ended", served); end != stopping {
 		t.Fatalf("serve ended %q, want it to stop with its context", end)

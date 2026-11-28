@@ -188,8 +188,9 @@ func (w undeliveredWindow) messageID() string {
 // mark written, only while the hold is this process's; the mark of a post that succeeded is written
 // under recordTimeout even once ctx has ended. A Deps with no poster posts nothing and leaves every
 // window unposted.
-func postUndeliveredNotes(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
-	if deps.PostIssueMessage == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+func (o *Outbox) postUndeliveredNotes(ctx context.Context, hold fence) (full, failed bool) {
+	deps, instance := o.deps, o.instance
+	if deps.PostIssueMessage == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	windows, err := dueUndeliveredWindows(ctx, deps, instance)
@@ -200,7 +201,7 @@ func postUndeliveredNotes(ctx context.Context, deps Deps, hold fence, instance u
 		return false, true
 	}
 	for _, window := range windows {
-		if ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+		if ctx.Err() != nil || o.pastDeadline(hold) {
 			return false, false
 		}
 		messageID, err := deps.PostIssueMessage(ctx, graphWriter, model.SystemMessage{

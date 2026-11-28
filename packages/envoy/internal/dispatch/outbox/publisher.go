@@ -119,14 +119,6 @@ type Deps struct {
 	// issue message (api.Background.PostSystemMessage). A nil one posts nothing, and the windows
 	// wait.
 	PostIssueMessage func(ctx context.Context, actor model.Actor, message model.SystemMessage) (string, error)
-	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
-	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
-	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward
-	// nothing acknowledges stays unanswered for the whole test: then what the test reads is the
-	// order of two events rather than a duration, which a loaded machine changes. It is
-	// unexported, so only this package sets it and no importer can shorten the wait cmd/dispatch
-	// runs.
-	forwardAckWait time.Duration
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -140,18 +132,13 @@ type Deps struct {
 	Metrics *metrics.Registry
 	// held is the fallback copies this process's passes found waiting behind an earlier event of
 	// their owner, which the gauges read and which logs one WARN for a copy held past
-	// heldCopyWarnAfter (heldCopies). New makes it; a pass run with none - one by itself, as this
-	// package's tests run it - counts and reports nothing.
+	// model.MentionCopyHeldWarnAfter. New makes it; a pass run with none - one by itself, as
+	// this package's tests run it - counts and reports nothing.
 	held *heldCopies
-	// heldCopyWarnAfter is how long a copy waits before that WARN, and zero is
-	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
-	// need not wait a claim lease out; it is unexported, so no importer can.
-	heldCopyWarnAfter time.Duration
-	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
-	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
-	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves
-	// it past a forward's fence and acknowledgement window while the forward waits, which no test
-	// could otherwise wait out; it is unexported, so no importer can.
+	// clock is the role-forward clock: it judges a resolution's fence and the
+	// stream's acknowledgement (roleForward.forward), and sets the timestamp
+	// on a kept copy (roleForward.keep). Nil uses time.Now. A test can move it
+	// past the forward's fence or acknowledgement window while the forward waits.
 	clock func() time.Time
 	// holdRead, when set, runs inside a holder transaction right after its first, unlocked read of
 	// the publisher hold found the hold this process's (inHolderTransaction), before the
@@ -172,16 +159,7 @@ type Deps struct {
 	lanes *lanes
 }
 
-// forwardAckTimeout is the wait this outbox's role forwards give the stream's acknowledgement of
-// their stored copy (roleForward.forward), from forwardAckWait.
-func (d Deps) forwardAckTimeout() time.Duration {
-	if d.forwardAckWait > 0 {
-		return d.forwardAckWait
-	}
-	return roleForwardAckTimeout
-}
-
-// now is the outbox's clock (clock), time.Now unless a test set one.
+// now reads the role-forward clock, or time.Now unless a test set one.
 func (d Deps) now() time.Time {
 	if d.clock != nil {
 		return d.clock()
