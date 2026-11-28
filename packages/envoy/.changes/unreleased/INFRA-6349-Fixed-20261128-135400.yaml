@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The pre-deploy census no longer lists an idle session among the transactions open longer than
+  its bound. An idle session that Postgres wakes to catch up on invalidation messages, or to take
+  a notification, runs a short transaction of its own, and for that moment pg_stat_activity shows
+  a transaction start at the session's last statement, so the census listed a session that had
+  only been idle as a transaction open since then.
+time: 2026-11-28T13:54:00Z
+custom:
+    Issue: INFRA-6349

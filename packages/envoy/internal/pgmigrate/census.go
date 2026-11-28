@@ -462,6 +462,20 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// (holderRefusal says why idle is the one state that shows it): Postgres reads
 	// pg_stat_activity once per transaction and keeps it (freshActivity), so the census clears that
 	// copy first and such a transaction is younger than this query.
+	//
+	// An idle session is never listed by the age of its xact_start. Postgres reports a session
+	// idle only while its client holds no transaction (PostgresMain, postgres.c, reports
+	// STATE_IDLE only outside a transaction block), yet such a session runs a transaction of its
+	// own while it waits for its client: one that has fallen behind on the shared invalidation
+	// messages starts and commits one to read them (ProcessCatchupInterrupt, sinval.c, which
+	// ProcessClientReadInterrupt, postgres.c, calls while the session waits for its client), and
+	// one that listens does the same to read an incoming NOTIFY (ProcessIncomingNotify, async.c).
+	// Neither reports any activity, so pg_stat_activity still shows the session idle, and
+	// StartTransaction (xact.c) stamps that transaction's xact_start with the start of the
+	// session's last statement (stmtStartTimestamp). Its age is then how long the session has
+	// waited for its client, not how long any transaction of its client's has been open: listed
+	// by it, a pool's connection idle for a second, beside another database's DDL, read as a
+	// transaction open for a second (INFRA-6349).
 	if err := freshActivity(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -470,7 +484,7 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 			clock_timestamp() - a.xact_start, coalesce(a.backend_type = 'autovacuum worker', false)
 		from pg_stat_activity a
 		where a.datname = current_database() and a.pid <> pg_backend_pid()
-			and (clock_timestamp() - a.xact_start >= $1::interval
+			and (a.state is distinct from 'idle' and clock_timestamp() - a.xact_start >= $1::interval
 				or a.xact_start is null and a.state is distinct from 'idle'
 					and exists (select from pg_locks l where l.pid = a.pid and l.locktype = 'virtualxid'))
 		order by a.xact_start, a.pid`, options.LongTransaction)
