@@ -26,6 +26,7 @@ import (
 // committed and none begun while it lasted; how long it lasted; and the lines it logged among the
 // batches'.
 func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// before brings the reads to the row's state as the fill asks before its first batch;
@@ -81,6 +82,7 @@ func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			textversionstest.SeedIssue(t, database)
 			broker := events.NewBroker()

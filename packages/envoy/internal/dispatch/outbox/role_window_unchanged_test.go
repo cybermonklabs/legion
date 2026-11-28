@@ -45,25 +45,16 @@ func probeRelaySubject(ctx context.Context, conn *natsgo.Conn, sessionID string)
 	return err
 }
 
-// awaitNoRelayResponder waits until a probe of sessionID's relay subject meets no responder: a
-// closed connection leaves its subscriptions for the moment the server reads the close. Until the
-// server has read it, a probe goes to the closed subscriber's interest, which nobody answers and
-// which is no "no responders" either, so each probe ends after relayProbeTry and the next asks
-// again: a try that ends is a question to repeat, not an answer. The asking's one bound is the
-// test binary's deadline, and its failure prints the last probe's answer.
+// awaitNoRelayResponder waits for the server to remove the closed connection's
+// subscription before asking once. Probing a closed but not yet removed subscriber
+// would wait for a reply nobody can send.
 func awaitNoRelayResponder(t *testing.T, conn *natsgo.Conn, sessionID string) {
 	t.Helper()
-	ctx := testwait.Context(t)
-	testwait.Until(t, fmt.Sprintf("nothing to subscribe %s's relay subject", sessionID), func() (error, bool) {
-		try, cancel := context.WithTimeout(ctx, relayProbeTry)
-		defer cancel()
-		err := probeRelaySubject(try, conn, sessionID)
-		return err, errors.Is(err, natsgo.ErrNoResponders)
-	})
+	testnats.AwaitNoSubscription(t, conn, bus.DeliverSubject(sessionID))
+	if err := probeRelaySubject(testwait.Context(t), conn, sessionID); !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("probe %s's relay subject after its subscription closed: %v, want no responders", sessionID, err)
+	}
 }
-
-// relayProbeTry is how long one of awaitNoRelayResponder's probes waits before the next asks.
-const relayProbeTry = time.Second
 
 // Dispatch's outbox judges a role route's holder by the age of its last registration alone, as
 // the listener's role routes do (roles.ResolveHolder over roles.Buckets): a holder registered in
@@ -94,9 +85,7 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subscribe the holder's relay subject: %v", err)
 	}
-	if err := relay.Flush(); err != nil {
-		t.Fatalf("flush the holder's relay subscription: %v", err)
-	}
+	flushSubscriber(t, relay)
 	rig.claim(t, role, holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Delivery: session.DeliveryConsumer})
 	if err := probeRelaySubject(testwait.Context(t), rig.conn, holder); err != nil {
 		t.Fatalf("a probe of %s's relay subject while its subscriber holds it answered %v, want the subscriber's answer", holder, err)
@@ -110,13 +99,20 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	if record.Delivery != session.DeliveryConsumer {
 		t.Fatalf("the holder's record states delivery %q, want %q: the record a relay probe is asked about", record.Delivery, session.DeliveryConsumer)
 	}
-	if age := time.Since(time.UnixMilli(record.UpdatedAt)); age >= session.LiveWindow {
+	if record.UpdatedAt == 0 {
+		t.Fatal("the holder's record carries no registration stamp")
+	}
+	// Judge the same stored heartbeat at two fixed ages, independent of how long
+	// registration and disconnect took.
+	registered := time.UnixMilli(record.UpdatedAt)
+	live := roles.Windows{Now: func() time.Time { return registered.Add(time.Second) }}
+	if age := live.Now().Sub(registered); age >= session.LiveWindow {
 		t.Fatalf("the holder's last registration is %s old, want less than %s", age, session.LiveWindow)
 	}
 	rig.silent(t, roleTopic)
 
 	t.Run("the outbox forwards an event routed to the role to the holder's own subject and publishes it", func(t *testing.T) {
-		deps, registry := rig.countingDepsJudgedBy(roles.Windows{})
+		deps, registry := rig.countingDepsJudgedBy(live)
 		event := rig.routedEvent(t, "T-1", role, alice)
 
 		holding(t, deps).scan(context.Background(), unfenced{})
@@ -152,8 +148,8 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	})
 
 	t.Run("past the live window the outbox holds the event pending for the holder as unresponsive", func(t *testing.T) {
-		past := roles.Windows{Now: func() time.Time { return time.Now().Add(session.LiveWindow + 30*time.Second) }}
-		if age := past.Now().Sub(time.UnixMilli(record.UpdatedAt)); age <= session.LiveWindow || age >= session.GoneHorizon {
+		past := roles.Windows{Now: func() time.Time { return registered.Add(session.LiveWindow + 30*time.Second) }}
+		if age := past.Now().Sub(registered); age <= session.LiveWindow || age >= session.GoneHorizon {
 			t.Fatalf("the holder's last registration is %s old at the moved clock, want more than %s and less than %s", age, session.LiveWindow, session.GoneHorizon)
 		}
 		deps, registry := rig.countingDepsJudgedBy(past)

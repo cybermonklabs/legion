@@ -36,8 +36,9 @@ const keptExpiryNotices = bus.KeptExpiredSubjectPrefix + ">"
 // row and writes nothing - no expiry, no record, no cursor move - while instance does not hold it
 // (errNotTheHolder), and a pass past the hold's deadline reads nothing. So a process the hold has
 // left cannot record an expiry the holder's own pass is about to keep again.
-func readKeptExpiries(ctx context.Context, deps Deps, hold fence, instance uuid.UUID, stream *keptStreamRead) (full, failed bool) {
-	if deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+func (o *Outbox) readKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
+	deps, instance, stream := o.deps, o.instance, &o.keptStream
+	if deps.KeptLanes == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	after, proceed, failed := keptExpiryStart(ctx, deps, instance, stream)

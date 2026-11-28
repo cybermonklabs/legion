@@ -91,7 +91,26 @@ func requireRows(t testing.TB, database *store.Store, want []Written, only bool)
 // for seconds: a fixed span would measure how long such a write was held, not the fill.
 func AwaitRowsUntil(t *testing.T, database *store.Store, ids []int64, each func()) {
 	t.Helper()
-	testwait.UntilPolling(t, 50*time.Millisecond, fmt.Sprintf("one row of each of the events %v, the rows counted", ids), func() (int, bool) {
+	what, read := awaitRowsRead(t, database, ids, each)
+	testwait.UntilPolling(t, 50*time.Millisecond, what, read)
+}
+
+// AwaitRows is AwaitRowsUntil through the shared wait (testwait.Until), at its pace rather than
+// one of its own: it waits until every event of ids has its one row, running each between reads
+// when it is set, bounded by the test binary's deadline alone, and its failure names the events
+// and the count of rows it read last.
+func AwaitRows(t testing.TB, database *store.Store, ids []int64, each func()) {
+	t.Helper()
+	what, read := awaitRowsRead(t, database, ids, each)
+	testwait.Until(t, what, read)
+}
+
+// awaitRowsRead is what AwaitRows and AwaitRowsUntil wait on: the text their failure names, the
+// events of ids and the rows counted, and their read, which counts the rows of ids, reports
+// whether every event has its one row, and runs each, when it is set, after a read that finds a
+// row missing.
+func awaitRowsRead(t testing.TB, database *store.Store, ids []int64, each func()) (string, func() (int, bool)) {
+	return fmt.Sprintf("one row of each of the events %v, the rows counted", ids), func() (int, bool) {
 		rows := RowsOf(t, database, ids...)
 		if rows == len(ids) {
 			return rows, true
@@ -100,7 +119,7 @@ func AwaitRowsUntil(t *testing.T, database *store.Store, ids []int64, each func(
 			each()
 		}
 		return rows, false
-	})
+	}
 }
 
 // Cursor is the fill's cursor, the event its cursor row names, and 0 before the fill wrote the

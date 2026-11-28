@@ -6,15 +6,16 @@ import (
 	"math"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
 // callBound is the most one Embed call this queue makes may take, whatever the place:
 // embed.Bounded ends the call there through its context. It is Azure's own request timeout
 // (azureRequestTimeout, 60 s); Bedrock's SDK sets no bound of its own. Half claimWindow, it leaves
-// a call that starts with a fresh claim the other half to end in. A var, as renewClaimInterval is,
-// so a test can shrink it and see a call end at its bound in milliseconds.
-var callBound = 60 * time.Second
+// a call that starts with a fresh claim the other half to end in. The bound runs on the queue's
+// clock (Deps.Clock), so a test that wants a call to reach it moves that clock there.
+const callBound = 60 * time.Second
 
 // callSlack is how much of its claim a call that runs to callBound must still have when it ends,
 // for what runs before the next renewal: the call's unwinding once its context ends, the commit,
@@ -25,10 +26,10 @@ const callSlack = 15 * time.Second
 // row it still protects (claimRenewal.renew) - during a wait longer than this, a reservation's on
 // the token budget (reserveTokens) or the pace's before an Embed call (embedDocuments) -
 // comfortably inside claimWindow so a renewal always lands before the claim it is refreshing could
-// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A var,
-// not a const as claimWindow is, so a test can shrink it well below claimWindow's own 2 minutes
-// and observe a renewal firing in milliseconds rather than needing to wait out the real interval.
-var renewClaimInterval = claimWindow / 2
+// lapse. A call that could outlive the claim renews it sooner (claimRenewal.renew's need). A
+// claim's age is read on the queue's clock (Deps.Clock), so a test that wants a renewal moves that
+// clock past the interval rather than waiting it out.
+const renewClaimInterval = claimWindow / 2
 
 // claimRenewal re-extends scanPending's claim on every row of the original top-level batch a
 // ProcessBatch call is working through - not just whatever subtree bisection is currently in,
@@ -41,20 +42,23 @@ var renewClaimInterval = claimWindow / 2
 // corrupted - commitEmbeddings' own content_hash-matched update already makes a doubly-claimed
 // row safe, just not free. A nil *claimRenewal (a caller with no claim to protect, such as a test
 // exercising reserveTokens alone) is a safe no-op. last is when the claim was last made or
-// renewed, read before the statement that made it, so the claim never reads younger than it is.
-// extend makes each renewal: extendClaim on the store of the Deps newClaimRenewal was given, or,
-// in a test on a synctest fake clock, where no Postgres statement may run (duty.ExclusiveFunc says
-// why), a record of the renewal.
+// renewed, read before the statement that made it, so the claim never reads younger than it is;
+// clock is the one last and the claim's age are read on, the queue's (Deps.Clock). extend makes
+// each renewal: extendClaim on the store of the Deps newClaimRenewal was given, or, in a test on a
+// synctest fake clock, where no Postgres statement may run (duty.ExclusiveFunc says why), a record
+// of the renewal.
 type claimRenewal struct {
 	rows   []pendingRow
+	clock  clock.Clock
 	last   time.Time
 	extend func(ctx context.Context, rows []pendingRow) error
 }
 
 // newClaimRenewal renews deps' claim on rows, made at claimed: read before the statement that
 // made the claim (ProcessBatch's scanPending), so the claim never reads younger than it is.
+// claimed is a moment on deps' clock (Deps.Clock), on which the renewal reads the claim's age.
 func newClaimRenewal(deps Deps, rows []pendingRow, claimed time.Time) *claimRenewal {
-	return &claimRenewal{rows: rows, last: claimed, extend: func(ctx context.Context, rows []pendingRow) error {
+	return &claimRenewal{rows: rows, clock: deps.clock(), last: claimed, extend: func(ctx context.Context, rows []pendingRow) error {
 		return extendClaim(ctx, deps, rows)
 	}}
 }
@@ -62,12 +66,13 @@ func newClaimRenewal(deps Deps, rows []pendingRow, claimed time.Time) *claimRene
 // renew renews c's claim once it falls due (due). need is the most the step about to start may
 // take: an Embed call's callBound plus callSlack (embedDocuments), so however late after the last
 // renewal a call starts, it ends with its claim no older than claimWindow less callSlack; 0 at a
-// slice of a wait (waitOutDebt), which ends when the claim next falls due.
+// slice of a wait (waitOutDebt), which ends when the claim next falls due. The renewal's moment
+// is read on c's clock.
 func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 	if c == nil || ctx.Err() != nil || c.due(need) > 0 {
 		return
 	}
-	c.last = time.Now()
+	c.last = c.clock.Now()
 	if err := c.extend(ctx, c.rows); err != nil {
 		slog.Error("dispatch embedqueue: claim renewal failed", "error", err)
 	}
@@ -76,15 +81,13 @@ func (c *claimRenewal) renew(ctx context.Context, need time.Duration) {
 // due is how long until renew(need) renews c's claim, and 0 once it would: until the claim is
 // claimWindow less need old, or renewClaimInterval old if that is sooner. The interval bounds a
 // call's renewal too, so a call's own renewal, a statement after its reservation, renews whatever
-// a renewal before the reservation would, whatever renewClaimInterval is; without it no renewal
-// runs between bisection's attempts once a test shrinks the interval
-// (TestProcessBatchActuallyCallsRenewalAndReservesTokens). A nil *claimRenewal, which renews
-// nothing, is never due.
+// a renewal before the reservation would, whatever renewClaimInterval is. The claim's age is read
+// on c's clock. A nil *claimRenewal, which renews nothing, is never due.
 func (c *claimRenewal) due(need time.Duration) time.Duration {
 	if c == nil {
 		return math.MaxInt64
 	}
-	return max(min(claimWindow-need, renewClaimInterval)-time.Since(c.last), 0)
+	return max(min(claimWindow-need, renewClaimInterval)-c.clock.Now().Sub(c.last), 0)
 }
 
 // extendClaim pushes next_attempt_at of each of rows claimWindow past now, keeping scanPending's
@@ -190,8 +193,8 @@ func reserveBackgroundTokens(ctx context.Context, deps Deps, texts []string, ren
 // due during the wait, not only before or after it, so a claim never lapses mid-wait;
 // renewal.renew is a safe no-op on nil (a caller with no claim to protect, such as a test
 // exercising the budget alone). ceilingPerMinute is a parameter rather than read from deps here so
-// a test can use a tiny ceiling and observe a real, short wait instead of needing to simulate a
-// whole minute.
+// a test can reserve against a ceiling of its own. The wait runs on the queue's clock
+// (Deps.Clock), where a test reads it as the deadline it arms rather than waiting it out.
 func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int, renewal *claimRenewal) {
 	var available float64
 	if err := deps.Store.Pool.QueryRow(ctx, `
@@ -207,7 +210,7 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 		return
 	}
 	wait := time.Duration(-available / (float64(ceilingPerMinute) / 60.0) * float64(time.Second))
-	waitOutDebt(ctx, wait, renewal)
+	waitOutDebt(ctx, deps.clock(), wait, renewal)
 }
 
 // waitOutDebt is the wait loop of reserveTokens and of the pace's wait before an Embed call
@@ -219,12 +222,14 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 // (embedDocuments). The renewals' own time counts toward the wait, so the wait ends no sooner than
 // wait after it began, and later only by a renewal still running then: a renewal that itself took
 // renewClaimInterval leaves the claim due at once, and the next is made at once, as the rule asks.
-// A nil renewal (a call that holds no claim) sleeps the wait out whole.
-func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal) {
-	end := time.Now().Add(wait)
-	for time.Until(end) > 0 && ctx.Err() == nil {
+// A nil renewal (a call that holds no claim) sleeps the wait out whole. The wait, its end and its
+// slices run on c: the queue's clock (Deps.Clock) in reserveTokens and embedDocuments, the clock
+// renewal's age is read on too.
+func waitOutDebt(ctx context.Context, c clock.Clock, wait time.Duration, renewal *claimRenewal) {
+	end := c.Now().Add(wait)
+	for end.Sub(c.Now()) > 0 && ctx.Err() == nil {
 		renewal.renew(ctx, 0)
-		if !pauseFor(ctx, min(time.Until(end), renewal.due(0))) {
+		if c.Sleep(ctx, min(end.Sub(c.Now()), renewal.due(0))) != nil {
 			return
 		}
 	}

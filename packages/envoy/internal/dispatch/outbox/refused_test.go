@@ -329,7 +329,7 @@ func TestARefusedDestinationIsRecordedAsFailed(t *testing.T) {
 			t.Fatalf("the comment's scan sent %d copies to %s, want none: the fallback row holds that copy", attempts[sessionTopic], sessionTopic)
 		}
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+		bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if !row.settled || row.published || row.attempts != 0 {
@@ -350,7 +350,7 @@ func TestARefusedDestinationIsRecordedAsFailed(t *testing.T) {
 		`, commentID); err != nil {
 			t.Fatalf("make every unsettled row due: %v", err)
 		}
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+		bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 		if attempts, _ := publisher.snapshot(); attempts[sessionTopic] != 1 {
 			t.Errorf("the refused copy was attempted %d times over two passes, want once: a settled row is not claimed again", attempts[sessionTopic])
 		}
@@ -366,7 +366,7 @@ func TestARefusedDestinationIsRecordedAsFailed(t *testing.T) {
 		deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 		commentID := seedHeldFallbackCopy(ctx, t, deps)
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+		bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 
 		if attempts, _ := publisher.snapshot(); attempts[sessionTopic] != 1 {
 			t.Fatalf("the failing copy was attempted %d times, want once", attempts[sessionTopic])

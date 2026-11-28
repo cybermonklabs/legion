@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -60,7 +59,7 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 					t.Parallel()
 					event := owner.event
 					event.Type = eventType
-					event.CreatedAt = time.Now()
+					event.CreatedAt = fixtureTime
 					event.Payload = map[string]any{
 						"id":          "00000000-0000-0000-0000-000000000030",
 						"artifact_id": "00000000-0000-0000-0000-000000000040",

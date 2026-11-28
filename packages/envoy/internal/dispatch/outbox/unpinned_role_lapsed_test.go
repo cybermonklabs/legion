@@ -51,6 +51,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 	target := "role:" + mentioned
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, mentioned, holder, session.SessionEntry{SelfSubscribed: true})
 	claimant := rig.receiver(t, holder)
 	wrote := rig.receiver(t, author)
@@ -73,12 +74,11 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing",
 			holder, got, target)
 	}
-	waitFor(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
-	copies := wrote.received()
+	copies := wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key: no attempt of this comment names that session",
 			author, copies, comment.ID)
@@ -98,7 +98,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %+v once the lease of its own mention of %s lapsed, want nothing: no attempt names that session while the sender has pinned none, so this copy carries the event's own key %s - one that host never claimed - and the mention lands beside it. The copy is the fallback pass's to key, from the attempts as they stand when it publishes them",
 			holder, got, target, fmt.Sprintf("dispatch-%d", comment.ID))
 	}
@@ -154,14 +154,14 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("settle the mention of %s sent: %v", staged.target, err)
 		}
 
-		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
+		bareOutbox(staged.rig.deps(), holdingProcess(t, staged.rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || row.published {
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it settled with nothing published: the mention delivered the comment",
 				staged.holder, row.settled, row.published)
 		}
-		if got := staged.claimant.received(); len(got) != 0 {
+		if got := staged.claimant.receivedNow(t, staged.rig.client); len(got) != 0 {
 			t.Fatalf("%s was sent %+v though its own mention of %s delivered the comment, want nothing",
 				staged.holder, got, staged.target)
 		}
@@ -180,17 +180,14 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 			t.Fatalf("settle the mention of %s failed: %v", staged.target, err)
 		}
 
-		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
+		bareOutbox(staged.rig.deps(), holdingProcess(t, staged.rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.LegacyAgentSubject(staged.holder))
 		if !row.settled || !row.published {
 			t.Fatalf("the copy held for %s reads settled=%v published=%v, want it published: its mention failed, so the outbox owes that session the comment",
 				staged.holder, row.settled, row.published)
 		}
-		waitFor(t, "the copy the mention's failure owes", func() bool {
-			return len(staged.claimant.received()) > 0
-		})
-		copies := staged.claimant.received()
+		copies := staged.claimant.receivedNow(t, staged.rig.client)
 		want := contracts.AgentSendDedupeKey(
 			staged.holder, model.CommentMentionIdempotencyKey(staged.commentID, staged.target, "steer"))
 		if len(copies) != 1 || copies[0].DedupeKey != want {

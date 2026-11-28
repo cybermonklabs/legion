@@ -45,6 +45,7 @@ func rulesBefore(version int) map[string]rule {
 // column for column, body and body_from included, the rows a fill of this build alone writes of
 // the same log from an empty table.
 func TestTheReReadLeavesTheRowsAFillOfThisBuildAloneWrites(t *testing.T) {
+	t.Parallel()
 	for _, eventType := range rulesAdded[2] {
 		if _, ok := versionRules[eventType]; !ok {
 			t.Fatalf("rules version 2 adds %s, which versionRules does not read", eventType)

@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -39,9 +40,9 @@ func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
 }
 
 // latestWait is the latest a wait can start after the claim's last renewal: a claim
-// claimWindow-callBound-callSlack (45 s) old or older is renewed as the call is made. A var, as
-// callBound is, so it follows callBound's value rather than repeating it.
-var latestWait = claimWindow - callBound - callSlack - 100*time.Millisecond
+// claimWindow-callBound-callSlack (45 s) old or older is renewed as the call is made. It is
+// computed from those constants, so it follows callBound's value rather than repeating it.
+const latestWait = claimWindow - callBound - callSlack - 100*time.Millisecond
 
 // A call the pace holds, from a claim old enough that the wait ends just before the wait's own
 // renewal falls due (renewClaimInterval), goes out with the claim renewed: the wait renews nothing,
@@ -71,13 +72,14 @@ func TestACallThePaceHeldRenewsItsClaimAsItGoesOut(t *testing.T) {
 // backs the pace off.
 func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
 	t.Parallel()
-	paced := func(inner embed.Embedder) (Deps, *passThrough) {
+	paced := func(deps Deps, inner embed.Embedder) (Deps, *passThrough) {
 		wrapper := &passThrough{Embedder: inner}
-		return Deps{Embedder: wrapper}.Paced(), wrapper
+		deps.Embedder = wrapper
+		return deps.Paced(), wrapper
 	}
 	t.Run("the pace's wait renews the claim", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			deps, wrapper := paced(&fakeEmbedder{})
+			deps, wrapper := paced(Deps{}, &fakeEmbedder{})
 			requireRenewedThroughThePacesWait(t, deps, retry.MaxDelay, latestWait)
 			if wrapper.calls != 2 {
 				t.Errorf("the wrapper saw %d calls, want 2", wrapper.calls)
@@ -87,10 +89,12 @@ func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
 	t.Run("a canary that meets an outage backs the pace off", func(t *testing.T) {
 		database := storetest.Open(t)
 		seedIssue(t, database, "WRAP", "WRAP-1", "Title of WRAP-1")
-		deps, wrapper := paced(&fakeEmbedder{err: simulatedOutage{}})
-		deps.Store = database
+		// The pace's wait before the canary runs on the queue's clock (Deps.Clock), which the row
+		// moves through it (runOnQueueClock).
+		queueClock := newQueueClock(t, database)
+		deps, wrapper := paced(Deps{Store: database, Clock: queueClock}, &fakeEmbedder{err: simulatedOutage{}})
 		pace := deps.pace.Interval()
-		succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+		succeeded, failed, blocked, throttled, err := processBatchOnQueueClock(t, queueClock, nil, deps)
 		if err != nil || succeeded != 0 || failed != 1 || blocked || throttled {
 			t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want 0, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
 		}
@@ -178,7 +182,7 @@ func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
 					time.Sleep(took)
 					return nil
 				}
-				waitOutDebt(ctx, 3*renewClaimInterval, renewal)
+				waitOutDebt(ctx, clock.Real(), 3*renewClaimInterval, renewal)
 				ended := time.Now()
 				if err := ctx.Err(); err != nil {
 					t.Fatalf("the wait ended only with its context (%v), after %v and %d renewals; want it to end by itself", err, ended.Sub(started), len(renewed)-1)

@@ -26,10 +26,10 @@ func fillCounts(t *testing.T, database *store.Store) {
 	}
 }
 
-// foldCounts runs one fold (foldCoverage), failing the test on an error.
+// foldCounts runs one fold (CountsDeps.fold) on the real clock, failing the test on an error.
 func foldCounts(t *testing.T, database *store.Store) {
 	t.Helper()
-	if err := foldCoverage(context.Background(), database); err != nil {
+	if err := (CountsDeps{Store: database}).fold(context.Background()); err != nil {
 		t.Fatalf("fold the coverage counts: %v", err)
 	}
 }
@@ -228,12 +228,14 @@ func requireAnswers(t *testing.T, database *store.Store, identity string, want e
 // ANALYZE for the configured identity and for none, and the rows every scan node read - the rows
 // it answered, its Filter removed and its index recheck removed, times the times it ran (rowsRead)
 // - add up to the same at both sizes; no state reads more than coverageDeltaBound + 1 delta rows,
-// and each reads every delta row it holds up to that.
+// and each reads every delta row it holds up to that. Each state runs on databases of its own,
+// beside the others.
 func TestCoverageReadsTheSameRowsAtTwiceTheCorpus(t *testing.T) {
 	t.Parallel()
 	const n = 20
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
+			t.Parallel()
 			read := map[string]float64{}
 			scans := map[string][]string{}
 			for _, size := range []int{n, 2 * n} {
@@ -312,11 +314,13 @@ func unkeyedScansOfGrowingTables(t *testing.T, plan []byte, tables map[string]st
 // TestTheCoverageReadScansNoTableWithoutAnIndexCondition holds R7b's plan: in every state the
 // route reads in, the report's statement reads every table but the base rows, the delta rows and
 // the two tables of one row through an index condition (explaintest.ScansWithoutIndexCond), for
-// the configured identity and for none.
+// the configured identity and for none. Each state runs on a database of its own, whose statistics
+// alone its plans are made from, beside the others.
 func TestTheCoverageReadScansNoTableWithoutAnIndexCondition(t *testing.T) {
 	t.Parallel()
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
+			t.Parallel()
 			database := seedRouteState(t, state, 10)
 			tables := indexTables(t, database)
 			for _, identity := range []string{configuredIdentity, ""} {
@@ -367,11 +371,13 @@ func (r *sentRecorder) take() []sentStatement {
 // (mainRouteCoverageStatement) nor the one before it (mainCoverageQuery); every statement but the
 // transaction's own (its begin, its bound, planCoverage's settings, its rollback) reads, and each
 // such read, explained with the arguments it was sent with, reads no table that grows with the
-// corpus by a scan with no index condition. Coverage answers each state's answer.
+// corpus by a scan with no index condition. Coverage answers each state's answer. Each state runs
+// on a database of its own, beside the others.
 func TestTheCoverageRouteSendsNoStatementOfMains(t *testing.T) {
 	t.Parallel()
 	for _, state := range coverageRouteStates {
 		t.Run(state.name, func(t *testing.T) {
+			t.Parallel()
 			database := seedRouteState(t, state, 10)
 			tables := indexTables(t, database)
 			recorder := &sentRecorder{}

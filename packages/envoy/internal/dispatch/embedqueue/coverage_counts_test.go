@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // countingTrigger is one trigger the coverage counts are kept by, as pg_trigger holds it: the
@@ -267,13 +270,8 @@ func TestTwoWritesToOneIssuesInputsLeaveItsStateRowCurrent(t *testing.T) {
 	if err := a.Commit(ctx); err != nil {
 		t.Fatalf("commit A: %v", err)
 	}
-	select {
-	case err := <-rewritten:
-		if err != nil {
-			t.Fatalf("B's rewrite of the spec: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("B's rewrite of the spec did not end within 10s of A's commit")
+	if err := testwait.Receive(t, "B's rewrite of the spec to end once A committed", rewritten); err != nil {
+		t.Fatalf("B's rewrite of the spec: %v", err)
 	}
 	if err := b.Commit(ctx); err != nil {
 		t.Fatalf("commit B: %v", err)
@@ -328,13 +326,17 @@ func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
 		requireMainsAnswer(t, database, "after "+claim)
 	}
 
-	deps := Deps{Store: database, Embedder: &fakeEmbedder{}}
+	// The queue's clock, on which the renewal reads the claim's age: the test moves it on by the
+	// renewal's interval (renewClaimInterval) rather than dating the claim back on Go's clock.
+	queueClock := clocktest.Held()
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{}, Clock: queueClock}
 	claimed, settled, err := scanPending(ctx, deps)
 	if err != nil || len(claimed) != 1 || claimed[0].id != key || settled != 0 {
 		t.Fatalf("scanPending = %v, %d settled, %v, want %s claimed", claimed, settled, err, key)
 	}
 	requireUnrefreshed("scanPending's claim")
-	renewal := newClaimRenewal(deps, claimed, time.Now().Add(-renewClaimInterval-time.Second))
+	renewal := newClaimRenewal(deps, claimed, queueClock.Now())
+	queueClock.Advance(renewClaimInterval)
 	renewal.renew(ctx, 0)
 	requireUnrefreshed("claimRenewal's renewal")
 
@@ -666,8 +668,10 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 		return 0
 	})
 
-	// embeddings: the queue's own writes.
-	deps := Deps{Store: database, Embedder: &fakeEmbedder{}}
+	// embeddings: the queue's own writes, on the queue's clock, which the test moves on by the
+	// renewal's interval (renewClaimInterval) so the renewal finds the claim due.
+	queueClock := clocktest.Held()
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{}, Clock: queueClock}
 	var claimed []pendingRow
 	before := issueStateXmins(t, database)
 	requirePoolWriteKept(t, database, "scanPending's settling of the blank rows and claim of the rest", func() int64 {
@@ -681,7 +685,8 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 	requireClaimRefreshedNothing(t, database, "scanPending's claim", claimed, before)
 
 	before = issueStateXmins(t, database)
-	renewal := newClaimRenewal(deps, claimed, time.Now().Add(-renewClaimInterval-time.Second))
+	renewal := newClaimRenewal(deps, claimed, queueClock.Now())
+	queueClock.Advance(renewClaimInterval)
 	if deltas := requirePoolWriteKept(t, database, "claimRenewal's renewal of the claim", func() int64 {
 		renewal.renew(ctx, 0)
 		return int64(len(claimed))
@@ -837,11 +842,11 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 // another deleted, and a row of each not-indexed table a count keeps (components,
 // artifact_versions, check_results, handoffs), each inside withTableTriggersOff, and an issue
 // written under session_replication_role = replica (withTriggersOff) - are in the counts after one
-// recount (recountCoverage), which the report's three sides then answer alike (requireMainsAnswerFor).
+// recount (CountsDeps.recount), which the report's three sides then answer alike (requireMainsAnswerFor).
 // It runs once with an embedder configured, the queue having embedded every row it could with that
 // identity before the writes and the report read for it, and once with none, the report read for
-// no identity. Before the recount the counts miss the writes: the report counts one component fewer
-// than the table holds.
+// no identity, each on a database of its own, beside the other. Before the recount the counts miss
+// the writes: the report counts one component fewer than the table holds.
 func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 	t.Parallel()
 	for _, configured := range []struct{ name, identity string }{
@@ -849,6 +854,7 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 		{"no embedder", ""},
 	} {
 		t.Run(configured.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			database := storetest.Open(t)
 			q := database.Pool
@@ -910,7 +916,7 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 				t.Fatalf("before the recount the counts hold %d components of the table's %d, want one fewer: the component written with its triggers off fired a trigger", kept, components)
 			}
 
-			if err := recountCoverage(ctx, database); err != nil {
+			if err := (CountsDeps{Store: database}).recount(ctx); err != nil {
 				t.Fatalf("recount: %v", err)
 			}
 			requireMainsAnswerFor(t, database, "after one recount", configured.identity)
@@ -1005,17 +1011,6 @@ func TestTheRefreshAndTheRecountRenderAnIssuesInputsAlike(t *testing.T) {
 
 // ───── the counts loop: the fold, the recount, the fill (R7e to R7i, R7o, R7x) ─────
 
-// setForTest sets variable, a package variable a test may change (the counts loop's periods,
-// bounds, random sources and clock, renewClaimInterval, callBound), to value until the test ends.
-// A test that calls it is serial (its "Not parallel:" line says so), and Go starts no parallel test
-// of a package until its serial tests have finished, so nothing else reads the variable meanwhile.
-func setForTest[T any](t *testing.T, variable *T, value T) {
-	t.Helper()
-	saved := *variable
-	*variable = value
-	t.Cleanup(func() { *variable = saved })
-}
-
 // fractions is a random source that answers values in turn, from the first again after the last.
 func fractions(values ...float64) func() float64 {
 	var mu sync.Mutex
@@ -1029,42 +1024,6 @@ func fractions(values ...float64) func() float64 {
 	}
 }
 
-// fakeCountsClock is a counts clock (countsClock) a test moves itself: After records the wait it was
-// asked for, calls onWait with how many waits came before it, and moves the time on by the wait at
-// once, so the loop's periods run as fast as their work does and fake time stands still while
-// it works. Once onWait answers true it cancels the loop's context (stop) and answers a channel that
-// never fires.
-type fakeCountsClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	waits  []time.Duration
-	onWait func(index int) (stop bool)
-	stop   context.CancelFunc
-}
-
-func (c *fakeCountsClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeCountsClock) After(d time.Duration) <-chan time.Time {
-	c.mu.Lock()
-	index := len(c.waits)
-	c.waits = append(c.waits, d)
-	c.mu.Unlock()
-	if c.onWait(index) {
-		c.stop()
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-	fired := make(chan time.Time, 1)
-	fired <- c.now
-	return fired
-}
-
 // clockedLine is one line the counts loop logged, at the fake time it logged it.
 type clockedLine struct {
 	at      time.Time
@@ -1074,11 +1033,13 @@ type clockedLine struct {
 }
 
 // clockedLog is a slog.Handler that keeps every line with clock's time, so a test reads when, in
-// the loop's own time, a recount started or failed.
+// the loop's own time, a recount started or failed. recountStarted, when set, is told that time as
+// the loop logs a recount's start (recountStartedLine), on the loop's goroutine.
 type clockedLog struct {
-	clock *fakeCountsClock
-	mu    sync.Mutex
-	lines []clockedLine
+	clock          *clocktest.Fake
+	recountStarted func(at time.Time)
+	mu             sync.Mutex
+	lines          []clockedLine
 }
 
 func (l *clockedLog) Enabled(context.Context, slog.Level) bool { return true }
@@ -1086,8 +1047,11 @@ func (l *clockedLog) Enabled(context.Context, slog.Level) bool { return true }
 func (l *clockedLog) Handle(_ context.Context, record slog.Record) error {
 	at := l.clock.Now()
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.lines = append(l.lines, clockedLine{at, record.Level, record.Message, attrsOf(record)})
+	l.mu.Unlock()
+	if record.Message == recountStartedLine && l.recountStarted != nil {
+		l.recountStarted(at)
+	}
 	return nil
 }
 
@@ -1119,7 +1083,7 @@ const (
 // clockedStatements records the SQL of every statement started on the pool it traces
 // (storetest.Traced), each with clock's time.
 type clockedStatements struct {
-	clock *fakeCountsClock
+	clock *clocktest.Fake
 	mu    sync.Mutex
 	sent  []clockedStatement
 }
@@ -1159,25 +1123,140 @@ func servingNow() <-chan struct{} {
 	return serving
 }
 
-// runCountsUntilStopped runs RunCounts on database with clock as the loop's clock (countsTime)
-// until clock stops it, and fails the test when it does not return within within.
-func runCountsUntilStopped(t *testing.T, database *store.Store, clock *fakeCountsClock, within time.Duration) {
-	t.Helper()
+// clockAdvancer moves fake on by span as each statement whose SQL is sql starts on the pool it
+// traces (storetest.Traced), on the goroutine that sends it: a statement the loop's clock sees
+// take span.
+type clockAdvancer struct {
+	fake *clocktest.Fake
+	sql  string
+	span time.Duration
+}
+
+func (a clockAdvancer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if data.SQL == a.sql {
+		a.fake.Advance(a.span)
+	}
+	return ctx
+}
+
+func (clockAdvancer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// countsEvent is what a counts loop a test drives (countsLoop) reports: the wait it is parked at,
+// for the moment at, wait from the fake's present (0 for one due already); or, where the test's
+// log tells the loop (clockedLog.recountStarted), a recount that started at at.
+type countsEvent struct {
+	recount bool
+	at      time.Time
+	wait    time.Duration
+}
+
+// countsLoop is RunCounts on a goroutine of its own, on a clocktest.Fake that only the test moves.
+// The loop reports each wait it is about to make once its timer is armed (CountsDeps.waiting) and
+// stays parked there until the test lets it on (release), so what the test does at a wait it does
+// while the loop does nothing. Every wait of the test on it goes through testwait, bounded by the
+// test binary's deadline alone.
+type countsLoop struct {
+	fake   *clocktest.Fake
+	ctx    context.Context
+	cancel context.CancelFunc
+	events chan countsEvent
+	resume chan struct{}
+	done   chan struct{}
+}
+
+// newCountsLoop is a loop on fake that start runs.
+func newCountsLoop(fake *clocktest.Fake) *countsLoop {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	clock.stop = cancel
-	setForTest[countsClock](t, &countsTime, clock)
-	done := make(chan struct{})
+	return &countsLoop{fake: fake, ctx: ctx, cancel: cancel,
+		events: make(chan countsEvent, 1), resume: make(chan struct{}), done: make(chan struct{})}
+}
+
+// start runs RunCounts with deps until the test stops the loop (stop), or t ends: deps' Serving
+// closed already, its Clock the loop's fake, and its waiting hook the loop's report of each wait.
+func (l *countsLoop) start(t *testing.T, deps CountsDeps) {
+	t.Helper()
+	deps.Serving, deps.Clock = servingNow(), l.fake
+	deps.waiting = func(until time.Time) {
+		l.report(countsEvent{at: until})
+		select {
+		case <-l.resume:
+		case <-l.ctx.Done():
+		}
+	}
 	go func() {
-		defer close(done)
-		RunCounts(ctx, CountsDeps{Store: database, Serving: servingNow()})
+		defer close(l.done)
+		RunCounts(l.ctx, deps)
 	}()
+	t.Cleanup(func() { l.stop(t) })
+}
+
+// recountStarted reports a recount that started at at, on the loop's goroutine: a test's log
+// calls it (clockedLog.recountStarted).
+func (l *countsLoop) recountStarted(at time.Time) {
+	l.report(countsEvent{recount: true, at: at})
+}
+
+// report hands the test event, or drops it once the loop is stopped.
+func (l *countsLoop) report(event countsEvent) {
 	select {
-	case <-done:
-	case <-time.After(within):
-		cancel()
-		<-done
-		t.Fatalf("the counts loop did not reach the end of its run within %v (waits asked for: %v)", within, clock.waits)
+	case l.events <- event:
+	case <-l.ctx.Done():
+	}
+}
+
+// next takes what the loop reports next. A wait for a moment ahead of the fake is read armed on
+// it first; a wait for a moment the fake has reached fired as it was armed, is never pending, and
+// waits 0.
+func (l *countsLoop) next(t *testing.T) countsEvent {
+	t.Helper()
+	event := testwait.Receive(t, "the counts loop's next wait or recount", l.events)
+	if !event.recount {
+		now := l.fake.Now()
+		if event.at.After(now) {
+			l.fake.AwaitArmedAt(t, "the counts loop's wait", event.at)
+		}
+		event.wait = max(event.at.Sub(now), 0)
+	}
+	return event
+}
+
+// release moves the fake to until, the moment of the wait the loop is parked at, when it lies
+// ahead, and lets the loop on.
+func (l *countsLoop) release(until time.Time) {
+	if until.After(l.fake.Now()) {
+		l.fake.Set(until)
+	}
+	l.resume <- struct{}{}
+}
+
+// stop ends the loop's context and waits for RunCounts to return.
+func (l *countsLoop) stop(t *testing.T) {
+	t.Helper()
+	l.cancel()
+	testwait.Receive(t, "the counts loop to return once its context ended", l.done)
+}
+
+// runCountsUntilStopped runs RunCounts with deps on fake (countsLoop) and drives it one wait at a
+// time: at each wait, while the loop is parked at it, it calls next with the wait's index, then
+// moves the fake to the wait's moment and lets the loop on, until next answers true, when it stops
+// the loop. It answers every wait the loop made, each from the fake's present to the moment it was
+// for.
+func runCountsUntilStopped(t *testing.T, deps CountsDeps, fake *clocktest.Fake, next func(index int) (stop bool)) []time.Duration {
+	t.Helper()
+	loop := newCountsLoop(fake)
+	loop.start(t, deps)
+	var waits []time.Duration
+	for index := 0; ; index++ {
+		event := loop.next(t)
+		if event.recount {
+			t.Fatalf("the counts loop reported a recount, which only a test's own drive reads (clockedLog.recountStarted)")
+		}
+		waits = append(waits, event.wait)
+		if next(index) {
+			loop.stop(t)
+			return waits
+		}
+		loop.release(event.at)
 	}
 }
 
@@ -1200,54 +1279,51 @@ func insertComponent(t *testing.T, q querier, project, id string, snapshot int) 
 }
 
 // TestTheCountsLoopRecountsAtLeastEveryElevenMinutes holds R7e. Over 10,000 draws of the gap the
-// loop waits from one recount's start to the next (recountGap), for T (coverageRecountTimeout) at
-// 20 s (its floor), at 59 s, at 60 s and at 5 minutes, every gap is at least coverageRecountInterval and at most
-// that plus coverageRecountJitter, and that sum plus T is at most 11 minutes; the loop's own
-// values are the schedule of its own T. The loop starts each recount that gap after the one before
-// started, read in its own time with the random source injected. And with the interval shortened,
-// RunCounts, with no embedder and with one embedding beside it (Run), recounts twice, and the
-// counts follow a component and an issue's title written between the two with their tables'
+// loop waits from one recount's start to the next (recountGap), for T (the recount's deadline) at
+// 20 s (its floor), at 59 s, at 60 s and at 5 minutes, every gap is at least the interval
+// recountSchedule names for T and at most that plus its jitter, and that sum plus T is at most 11
+// minutes. The loop, at its own T (coverageRecountTimeout) and on its own clock, starts each
+// recount that gap after the one before started, 9 min 40 s, read in its own time with the random
+// source injected, though each recount takes a minute of that time. And RunCounts, with no
+// embedder and with one embedding beside it (Run), recounts again after its first recount, and
+// the counts follow a component and an issue's title written between the two with their tables'
 // triggers off.
 func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
-	// Not parallel: it writes the package variables coverageRecountInterval, coverageRecountJitter and
-	// coverageRecountRandom (setForTest) and swaps the default logger (logtest.SetDefault).
-	if interval, jitter := recountSchedule(coverageRecountTimeout); coverageRecountInterval != interval || coverageRecountJitter != jitter {
-		t.Errorf("the loop recounts every %v plus up to %v, want its T's (%v) schedule, %v plus up to %v",
-			coverageRecountInterval, coverageRecountJitter, coverageRecountTimeout, interval, jitter)
-	}
+	t.Parallel()
 	for _, timeout := range []time.Duration{20 * time.Second, 59 * time.Second, time.Minute, 5 * time.Minute} {
 		interval, jitter := recountSchedule(timeout)
 		if interval+jitter+timeout > 11*time.Minute {
 			t.Errorf("T %v: the interval %v plus the jitter %v plus T pass 11 minutes", timeout, interval, jitter)
 		}
-		setForTest(t, &coverageRecountInterval, interval)
-		setForTest(t, &coverageRecountJitter, jitter)
 		for range 10000 {
-			if gap := recountGap(); gap < interval || gap > interval+jitter {
+			if gap := recountGap(rand.Float64, timeout); gap < interval || gap > interval+jitter {
 				t.Fatalf("T %v: a recount starts %v after the one before, want %v to %v", timeout, gap, interval, interval+jitter)
 			}
 		}
 	}
 
 	t.Run("the loop's own gaps", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		seedIssue(t, database, "GAPS", "GAPS-1", "An issue the recounts count")
 		fillCounts(t, database)
-		interval, jitter := recountSchedule(20 * time.Second)
-		setForTest(t, &coverageRecountInterval, interval)
-		setForTest(t, &coverageRecountJitter, jitter)
+		interval, jitter := recountSchedule(coverageRecountTimeout)
 		drawn := []float64{0, 0.999, 0.5}
-		setForTest(t, &coverageRecountRandom, fractions(drawn...))
-		clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
-		log := &clockedLog{clock: clock}
-		logtest.SetDefault(t, log)
-		clock.onWait = func(int) bool { return len(log.logged(recountStartedLine)) >= 4 }
-		runCountsUntilStopped(t, database, clock, 2*time.Minute)
+		fake := clocktest.New(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC))
+		// Each recount takes a minute on the loop's clock, under its bound: the fake moves on by it
+		// as the recount's first find of stale issues starts. So a recount that ends starts the next
+		// gap a minute after the one that started it.
+		const recountTakes = time.Minute
+		traced := &store.Store{Pool: storetest.Traced(t, database.Pool, clockAdvancer{fake, staleIssueKeys, recountTakes}, nil)}
+		log := &clockedLog{clock: fake}
+		runCountsUntilStopped(t, CountsDeps{Store: traced, Logger: slog.New(log), recountRandom: fractions(drawn...)}, fake,
+			func(int) bool { return len(log.logged(recountStartedLine)) >= 4 })
 		started := log.logged(recountStartedLine)
 		for k := 1; k < len(started); k++ {
 			want := interval + time.Duration(drawn[(k-1)%len(drawn)]*float64(jitter))
 			if gap := started[k].at.Sub(started[k-1].at); gap != want {
-				t.Errorf("recount %d started %v after the one before, want %v", k+1, gap, want)
+				t.Errorf("recount %d started %v after the one before, want %v: 11 minutes less T (%v) after the one before started",
+					k+1, gap, want, coverageRecountTimeout)
 			}
 		}
 	})
@@ -1258,36 +1334,50 @@ func TestTheCountsLoopRecountsAtLeastEveryElevenMinutes(t *testing.T) {
 			name = "an embedder"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
-			states := seedEveryCoverageState(t, database)
+			// The seed holds only what the two writes need, not every state an item can be in
+			// (seedEveryCoverageState): TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff
+			// compares every state after the same recount (CountsDeps.recount), and this check is
+			// for a loop whose recount misses a write made with triggers off. The seed is an issue
+			// embedded at its title by the configured identity, whose title the drive writes with
+			// the trigger off, and the architecture the component the drive writes needs. A recount
+			// that misses the component leaves the counts with no component, and one that misses
+			// the title leaves the issue current for the configured identity, where main's
+			// statements, which requireMainsAnswer compares the counts with, read one component and
+			// the issue lacking. With the queue beside the loop, its coverage pass can rewrite the
+			// issue's row at its new title before the recount does, so there the component is the
+			// write that only a recount follows. An issue and a window that wait for their first
+			// vector give the queue (Run) rows to embed beside the loop.
+			const titled = "ORCL-1"
+			seedIssue(t, database, "ORCL", titled, "A title written again with its trigger off")
+			embedRowAs(t, database.Pool, "issue", titled, configuredIdentity)
+			seedIssue(t, database, "ORCL", "ORCL-2", "An issue waiting for its first vector")
+			enqueueWindow(t, database.Pool, "document_block", "document_block/loop", "b1", "A window waiting for its first vector", "b1")
 			seedComponentsArchitecture(t, database.Pool, "ORCL", 902)
 			fillCounts(t, database)
-			setForTest(t, &coverageRecountInterval, time.Second)
-			setForTest(t, &coverageRecountJitter, 0)
 			records := &logtest.Recorder{}
-			logtest.SetDefault(t, records)
 			if withEmbedder {
 				runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				RunCounts(ctx, CountsDeps{Store: database, Serving: servingNow()})
-			}()
-			t.Cleanup(func() { cancel(); <-done })
-			eventually(t, 30*time.Second, "a first recount", func() bool {
-				return len(passRecords(records, slog.LevelInfo, recountedLine)) > 0
-			})
-
-			withTableTriggersOff(t, database, "components", func(q querier) {
-				insertComponent(t, q, "ORCL", "written-with-its-triggers-off", 902)
-			})
-			withTableTriggersOff(t, database, "issues", func(q querier) {
-				mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, states.titleEdited)
-			})
-			written := len(records.Records())
-			eventually(t, 30*time.Second, "a recount started after the writes, and its end", func() bool {
+			// The loop's first run is a recount, at once; once it has ended, the loop is parked at
+			// its next wait, where the writes go in. Then the fake moves through each wait the loop
+			// arms until a recount that started after the writes has ended.
+			written := -1
+			runCountsUntilStopped(t, CountsDeps{Store: database, Logger: slog.New(records)}, clocktest.New(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)), func(int) bool {
+				if written < 0 {
+					if len(passRecords(records, slog.LevelInfo, recountedLine)) == 0 {
+						return false
+					}
+					withTableTriggersOff(t, database, "components", func(q querier) {
+						insertComponent(t, q, "ORCL", "written-with-its-triggers-off", 902)
+					})
+					withTableTriggersOff(t, database, "issues", func(q querier) {
+						mustExec(t, q, `update issues set title = 'A title written with its trigger off' where key = $1`, titled)
+					})
+					written = len(records.Records())
+					return false
+				}
 				after := records.Records()[written:]
 				for position, record := range after {
 					if record.Message == recountStartedLine {
@@ -1341,18 +1431,20 @@ var countsHolds = []struct{ group, kind string }{
 }
 
 // requireCountsBesideLiveWrites holds R7f for one of the three statements that write the base
-// (the recount, the fill, the fold), which run calls once, held in each group in turn. On other
-// connections, a first writer commits its writes (liveWrites) before the statement's snapshot, and
-// a second opens and writes before it and commits after it while the statement still runs: the
-// test holds the statement on a class's base row of the group (countsHolds), which a third
-// transaction holds - locked for update, or for the fill, which finds no base row, inserted and not
-// committed - and which no writer's commit needs, since a write inserts delta rows and never touches
-// the base. The second writer commits while the statement waits, then the hold ends. After the next
-// fold, the counts equal main's statement's.
-func requireCountsBesideLiveWrites(t *testing.T, fill bool, run func(context.Context, *store.Store) error) {
+// (the recount, the fill, the fold), a method of CountsDeps that run calls once, on the real clock
+// at its production bound, held in each group in turn, each on a database of its own, beside the
+// others. On other connections, a first writer commits its writes (liveWrites) before the
+// statement's snapshot, and a second opens and writes before it and commits after it while the
+// statement still runs: the test holds the statement on a class's base row of the group
+// (countsHolds), which a third transaction holds - locked for update, or for the fill, which finds
+// no base row, inserted and not committed - and which no writer's commit needs, since a write
+// inserts delta rows and never touches the base. The second writer commits while the statement
+// waits, then the hold ends. After the next fold, the counts equal main's statement's.
+func requireCountsBesideLiveWrites(t *testing.T, fill bool, run func(CountsDeps, context.Context) error) {
 	t.Helper()
 	for _, held := range countsHolds {
 		t.Run("held in "+held.group, func(t *testing.T) {
+			t.Parallel()
 			requireCountsBesideLiveWritesHeld(t, fill, run, held.kind)
 		})
 	}
@@ -1360,7 +1452,7 @@ func requireCountsBesideLiveWrites(t *testing.T, fill bool, run func(context.Con
 
 // requireCountsBesideLiveWritesHeld is requireCountsBesideLiveWrites with the statement held on
 // the base row of kind's live unmatched class.
-func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context.Context, *store.Store) error, kind string) {
+func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(CountsDeps, context.Context) error, kind string) {
 	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -1408,17 +1500,14 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 	}
 
 	ran := make(chan error, 1)
-	go func() { ran <- run(ctx, database) }()
+	go func() { ran <- run(CountsDeps{Store: database}, ctx) }()
 	storetest.WaitForLockWaiters(t, hold, 1)
 	committed := make(chan error, 1)
 	go func() { committed <- open.Commit(ctx) }()
-	select {
-	case err := <-committed:
-		if err != nil {
-			t.Fatalf("commit the second writer: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second writer's commit waited on the statement or the hold")
+	// A commit that waited on the statement or the hold would never return: the hold ends only
+	// after it.
+	if err := testwait.Receive(t, "the second writer's commit, which waits on neither the statement nor the hold", committed); err != nil {
+		t.Fatalf("commit the second writer: %v", err)
 	}
 	select {
 	case err := <-ran:
@@ -1428,13 +1517,8 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatalf("end the hold: %v", err)
 	}
-	select {
-	case err := <-ran:
-		if err != nil {
-			t.Fatalf("the statement beside the live writes: %v", err)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("the statement did not end within 60s of the hold's end")
+	if err := testwait.Receive(t, "the statement to end once the hold ended", ran); err != nil {
+		t.Fatalf("the statement beside the live writes: %v", err)
 	}
 	foldCounts(t, database)
 	requireMainsAnswer(t, database, "after the next fold")
@@ -1447,21 +1531,21 @@ func requireCountsBesideLiveWritesHeld(t *testing.T, fill bool, run func(context
 // (requireCountsBesideLiveWrites).
 func TestARecountBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
 	t.Parallel()
-	requireCountsBesideLiveWrites(t, false, recountCoverage)
+	requireCountsBesideLiveWrites(t, false, CountsDeps.recount)
 }
 
 // TestAFillBesideLiveWritesLosesAndDoublesNothing holds R7f for the fill, on counts that hold
 // nothing yet (requireCountsBesideLiveWrites).
 func TestAFillBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
 	t.Parallel()
-	requireCountsBesideLiveWrites(t, true, FillCoverage)
+	requireCountsBesideLiveWrites(t, true, CountsDeps.fill)
 }
 
 // TestAFoldBesideLiveWritesLosesAndDoublesNothing holds R7f for the fold
 // (requireCountsBesideLiveWrites).
 func TestAFoldBesideLiveWritesLosesAndDoublesNothing(t *testing.T) {
 	t.Parallel()
-	requireCountsBesideLiveWrites(t, false, foldCoverage)
+	requireCountsBesideLiveWrites(t, false, CountsDeps.fold)
 }
 
 // countsLockWaits names, by backend, every session of this test's database that waits for the
@@ -1486,7 +1570,7 @@ const countsLockWaits = `
 // transaction.
 func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 	t.Parallel()
-	ops := map[string]func(context.Context, *store.Store) error{"fold": foldCoverage, "recount": recountCoverage}
+	ops := map[string]func(CountsDeps, context.Context) error{"fold": CountsDeps.fold, "recount": CountsDeps.recount}
 	for _, order := range [][2]string{{"recount", "fold"}, {"fold", "recount"}} {
 		t.Run("the "+order[1]+" waits for the "+order[0], func(t *testing.T) {
 			ctx := context.Background()
@@ -1504,7 +1588,7 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 			mustExec(t, hold, `select 1 from search_coverage_counts where kind = 'component' for update`)
 
 			ended := make(chan error, 2)
-			go func() { ended <- ops[order[0]](ctx, database) }()
+			go func() { ended <- ops[order[0]](CountsDeps{Store: database}, ctx) }()
 			storetest.WaitForLockWaiters(t, hold, 1)
 			var waiting, blockers []int32
 			var holders int
@@ -1517,12 +1601,12 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 				and database = (select oid from pg_database where datname = current_database())`).Scan(&holderPID); err != nil {
 				t.Fatalf("read the counts lock's holder: %v", err)
 			}
-			go func() { ended <- ops[order[1]](ctx, database) }()
-			eventually(t, 30*time.Second, "the "+order[1]+" waiting for the counts lock", func() bool {
+			go func() { ended <- ops[order[1]](CountsDeps{Store: database}, ctx) }()
+			testwait.Until(t, "the "+order[1]+" waiting for the counts lock (the waiting backends last read)", func() ([]int32, bool) {
 				if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil {
 					t.Fatalf("read the counts lock's waiters: %v", err)
 				}
-				return len(waiting) == 1
+				return waiting, len(waiting) == 1
 			})
 			if blockers[0] != holderPID {
 				t.Errorf("the %s waits for the counts lock on backend %d, want the %s's backend %d", order[1], blockers[0], order[0], holderPID)
@@ -1531,13 +1615,8 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 				t.Fatalf("end the hold: %v", err)
 			}
 			for range 2 {
-				select {
-				case err := <-ended:
-					if err != nil {
-						t.Fatalf("a fold or a recount: %v", err)
-					}
-				case <-time.After(60 * time.Second):
-					t.Fatal("the fold and the recount did not both end within 60s of the hold's end")
+				if err := testwait.Receive(t, "the fold and the recount to end once the hold ended", ended); err != nil {
+					t.Fatalf("a fold or a recount: %v", err)
 				}
 			}
 			if err := database.Pool.QueryRow(ctx, countsLockWaits).Scan(&waiting, &blockers, &holders); err != nil || holders != 0 || len(waiting) != 0 {
@@ -1554,18 +1633,17 @@ func TestAFoldAndARecountTakeTurnsOnOneTransactionLock(t *testing.T) {
 // own time at the fold statement each sends (foldDeltas), the first that long after the loop's
 // first run ended. No recount falls due in the time it runs.
 func TestTheFoldRunsEveryTenSecondsPlusItsJitter(t *testing.T) {
-	// Not parallel: it writes the package variable coverageFoldRandom (setForTest).
+	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "FOLD", "FOLD-1", "An issue the folds count")
 	fillCounts(t, database)
 	drawn := []float64{0, 0.25, 0.5, 0.75, 0.999}
-	setForTest(t, &coverageFoldRandom, fractions(drawn...))
 	start := time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
-	clock := &fakeCountsClock{now: start}
-	statements := &clockedStatements{clock: clock}
+	fake := clocktest.New(start)
+	statements := &clockedStatements{clock: fake}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
-	clock.onWait = func(int) bool { return len(statements.of(foldDeltas)) >= 6 }
-	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+	runCountsUntilStopped(t, CountsDeps{Store: traced, foldRandom: fractions(drawn...)}, fake,
+		func(int) bool { return len(statements.of(foldDeltas)) >= 6 })
 
 	folds := statements.of(foldDeltas)
 	if len(folds) < 6 {
@@ -1588,17 +1666,17 @@ func TestTheFoldRunsEveryTenSecondsPlusItsJitter(t *testing.T) {
 // row refuses the sum the fold adds to it - logs an ERROR line; the fold of the next period runs
 // and succeeds, folding every delta row, and the counts then equal main's statement's.
 func TestAFailedFoldLogsAndTheNextOneCatchesUp(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	database := storetest.Open(t)
 	seedEveryCoverageState(t, database)
 	seedComponentsArchitecture(t, database.Pool, "FAIL", 905)
 	fillCounts(t, database)
-	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
-	statements := &clockedStatements{clock: clock}
+	fake := clocktest.New(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC))
+	statements := &clockedStatements{clock: fake}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	records := &logtest.Recorder{}
-	logtest.SetDefault(t, records)
-	clock.onWait = func(index int) bool {
+	// Each step runs while the loop is parked at its wait.
+	runCountsUntilStopped(t, CountsDeps{Store: traced, Logger: slog.New(records)}, fake, func(index int) bool {
 		switch index {
 		case 1: // before the first fold; the loop's first run, a recount, is done
 			insertComponent(t, database.Pool, "FAIL", "folded", 905)
@@ -1610,8 +1688,7 @@ func TestAFailedFoldLogsAndTheNextOneCatchesUp(t *testing.T) {
 			mustExec(t, database.Pool, `alter table search_coverage_counts drop constraint fold_refused`)
 		}
 		return index == 3
-	}
-	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+	})
 
 	if folds := statements.of(foldDeltas); len(folds) != 2 {
 		t.Fatalf("the loop sent %d folds, want the failed one and the next", len(folds))
@@ -1648,28 +1725,27 @@ func requireBackoffWaits(t *testing.T, waits []time.Duration, drawn []float64) {
 // bound 10 s and each later one twice the one before up to 10 minutes, never past them; no fold
 // runs while no fill has ended.
 func TestTheFillBacksOffExponentiallyWithFullJitter(t *testing.T) {
-	// Not parallel: it makes every fill fail (FailCoverageFillsForTest), writes the package variable
-	// coverageBackoffRandom (setForTest) and swaps the default logger (logtest.SetDefault).
+	// Not parallel: it makes every fill fail (FailCoverageFillsForTest, a count the whole process
+	// reads) and swaps the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	FailCoverageFillsForTest(1000)
 	t.Cleanup(func() { FailCoverageFillsForTest(0) })
 	drawn := []float64{0.5, 0.1, 0.999999, 0.75, 1e-9, 0.3}
-	setForTest(t, &coverageBackoffRandom, fractions(drawn...))
-	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
-	statements := &clockedStatements{clock: clock}
+	fake := clocktest.New(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC))
+	statements := &clockedStatements{clock: fake}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
-	clock.onWait = func(index int) bool { return index == 12 }
-	runCountsUntilStopped(t, traced, clock, time.Minute)
+	waits := runCountsUntilStopped(t, CountsDeps{Store: traced, backoffRandom: fractions(drawn...)}, fake,
+		func(index int) bool { return index == 12 })
 
-	if len(clock.waits) != 13 {
-		t.Fatalf("the loop waited %d times, want 13", len(clock.waits))
+	if len(waits) != 13 {
+		t.Fatalf("the loop waited %d times, want 13", len(waits))
 	}
-	requireBackoffWaits(t, clock.waits, drawn)
+	requireBackoffWaits(t, waits, drawn)
 	failed := passRecords(records, slog.LevelError, fillFailedLine)
-	if len(failed) != len(clock.waits) {
-		t.Errorf("the loop logged %d failed fills, want one before each of its %d waits", len(failed), len(clock.waits))
+	if len(failed) != len(waits) {
+		t.Errorf("the loop logged %d failed fills, want one before each of its %d waits", len(failed), len(waits))
 	}
 	for _, record := range failed {
 		if logged, _ := attrsOf(record)["error"].Any().(error); !errors.Is(logged, errFillMadeToFail) {
@@ -1682,34 +1758,56 @@ func TestTheFillBacksOffExponentiallyWithFullJitter(t *testing.T) {
 }
 
 // TestAFailedRecountBacksOffAsTheFillDoes holds R7x: with the backoff's random source injected and
-// the recount made to fail three times in a row (its deadline, coverageRecountTimeout, past before
-// its first statement), each failure is logged at ERROR, and the waits from each failure to the
-// recount that tries again, read in the loop's own time, are the injected fractions of 10 s, 20 s
-// and 40 s; the folds go on meanwhile. The recount that then ends puts the next one back on
-// coverageRecountInterval.
+// the recount made to fail three times in a row, each failure is logged at ERROR, and the waits
+// from each failure to the recount that tries again, read in the loop's own time, are the
+// injected fractions of 10 s, 20 s and 40 s; the folds go on meanwhile. The recount that then ends
+// puts the next one back on its interval, 11 minutes less T after it started. Each failed recount
+// ends at its own bound, T (coverageRecountTimeout) on the loop's clock, in the middle of its first
+// statement: the test holds search_coverage_issues, which that statement (staleIssueKeys) reads
+// and no fold does, and once the statement waits on the hold it moves the loop's clock to the
+// recount's deadline. It ends the hold after the third failure.
 func TestAFailedRecountBacksOffAsTheFillDoes(t *testing.T) {
-	// Not parallel: it writes the package variables coverageBackoffRandom and coverageRecount*
-	// (setForTest) and swaps the default logger (logtest.SetDefault).
+	t.Parallel()
+	ctx := context.Background()
 	database := storetest.Open(t)
 	seedIssue(t, database, "BACK", "BACK-1", "An issue the recounts count")
 	fillCounts(t, database)
 	drawn := []float64{0.5, 0.25, 0.75}
-	setForTest(t, &coverageBackoffRandom, fractions(drawn...))
-	setForTest(t, &coverageRecountInterval, 30*time.Second)
-	setForTest(t, &coverageRecountJitter, 0)
-	setForTest(t, &coverageRecountTimeout, time.Nanosecond)
-	clock := &fakeCountsClock{now: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}
-	statements := &clockedStatements{clock: clock}
+	fake := clocktest.New(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC))
+	statements := &clockedStatements{clock: fake}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
-	log := &clockedLog{clock: clock}
-	logtest.SetDefault(t, log)
-	clock.onWait = func(int) bool {
-		if len(log.logged(recountFailedLine)) == 3 {
-			coverageRecountTimeout = 2 * time.Minute
-		}
-		return len(log.logged(recountStartedLine)) == 5
+	hold, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the hold: %v", err)
 	}
-	runCountsUntilStopped(t, traced, clock, 2*time.Minute)
+	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
+	mustExec(t, hold, `lock table search_coverage_issues in access exclusive mode`)
+	loop := newCountsLoop(fake)
+	log := &clockedLog{clock: fake, recountStarted: loop.recountStarted}
+	loop.start(t, CountsDeps{Store: traced, Logger: slog.New(log), backoffRandom: fractions(drawn...)})
+	for held := true; ; {
+		event := loop.next(t)
+		if event.recount {
+			if held {
+				storetest.WaitForLockWaiters(t, hold, 1)
+				deadline := event.at.Add(coverageRecountTimeout)
+				fake.AwaitArmedAt(t, "the recount's bound", deadline)
+				fake.Set(deadline)
+			}
+			continue
+		}
+		if held && len(log.logged(recountFailedLine)) == 3 {
+			if err := hold.Rollback(ctx); err != nil {
+				t.Fatalf("end the hold: %v", err)
+			}
+			held = false
+		}
+		if len(log.logged(recountStartedLine)) == 5 {
+			loop.stop(t)
+			break
+		}
+		loop.release(event.at)
+	}
 
 	started, failed := log.logged(recountStartedLine), log.logged(recountFailedLine)
 	if len(started) != 5 || len(failed) != 3 || len(log.logged(recountedLine)) < 1 {
@@ -1721,11 +1819,15 @@ func TestAFailedRecountBacksOffAsTheFillDoes(t *testing.T) {
 		if failed[k].level != slog.LevelError {
 			t.Errorf("failure %d is logged at %v, want ERROR", k+1, failed[k].level)
 		}
+		if ended := failed[k].at.Sub(started[k].at); ended != coverageRecountTimeout {
+			t.Errorf("failure %d ended %v after its recount started, want at its bound, %v", k+1, ended, coverageRecountTimeout)
+		}
 		waits = append(waits, started[k+1].at.Sub(failed[k].at))
 	}
 	requireBackoffWaits(t, waits, drawn)
-	if next := started[4].at.Sub(started[3].at); next != 30*time.Second {
-		t.Errorf("the recount after the one that ended started %v after it, want coverageRecountInterval, 30s", next)
+	if interval, jitter := recountSchedule(coverageRecountTimeout); jitter != 0 || started[4].at.Sub(started[3].at) != interval {
+		t.Errorf("the recount after the one that ended started %v after it, want its interval, %v (jitter %v)",
+			started[4].at.Sub(started[3].at), interval, jitter)
 	}
 	if folds := statements.of(foldDeltas); len(folds) == 0 {
 		t.Error("the loop folded nothing while the recount backed off")

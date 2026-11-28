@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -34,6 +35,7 @@ import (
 // order, and the row written with insertVersions holds the vector of the body the comment was
 // written with.
 func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -104,6 +106,7 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 // named, with its event, in a warning, once: a batch whose bound leaves the event to the next
 // batch does not warn of it.
 func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -147,6 +150,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 // the body writes the same body again. Its whole body, read from the row, equals the comment's
 // latest version's, so it starts no version, and the table keeps the one row.
 func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -195,6 +199,7 @@ func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
 // Each case reads its batch as the fill's batch reads it (readBatch), which reads the document an
 // event names.
 func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -304,6 +309,7 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 // the statement does with the payload's test outside the CASE, reads the out-of-line value's
 // index and pages for each event besides: 3 buffers an event, 9,077 in all, 6 times over it.
 func TestEachKindsWholeBodyStatementsReadNoPayloadTheyNeedNotRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -414,6 +420,7 @@ func TestEachKindsWholeBodyStatementsReadNoPayloadTheyNeedNotRead(t *testing.T) 
 // logs no warning, and whole, it logs exactly one, which names ACME-1 and its event, and none of
 // ACME-2. The warning names when ACME-1's version 1 was made, and the batch starts both versions.
 func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
@@ -455,6 +462,7 @@ func TestAnIssueCreatedAfterItsFirstDocumentVersionIsWarnedOfOnce(t *testing.T) 
 // which names the issue and the event. The cases are two batches rather than one of three events,
 // since a bound that ends a batch at its second event never decides its third.
 func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
@@ -824,7 +832,7 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 	ctx := t.Context()
 	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	read, _, err := newFiller(database.Pool, nil).readEvents(ctx, tx, after, through)
+	read, _, err := newFiller(database.Pool, nil, clock.Real(), 0).readEvents(ctx, tx, after, through)
 	if err != nil {
 		t.Fatalf("read the events after event %d: %v", after, err)
 	}

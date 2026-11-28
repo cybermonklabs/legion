@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -78,7 +79,7 @@ const (
 // An event whose payload the rules cannot read stops it, with the rows of the events before that
 // one written and an error that names it.
 func FillToHorizon(ctx context.Context, db *store.Store, horizon *events.Horizon) error {
-	return newFiller(db.Pool, horizon).toHorizon(ctx)
+	return newFiller(db.Pool, horizon, clock.Real(), db.TextVersionsReachMargin).toHorizon(ctx)
 }
 
 // txBeginner is what the fill needs of a pool: transactions. *store.Pool, the shared pool
@@ -87,12 +88,16 @@ type txBeginner interface {
 	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }
 
-// filler is one fill: the pool its batches run on, the horizon its passes read, and what a
-// serving process sets on it. A filler is used by one goroutine at a time.
+// filler is one fill: the pool its batches run on, the horizon its passes read, the clock its
+// waits run on, and what a serving process sets on it. A filler is used by one goroutine at a
+// time.
 type filler struct {
 	pool    txBeginner
 	horizon *events.Horizon
 	logger  *slog.Logger
+	// clock is what the fill's re-reads of the horizon (toHorizon) and its rest after a batch
+	// wait on, and what a batch's time, which the rest waits out, is read from.
+	clock clock.Clock
 	// holder is the holder of the hold fillHoldName the fill's batches run under: each batch
 	// checks that duty_holds still names holder for it, and writes holder into the cursor row.
 	// uuid.Nil runs with no hold.
@@ -101,11 +106,14 @@ type filler struct {
 	// the pass with it.
 	pause func(ctx context.Context) error
 	// rest waits after each batch that read events for as long as the batch ran, so the fill
-	// takes at most half of one backend's time.
+	// takes at most half of one backend's time: clock.Sleep, which a test replaces.
 	rest func(ctx context.Context, d time.Duration) error
 	// maxEvents and maxBytes are the bounds of one batch (batchEvents, batchBytes).
 	maxEvents int
 	maxBytes  int64
+	// reachMargin is the margin each batch computes the reach with
+	// (store.ComputeTextVersionsReach); zero is the store's 1 s.
+	reachMargin time.Duration
 	// rules is the rules the fill decides by: this build's (currentRules), or in a test a lower
 	// version's, standing for a fill of an earlier build.
 	rules *ruleSet
@@ -125,36 +133,27 @@ type progress struct {
 }
 
 // newFiller is a fill on pool, up to horizon, with this build's rules, no hold, no pause and the
-// production bounds.
-func newFiller(pool txBeginner, horizon *events.Horizon) *filler {
+// production bounds, whose waits run on c and whose batches compute the reach with reachMargin
+// (zero is the store's 1 s).
+func newFiller(pool txBeginner, horizon *events.Horizon, c clock.Clock, reachMargin time.Duration) *filler {
 	return &filler{
-		pool:      pool,
-		horizon:   horizon,
-		logger:    slog.Default(),
-		rest:      sleep,
-		maxEvents: batchEvents,
-		maxBytes:  batchBytes,
-		rules:     &currentRules,
-	}
-}
-
-// sleep waits d, or until ctx ends with its error.
-func sleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+		pool:        pool,
+		horizon:     horizon,
+		logger:      slog.Default(),
+		clock:       c,
+		rest:        c.Sleep,
+		maxEvents:   batchEvents,
+		maxBytes:    batchBytes,
+		reachMargin: reachMargin,
+		rules:       &currentRules,
 	}
 }
 
 // toHorizon runs passes until one leaves no id an observation saw above the horizon it read: a
 // pass that ends with the horizon held below such an id (Horizon.Gap), or with the horizon proven
-// past the safe it read by another reader of it, is followed by another 1 s later, doubling to
-// 8 s. The horizon waits on every event write of this database, and one that rolls back ends with
-// no notification, so nothing else says when to read it again.
+// past the safe it read by another reader of it, is followed by another 1 s later on the fill's
+// clock, doubling to 8 s. The horizon waits on every event write of this database, and one that
+// rolls back ends with no notification, so nothing else says when to read it again.
 func (f *filler) toHorizon(ctx context.Context) error {
 	wait := rereadFirst
 	for {
@@ -165,7 +164,7 @@ func (f *filler) toHorizon(ctx context.Context) error {
 		if !f.heldBelow(safe) {
 			return nil
 		}
-		if err := sleep(ctx, wait); err != nil {
+		if err := f.clock.Sleep(ctx, wait); err != nil {
 			return err
 		}
 		wait = min(2*wait, rereadMax)
@@ -414,7 +413,7 @@ select s.id, s.type, s.issue_key, s.artifact_id::text,
 // caught up keeps it current. An event whose payload the rules cannot read stops the batch there:
 // the events before it are written and answered, with the error that names it.
 func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
-	started := time.Now()
+	started := f.clock.Now()
 	ctx = store.WithTransactionTracking(ctx)
 	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -493,7 +492,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if err := insertVersions(ctx, tx, got.Versions, false); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
-	reach, computed, err := store.ComputeTextVersionsReach(ctx, tx, result.cursor)
+	reach, computed, err := store.ComputeTextVersionsReach(ctx, tx, result.cursor, f.reachMargin)
 	if err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
@@ -515,7 +514,7 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: commit the batch: %w", err)
 	}
-	result.took = time.Since(started)
+	result.took = f.clock.Now().Sub(started)
 	if unreadable != nil {
 		return result, fmt.Errorf("keyword fill: %w", unreadable)
 	}

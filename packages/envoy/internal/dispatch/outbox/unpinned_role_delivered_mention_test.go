@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -57,6 +56,7 @@ func TestAForwardKeyedByADeliveredMentionSkipsTheWaitForAnUnnamedMention(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 
@@ -157,6 +157,8 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	database, frozen := frozenDatabaseClock(t, rig.database)
+	rig.database = database
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
 
@@ -191,9 +193,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 		},
 	})
 
-	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))
 	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
@@ -211,7 +211,7 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on the comment's unpinned mentions, want 0: a wait is no failure", attempts)
 	}
-	if !waitsFromScan(due, before, after) {
+	if !waitsFromScan(due, frozen, frozen) {
 		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 	if rows := heldDestinations(t, rig.database, commentID); slices.Contains(rows, roleTopic) {

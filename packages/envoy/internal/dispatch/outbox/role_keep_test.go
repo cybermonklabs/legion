@@ -173,21 +173,16 @@ func (p *keepRecorder) keeps() []keptPublish {
 // no resolution releases one (dispatch://INFRA-392).
 type roleClaimStub struct {
 	holder string
-	// lastSeen, when it is not zero, is the holder's last registration: a stub that names one
-	// answers that record, so the resolution judges the holder by its own state rather than by
-	// the absence of a record.
-	lastSeen int64
+	// seenAgo dates a record on the clock that judges it, when Holder reads it.
+	// Zero means there is no session record.
+	seenAgo time.Duration
+	windows roles.Windows
 }
 
 const retainedHolder = "ses_restored"
 
-// unresponsiveClaim is the claim of a holder that stopped answering: its record stands and its
-// last registration is past the live window, inside the gone horizon. This build keeps that
-// claim - nothing here releases one, and the listener's role-claim reaper is the one caller that
-// ever does - so nothing is kept for it either.
-var unresponsiveClaim = roleClaimStub{
-	holder:   retainedHolder,
-	lastSeen: time.Now().Add(-(session.LiveWindow + time.Minute)).UnixMilli(),
+func liveClaim(holder string) roleClaimStub {
+	return roleClaimStub{holder: holder, seenAgo: time.Millisecond, windows: roles.Windows{Now: roleRigNow}}
 }
 
 // unclaimedRoles is the store in which no role is claimed.
@@ -198,14 +193,14 @@ func (s roleClaimStub) RoleClaim(context.Context, string) (envoystore.RoleClaim,
 }
 
 func (s roleClaimStub) Holder(context.Context, string) (session.SessionEntry, error) {
-	if s.lastSeen == 0 {
+	if s.seenAgo == 0 {
 		return session.SessionEntry{}, natsgo.ErrKeyNotFound
 	}
-	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: s.lastSeen}, nil
+	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: s.windows.Now().Add(-s.seenAgo).UnixMilli()}, nil
 }
 
-func (roleClaimStub) EntryState(entry session.SessionEntry) session.State {
-	return roles.Windows{}.EntryState(entry)
+func (s roleClaimStub) EntryState(entry session.SessionEntry) session.State {
+	return s.windows.EntryState(entry)
 }
 
 func (roleClaimStub) LastSeen(string) int64 { return 0 }
@@ -349,7 +344,9 @@ func TestARoleRouteToAnUnresponsiveHolderErrsWithNothingKept(t *testing.T) {
 	const role = "kept-unresponsive"
 	database, broker, event := keptRoleEvent(t, "T-1", role)
 	publisher := &keepRecorder{}
-	deps := Deps{Store: database, Publisher: publisher, Broker: broker, RoleClaims: unresponsiveClaim, Sessions: unresponsiveClaim}
+	claim := liveClaim(retainedHolder)
+	claim.seenAgo = session.LiveWindow + time.Minute
+	deps := Deps{Store: database, Publisher: publisher, Broker: broker, RoleClaims: claim, Sessions: claim}
 
 	holding(t, deps).scan(context.Background(), unfenced{})
 
@@ -489,11 +486,10 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	publisher := claimedUnderTheKeep(rig.client, func() {
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
-	outbox := holding(t, rig.publisherOn(publisher))
-
-	started := time.Now()
+	deps := rig.publisherOn(publisher)
+	deps.clock = roleRigNow
+	outbox := holding(t, deps)
 	outbox.scan(context.Background(), unfenced{})
-	keptScan := time.Since(started)
 
 	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
@@ -511,9 +507,8 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	// The handover's copy carries the time of the keep, as the drain's own forward of a copy
 	// carries the stream's store time of it: every holder is reached through the stream, which keeps
 	// whichever of the two reached its agent subject first, which is this one here.
-	if handed.KeptAt == nil || *handed.KeptAt < started.UnixMilli() || *handed.KeptAt > time.Now().UnixMilli() {
-		t.Fatalf("the holder was handed kept_at %v, want the time the outbox kept the copy, between %d and now",
-			handed.KeptAt, started.UnixMilli())
+	if handed.KeptAt == nil || *handed.KeptAt != fixtureTime.UnixMilli() {
+		t.Fatalf("the holder was handed kept_at %v, want %d", handed.KeptAt, fixtureTime.UnixMilli())
 	}
 	if copies := keptCopies(t, rig.client, role); len(copies) != 1 || copies[0].EventID != keptKey || copies[0].KeptAt != nil {
 		t.Fatalf("role %s's kept lane holds %d copies, want the one the outbox kept with no kept_at of its own: the lane stays the authority for a later holder, and the time is stamped on the forward", role, len(copies))
@@ -526,9 +521,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "3b2f1a8c-5d44-4e7a-9b61-2c8f0a6d1e52", IssueKey: new(key), Body: "the issue's next event"},
 	})
-	nextStarted := time.Now()
 	outbox.scan(context.Background(), unfenced{})
-	nextScan := time.Since(nextStarted)
 	handedNext := handedNow(t, recv, "the issue's next event")
 
 	nextKey := fmt.Sprintf("dispatch-%d", next.ID)
@@ -550,8 +543,6 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		t.Fatalf("the stream holds %v on %s, want the handover's copy of the kept event and the next event's forward, each under the id the drain's own forward of it would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the scan that kept the copy and handed it to the holder took %s; the issue's next event was handed to it in the scan that began %s later, which took %s. The copy is on the role's kept lane as well, where nothing but the listener's sweep, minutes apart, would have read it.",
-		keptScan, nextStarted.Sub(started), nextScan)
 }
 
 // A copy kept for a role whose lane already holds older copies is not handed over: the holder
@@ -603,7 +594,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 		t.Fatalf("the later event was not kept: attempt_count %d, publish_error %v", attempts, failure)
 	}
 	earlierKey, laterKey := fmt.Sprintf("dispatch-%d", earlier.ID), fmt.Sprintf("dispatch-%d", later.ID)
-	if taken := recv.received(); len(taken) != 0 {
+	if taken := recv.receivedNow(t, rig.client); len(taken) != 0 {
 		t.Fatalf("the holder was handed %v in the scan that kept %s, want nothing: %s reaches it first, and only the drain of the role's lane hands either over",
 			eventIDs(taken), laterKey, earlierKey)
 	}
@@ -650,9 +641,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
 
-	started := time.Now()
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
-	scanned := time.Since(started)
 
 	if err := testwait.Receive(t, "the claim made under the first keep", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
@@ -689,7 +678,6 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("the stream holds %v on %s, want both handovers under the ids the drain's own forwards of them would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the scan that kept both copies of the issue and handed both to the holder took %s; nothing drained the lane and nothing swept it.", scanned)
 }
 
 // Two events of one issue kept in one batch, with the role claimed by one session under the
@@ -748,7 +736,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 		t.Fatalf("the session that claimed the role under the first keep received %v, want %s alone: the handover behind that keep is the one that reached it",
 			eventIDs(taken), firstKey)
 	}
-	if taken := toSecondHolder.received(); len(taken) != 0 {
+	if taken := toSecondHolder.receivedNow(t, rig.client); len(taken) != 0 {
 		t.Fatalf("the session that claimed the role under the second keep received %v, want nothing: %s is still on the lane in front of %s for its own drain to send",
 			eventIDs(taken), firstKey, secondKey)
 	}

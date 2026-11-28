@@ -20,13 +20,13 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The identities the coverage tests configure: one place's, and another's a row may carry from
@@ -283,7 +283,11 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 // written once the counts are filled, under session_replication_role = replica, which fires no
 // counting trigger either, and the counts follow such a write at the counts loop's next recount,
 // not at once: they are read after one recount
-// (recountCoverage). Run's own writes fire their triggers, so the counts follow them at once.
+// (CountsDeps.recount). Run's own writes fire their triggers, so the counts follow them at once.
+//
+// The scan loop holds the scan the pass's row earns to its gap on the queue's clock (Deps.Clock),
+// a fake here, which the test moves to each wait the loop arms (scanLoop.until). The row the pass
+// adds is due at the database's now(), so nothing waits on the database's clock.
 func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -297,15 +301,16 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	if rows != 0 {
 		t.Fatalf("%d embeddings rows after writing with the triggers off, want 0", rows)
 	}
-	if err := recountCoverage(context.Background(), database); err != nil {
+	if err := (CountsDeps{Store: database}).recount(context.Background()); err != nil {
 		t.Fatalf("recount after writing with the triggers off: %v", err)
 	}
 	if items, current, lacking, _, oldest := coverage(t, database, configuredIdentity); items != int64(seeded) || current != 0 || lacking != int64(seeded) || oldest == nil {
 		t.Fatalf("coverage after one recount, before Run: items %d current %d lacking %d oldest %v, want %d, 0, %d and an age", items, current, lacking, oldest, seeded, seeded)
 	}
 
-	runQueue(t, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
-	testwait.UntilPolling(t, 100*time.Millisecond, "every item current under Run (items, current, lacking, failed, oldest)", func() (string, bool) {
+	loop := newScanLoop(newQueueClock(t, database))
+	loop.start(t, context.Background(), Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
+	loop.until(t, "every item current under Run (items, current, lacking, failed, oldest)", func() (string, bool) {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
 		return fmt.Sprint(items, current, lacking, failed, oldest), items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil
 	})
@@ -396,7 +401,9 @@ func TestCoverChangesNothingTheTriggersAlreadyEnqueued(t *testing.T) {
 }
 
 // A row whose text changed with the triggers off is repaired to the item's text with fresh
-// attempts, and then embedded at it.
+// attempts, and then embedded at it. The repair leaves the row due now and pending from the pass,
+// both read on the database's clock: its next_attempt_at at or before the database's now(), and
+// its pending_since at or after that clock as read before the pass.
 func TestCoverRepairsAStaleRow(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -413,25 +420,25 @@ func TestCoverRepairsAStaleRow(t *testing.T) {
 		where kind = 'issue' and id = 'STLE-1'`, configuredIdentity)
 	fillCounts(t, database)
 
-	started := time.Now()
+	started := databaseNow(t, database)
 	cover(t, deps)
 	var text, hash, wantHash string
 	var attempts, confirmed int
-	var dead bool
+	var dead, dueNow, pendingSinceThePass bool
 	var deadModel *string
 	var nextAttempt, pendingSince time.Time
 	if err := database.Pool.QueryRow(context.Background(), `
 		select text_snapshot, content_hash, encode(sha256(convert_to('Restored title', 'UTF8')), 'hex'), attempt_count,
-		       confirmed_failures, dead, dead_model, next_attempt_at, pending_since
-		from embeddings where kind = 'issue' and id = 'STLE-1'`,
-	).Scan(&text, &hash, &wantHash, &attempts, &confirmed, &dead, &deadModel, &nextAttempt, &pendingSince); err != nil {
+		       confirmed_failures, dead, dead_model, next_attempt_at, pending_since, next_attempt_at <= now(), pending_since >= $1
+		from embeddings where kind = 'issue' and id = 'STLE-1'`, started,
+	).Scan(&text, &hash, &wantHash, &attempts, &confirmed, &dead, &deadModel, &nextAttempt, &pendingSince, &dueNow, &pendingSinceThePass); err != nil {
 		t.Fatalf("read repaired row: %v", err)
 	}
 	if text != "Restored title" || hash != wantHash || attempts != 0 || confirmed != 0 || dead || deadModel != nil {
 		t.Errorf("repaired row: text %q hash %q attempts %d confirmed %d dead %t dead_model %v, want the item's text and hash, fresh counters, alive", text, hash, attempts, confirmed, dead, deadModel)
 	}
-	if nextAttempt.After(time.Now()) || pendingSince.Before(started.Add(-time.Second)) {
-		t.Errorf("next_attempt_at %v, pending_since %v; want both now", nextAttempt, pendingSince)
+	if !dueNow || !pendingSinceThePass {
+		t.Errorf("next_attempt_at %v (due now %t), pending_since %v (since the pass began at %v: %t); want the repaired row due now and pending from the pass", nextAttempt, dueNow, pendingSince, started, pendingSinceThePass)
 	}
 	drain(t, deps)
 	if last := embedder.calls[len(embedder.calls)-1]; len(last) != 1 || last[0] != "Restored title" {
@@ -635,15 +642,16 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 		t.Fatalf("claim the live row: %v", err)
 	}
 
+	second := storetest.SecondProcess(t, database)
 	passDone := make(chan error, 1)
 	go func() {
-		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
+		passDone <- Cover(ctx, Deps{Store: second, Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
 	storetest.WaitForLockWaiters(t, writer, 1)
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the live write: %v", err)
 	}
-	if err := <-passDone; err != nil {
+	if err := testwait.Receive(t, "Cover to return once the live write committed", passDone); err != nil {
 		t.Fatalf("Cover: %v", err)
 	}
 
@@ -664,7 +672,9 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 
 // A vector another identity made leaves the index's rows: a row embedded at its current text goes
 // pending now and is embedded again under the configured identity, a row already pending keeps its
-// claim, backoff and pending_since, and a second pass changes nothing.
+// claim, backoff and pending_since, and a second pass changes nothing. "Pending now" is read on
+// the database's clock, which stamps the pass's writes: due at or before the database's now(), and
+// pending since that clock as read before the pass, or later.
 func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -681,22 +691,24 @@ func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
 
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
-	started := time.Now()
+	started := databaseNow(t, database)
 	cover(t, deps)
-	read := func(id string) (hasVector bool, model, embeddedHash *string, attempts int, next, pending time.Time) {
+	read := func(id string) (hasVector bool, model, embeddedHash *string, attempts int, next, pending time.Time, dueNow, pendingSinceThePass bool) {
 		t.Helper()
 		if err := database.Pool.QueryRow(ctx, `
-			select embedding is not null, model, embedded_hash, attempt_count, next_attempt_at, pending_since
-			from embeddings where kind = 'issue' and id = $1`, id,
-		).Scan(&hasVector, &model, &embeddedHash, &attempts, &next, &pending); err != nil {
+			select embedding is not null, model, embedded_hash, attempt_count, next_attempt_at, pending_since,
+			       next_attempt_at <= now(), pending_since >= $2
+			from embeddings where kind = 'issue' and id = $1`, id, started,
+		).Scan(&hasVector, &model, &embeddedHash, &attempts, &next, &pending, &dueNow, &pendingSinceThePass); err != nil {
 			t.Fatalf("read %s: %v", id, err)
 		}
 		return
 	}
-	if hasVector, model, embeddedHash, attempts, next, pending := read("FRGN-1"); hasVector || model != nil || embeddedHash != nil || attempts != 0 || next.After(time.Now()) || pending.Before(started.Add(-time.Second)) {
-		t.Errorf("FRGN-1: vector %t model %v embedded_hash %v attempts %d next %v pending %v; want no vector and pending from now", hasVector, model, embeddedHash, attempts, next, pending)
+	if hasVector, model, embeddedHash, attempts, next, pending, dueNow, pendingSinceThePass := read("FRGN-1"); hasVector || model != nil || embeddedHash != nil || attempts != 0 || !dueNow || !pendingSinceThePass {
+		t.Errorf("FRGN-1: vector %t model %v embedded_hash %v attempts %d next %v (due now %t) pending %v (since the pass began at %v: %t); want no vector and pending from now",
+			hasVector, model, embeddedHash, attempts, next, dueNow, pending, started, pendingSinceThePass)
 	}
-	if hasVector, model, _, attempts, next, pending := read("FRGN-2"); hasVector || model != nil || attempts != 3 || !next.Equal(claimedUntil) || !pending.Equal(waitingSince) {
+	if hasVector, model, _, attempts, next, pending, _, _ := read("FRGN-2"); hasVector || model != nil || attempts != 3 || !next.Equal(claimedUntil) || !pending.Equal(waitingSince) {
 		t.Errorf("FRGN-2: vector %t model %v attempts %d next %v pending %v; want no vector and its claim, backoff and pending_since kept (3, %v, %v)", hasVector, model, attempts, next, pending, claimedUntil, waitingSince)
 	}
 
@@ -992,7 +1004,7 @@ func TestTwoConcurrentPassesLeaveTheStateOnePassLeaves(t *testing.T) {
 			errs[i] = Cover(context.Background(), Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)})
 		})
 	}
-	wg.Wait()
+	testwait.Returns(t, "both processes' coverage passes to return", wg.Wait)
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("concurrent pass %d: %v", i, err)
@@ -1035,9 +1047,11 @@ func commitForeignVector(t *testing.T, database *store.Store, id string) {
 // vector the old configuration's process commits after the boot pass is dropped by that run and
 // embedded again under the new identity.
 //
-// The recheck runs every 3 s here (Deps.identityRecheck), and nothing else drops the vector the
-// old configuration commits once the boot pass has ended, so the wait for it is
-// testwait.Eventually's minute.
+// The recheck waits identityRecheckInterval, plus its jitter, on the queue's clock (Deps.Clock),
+// a fake here. Once the boot pass has ended and the scan loop rests, that clock holds the
+// recheck's timer and no other, at a moment the test reads and holds to the interval
+// (armedRecheck); the test moves the clock there, and nothing else drops the vector the old
+// configuration commits once the boot pass has ended.
 func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPass(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -1045,17 +1059,24 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	seedIssue(t, database, "ROLL", "ROLL-2", "Embedded before the roll")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ROLL-1'`)
+	fake := newQueueClock(t, database)
+	booted := fake.Now()
+	loop := newScanLoop(fake)
 	parked := make(chan struct{})
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked), identityRecheck: 3 * time.Second})
-	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here. The boot
-	// pass has also ended (its loop parked), so no step of it can be what drops the vector below.
-	testwait.Eventually(t, "the boot pass and the boot drain", func() bool {
-		return modelOf(t, database, "ROLL-1") == configuredIdentity && modelOf(t, database, "ROLL-2") != foreignIdentity
-	})
+	loop.start(t, context.Background(), Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked)})
+	// The boot pass has ended (its loop parked), so no step of it can be what drops the vector
+	// below. It dropped ROLL-2's vector, and once the scan loop rests the queue has embedded both
+	// rows here: the scan that drop earned is held to its gap, which the test moves the clock to.
 	testwait.Receive(t, "the coverage loop to park after its boot pass", parked)
+	loop.rest(t, "the scan loop to rest once the boot pass's rows are embedded")
+	if one, two := modelOf(t, database, "ROLL-1"), modelOf(t, database, "ROLL-2"); one != configuredIdentity || two != configuredIdentity {
+		t.Fatalf("after the boot pass and the boot drain ROLL-1's vector is %q's and ROLL-2's %q's, want both embedded here, under %q", one, two, configuredIdentity)
+	}
 	commitForeignVector(t, database, "ROLL-1")
-	testwait.Eventually(t, "ROLL-1 dropped by the recheck and embedded again here", func() bool {
-		return modelOf(t, database, "ROLL-1") == configuredIdentity
+	fake.Set(armedRecheck(t, fake, booted))
+	loop.until(t, "ROLL-1 dropped by the recheck and embedded again here (the identity of its vector)", func() (string, bool) {
+		model := modelOf(t, database, "ROLL-1")
+		return model, model == configuredIdentity
 	})
 }
 
@@ -1064,54 +1085,163 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 // after it. Nothing but the identity steps would take it back - the scan selects only rows whose
 // embedded_hash is distinct from content_hash, which this row's is not, and search compares a
 // stored vector only with a query vector of its own identity - so without them the issue would
-// be matched by no meaning search for the life of the process. The recheck runs every second here
-// (Deps.identityRecheck), so the wait for it is testwait.Eventually's minute.
+// be matched by no meaning search for the life of the process. The recheck is reached as in the
+// test above: the test reads its moment on the queue's clock and moves the clock there.
 func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
+	fake := newQueueClock(t, database)
+	booted := fake.Now()
+	loop := newScanLoop(fake)
 	parked := make(chan struct{})
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked), identityRecheck: time.Second})
+	loop.start(t, context.Background(), Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked)})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector. The boot pass has
 	// also ended (its loop parked), so only a recheck can drop the vector committed below.
-	testwait.Eventually(t, "the boot pass and the boot drain", func() bool {
-		return modelOf(t, database, "CLEAN-1") == configuredIdentity
-	})
 	testwait.Receive(t, "the coverage loop to park after its boot pass", parked)
+	loop.rest(t, "the scan loop to rest once the boot drain is done")
+	if model := modelOf(t, database, "CLEAN-1"); model != configuredIdentity {
+		t.Fatalf("after the boot pass and the boot drain CLEAN-1's vector is %q's, want it embedded here, under %q", model, configuredIdentity)
+	}
 	commitForeignVector(t, database, "CLEAN-1")
-	testwait.Eventually(t, "CLEAN-1's foreign vector dropped and embedded again here", func() bool {
-		return modelOf(t, database, "CLEAN-1") == configuredIdentity
+	fake.Set(armedRecheck(t, fake, booted))
+	loop.until(t, "CLEAN-1's foreign vector dropped and embedded again here (the identity of its vector)", func() (string, bool) {
+		model := modelOf(t, database, "CLEAN-1")
+		return model, model == configuredIdentity
 	})
 }
 
+// coveragePark is one wait Run's coverage loop settled into (Deps.coverageParked): whether it
+// waits on the embedder's first answer, and the queue's clock as it settled.
+type coveragePark struct {
+	awaitingAnswer bool
+	now            time.Time
+}
+
 // A boot pass that skipped the identity steps because the embedder had not answered its canary
-// runs them as soon as the queue's first embed succeeds, not identityRecheckInterval later: the
-// wait is testwait.Eventually's minute, a tenth of the ten minutes the row tells apart.
+// runs them as soon as the queue's first embed succeeds, not identityRecheckInterval later.
+//
+// The queue's clock (Deps.Clock) is a fake that starts retry.Delay(1) behind the database's: the
+// retry the queue stamps ANSR-1 with, that delay past its own clock at the failure (retryRows), is
+// then due on the database's clock as it is written, so the scan that retries it waits on the
+// queue's clock alone. The test reads that stamp and the moment the scan loop arms for the retry,
+// the later of it and the scan's floor, and moves the clock to the scan loop's waits and to
+// nothing else: never to the coverage loop's recheck, which stays armed identityRecheckInterval
+// or more after the boot pass began. So the identity steps that drop ANSR-2's vector are the ones
+// the first answer woke, and the coverage loop settles after them at a moment of that clock
+// before the recheck's, less than identityRecheckInterval after the first answer.
 func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
+	ctx := context.Background()
 	seedIssue(t, database, "ANSR", "ANSR-1", "Pending here")
 	seedIssue(t, database, "ANSR", "ANSR-2", "Embedded elsewhere")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ANSR-1'`)
 	embedder := newSyncEmbedder(configuredIdentity)
 	embedder.setErr(errors.New("simulated: the deployment does not answer yet"))
-	runQueue(t, Deps{Store: database, Embedder: embedder})
-	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
-	testwait.Eventually(t, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
+	fake := clocktest.New(databaseNow(t, database).Add(-retry.Delay(1)))
+	booted := fake.Now()
+	loop := newScanLoop(fake)
+	parks := make(chan coveragePark, 4)
+	loop.start(t, ctx, Deps{Store: database, Embedder: embedder, coverageParked: func(awaitingAnswer bool) {
+		select {
+		case parks <- coveragePark{awaitingAnswer: awaitingAnswer, now: fake.Now()}:
+		default:
+		}
+	}})
+
+	// Two canaries fail: the boot pass's, after which its loop parks on the embedder's first
+	// answer, and the one confirming ANSR-1's own failed embed, after which the row is retried.
+	if park := testwait.Receive(t, "the coverage loop to park after its boot pass", parks); !park.awaitingAnswer {
+		t.Fatal("the coverage loop settled with nothing owed while the embedder does not answer: its boot pass did not skip the identity steps")
+	}
+	retried := loop.next(t, "the scan loop's wait for ANSR-1's retry")
+	var attempts int
+	var retryAt time.Time
+	var dueOnTheDatabase bool
+	if err := database.Pool.QueryRow(ctx, `
+		select attempt_count, next_attempt_at, next_attempt_at <= now() from embeddings where kind = 'issue' and id = 'ANSR-1'`,
+	).Scan(&attempts, &retryAt, &dueOnTheDatabase); err != nil {
+		t.Fatalf("read ANSR-1's retry: %v", err)
+	}
+	if want := booted.Add(retry.Delay(1)); attempts != 1 || !retryAt.Equal(want) || !dueOnTheDatabase {
+		t.Fatalf("ANSR-1 after its failed embed: attempt %d, retried at %v (due on the database's clock: %t); want attempt 1 retried at %v, retry.Delay(1) (%v) past the queue's clock at the failure, a moment the database's clock has reached",
+			attempts, retryAt, dueOnTheDatabase, want, retry.Delay(1))
+	}
+	want := booted.Add(retryInterval)
+	if retryAt.After(want) {
+		want = retryAt
+	}
+	if !retried.armed || !retried.at.Equal(want) {
+		t.Fatalf("after ANSR-1's failed embed the scan loop reports %v, want its timer armed for %v: the later of the retry (%v) and the scan's floor, retryInterval after the pass on the queue's clock", retried, want, retryAt)
+	}
+	armed := fake.Armed()
+	if len(armed) != 2 || !armed[0].Equal(retried.at) {
+		t.Fatalf("the queue's clock holds the timers %v, want the scan loop's for the retry (%v) and the coverage loop's next recheck after it", armed, retried.at)
+	}
+	recheck := armed[1]
+	requireRecheck(t, recheck, booted)
+	if got := embedder.canaryCalls(); got < 2 {
+		t.Fatalf("the embedder saw %d canaries, want the boot pass's and the one confirming ANSR-1's failed embed", got)
+	}
 	if got := modelOf(t, database, "ANSR-2"); got != foreignIdentity {
 		t.Fatalf("ANSR-2 holds %q before the embedder answered, want the foreign vector left in place", got)
 	}
+
+	// The first answer: the pass the retry's timer starts embeds ANSR-1.
 	embedder.setErr(nil)
-	testwait.Eventually(t, "ANSR-2's foreign vector dropped and embedded again here", func() bool {
-		return modelOf(t, database, "ANSR-2") == configuredIdentity
+	answered := retried.at
+	loop.fire(retried)
+	loop.until(t, "ANSR-2's foreign vector dropped and embedded again here (the identity of its vector)", func() (string, bool) {
+		model := modelOf(t, database, "ANSR-2")
+		return model, model == configuredIdentity
 	})
+	park := testwait.Receive(t, "the coverage loop to park after the identity steps the first answer woke", parks)
+	if park.awaitingAnswer || !park.now.Before(recheck) || park.now.Sub(answered) >= identityRecheckInterval {
+		t.Errorf("after the first answer at %v the coverage loop settled at %v (awaiting an answer: %t); want it settled with nothing owed before its recheck at %v, less than identityRecheckInterval (%v) after the first answer",
+			answered, park.now, park.awaitingAnswer, recheck, identityRecheckInterval)
+	}
+	if now := fake.Now(); !now.Before(recheck) {
+		t.Errorf("the queue's clock stands at %v, at or past the recheck armed for %v: the test moved it to a timer that is not the scan loop's", now, recheck)
+	}
+}
+
+// issueWritten is the created_at of issue key: the moment a lacking issue ages from when it has no
+// embeddings row, or a row that has waited since before the issue was written (Coverage).
+func issueWritten(t *testing.T, database *store.Store, key string) time.Time {
+	t.Helper()
+	var written time.Time
+	if err := database.Pool.QueryRow(context.Background(), `select created_at from issues where key = $1`, key).Scan(&written); err != nil {
+		t.Fatalf("read when %s was written: %v", key, err)
+	}
+	return written
+}
+
+// requireAgedFrom fails t unless oldest is the age, in whole seconds, of a wait that began at
+// from, as a Coverage that ran between before and after on the database's clock (databaseNow)
+// reads it: Coverage floors its statement's now() less the oldest wait's start, and that now()
+// lies between the two readings. The ages a test stages are hours, and the bounds are those hours
+// plus the time the call took and no more, so a slow call widens them without putting a correct
+// age outside them, and an age read from another column or another clock falls outside them.
+func requireAgedFrom(t *testing.T, what string, oldest *int64, from, before, after time.Time) {
+	t.Helper()
+	low, high := int64(before.Sub(from)/time.Second), int64(after.Sub(from)/time.Second)
+	if oldest == nil || *oldest < low || *oldest > high {
+		age := "none"
+		if oldest != nil {
+			age = fmt.Sprintf("%d s", *oldest)
+		}
+		t.Errorf("%s = %s, want %d to %d s: the wait from %s, read between %s and %s on the database's clock", what, age, low, high,
+			from.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+	}
 }
 
 // Coverage over every state an item can be in: no row (aging from when it was written), stale
 // hash, another identity's vector, no vector, dead, current; then with no embedder; then an empty
-// backlog.
+// backlog. Each oldest age is held between the ages the wait had on the database's clock just
+// before the report and just after it (requireAgedFrom).
 func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -1139,7 +1269,9 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	mustExec(t, database.Pool, `update issues set created_at = now() - interval '3 hours' where key in ('CVRG-4', 'CVRG-5')`)
 	mustExec(t, database.Pool, `update embeddings set pending_since = now() - interval '30 minutes' where id = 'CVRG-5'`)
 
+	before := databaseNow(t, database)
 	report, err := Coverage(ctx, database, configuredIdentity)
+	after := databaseNow(t, database)
 	if err != nil {
 		t.Fatalf("Coverage: %v", err)
 	}
@@ -1150,18 +1282,17 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	if issues.Items != 6 || issues.Current != 1 || issues.Lacking != 4 || issues.Failed != 1 {
 		t.Errorf("issue counts %+v, want 6 items, 1 current, 4 lacking, 1 failed", issues)
 	}
-	if issues.OldestLackingSeconds == nil || *issues.OldestLackingSeconds < 3*3600 || *issues.OldestLackingSeconds > 3*3600+60 {
-		t.Errorf("oldest lacking = %v, want about 3 hours (Foreign, aged from its write)", issues.OldestLackingSeconds)
-	}
+	requireAgedFrom(t, "oldest lacking (Foreign, aged from its write)", issues.OldestLackingSeconds, issueWritten(t, database, "CVRG-4"), before, after)
 	if report.Total != issues {
 		t.Errorf("total %+v, want the issue counts %+v (no other kind has items)", report.Total, issues)
 	}
 
 	// No row's own age counts from its write.
 	mustExec(t, database.Pool, `update issues set created_at = now() where key in ('CVRG-4', 'CVRG-5')`)
-	if _, _, _, _, oldest := coverage(t, database, configuredIdentity); oldest == nil || *oldest < 2*3600 || *oldest > 2*3600+60 {
-		t.Errorf("oldest lacking = %v, want about 2 hours (No row, aged from its write)", oldest)
-	}
+	before = databaseNow(t, database)
+	_, _, _, _, oldest := coverage(t, database, configuredIdentity)
+	after = databaseNow(t, database)
+	requireAgedFrom(t, "oldest lacking (No row, aged from its write)", oldest, issueWritten(t, database, "CVRG-1"), before, after)
 
 	unconfigured, err := Coverage(ctx, database, "")
 	if err != nil {
@@ -1404,10 +1535,13 @@ func (p *pausingProxy) serve(client net.Conn) {
 // same row. The insert commits, the pass's next statement - the repair of the issue whose title
 // changed with the triggers off - starts while the claim's cursor is still open, and the pass
 // must still reach that issue, which the scan then embeds.
+//
+// The order is read, not timed: the test lets the claim's rows go only once the repaired row
+// holds the title the triggers never saw, so the repair ran while the cursor was open. The queue
+// runs on a fake clock (Deps.Clock), which the test moves to the gap the scan loop holds the
+// pass's rows to (scanLoop.until).
 func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) {
-	// Not parallel: its interleaving is a 500 ms sleep: the pass's next statement must start
-	// inside it, while the claim's cursor is still open, and a parallel batch's load could hold
-	// the pass past it, which would pass the test without the interleaving it is for.
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const blockedTitle = "Issue whose row an open transaction is inserting"
@@ -1451,7 +1585,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 		t.Fatalf("open a pool through the proxy: %v", err)
 	}
 	proxied := &store.Store{Pool: store.NewPool(opened)}
-	defer proxied.Pool.Close()
+	defer testwait.Returns(t, "every connection of the pool through the proxy to come back, so the pool closes", proxied.Pool.Close)
 
 	// The pass's insert of the issue kind's missing rows waits on this one.
 	insert, err := database.Pool.Begin(ctx)
@@ -1466,54 +1600,30 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity)})
-	}()
+	loop := newScanLoop(newQueueClock(t, database))
+	stop := loop.start(t, runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity)})
 	defer func() {
 		cancel()
 		releaseProxy()
-		<-done
+		stop()
 	}()
 
-	select {
-	case <-proxy.paused:
-	case <-time.After(15 * time.Second):
-		t.Fatal("the scan loop's claim of SIDE-2 never reached the client")
-	}
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		var waiting int
-		if err := database.Pool.QueryRow(ctx, `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and `+lockwaittest.WaitingOn("transactionid")).Scan(&waiting); err != nil {
-			t.Fatalf("count lock waiters: %v", err)
-		}
-		if waiting == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d statements wait on a transaction, want the pass's insert", waiting)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Receive(t, "the scan loop's claim of SIDE-2 to reach the client", proxy.paused)
+	// The pass's insert of the issue kind's missing rows queues behind the test's uncommitted one.
+	storetest.WaitForLockWaiters(t, insert, 1)
 	if err := insert.Commit(ctx); err != nil {
 		t.Fatalf("commit SIDE-1's row: %v", err)
 	}
-	// The pass's next statement starts while the claim's cursor is still open.
-	time.Sleep(500 * time.Millisecond)
+	// The pass's insert goes through on that commit, and its next statement, the repair of SIDE-3,
+	// runs while the claim's cursor is still open: the proxy lets the claim's rows go only below.
+	testwait.Until(t, "the pass to repair SIDE-3 while the scan loop's claim holds its cursor open (the text SIDE-3's row holds)", func() (string, bool) {
+		text, _ := issueRow(t, database, "SIDE-3")
+		return text, text == "Title changed with the triggers off"
+	})
 	releaseProxy()
 
-	deadline = time.Now().Add(20 * time.Second)
-	for {
+	loop.until(t, "all 3 items current after Run's pass: the coverage pass reached the issue no trigger saw (items, current, lacking, failed)", func() (string, bool) {
 		items, current, lacking, failed, _ := coverage(t, database, configuredIdentity)
-		if items == 3 && current == 3 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after Run: items %d current %d lacking %d failed %d, want all 3 current: the coverage pass stopped before the issue no trigger saw", items, current, lacking, failed)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return fmt.Sprint(items, current, lacking, failed), items == 3 && current == 3
+	})
 }

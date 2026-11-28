@@ -29,8 +29,9 @@ const coverageStatementRows = 500
 // after a failed run before it tries that run again. While a rolling deploy that changes the
 // identity still has an old-configuration process embedding, that process commits vectors the
 // new identity must drop; ten minutes was the whole pass's period before, and nothing faster is
-// owed to a vector search already filters out by identity. A test of the recheck shortens it for
-// its own Run alone (Deps.identityRecheck).
+// owed to a vector search already filters out by identity. The wait runs on the queue's clock
+// (Deps.Clock), so a test that wants the recheck moves that clock there: this is the one interval
+// the coverage loop runs under.
 const identityRecheckInterval = 10 * time.Minute
 
 // issueKind is the one kind of row meaning search ranks that no indexer owns, and so the one
@@ -654,11 +655,13 @@ func recheckCoverage(ctx context.Context, deps Deps) (identityRun, error) {
 // after identityRecheckInterval, a failed boot pass as the whole pass since it may have failed
 // before its later steps: every step is idempotent and safe beside a live write, so nothing is
 // lost by waiting. A boot pass whose report alone failed has done every step, so it does not
-// fail (coverPass). The context ending returns at once.
+// fail (coverPass). The context ending returns at once. The wait between runs is a timer on the
+// queue's clock (Deps.Clock).
 //
 // After each pass that succeeded it reports the wait it settles into to a test of this package
 // (reportParked).
 func runCoverage(ctx context.Context, deps Deps) {
+	c := deps.clock()
 	pass := coverPass
 	for {
 		steps, err := pass(ctx, deps)
@@ -667,20 +670,20 @@ func runCoverage(ctx context.Context, deps Deps) {
 		case ctx.Err() != nil:
 			return
 		case err != nil:
-			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", deps.identityRecheck)
+			slog.Error("dispatch embedqueue: coverage pass failed; it runs again later", "error", err, "retryIn", identityRecheckInterval)
 		default:
 			pass = recheckCoverage
 			if steps.skipped && steps.mine {
 				answered = deps.proven.answered()
 			}
 		}
-		timer := time.NewTimer(duty.Jittered(deps.identityRecheck))
+		timer := c.NewTimer(duty.Jittered(identityRecheckInterval))
 		deps.reportParked(err, answered)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return
-		case <-timer.C:
+		case <-timer.C():
 		case <-answered:
 			timer.Stop()
 		}

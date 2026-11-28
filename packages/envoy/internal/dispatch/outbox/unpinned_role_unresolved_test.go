@@ -20,10 +20,9 @@ import (
 // 250 ms window (resolveMentionTarget), whose sender pins the session on the row a round trip
 // later (coalesce(session_id, $6) in internal/dispatch/api/comment_delivery.go).
 //
-// It is the statement that file runs, column for column, because what this reading counts as
-// live and naming no session is exactly what the production row must read as
-// (loadMentionDeliveries): a fixture that guesses at those columns tells nothing about the
-// comment the API wrote.
+// The shape matches the production row read by loadMentionDeliveries, except that the fixture
+// sets created_at explicitly and puts both created_at and claimed_at stagedAhead in the future
+// so the attempt stays live through the test.
 func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, mode string) {
 	t.Helper()
 	ctx := context.Background()
@@ -34,9 +33,9 @@ func seedCreatedAttempt(t *testing.T, database *store.Store, commentID, target, 
 		t.Fatalf("record the mention of %s: %v", target, err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
-		insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, resolve_error, state, claimed_at)
-		values ($1, $2, 1, $3, null, null, 'pending', now())
-	`, commentID, target, mode); err != nil {
+		insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, resolve_error, state, created_at, claimed_at)
+		values ($1, $2, 1, $3, null, null, 'pending', now() + $4::interval, now() + $4::interval)
+	`, commentID, target, mode, stagedAhead); err != nil {
 		t.Fatalf("open the unanswered attempt of %s: %v", target, err)
 	}
 }

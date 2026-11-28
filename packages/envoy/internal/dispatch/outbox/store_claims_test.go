@@ -41,7 +41,7 @@ func TestAClaimStatedAgainUnderItsEventLeavesTheRoleHeld(t *testing.T) {
 	database := storetest.Open(t)
 	deps := Deps{Store: database}
 	deps.lanes = newLanes(func() {})
-	resolved := time.Now()
+	resolved := fixtureTime
 	record := func(event int64, holder, parent string, at time.Time) {
 		t.Helper()
 		claims := graphWrite{claims: []graphstore.Claim{
@@ -106,7 +106,7 @@ func TestARetriedEventLeavesTheHolderANewerEventStated(t *testing.T) {
 	database := storetest.Open(t)
 	deps := Deps{Store: database}
 	deps.lanes = newLanes(func() {})
-	resolved := time.Now()
+	resolved := fixtureTime
 	statedAt, retriedAt, newerAt := resolved, resolved.Add(time.Second), resolved.Add(2*time.Second)
 	recordResolution(t, deps, role, stated, first, statedAt)
 	recordResolution(t, deps, role, retried, first, retriedAt)
@@ -161,7 +161,7 @@ func TestARetriedEventLeavesARoleANewerEventUnclaimedUnheld(t *testing.T) {
 	database := storetest.Open(t)
 	deps := Deps{Store: database}
 	deps.lanes = newLanes(func() {})
-	resolved := time.Now()
+	resolved := fixtureTime
 	statedAt, retriedAt, newerAt := resolved, resolved.Add(time.Second), resolved.Add(2*time.Second)
 	recordResolution(t, deps, role, stated, first, statedAt)
 	recordResolution(t, deps, role, retried, first, retriedAt)
@@ -206,7 +206,7 @@ func TestALaterResolutionRecordedUnderAnOlderEventMovesTheRole(t *testing.T) {
 	database := storetest.Open(t)
 	deps := Deps{Store: database}
 	deps.lanes = newLanes(func() {})
-	firstAt := time.Now()
+	firstAt := fixtureTime
 	secondAt := firstAt.Add(time.Second)
 	recordResolution(t, deps, role, newer, first, firstAt)
 	recordResolution(t, deps, role, older, second, secondAt)
@@ -252,7 +252,7 @@ func resolvedRoleWrite(role string, event int64, holder string, resolvedAt time.
 			forward: forwardOf(role, contracts.Envelope{}, resolution, nil, resolvedAt),
 		}},
 	}
-	return deliveredGraph([]*batchEvent{routed}, nil, time.Now())
+	return deliveredGraph([]*batchEvent{routed}, nil, fixtureTime)
 }
 
 // tuplesUnder is how many rows of the log name event as their cause, whatever they are about.
@@ -315,7 +315,7 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	single := storetest.SingleConnection(t, database)
-	at := time.Now()
+	at := fixtureTime
 	node := graphstore.SessionNode(reached, graphWriter, at, created)
 	tuple := deliveredTo(graphstore.KindComment, comment, graphstore.KindSession, reached, at, created)
 

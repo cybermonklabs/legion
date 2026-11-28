@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // HoldReleasedChannel is the channel Release notifies, with the hold's name as the payload, in the
@@ -35,10 +37,12 @@ var ErrHoldLost = errors.New("the hold no longer names this holder")
 //
 // TTL is how long the hold lasts on the database's clock after each statement that takes or renews
 // it. Renew is the interval between renewals, and also the bound on each renewal's wait for an
-// answer. Margin is how long before the TTL runs out, on this process's monotonic clock, the hold
-// reports itself lost. Token is the free text the holder records with the hold (SetToken changes
-// it). Logger is where the renewal writes its lines - a renewal that failed, a hold lost to another
-// holder - and nil is the default logger as it is when the line is written (logTo).
+// answer. Margin is how long before the TTL runs out, on the hold's own clock, the hold reports
+// itself lost. Token is the free text the holder records with the hold (SetToken changes it).
+// Logger is where the renewal writes its lines - a renewal that failed, a hold lost to another
+// holder - and nil is the default logger as it is when the line is written (logTo). Clock is the
+// clock the renewals and the loss deadline run on: clock.Real when nil, and a test's
+// clocktest.Fake, whose timers fire only where the test moves it.
 //
 // TTL must exceed Margin, Margin must not be negative, and Renew must be positive and shorter than
 // TTL - Margin, or no renewal could ever be confirmed before the hold reports itself lost.
@@ -46,6 +50,7 @@ type HoldOptions struct {
 	TTL, Renew, Margin time.Duration
 	Token              string
 	Logger             *slog.Logger
+	Clock              clock.Clock
 }
 
 // The statements a hold sends. Every duration crosses as float seconds into make_interval, which
@@ -92,14 +97,15 @@ const (
 //   - One holder per name on the database's clock. A holder takes a name only when its row is
 //     absent, lapsed or already its own, in one statement (takeHold), and every expiry is the
 //     database's now() plus the TTL. No two processes ever both hold a live row.
-//   - Loss is reported Margin before the TTL runs out, on this process's monotonic clock. The
-//     loss deadline is the moment the last confirmed renewal (or the take) was sent, read before
-//     the statement left, plus TTL - Margin. The database stamped that statement's expiry no
-//     earlier than it arrived, so the row stays live at least Margin past the deadline: a holder
-//     that stops when Lost closes, or that checks Deadline before each act, stops before any
-//     other process can take the name. A renewal that fails or gets no answer within Renew
-//     leaves the deadline where it was, and the next tick tries again; a renewal that affects no
-//     row means the row names another holder or none, and the hold is lost at once.
+//   - Loss is reported Margin before the TTL runs out, on the hold's own clock (HoldOptions.Clock,
+//     the real one by default). The loss deadline is the moment the last confirmed renewal (or the
+//     take) was sent, read before the statement left, plus TTL - Margin. The database stamped
+//     that statement's expiry no earlier than it arrived, so the row stays live at least Margin
+//     past the deadline: a holder that stops when Lost closes, or that checks Deadline before
+//     each act, stops before any other process can take the name. A renewal that fails or gets no
+//     answer within Renew leaves the deadline where it was, and the next tick tries again; a
+//     renewal that affects no row means the row names another holder or none, and the hold is
+//     lost at once.
 //   - Release frees the name at once and wakes the standbys: it deletes the row and notifies
 //     HoldReleasedChannel in one transaction.
 //
@@ -119,7 +125,7 @@ type Hold struct {
 	// mu guards deadline, expired and the timer that closes lost at the deadline.
 	mu       sync.Mutex
 	deadline time.Time
-	timer    *time.Timer
+	timer    clock.Timer
 	expired  bool
 	lost     chan struct{}
 }
@@ -133,7 +139,10 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 		return nil, fmt.Errorf("hold %q: options TTL %s, Renew %s, Margin %s: need 0 <= Margin < TTL and 0 < Renew < TTL - Margin",
 			name, opts.TTL, opts.Renew, opts.Margin)
 	}
-	sent := time.Now()
+	if opts.Clock == nil {
+		opts.Clock = clock.Real()
+	}
+	sent := opts.Clock.Now()
 	tag, err := db.Exec(ctx, takeHold, name, holder, opts.Token, opts.TTL.Seconds())
 	if err != nil {
 		return nil, fmt.Errorf("take hold %q: %w", name, err)
@@ -153,7 +162,7 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 		lost:     make(chan struct{}),
 	}
 	h.mu.Lock()
-	h.timer = time.AfterFunc(time.Until(h.deadline), h.expire)
+	h.timer = opts.Clock.AfterFunc(h.deadline.Sub(opts.Clock.Now()), h.expire)
 	h.mu.Unlock()
 	go h.renew(renewing)
 	return h, nil
@@ -164,8 +173,9 @@ func TryHold(ctx context.Context, db Holds, name string, holder uuid.UUID, opts 
 func (h *Hold) Lost() <-chan struct{} { return h.lost }
 
 // Deadline is the current loss deadline: the send time of the last confirmed renewal (or the
-// take), plus TTL - Margin, or the moment Lost closed if that came first. It carries the monotonic
-// clock reading, so time.Now().Before(Deadline()) is the check a holder makes before each act it
+// take), plus TTL - Margin, or the moment Lost closed if that came first, read on the hold's clock
+// (HoldOptions.Clock). On the real clock it carries the monotonic reading, so a check of the hold's
+// clock's Now() before Deadline() is the check a holder makes before each act it
 // may make only while it holds the name. Once Lost has closed it never moves again.
 func (h *Hold) Deadline() time.Time {
 	h.mu.Lock()
@@ -248,23 +258,24 @@ func HoldToken(ctx context.Context, db Holds, name string) (token string, held b
 }
 
 // renew renews the hold every Renew until ctx ends or the hold is lost. Each renewal waits at most
-// Renew for its answer. The send time is read before the statement leaves, because the database
-// stamps the new expiry no earlier than the statement arrives, and only that order keeps the loss
-// deadline Margin ahead of the row's lapse.
+// Renew for its answer, and the renewals tick on a clock.Ticker on the hold's clock, whose next
+// tick is armed once this renewal is done. The send time is read before the statement leaves,
+// because the database stamps the new expiry no earlier than the statement arrives, and only that
+// order keeps the loss deadline Margin ahead of the row's lapse.
 func (h *Hold) renew(ctx context.Context) {
 	defer close(h.done)
-	ticker := time.NewTicker(h.opts.Renew)
-	defer ticker.Stop()
+	renewals := clock.NewTicker(h.opts.Clock, h.opts.Renew, false)
+	defer renewals.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-h.lost:
 			return
-		case <-ticker.C:
+		case <-renewals.C():
 		}
-		sent := time.Now()
-		bounded, cancel := context.WithTimeout(ctx, h.opts.Renew)
+		sent := renewals.Took()
+		bounded, cancel := h.opts.Clock.WithTimeout(ctx, h.opts.Renew)
 		tag, err := h.db.Exec(bounded, renewHold, h.name, h.holder, h.opts.TTL.Seconds())
 		cancel()
 		switch {
@@ -279,6 +290,7 @@ func (h *Hold) renew(ctx context.Context) {
 		default:
 			h.confirm(sent)
 		}
+		renewals.Next()
 	}
 }
 
@@ -291,12 +303,12 @@ func (h *Hold) confirm(sent time.Time) {
 	if h.expired {
 		return
 	}
-	if !time.Now().Before(h.deadline) {
+	if !h.opts.Clock.Now().Before(h.deadline) {
 		h.loseLocked()
 		return
 	}
 	h.deadline = sent.Add(h.opts.TTL - h.opts.Margin)
-	h.timer.Reset(time.Until(h.deadline))
+	h.timer.Reset(h.deadline.Sub(h.opts.Clock.Now()))
 }
 
 // expire is the deadline timer's callback. A renewal confirmed while the timer was firing has
@@ -305,7 +317,7 @@ func (h *Hold) confirm(sent time.Time) {
 func (h *Hold) expire() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.expired || time.Now().Before(h.deadline) {
+	if h.expired || h.opts.Clock.Now().Before(h.deadline) {
 		return
 	}
 	h.loseLocked()
@@ -325,7 +337,7 @@ func (h *Hold) loseLocked() {
 	}
 	h.expired = true
 	h.timer.Stop()
-	if now := time.Now(); now.Before(h.deadline) {
+	if now := h.opts.Clock.Now(); now.Before(h.deadline) {
 		h.deadline = now
 	}
 	close(h.lost)

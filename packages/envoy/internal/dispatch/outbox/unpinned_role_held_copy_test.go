@@ -39,6 +39,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	lapsed, live := "role:"+lapsedRole, "role:"+liveRole
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.silent(t, contracts.RoleTopicPrefix+lapsedRole)
 	rig.silent(t, contracts.RoleTopicPrefix+liveRole)
 	claimant := rig.receiver(t, holder)
@@ -56,7 +57,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		},
 	})
 	// The first attempt's sender died with the send in flight, so the delivery sweep owes it a
-	// resend; the second is a send a sender claimed just now.
+	// resend; the second is a send that stays live through the test.
 	seedDelivery(t, rig.database, commentID, lapsed, "", "resumed")
 	seedDelivery(t, rig.database, commentID, live, "", "pending")
 
@@ -65,7 +66,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("the batch left the claimant's held copy settled=%v published=%v, want the unpublished row the lapsed attempt's state owes every key of this comment",
 			row.settled, row.published)
 	}
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %v by the batch, want nothing: its copy is the row's", holder, keysOf(got))
 	}
 
@@ -77,7 +78,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("fail the resend of the mention of %s: %v", lapsed, err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the live unnamed mention, which its sender can pin to this very claimant, is still being sent: the mention would land beside the copy under %s",
 			holder, keysOf(got),
@@ -103,10 +104,9 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("pass the held copy's wait: %v", err)
 	}
 
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
-	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
+	if got := keysOf(claimant.receivedNow(t, rig.client)); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",
 			holder, got, want)
 	}

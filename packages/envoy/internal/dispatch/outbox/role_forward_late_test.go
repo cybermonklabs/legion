@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldForward is a publisher whose window holds the first forward to subject after the forward
@@ -77,21 +78,13 @@ func TestAForwardStoredAfterItsFenceAndAckWindowIsNotADelivery(t *testing.T) {
 		defer close(scanned)
 		outbox.scan(ctx, unfenced{})
 	}()
-	select {
-	case <-publisher.entered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the forward to the first holder did not reach the window within 30s")
-	}
+	testwait.Receive(t, "the forward to the first holder to reach the window", publisher.entered)
 	// The role moves to the next holder while the forward waits, and the forward is stored past
 	// its resolution's fence and acknowledgement window.
 	rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
-	offset.Store(int64(roles.ForwardFenceAge + deps.forwardAckTimeout() + 10*time.Minute))
+	offset.Store(int64(roles.ForwardFenceAge + roleForwardAckTimeout + 10*time.Minute))
 	close(publisher.release)
-	select {
-	case <-scanned:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the scan did not return within 30s of the held forward's release")
-	}
+	testwait.Receive(t, "the scan to return once the held forward is released", scanned)
 
 	if at := publishedAt(t, rig.database, event.ID); at != nil {
 		t.Fatalf("the event was published at %v, though its forward was stored too late to count as delivered", at)

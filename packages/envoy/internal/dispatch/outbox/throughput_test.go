@@ -16,6 +16,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -25,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -46,7 +49,9 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 		t.Fatalf("open the busy shared pool: %v", err)
 	}
 	busy := &store.Store{Pool: store.NewPool(pool)}
-	t.Cleanup(busy.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the busy pool's connections to come back and its pool to close", busy.Pool.Close)
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	var callers sync.WaitGroup
 	for range 2 * busyPoolSize {
@@ -263,7 +268,7 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 // of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
 func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -340,6 +345,7 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
+	clock    *clocktest.Fake
 	// role is every forward the role's holder received, in arrival order, and marks the markers
 	// it took (markers.await).
 	roleMu sync.Mutex
@@ -347,23 +353,16 @@ type throughputRig struct {
 	marks  markers
 }
 
-// outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
-// publisher the outbox sends through: a send counts from the moment the outbox makes it until
-// its answer is in. One outstandingSends counts across every window the publisher hands out,
-// because a scan runs up to concurrentBatches batches at once and each takes a window of its
-// own, so the reading is the peak over the whole drain: the most sends that were outstanding at
-// any one moment.
-//
-// The row reads that peak because it is what the outbox's throughput is made of, and unlike a
-// rate no load on the machine can change it. A drain that sends while earlier sends are
-// unanswered holds many at once, so a remote hub's round trips overlap and the peak is tens. A
-// drain that waits for each answer before it makes the next send holds about one send per batch
-// however fast or slow the machine runs, so its peak is the number of batches.
+// outstandingSends counts sends across the windows of one drain. In the backlog cases it
+// withholds their answers from the outbox until the outstanding count reaches the floor.
 type outstandingSends struct {
 	Publisher
 	mu          sync.Mutex
 	outstanding int
 	peak        int
+	floor       int
+	ready       chan struct{}
+	stop        <-chan struct{}
 }
 
 // WindowUntil wraps the real window, so every send of it is counted.
@@ -378,6 +377,9 @@ func (c *outstandingSends) began() {
 	c.outstanding++
 	if c.outstanding > c.peak {
 		c.peak = c.outstanding
+		if c.peak == c.floor {
+			close(c.ready)
+		}
 	}
 }
 
@@ -395,10 +397,8 @@ func (c *outstandingSends) peakOutstanding() int {
 	return c.peak
 }
 
-// outstandingWindow is one counted window. Each of its three sending methods counts its send
-// outstanding and hands the caller a channel of its own, which yields what the real channel
-// yielded, exactly once, so the outbox sees what it would have seen. Probe goes straight through,
-// as Connected and ConnectionChanged do on the publisher.
+// outstandingWindow counts sends and relays their real answers after the gate opens.
+// Probe goes straight through, as Connected and ConnectionChanged do on the publisher.
 type outstandingWindow struct {
 	bus.Sender
 	sends *outstandingSends
@@ -416,35 +416,88 @@ func (s outstandingWindow) Request(subject string, item contracts.Envelope, opts
 	return s.count(s.Sender.Request(subject, item, opts))
 }
 
-// count holds one send outstanding until answer yields, and relays that one value on a buffered
-// channel, which the relaying goroutine can always write to whether the outbox reads it or not.
+// count marks a send outstanding until it can relay the answer. It waits for ready before
+// taking the answer, and abandons the relay if stop wins either wait.
 func (s outstandingWindow) count(answer <-chan error) <-chan error {
 	s.sends.began()
 	relayed := make(chan error, 1)
 	go func() {
-		err := <-answer
-		s.sends.answered()
-		relayed <- err
+		select {
+		case <-s.sends.ready:
+		case <-s.sends.stop:
+			return
+		}
+		select {
+		case err := <-answer:
+			s.sends.answered()
+			relayed <- err
+		case <-s.sends.stop:
+		}
 	}()
 	return relayed
 }
 
+// proxyChunkClock signals the driver as soon as the proxy arms a chunk's delay.
+type proxyChunkClock struct {
+	*clocktest.Fake
+	armed chan struct{}
+}
+
+func (c proxyChunkClock) Sleep(ctx context.Context, d time.Duration) error {
+	timer := c.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case c.armed <- struct{}{}:
+	default:
+	}
+	select {
+	case <-timer.C():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runProxyClock drains the armed chunk delays whenever the proxy signals, with the
+// shared wait's poll as a fallback. The test goroutine joins the driver at cleanup.
+func runProxyClock(t *testing.T, c proxyChunkClock) {
+	t.Helper()
+	stop, done := make(chan struct{}), make(chan struct{})
+	wake := notify(c.armed)
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if !fireNext(c.Fake) {
+				testwait.Within(c.armed, testwait.Poll)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		wake()
+		testwait.Receive(t, "the proxy clock driver returning", done)
+	})
+}
+
 func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	t.Helper()
-	server, url := testnats.Start(t)
-	_ = server
-	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt)).URL()
+	_, url := testnats.Start(t)
+	chunks := proxyChunkClock{Fake: clocktest.New(time.Time{}), armed: make(chan struct{}, 1)}
+	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt), testnats.ProxyClock(chunks)).URL()
+	runProxyClock(t, chunks)
 	client, err := bus.ConnectOwningStream([]string{proxied})
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
-	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	reader := testnats.Connect(t, url)
 	t.Cleanup(reader.Close)
-	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
+	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker(), clock: chunks.Fake}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {
 			return
@@ -456,9 +509,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}); err != nil {
 		t.Fatalf("subscribe the role's holder: %v", err)
 	}
-	if err := reader.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
+	flushSubscriber(t, reader)
 	registry, err := envoystore.Open(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
@@ -498,16 +549,9 @@ func (r *throughputRig) roleArrivals() []int64 {
 // sessions. The destinations each event type reached are logged for comparison; the count of
 // destinations is checked last, so a publisher that reaches fewer still reports its order.
 //
-// The reading is how many sends the outbox held outstanding at once, at its peak over the drain
-// (outstandingSends, minOutstanding). The rate is logged beside it and nothing is asserted of it:
-// a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
-// least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
-// 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
-// outbox. The cases run beside each other and beside the package's other tests (TestMain's
-// outboxTestParallelism), so a rate logged in a package run reads the load of those too: to
-// compare a reading with THROUGHPUT.md's, which were taken one case at a time, run this test
-// alone with -parallel 1 (go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency
-// -parallel 1).
+// The verdict is how many sends the outbox holds outstanding at once. The gate releases answers
+// at minOutstanding, regardless of machine load. The rate and drain time are logged on the proxy
+// clock for each case. They are not wall-time measurements or verdicts (see THROUGHPUT.md).
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
@@ -594,14 +638,22 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 						outboxStore = busySharedPool(t, rig.database)
 					}
 
-					started := time.Now()
-					sends := &outstandingSends{Publisher: rig.client}
-					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
+					started := rig.clock.Now()
+					stopRelaying := make(chan struct{})
+					sends := &outstandingSends{Publisher: rig.client, floor: minOutstanding, ready: make(chan struct{}), stop: stopRelaying}
+					if tc.burst {
+						sends.floor = 0
+						close(sends.ready)
+					}
+					outbox := wiredOutbox(t, outboxStore, rig.client, sends, rig.broker)
+					stop := runOn(t, outbox)
 					defer stop()
-					// The drain's one bound is the test binary's deadline: how long it takes is
-					// logged, never asserted, so a loaded machine only reads a lower rate.
+					defer close(stopRelaying)
+					if !tc.burst {
+						testwait.Receive(t, fmt.Sprintf("%s: at least %d sends outstanding at the peak", name, minOutstanding), sends.ready)
+					}
 					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
-					elapsed := time.Since(started)
+					elapsed := rig.clock.Now().Sub(started)
 					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
@@ -701,19 +753,24 @@ func logDestinations(t *testing.T, name string, seeded []model.Event, stream []i
 // the returned func stops it.
 func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *events.Broker) func() {
 	t.Helper()
-	return runOutboxThrough(t, database, client, client, broker)
+	return runOn(t, wiredOutbox(t, database, client, client, broker))
 }
 
-// runOutboxThrough is runOutbox publishing through publisher rather than through client itself,
-// for a row that reads what the outbox's own sends do (outstandingSends). Role routes still
-// resolve on client's connection, as cmd/dispatch has them.
-func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
+// wiredOutbox builds an outbox without running it, so a test can set its clock or wrap its publisher.
+func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
+	return wiredOutboxJudgedBy(t, database, client, publisher, broker, roles.Windows{})
+}
+
+// wiredOutboxJudgedBy is wiredOutbox whose role holders are judged by windows. A roleRig dates its
+// registrations on roleRigNow, so a row on one passes roles.Windows{Now: roleRigNow}.
+func wiredOutboxJudgedBy(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker, windows roles.Windows) *Outbox {
 	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
-	holders := roles.NewBuckets(client, roles.Windows{})
-	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
+	holders := roles.NewBuckets(client, windows)
+	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
 }

@@ -19,7 +19,7 @@ import (
 )
 
 // deadlinePassingOnTopic is the publisher hold a fallback pass runs under and the NATS it sends
-// through: the window writes the copy while the deadline is still an hour ahead, and the deadline
+// through: the window writes the copy while the deadline is still open (openDeadline), and the deadline
 // passes as that copy goes out, so the pass comes back from the answer to a hold whose margin ran
 // out during the very wait it opened - what a renewal landing late leaves behind in production
 // (publisherHoldOptions). holdPassingDuringAcknowledgement is the same hold for a batch. Only a
@@ -32,9 +32,9 @@ type deadlinePassingOnTopic struct {
 
 func (p *deadlinePassingOnTopic) Deadline() time.Time {
 	if p.passed.Load() {
-		return time.Now().Add(-time.Second)
+		return passedDeadline
 	}
-	return time.Now().Add(time.Hour)
+	return openDeadline
 }
 
 func (p *deadlinePassingOnTopic) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -67,7 +67,7 @@ func TestAFallbackPassRecordsACopyWhoseAnswerOutlastedTheHoldsDeadline(t *testin
 	deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
 	commentID := seedHeldFallbackCopy(ctx, t, deps)
 
-	publishFallbackCopies(ctx, deps, publisher, holdingProcess(t, database))
+	bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, publisher)
 
 	if !publisher.passed.Load() {
 		t.Fatalf("the pass sent nothing to %s, so the hold's deadline never passed during an answer and the test holds nothing; the pass logged:\n%s",
@@ -136,9 +136,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookRecordsNothing(t *testing.T) {
 				tc.lose(t, database)
 			}
 
-			before := time.Now()
-			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
-			after := time.Now()
+			before := databaseNow(t, database)
+			bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
+			after := databaseNow(t, database)
 
 			if !lost.Load() {
 				t.Fatalf("the pass published no copy, so the hold was never taken from it and the test holds nothing; the pass logged:\n%s",
@@ -179,9 +179,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 	// Another process takes the hold before this one claims a row of its own.
 	holdRow(t, database, uuid.New())
 
-	before := time.Now()
-	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	before := databaseNow(t, database)
+	bareOutbox(deps, stale).publishFallbackCopies(ctx, unfenced{})
+	after := databaseNow(t, database)
 
 	// The scan that seeded the row published the issue topic; the copy is the pass's one send.
 	if copies := topicsOf(publisher.all())[1:]; len(copies) != 1 || copies[0] != sessionTopic {
@@ -207,7 +207,7 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 // its last renewal bought it (publisherHoldOptions).
 type resumedPastTheDeadline struct{}
 
-func (resumedPastTheDeadline) Deadline() time.Time { return time.Now().Add(-time.Second) }
+func (resumedPastTheDeadline) Deadline() time.Time { return passedDeadline }
 
 // TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing: a pass claims nothing once its
 // hold's deadline has passed, as a scan starts no batch past it (Outbox.scan). The process may
@@ -235,7 +235,7 @@ func TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing(t *testing.T) {
 	}
 	held := readHeldCopy(t, database, commentID, sessionTopic)
 
-	full, failed, _ := publishFallbackCopies(ctx, deps, resumedPastTheDeadline{}, holdingProcess(t, database))
+	full, failed, _ := bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, resumedPastTheDeadline{})
 
 	if full || failed {
 		t.Fatalf("the pass reports full=%v failed=%v, want neither: it claimed no row and no statement of it failed",
@@ -257,7 +257,7 @@ func TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing(t *testing.T) {
 			row.due, held.due, fallbackClaim)
 	}
 	// The row is still the hold's own pass's to decide, and that pass settles it.
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
+	bareOutbox(deps, holdingProcess(t, database)).publishFallbackCopies(ctx, unfenced{})
 	if settled := readHeldCopy(t, database, commentID, sessionTopic); !settled.settled || settled.published {
 		t.Fatalf("the holder's own pass left the held copy settled=%v published=%v, want it settled with nothing "+
 			"published: the row the pass past its deadline left alone is this one's to decide; the passes logged:\n%s",
@@ -292,9 +292,9 @@ func TestAFallbackPassWhoseHoldLapsedBeforeItsClaimRecordsNothingBesideItsNextHo
 		holdRow(t, database, uuid.New())
 	}
 
-	before := time.Now()
-	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	before := databaseNow(t, database)
+	bareOutbox(deps, stale).publishFallbackCopies(ctx, unfenced{})
+	after := databaseNow(t, database)
 
 	if !took.Load() {
 		t.Fatalf("the pass published no copy, so nobody took the lapsed hold while it sent and the test holds "+

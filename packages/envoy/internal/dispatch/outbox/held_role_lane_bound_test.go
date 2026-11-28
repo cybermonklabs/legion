@@ -31,7 +31,6 @@ const heldRoleLaneBound = 2 * model.DeliveryClaimLapse
 // the comment's copy has an earlier event to keep after; it owes nothing more, and holds nothing.
 func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *testing.T) {
 	t.Parallel()
-	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	const routed = "routed-role-of-the-issue"
 	const first = "first-unanswered-role"
 	const second = "second-unanswered-role"
@@ -41,6 +40,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -71,10 +71,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	seedDelivery(t, rig.database, commentID, "role:"+second, "", "resumed")
 	_, later := comment("and one more thing")
 
-	// Within the bound: the attempts are half the bound old, their claims this moment's. The scan
-	// below must read them inside 60 s, model.DeliveryClaimLapse, before their claims lapse and
-	// before the attempts reach the bound; it follows at once, millisecond work against 60 s of
-	// slack (TestMain names this bound).
+	// The SQL clock is frozen, so this fixture remains within the bound until the test ages it.
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	if got := recv.receivedNow(t, rig.client); len(got) != 1 {
@@ -89,10 +86,8 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound+time.Second)
 	dueNow(t, rig.database, held.ID)
 	dueNow(t, rig.database, later.ID)
-	passed := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	waitFor(t, "the later event at the holder past the bound", func() bool { return len(recv.received()) == 2 })
-	t.Logf("the later event reached %s %v after the scan past the bound", holder, time.Since(passed))
 	if got := recv.received(); got[1].SourceEventID != fmt.Sprint(later.ID) {
 		t.Fatalf("%s was sent %+v past the bound, want the earlier comment and then the later event (%d)", holder, got, later.ID)
 	}
@@ -116,14 +111,13 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	`, commentID); err != nil {
 		t.Fatalf("make the role row due: %v", err)
 	}
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	got := recv.receivedNow(t, rig.client)
 	var ids []string
 	for _, item := range got {
 		ids = append(ids, item.SourceEventID)
 	}
 	t.Logf("%s received events %v (want %d, %d, %d)", holder, ids, earlier.ID, later.ID, held.ID)
-	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 	if !slices.Equal(ids, []string{fmt.Sprint(earlier.ID), fmt.Sprint(later.ID), fmt.Sprint(held.ID)}) {
 		t.Fatalf("%s received events %v, want the earlier comment, the later event and the comment, each once", holder, ids)
 	}

@@ -63,9 +63,9 @@ const (
 // (Deps.KeptLanes). Each read through that reader is bounded at probeTimeout, as New bounds every
 // read of it, the scan's batches' handovers among them (boundedKeptLanes).
 func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
-	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
-	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
-	postFull, postFailed := postUndeliveredNotes(ctx, o.deps, hold, o.instance)
+	readFull, readFailed := o.readKeptExpiries(ctx, hold)
+	keepFull, keepFailed := o.keepExpiredCopiesAgain(ctx, hold)
+	postFull, postFailed := o.postUndeliveredNotes(ctx, hold)
 	return readFull || keepFull || postFull, readFailed || keepFailed || postFailed
 }
 
@@ -296,8 +296,9 @@ type expiryRecord struct {
 // falls due once that lapses, and the holder's next pass keeps the copy again under the same
 // message id, which the stream holds once, or forwards it under the same one, which the stream
 // and the holder each take once. It reports what the holder does next, as the fallback pass does.
-func keepExpiredCopiesAgain(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
-	if deps.KeptLanes == nil || ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+func (o *Outbox) keepExpiredCopiesAgain(ctx context.Context, hold fence) (full, failed bool) {
+	deps, instance := o.deps, o.instance
+	if deps.KeptLanes == nil || ctx.Err() != nil || o.pastDeadline(hold) {
 		return false, false
 	}
 	claimed, err := claimExpiredCopies(ctx, deps, instance)

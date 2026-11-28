@@ -52,7 +52,7 @@ It refuses a later cut with `store.TextVersionsNotReachedError`, which names the
 It refuses each cut while the fill's cursor row records rules older than `store.TextVersionsRules`, until the fill has read again the events those rules passed.
 The relation's `deleted_at` is the post's present `deleted_at`, read from `public.comments` and `public.messages`.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
-`store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less 1 s.
+`store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less a margin of 1 s, which only a test shortens (`store.Store.TextVersionsReachMargin`).
 
 `internal/dispatch/asof` is the reader of Dispatch at a past time, the cut, and it imports no part of the store or of the API: the store imports it.
 It holds a shadow for each table that a read at a cut reads: a SQL definition of the table's columns as they stood at the cut, from `events`, the append-only tables, `post_body_history` and the present rows of the shadowed tables, each kept only where it existed at the cut, with the cut as a `timestamptz` literal and each base table named with the schema `public`.

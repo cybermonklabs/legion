@@ -14,21 +14,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
 // the resource has), the status outage names while it is set (to every request, the canary's
 // included: Azure itself failing), nothing at all while hang is set (every request waits until its
-// client gives up: Azure not answering in time), 500 to any request holding a text that contains
-// poison while it is set (one text Azure fails on every time), and vectors otherwise, recording
-// each request's inputs and what it answered.
+// client gives up, Azure not answering in time, or until released closes), 500 to any request
+// holding a text that contains poison while it is set (one text Azure fails on every time), and
+// vectors otherwise, recording each request's inputs and what it answered.
 type azureFake struct {
 	mu         sync.Mutex
 	throttling bool
@@ -36,7 +38,11 @@ type azureFake struct {
 	outage     int
 	hang       bool
 	poison     string
-	requests   [][]string
+	// released, once closed, lets go every request hang holds, so a row whose calls the client
+	// never gives up on (a defect the row caught) still ends, and the server's Close, which waits
+	// for every request in flight, returns. Set when the fake is made, and never after.
+	released chan struct{}
+	requests [][]string
 	// answers is each request's answer: its status, when the request arrived and how long the
 	// answer took. A call the client's own timeout cut is a failure in place of the 429, which
 	// starts a bisection that logs nothing, so these are what a failure message can show of it.
@@ -68,7 +74,10 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Read to the body's end, so net/http watches the connection and ends r's context once
 		// the client gives up on the request.
 		_, _ = io.Copy(io.Discard, r.Body)
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-f.released:
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -121,6 +130,72 @@ func (f *azureFake) takeAnswered() (requests [][]string, answers []string) {
 	requests, answers = f.requests, f.answers
 	f.requests, f.answers = nil, nil
 	return requests, answers
+}
+
+// seen is how many requests the fake has recorded since take last emptied the record: what a row
+// that ends each call to a stand-in that never answers reads to know the call has arrived.
+func (f *azureFake) seen() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
+// runOnQueueClock runs batch on a goroutine of its own and moves queueClock, the queue's clock
+// (Deps.Clock), through what batch waits on there until batch returns. The pace's wait, a
+// reservation's wait on the shared budget and the pause between batches are each armed nearer
+// than callBound, and the earliest of them is moved to at once. A call's own bound
+// (embed.Bounded) is armed callBound on and is moved to only for a stand-in that never answers:
+// once calls reports that the stand-in has counted more calls than the bounds moved to so far, so
+// the call the bound ends is one the stand-in saw. calls is nil for a stand-in that answers every
+// call, whose calls end by themselves; a wait of callBound or longer is never moved to. batch runs
+// off the test's goroutine, so it hands what it saw to variables the test reads once this
+// returns, and fails nothing itself.
+func runOnQueueClock(t *testing.T, queueClock *clocktest.Fake, calls func() int, batch func()) {
+	t.Helper()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		batch()
+	}()
+	bounds := 0
+	testwait.Until(t, "the batch to return, moved through its waits on the queue's clock", func() (string, bool) {
+		select {
+		case <-returned:
+			return "returned", true
+		default:
+		}
+		seen := 0
+		if calls != nil {
+			seen = calls()
+		}
+		ended := false
+		armed, moved := queueClock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			switch {
+			case len(armed) == 0:
+				return time.Time{}, false
+			case armed[0].Sub(now) < callBound:
+				return armed[0], true
+			case seen > bounds && armed[0].Equal(now.Add(callBound)):
+				ended = true
+				return armed[0], true
+			}
+			return time.Time{}, false
+		})
+		if ended {
+			bounds++
+		}
+		return fmt.Sprintf("armed %v, moved %t; %d calls counted, %d ended at their bound", armed, moved, seen, bounds), false
+	})
+}
+
+// processBatchOnQueueClock is ProcessBatch(deps) run through runOnQueueClock on queueClock, deps'
+// own clock (Deps.Clock), with calls as runOnQueueClock takes it, and what it answered.
+func processBatchOnQueueClock(t *testing.T, queueClock *clocktest.Fake, calls func() int, deps Deps) (succeeded, failed int, blocked, throttled bool, err error) {
+	t.Helper()
+	runOnQueueClock(t, queueClock, calls, func() {
+		succeeded, failed, blocked, throttled, err = ProcessBatch(context.Background(), deps)
+	})
+	return succeeded, failed, blocked, throttled, err
 }
 
 // An Azure 429, through the real AzureClient, is a throttle: the whole batch is retried as one
@@ -224,11 +299,14 @@ func (h recordHook) Handle(ctx context.Context, record slog.Record) error {
 // retry write that fails writes no WARN, since no retry was scheduled; the failed write's ERROR
 // says so instead. Written before the write, the line named a retry the first cycle never
 // scheduled, and the row still held its old attempt count when the second cycle's line was written.
+// The retry is counted from the queue's clock (Deps.Clock, retryRows), a fake that never moves
+// here, so the row falls due exactly retryIn past the fake's moment.
 func TestAThrottledGroupsWarningComesOnceItsRetryIsWritten(t *testing.T) {
 	// Not parallel: it reads the throttled-group warning through the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	seedIssue(t, database, "THWR", "THWR-1", "Title of THWR-1")
-	deps := Deps{Store: database, Embedder: &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}}
+	queueClock := newQueueClock(t, database)
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}, Clock: queueClock}
 	type stored struct {
 		attempts int
 		due      time.Time
@@ -265,11 +343,9 @@ func TestAThrottledGroupsWarningComesOnceItsRetryIsWritten(t *testing.T) {
 
 	mustExec(t, database.Pool, `drop trigger refuse_retry on embeddings`)
 	forceEligible(t, database, "issue", "THWR-1")
-	before := time.Now()
 	if _, _, blocked, throttled, err := ProcessBatch(context.Background(), deps); err != nil || blocked || !throttled {
 		t.Fatalf("ProcessBatch with the retry write allowed = %v, %v, %v; want not blocked, throttled", blocked, throttled, err)
 	}
-	after := time.Now()
 	lines := passRecords(records, slog.LevelWarn, throttledGroupMessage)
 	if len(lines) == 0 || len(atWarning) != len(lines) {
 		t.Fatalf("%d throttled-group WARN lines, %d rows read as they were written; want the second cycle's line, read once", len(lines), len(atWarning))
@@ -282,8 +358,8 @@ func TestAThrottledGroupsWarningComesOnceItsRetryIsWritten(t *testing.T) {
 	if row.attempts != int(attempt) {
 		t.Errorf("as the WARN naming attempt %d was written THWR-1 held attempt %d: the line came before its retry was written", attempt, row.attempts)
 	}
-	if row.due.Before(before.Add(retryIn)) || row.due.After(after.Add(retryIn)) {
-		t.Errorf("as the WARN naming retryIn %v was written THWR-1 fell due at %v, want between %v and %v", retryIn, row.due, before.Add(retryIn), after.Add(retryIn))
+	if want := queueClock.Now().Add(retryIn); !row.due.Equal(want) {
+		t.Errorf("as the WARN naming retryIn %v was written THWR-1 fell due at %v, want %v: retryIn past the queue's clock", retryIn, row.due, want)
 	}
 }
 
@@ -342,7 +418,8 @@ func embeddingStates(t *testing.T, database *store.Store) map[string]string {
 // retry.DeadLetterAttempts. The failing halves of the bisection leave the shared pace where it
 // was, since Azure is answering (the pace cmd/dispatch asks for, Deps.Paced, for the first
 // cycle). Read as a throttle, the three were retried whole together, in step, and none ever
-// embedded.
+// embedded. The first cycle's pace waits run on the queue's clock (Deps.Clock), which the row
+// moves through them (runOnQueueClock).
 func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -353,10 +430,11 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := azureClientFor(t, server)
-	deps := Deps{Store: database, Embedder: client}.Paced()
+	queueClock := newQueueClock(t, database)
+	deps := Deps{Store: database, Embedder: client, Clock: queueClock}.Paced()
 	pace := deps.pace.Interval()
 
-	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+	succeeded, failed, blocked, throttled, err := processBatchOnQueueClock(t, queueClock, nil, deps)
 	if err != nil || blocked || throttled || succeeded != 2 || failed != 1 {
 		t.Fatalf("cycle 0: ProcessBatch = %d, %d, %v, %v, %v; want 2, 1, not blocked, not throttled", succeeded, failed, blocked, throttled, err)
 	}
@@ -394,6 +472,12 @@ func TestATextAzureFailsOnEveryTimeHoldsUpNoOtherText(t *testing.T) {
 // (RateLimitedEmbedder.BackOff, on the pace Deps.Paced gives one last cycle), so a cycle that
 // bisects two rows and sends two canaries leaves it four times slower. Read as untroubled, as they
 // once were, the calls that ran out of time raised the rate, and their canaries did not back it off.
+//
+// Each call's bound (embed.Bounded, callBound) and the paced cycle's waits run on the queue's
+// clock (Deps.Clock), which the row moves through them (runOnQueueClock): a call Azure never
+// answers ends at callBound, the most one call of the queue may take, once the stand-in has
+// counted it, and the AzureClient's own timeout is not what ends it. That a call its client's own
+// timeout ends is an outage too is embed's TestAzureEmbedMarksACallThatRanOutOfTimeAnOutage.
 func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 	t.Parallel()
 	for i, tc := range []struct {
@@ -413,19 +497,22 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 			for _, id := range ids {
 				seedIssue(t, database, "AZOU", id, "Title of "+id)
 			}
-			fake := &azureFake{outage: tc.outage, hang: tc.hang}
+			fake := &azureFake{outage: tc.outage, hang: tc.hang, released: make(chan struct{})}
 			server := httptest.NewServer(fake)
 			defer server.Close()
-			if tc.hang {
-				server.Client().Timeout = 100 * time.Millisecond
-			}
+			defer close(fake.released)
 			client := azureClientFor(t, server)
-			deps := Deps{Store: database, Embedder: client}
+			queueClock := newQueueClock(t, database)
+			var calls func() int
+			if tc.hang {
+				calls = fake.seen
+			}
+			deps := Deps{Store: database, Embedder: client, Clock: queueClock}
 			for cycle := range retry.DeadLetterAttempts + 2 {
 				for _, id := range ids {
 					forceEligible(t, database, "issue", id)
 				}
-				succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+				succeeded, failed, blocked, throttled, err := processBatchOnQueueClock(t, queueClock, calls, deps)
 				if err != nil || blocked || throttled || succeeded != 0 || failed != 2 {
 					t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, 2, not blocked, not throttled", cycle, succeeded, failed, blocked, throttled, err)
 				}
@@ -454,7 +541,7 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 			for _, id := range ids {
 				forceEligible(t, database, "issue", id)
 			}
-			if _, _, _, _, err := ProcessBatch(context.Background(), deps); err != nil {
+			if _, _, _, _, err := processBatchOnQueueClock(t, queueClock, calls, deps); err != nil {
 				t.Fatalf("the paced cycle: ProcessBatch: %v", err)
 			}
 			if got := deps.pace.Interval(); got != 4*pace {
@@ -466,7 +553,9 @@ func TestAnAzureWideOutageCountsAgainstNoRow(t *testing.T) {
 
 // A batch is at most the embedder's own MaxBatchTexts, and its token ceiling is the embedder's
 // own BackgroundTokensPerMinute: two rows whose estimates together pass it go in separate calls,
-// and the shared bucket is capped at it.
+// and the shared bucket is capped at it. The waits on the shared bucket and the pause between
+// batches run on the queue's clock (Deps.Clock), which the row moves through them
+// (runOnQueueClock).
 func TestBatchSizeAndTokenCeilingFollowTheEmbeddersLimits(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -481,9 +570,10 @@ func TestBatchSizeAndTokenCeilingFollowTheEmbeddersLimits(t *testing.T) {
 	}
 	embedder := newPlaceEmbedder(configuredIdentity)
 	embedder.limits = embed.Limits{MaxBatchTexts: 2, BackgroundTokensPerMinute: 15_000}
-	deps := Deps{Store: database, Embedder: embedder}
+	queueClock := newQueueClock(t, database)
+	deps := Deps{Store: database, Embedder: embedder, Clock: queueClock}
 
-	succeeded, failed, _, _, err := ProcessBatch(ctx, deps)
+	succeeded, failed, _, _, err := processBatchOnQueueClock(t, queueClock, nil, deps)
 	if err != nil || succeeded != 2 || failed != 0 {
 		t.Fatalf("first ProcessBatch = %d, %d, %v; want the two long rows", succeeded, failed, err)
 	}
@@ -498,7 +588,7 @@ func TestBatchSizeAndTokenCeilingFollowTheEmbeddersLimits(t *testing.T) {
 		t.Errorf("tokens_available = %v, want at most the embedder's 15,000 ceiling", available)
 	}
 
-	scan(ctx, deps)
+	runOnQueueClock(t, queueClock, nil, func() { scan(ctx, deps) })
 	if sizes := callSizes(embedder.calls[2:]); len(sizes) != 2 || sizes[0] != 2 || sizes[1] != 1 {
 		t.Errorf("the short rows went in calls of sizes %v, want [2 1]: MaxBatchTexts is 2", sizes)
 	}
@@ -691,7 +781,9 @@ func (c callErrors) Embed(ctx context.Context, texts []string, inputType embed.I
 // The largest group Bedrock's token ceiling alone allows, 25 pending full texts (800,000 bytes),
 // goes through ProcessBatch and the paced Bedrock client cmd/dispatch builds, over HTTP to a
 // stand-in Bedrock, as three calls of 10, 10 and 5 texts: two exactly at the 320,000-byte budget
-// and none past it, every text sent once (nothing was bisected), and every row current.
+// and none past it, every text sent once (nothing was bisected), and every row current. The pace's
+// waits run on the queue's clock (Deps.Clock), which the row moves through them
+// (runOnQueueClock).
 func TestNoBedrockCallCarriesMoreThanItsByteBudget(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -702,7 +794,8 @@ func TestNoBedrockCallCarriesMoreThanItsByteBudget(t *testing.T) {
 	client := callErrors{Embedder: bedrockClientFor(server), t: t}
 	const budget = 320_000 // Bedrock's MaxBatchBytes, which TestABedrockGroupAtItsByteBudgetIsSplitNotCutOff checks
 
-	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: client}.Paced())
+	queueClock := newQueueClock(t, database)
+	succeeded, failed, blocked, throttled, err := processBatchOnQueueClock(t, queueClock, nil, Deps{Store: database, Embedder: client, Clock: queueClock}.Paced())
 	if err != nil || succeeded != 25 || failed != 0 || blocked || throttled {
 		t.Fatalf("ProcessBatch = %d, %d, %v, %v, %v; want all 25 committed", succeeded, failed, blocked, throttled, err)
 	}
@@ -742,9 +835,7 @@ func TestAFullBatchOfDenseTextIsEmbeddedWithinTheByteBudgetWithoutBisection(t *t
 	limits := azureLimits(t)
 	// The token pace is not under test: a ceiling this high never waits.
 	limits.BackgroundTokensPerMinute = 100_000_000
-	for i := range limits.MaxBatchTexts {
-		seedIssue(t, database, "DENS", fmt.Sprintf("DENS-%d", i+1), denseCJK(32_000, i))
-	}
+	seedManyIssues(t, database, "DENS", limits.MaxBatchTexts, func(i int) string { return denseCJK(32_000, i) })
 	embedder := &timeoutEmbedder{placeEmbedder{identity: configuredIdentity, limits: limits}}
 
 	succeeded, failed, blocked, throttled, err := ProcessBatch(context.Background(), Deps{Store: database, Embedder: embedder})

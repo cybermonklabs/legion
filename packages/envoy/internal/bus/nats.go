@@ -149,7 +149,7 @@ func (o connectOpts) streamConfig() nats.StreamConfig {
 	return cfg
 }
 
-// AcknowledgementClock supplies deadline contexts for JetStream publish acknowledgements.
+// AcknowledgementClock supplies deadline contexts for publish windows and stored publishes.
 type AcknowledgementClock interface {
 	WithTimeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
 }
@@ -160,7 +160,8 @@ func (wallClock) WithTimeout(parent context.Context, timeout time.Duration) (con
 	return context.WithTimeout(parent, timeout)
 }
 
-// WithPublishAcknowledgementClock overrides the clock that bounds JetStream publish acknowledgements.
+// WithPublishAcknowledgementClock overrides the clock that bounds stored publishes and the
+// waits for a stream acknowledgement in a publish window.
 func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.publishAcknowledgementClock = clock })
 }
@@ -176,11 +177,10 @@ func WithReconnectErrClock(now func() time.Time) DialOption {
 // WithWindowClock sets the clock a publish window reads its deadline against before each send
 // (expired, pinToSend), times its first send's wait for a connection on, and runs its probe's flush
 // timeout on (WindowUntil, window.Probe), so a test whose window deadline is a hold's on a
-// clocktest.Fake judges all three on that fake. A Request's read of the connection before its send,
-// and its timeout, stay on the wall clock: observeToSend compares the window's deadline with the
-// Request's deadline on the wall clock and arms a real context deadline at the earlier, so on a fake
-// that stands apart from the wall clock that read can end while the window, read on the fake, has
-// not reached its deadline. nil, the default, is the real clock.
+// clocktest.Fake can move the window without moving its acknowledgement waits. A Request's
+// pre-send read stops at either the window's deadline on this clock or the request's pre-send
+// bound on the real clock. Confirmed core publishes also run their flush on this clock, within
+// their caller's context. Nil, the default, is the real clock.
 func WithWindowClock(c clock.Clock) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.windowClock = c })
 }
@@ -504,8 +504,9 @@ type Client struct {
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
-	// windowClock is the clock a publish window reads its deadline against, times its first send's
-	// wait for a connection on and times its probe on (WithWindowClock); nil is the real clock.
+	// windowClock governs publish-window deadlines, the first connection wait,
+	// a request's pre-send state read, and probe and confirmed-publish flushes
+	// (WithWindowClock). Nil uses real time.
 	windowClock clock.Clock
 	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks
@@ -976,6 +977,22 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 	return c, stepInstall, nil
 }
 
+// jetStreamOn keeps nats.go's acknowledgement timeout in production. With a custom clock the
+// bus ends the wait instead, so nats.go's wall timer must not race it. nats.go keeps unanswered
+// futures until a reply or disconnect and limits the number of pending publishes.
+func (c *Client) jetStreamOn(nc *nats.Conn) (nats.JetStreamContext, error) {
+	timeout := publishAcknowledgementTimeout
+	if c.customAcknowledgementClock() {
+		timeout = 0 // nats.go disables its async timeout at zero.
+	}
+	return JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(timeout))
+}
+
+func (c *Client) customAcknowledgementClock() bool {
+	_, wall := c.publishAcknowledgementClock.(wallClock)
+	return c.publishAcknowledgementClock != nil && !wall
+}
+
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
 // ensured the client's stream on nc (ensureStream) when ensure is true. The ensure is told
 // whether nc's server caps a stream that sets no consumer cap at a default of its own, read from
@@ -988,7 +1005,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 // only a client it returns gets this far, so a caller holding a connection can find the client
 // that owns it (clientOwning) for as long as that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
-	js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+	js, err := c.jetStreamOn(nc)
 	if err != nil {
 		return err
 	}
@@ -2338,7 +2355,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		js, err := JetStreamOn(nc, nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
+		js, err := c.jetStreamOn(nc)
 		if err != nil {
 			nc.Close()
 			return err

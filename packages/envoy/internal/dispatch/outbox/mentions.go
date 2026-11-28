@@ -1420,14 +1420,15 @@ type fallbackRecord struct {
 // the probe failed on the connection the reconnect replaced. A row the pass decided and failed
 // needs none of the three: its record moves its next_attempt_at out, and the timer is armed to
 // that.
-func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed, natsLost bool) {
+func (o *Outbox) publishFallbackCopies(ctx context.Context, hold fence) (full, failed, natsLost bool) {
+	deps, instance := o.deps, o.instance
 	if ctx.Err() != nil {
 		// Nothing this pass claimed could be decided: every row would be read and handed straight
 		// back, and the events behind them read on a context that is already done. The rows are
 		// left for whatever process runs next, as a pass that claimed them would leave them.
 		return false, false, false
 	}
-	if !time.Now().Before(hold.Deadline()) {
+	if o.pastDeadline(hold) {
 		// The hold's deadline has passed before a row was claimed, so this process may be one the
 		// hold has left already - it resumed past the margin, or a renewal of its own never
 		// landed - and a claim it took would keep rows out of the holder's own pass for
@@ -1530,7 +1531,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			// An earlier event of the comment's owner still owes a send the row's session may
 			// take: the row waits for it as for a mention still being sent, counted and, past
 			// model.MentionCopyHeldWarnAfter, reported once (heldCopies.hold).
-			deps.held.hold(held, event.event, *out.heldBy, deps.heldCopyWarnAfter)
+			deps.held.hold(held, event.event, *out.heldBy)
 			release(held, mentionPendingDelay)
 		default:
 			// The key's mention is still being sent or resent: the row waits for it as an event

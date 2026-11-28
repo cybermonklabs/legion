@@ -313,6 +313,7 @@ func TestACreditThisReadResolvedTheRoleMentionToKeepsItsCopy(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, role, credit.ID, session.SessionEntry{SelfSubscribed: true})
 	seedIssue(t, rig.database, "T-1", nil)
 	claimIssue(t, rig.database, "T-1", claimant)

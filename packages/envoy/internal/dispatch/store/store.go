@@ -24,12 +24,16 @@ import (
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
+	// TextVersionsReachMargin is the margin TextVersionsReach computes the keyword table's reach
+	// with (ComputeTextVersionsReach). Zero, as Open leaves it, is 1 s (textVersionsReachMargin);
+	// no deployment sets it. A test sets a shorter one, on its store and on the fill it compares
+	// that store's reach with, so its waits on the database's clock pass the margin sooner.
+	TextVersionsReachMargin time.Duration
 	// afterNonTransactionalStatement runs on the connection a marked migration was applied on,
 	// once its statement has returned and before its version is recorded, and its error fails
 	// that migration. Only a test sets it: the runner closes that connection before Migrate
 	// returns, so this is the one place the session that applied the statement can be asked
-	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
-	// runs nothing.
+	// whether it held a transaction around it. Nil, as Open leaves it, runs nothing.
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 

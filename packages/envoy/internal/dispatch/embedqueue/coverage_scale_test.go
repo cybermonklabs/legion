@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io/fs"
 	"math"
@@ -21,11 +20,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // coverageScaleURLEnv names the Postgres server TestCoverageStatementScale builds its corpora on,
@@ -44,9 +43,9 @@ const (
 )
 
 // scaleMeasurementBound is the bound the fill and each recount the scale test times run under in
-// place of coverageFillTimeout and coverageRecountTimeout, the go test timeout
-// scripts/coverage-scale.sh sets: what is timed is how long each takes to its end, which the test
-// then judges against the two bounds the counts loop holds them to.
+// place of coverageFillTimeout and coverageRecountTimeout (CountsDeps.fillBound and recountBound),
+// the go test timeout scripts/coverage-scale.sh sets: what is timed is how long each takes to its
+// end, which the test then judges against the two bounds the counts loop holds them to.
 const scaleMeasurementBound = 3 * time.Hour
 
 // coverageCorpusIssues, coverageCorpusVersions and coverageCorpusWindows are production's counts
@@ -274,8 +273,8 @@ type coverageScalePoint struct {
 // its tables' triggers off, so no count holds anything of it, as at the first deploy of the counts;
 // the record step run to completion (recordSources) as the boot pass leaves a database; and the two
 // window indexes dropped and built again by their migrations' own statements, each build timed.
-// The fill (FillCoverage) is then timed once, before any count, so its refresh computes every
-// issue's state row. The recount (recountCoverage) is timed in each state of scaleStates in turn:
+// The fill (CountsDeps.fill) is then timed once, before any count, so its refresh computes every
+// issue's state row. The recount (CountsDeps.recount) is timed in each state of scaleStates in turn:
 // freshly vacuumed; about a third of embeddings' pages not all-visible after an ANALYZE; every page
 // not all-visible after an ANALYZE; every page not all-visible while the statistics still record
 // about half of them all-visible from an earlier ANALYZE; and, once the configured embedder has
@@ -293,7 +292,8 @@ type coverageScalePoint struct {
 // scripts/coverage-scale.sh starts the server on it (cmd/dispatch's
 // TestTheServerFillsTheCoverageCountsAtScale) and drops it.
 //
-// The fill and each recount run under scaleMeasurementBound rather than their own bounds, so the
+// The fill and each recount run under scaleMeasurementBound rather than their own bounds, through
+// the two fields of CountsDeps that only this test sets (fillBound, recountBound), so the
 // time read is their whole length, and on a pool whose statements a tracer times (statementTimer),
 // so each group statement's time is read too. In each state the size at which the whole recount
 // reaches coverageRecountTimeout is taken from the two smallest scales' points, fitted both
@@ -310,8 +310,6 @@ func TestCoverageStatementScale(t *testing.T) {
 			"databases on, which packages/envoy/scripts/coverage-scale.sh starts and names; CI never sets it")
 	}
 	fillBound, recountBound := coverageFillTimeout, coverageRecountTimeout
-	setForTest(t, &coverageFillTimeout, scaleMeasurementBound)
-	setForTest(t, &coverageRecountTimeout, scaleMeasurementBound)
 	scales := coverageScales(t)
 	serve := os.Getenv(coverageScaleServeEnv) == "1"
 	largest := slices.MaxFunc(scales, func(a, b coverageScale) int { return cmp.Compare(a.value, b.value) })
@@ -482,7 +480,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	if serve {
 		// Postgres copies no database a session is connected to: the pool closes first, and a
 		// pool of its own reads the database from then on.
-		database.Pool.Close()
+		testwait.Returns(t, "every connection of "+name+"'s pool to come back, so the pool closes before the copy", database.Pool.Close)
 		copyForServerStart(t, admin, server, name)
 		if database, err = store.Open(ctx, databaseURL); err != nil {
 			t.Fatalf("open %s again once it is copied: %v", name, err)
@@ -493,7 +491,8 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	point := coverageScalePoint{scale: scale, builds: rebuildWindowIndexes(t, database, "scale "+scale.text)}
 	timer := &statementTimer{}
 	timed := &store.Store{Pool: storetest.Traced(t, database.Pool, timer, nil)}
-	point.fill = timeCountsRun(t, timer, "scale "+scale.text+": the fill", func() error { return FillCoverage(ctx, timed) })
+	counts := CountsDeps{Store: timed, fillBound: scaleMeasurementBound, recountBound: scaleMeasurementBound}
+	point.fill = timeCountsRun(t, timer, "scale "+scale.text+": the fill", func() error { return counts.fill(ctx) })
 	t.Logf("scale %s: the fill took %s", scale.text, point.fill)
 	for i, state := range scaleStates {
 		stage := "scale " + scale.text + ", state " + state.name
@@ -532,7 +531,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 				stage, measured.share, laggingVisibleShare)
 		}
 
-		measured.recount = timeCountsRun(t, timer, stage+": the recount", func() error { return recountCoverage(ctx, timed) })
+		measured.recount = timeCountsRun(t, timer, stage+": the recount", func() error { return counts.recount(ctx) })
 		t.Logf("%s: the whole recount took %s", stage, measured.recount)
 		_, heads := requireMainsAnswerFor(t, database, stage+", after the recount", state.identity)
 		// No state changes which items there are: updateOneRowOfPages changes no row's answer, and
@@ -619,18 +618,49 @@ func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, p
 	}
 }
 
-// loadSmallCoverageCorpus loads the corpus at 0.005 x production's size into database
-// (loadCoverageCorpus), about 4,900 window rows and 56 issues, and analyzes the tables it fills
-// (coverageScaleTables): the table each test of the coverage statement in a state of embeddings
-// builds that state from, on a test server, once it has set what else the state needs.
-func loadSmallCoverageCorpus(t *testing.T, database *store.Store) {
+// smallCoverageCorpusKey is the key of the template openSmallCoverageCorpus clones
+// (storetest.OpenFrom).
+const smallCoverageCorpusKey = "the small coverage corpus (openSmallCoverageCorpus)"
+
+// openSmallCoverageCorpus returns a store on a new database, dropped after t ends, that holds the
+// corpus at 0.005 x production's size (loadCoverageCorpus), about 4,900 window rows and 56 issues,
+// with the tables it fills analyzed (coverageScaleTables): the table each test of the coverage
+// statement in a state of embeddings builds that state from, on a test server, once it has set
+// what else the state needs. The database is a clone of a template the first test of this
+// process to ask loads once (storetest.OpenFrom): this tree's migrations, autovacuum turned off on
+// embeddings before the load, so no autovacuum or autoanalyze of embeddings sets its visibility
+// map or its statistics while a test makes its state, then the corpus and the analyze. A clone
+// keeps the template's tables, their storage parameters (autovacuum_enabled among them) and their
+// statistics; it keeps none of the template's database settings, and its counters of scans start
+// at none.
+//
+// The three tests that clone it are parallel:
+// TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible,
+// TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector and
+// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap. The first of the three
+// to ask builds the template while the package's other parallel tests run, and the other two wait
+// in its build (storetest.OpenFrom's once), so their leaf times include that wait.
+func openSmallCoverageCorpus(t *testing.T) *store.Store {
 	t.Helper()
-	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
-	if err != nil {
-		t.Fatalf("read the corpus script: %v", err)
-	}
-	loadCoverageCorpus(t, database.Pool.Config().ConnString(), coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
-	mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+	return storetest.OpenFrom(t, smallCoverageCorpusKey, func(databaseURL string) error {
+		script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
+		if err != nil {
+			return fmt.Errorf("read the corpus script: %w", err)
+		}
+		ctx := context.Background()
+		database, err := store.Open(ctx, databaseURL)
+		if err != nil {
+			return fmt.Errorf("open the corpus's template: %w", err)
+		}
+		defer database.Pool.Close()
+		if err := database.Migrate(ctx); err != nil {
+			return fmt.Errorf("migrate the corpus's template: %w", err)
+		}
+		mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
+		loadCoverageCorpus(t, databaseURL, coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
+		mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+		return nil
+	})
 }
 
 // checkCoverageCorpus fails t unless the database holds the corpus the scale makes: production's
@@ -802,32 +832,36 @@ func inMilliseconds(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 1, 64) + " ms"
 }
 
-// dropScaleDatabase drops name as storetest drops a test's database: plainly, again while
-// Postgres answers that it is in use (SQLSTATE 55006, a backend of the closed pools still being
-// torn down), and with force as the last attempt.
+// dropScaleDatabase drops name once no session is connected to it (awaitNoSessionOn): a backend of
+// the closed pools can still be being torn down when t ends. The drop is made once, and an error it
+// answers fails t.
 func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
-	ctx := context.Background()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		_, err := admin.Exec(ctx, "drop database "+name)
-		if err == nil {
-			return
-		}
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "55006" || time.Now().After(deadline) {
-			if _, forced := admin.Exec(ctx, "drop database "+name+" with (force)"); forced != nil {
-				t.Errorf("drop %s: %v, after the plain drop answered: %v", name, forced, err)
-			}
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
+	awaitNoSessionOn(t, admin, name, "so Postgres drops it")
+	if _, err := admin.Exec(context.Background(), "drop database "+name); err != nil {
+		t.Errorf("drop %s: %v", name, err)
 	}
 }
 
-// copyForServerStart copies name, a scale's database that no session is connected to, to
-// name_serve (create database ... template ... strategy file_copy), again while Postgres answers
-// that name is in use (SQLSTATE 55006, a backend of the closed pool still being torn down), and
-// prints the copy's name on a line that starts `coverage-scale-database:`, which
+// awaitNoSessionOn waits, through the shared wait (testwait.Until), until pg_stat_activity lists
+// no session connected to name but an autovacuum worker: Postgres drops no database, and copies
+// no template, while another session is connected to it, and it ends an autovacuum worker there
+// itself. why says what the wait is for; a failure names the sessions counted last.
+func awaitNoSessionOn(t *testing.T, admin *pgx.Conn, name, why string) {
+	t.Helper()
+	testwait.Until(t, "no session connected to "+name+", "+why+" (the sessions pg_stat_activity counted last)", func() (int, bool) {
+		var sessions int
+		if err := admin.QueryRow(context.Background(), `select count(*) from pg_stat_activity
+			where datname = $1 and backend_type <> 'autovacuum worker'`, name).Scan(&sessions); err != nil {
+			t.Fatalf("count the sessions connected to %s: %v", name, err)
+		}
+		return sessions, sessions == 0
+	})
+}
+
+// copyForServerStart copies name, a scale's database whose pool has closed, to name_serve (create
+// database ... template ... strategy file_copy) once no session is connected to name
+// (awaitNoSessionOn: a backend of the closed pool can still be being torn down), the copy made
+// once, and prints the copy's name on a line that starts `coverage-scale-database:`, which
 // scripts/coverage-scale.sh reads to start the server on it and drop it. It is the database a
 // server's first start meets at the first deploy of the counts: the corpus as loaded with its
 // tables' triggers off, analyzed and its issues' sources recorded, and no row of
@@ -848,17 +882,9 @@ func copyForServerStart(t *testing.T, admin *pgx.Conn, server, name string) {
 	t.Helper()
 	ctx := context.Background()
 	copied := name + "_serve"
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		_, err := admin.Exec(ctx, "create database "+copied+" template "+name+" strategy file_copy")
-		if err == nil {
-			break
-		}
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "55006" || time.Now().After(deadline) {
-			t.Fatalf("copy %s to %s for the server's start: %v", name, copied, err)
-		}
-		time.Sleep(200 * time.Millisecond)
+	awaitNoSessionOn(t, admin, name, "so Postgres copies it to "+copied)
+	if _, err := admin.Exec(ctx, "create database "+copied+" template "+name+" strategy file_copy"); err != nil {
+		t.Fatalf("copy %s to %s for the server's start: %v", name, copied, err)
 	}
 	fmt.Printf("coverage-scale-database: %s\n", copied)
 	if _, err := admin.Exec(ctx, "alter database "+copied+" set synchronous_commit = on"); err != nil {

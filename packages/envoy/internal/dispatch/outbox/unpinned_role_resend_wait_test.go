@@ -24,6 +24,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	target := "role:" + role
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	claimant := rig.receiver(t, holder)
 
@@ -42,7 +43,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("pass 1 sent claimant %+v", got)
 	}
 
@@ -60,7 +61,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 
 	// The fallback pass, with the attempt still unpinned and owed a resend, and the role still
 	// unnamed by the outbox.
-	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.deps(), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 	row = readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	got := claimant.receivedNow(t, rig.client)
 	t.Logf("after fallback pass: row settled=%v published=%v; claimant got %+v", row.settled, row.published, got)
@@ -113,7 +114,6 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(500 * time.Millisecond)
 	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
 		firstID, target); err != nil {
 		t.Fatal(err)

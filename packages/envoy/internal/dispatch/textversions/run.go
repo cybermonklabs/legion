@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
@@ -76,13 +77,28 @@ type Config struct {
 	// duty.HoldReleasedChannel): a standby tries for the hold on it, as well as every
 	// standbyRetry. Nil leaves the retry alone.
 	Released <-chan struct{}
-	// retry, when set, stands in for the standby's ticker of standbyRetry: each value it receives
-	// is one more try for the hold. A test of this package sets it, so the standby retries when the
-	// test says and the test's verdict waits on no ticker; nil, as every serving process leaves it,
-	// is the ticker.
-	retry <-chan time.Time
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
+
+	// clock is what the fill's timers run on and its times are read from: the standby's ticker of
+	// standbyRetry, the bounds of its take and release of the hold, the hold's renewals and its loss
+	// deadline (duty.HoldOptions.Clock), the passes' waits (await), the check of the hold's loss
+	// deadline (lost), the caught-up line's pace, and the filler's re-reads of the horizon and its
+	// rest after a batch. Nil, as every serving process leaves it, is the wall clock (clock.Real); a
+	// test of this package sets a clocktest.Fake, so the waits it asserts come at the moments it
+	// moves the fake to.
+	clock clock.Clock
+	// waiting, when set, is called in await before it waits for the next pass, with the wait due
+	// then, zero for none, on the fill's own goroutine. awaitingServing, when set, is called in run
+	// before it waits for Serving. Nil, as every serving process leaves them, calls nothing; a test
+	// of this package reads the fill's state through them.
+	waiting         func(due time.Duration)
+	awaitingServing func()
+	// reachMargin is the margin the reach each batch stores is computed with
+	// (store.ComputeTextVersionsReach), which newFiller gives the filler. Zero, as every serving
+	// process leaves it, is the store's 1 s; a test that reads the reach through a store with a
+	// shorter margin (store.Store.TextVersionsReachMargin) sets the same one here.
+	reachMargin time.Duration
 }
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold
@@ -112,9 +128,9 @@ func Run(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// runner is one process's fill under the hold: its Config, the filler its passes run, whose
-// holder it takes the hold as and whose logger it logs to, and when it last logged where the fill
-// stands.
+// runner is one process's fill under the hold: its Config, the filler its passes run, whose clock
+// (Config.clock) its timers run on too, whose holder it takes the hold as and whose logger it logs
+// to, and when it last logged where the fill stands.
 type runner struct {
 	cfg        Config
 	fill       *filler
@@ -138,7 +154,11 @@ func newRunner(cfg Config) (*runner, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	fill := newFiller(cfg.Leases, cfg.Horizon)
+	c := cfg.clock
+	if c == nil {
+		c = clock.Real()
+	}
+	fill := newFiller(cfg.Leases, cfg.Horizon, c, cfg.reachMargin)
 	fill.logger = logger
 	fill.holder = uuid.New()
 	fill.pause = newPauser(cfg.Latency, logger).waitUntilFast
@@ -157,6 +177,9 @@ const (
 // run waits for the process to serve, then stands by and fills under the hold in turn until ctx
 // ends.
 func (r *runner) run(ctx context.Context) {
+	if r.cfg.awaitingServing != nil {
+		r.cfg.awaitingServing()
+	}
 	select {
 	case <-ctx.Done():
 		return
@@ -181,17 +204,13 @@ func (r *runner) run(ctx context.Context) {
 }
 
 // standBy tries for the hold until it takes it, and answers it, or until ctx ends, and answers
-// nil: at once, then each time cfg.Released is signalled and every retry (a ticker of
-// standbyRetry, or cfg.retry where a test sets it). It says it stands by once, at the first
-// refusal.
+// nil: at once, then each time cfg.Released is signalled and at each tick of a ticker of
+// standbyRetry on the fill's clock, whose next tick is armed once the try of the last is done. It
+// says it stands by once, at the first refusal.
 func (r *runner) standBy(ctx context.Context) *duty.Hold {
-	retry := r.cfg.retry
-	if retry == nil {
-		ticker := time.NewTicker(standbyRetry)
-		defer ticker.Stop()
-		retry = ticker.C
-	}
-	said := false
+	ticker := clock.NewTicker(r.fill.clock, standbyRetry, false)
+	defer ticker.Stop()
+	said, ticked := false, false
 	for {
 		hold, err := r.tryHold(ctx)
 		switch {
@@ -205,20 +224,30 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 			r.fill.logger.Info(standingByMessage, "holder", r.fill.holder)
 			said = true
 		}
+		if ticked {
+			ticker.Next()
+			ticked = false
+		}
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-r.cfg.Released:
-		case <-retry:
+		case <-ticker.C():
+			ticker.Took()
+			ticked = true
 		}
 	}
 }
 
-// tryHold takes the hold when no other holder holds it live, within one renewal interval.
+// tryHold takes the hold when no other holder holds it live, within one renewal interval on the
+// fill's clock. The hold runs on that clock too (duty.HoldOptions.Clock): its renewals every
+// holdOptions.Renew and its loss deadline, which lost reads on the same clock.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
-	bounded, cancel := context.WithTimeout(ctx, holdOptions.Renew)
+	bounded, cancel := r.fill.clock.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
-	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, holdOptions)
+	opts := holdOptions
+	opts.Clock = r.fill.clock
+	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, opts)
 }
 
 // fillUnder runs the fill's passes under hold until ctx ends or the hold is lost: a pass at once,
@@ -272,26 +301,30 @@ func (r *runner) fillUnder(ctx context.Context, hold *duty.Hold) {
 
 // lost is whether the pass that answered err ended because the hold is no longer this holder's:
 // its loss closed held, a batch found duty_holds naming another holder or none
-// (duty.ErrHoldLost), or the hold's loss deadline passed while the pass ran - a process frozen
-// past it finds its connection's transaction ended when it resumes, before the hold's own timer
-// has told it.
+// (duty.ErrHoldLost), or the hold's loss deadline passed on the fill's clock while the pass ran -
+// a process frozen past it finds its connection's transaction ended when it resumes, before the
+// hold's own timer has told it.
 func (r *runner) lost(held context.Context, hold *duty.Hold, err error) bool {
 	return held.Err() != nil || errors.Is(err, duty.ErrHoldLost) ||
-		(err != nil && !time.Now().Before(hold.Deadline()))
+		(err != nil && !r.fill.clock.Now().Before(hold.Deadline()))
 }
 
-// await waits for the next pass: due later when due is not zero, at cfg.Events when woken, and
-// answers false once held ends instead.
+// await waits for the next pass: due later on the fill's clock when due is not zero, at
+// cfg.Events when woken, and answers false once held ends instead. It calls cfg.waiting, where a
+// test set it, with due before it waits.
 func (r *runner) await(held context.Context, due time.Duration, woken bool) bool {
 	var timer <-chan time.Time
 	if due > 0 {
-		t := time.NewTimer(due)
+		t := r.fill.clock.NewTimer(due)
 		defer t.Stop()
-		timer = t.C
+		timer = t.C()
 	}
 	var events <-chan struct{}
 	if woken {
 		events = r.cfg.Events
+	}
+	if r.cfg.waiting != nil {
+		r.cfg.waiting(due)
 	}
 	select {
 	case <-held.Done():
@@ -310,11 +343,11 @@ const caughtUpQuery = `select f.event_id, f.reach, (extract(epoch from now() - f
  where f.id = 1`
 
 // caughtUp logs, from a pass that ended with the fill caught up to the horizon it read, at most
-// once each caughtUpEvery, the fill's reach, how far it stands behind now (its lag), and how many
-// ids the cursor stands below the newest event. A fill with nothing to do runs no pass, and so
-// writes no line and sends no statement for it.
+// once each caughtUpEvery on the fill's clock, the fill's reach, how far it stands behind now
+// (its lag), and how many ids the cursor stands below the newest event. A fill with nothing to do
+// runs no pass, and so writes no line and sends no statement for it.
 func (r *runner) caughtUp(ctx context.Context) {
-	now := time.Now()
+	now := r.fill.clock.Now()
 	if !r.caughtUpAt.IsZero() && now.Sub(r.caughtUpAt) < caughtUpEvery {
 		return
 	}
@@ -351,10 +384,10 @@ func (r *runner) release(hold *duty.Hold) {
 
 // end releases hold (duty.Hold.Release): it stops the renewal and deletes the hold's row while it
 // still names this holder, notifying the standbys. It runs on a context of its own, bounded by
-// one renewal interval, since it must reach the database when the process's context has ended.
-// It answers whether the release reached the database.
+// one renewal interval on the fill's clock, since it must reach the database when the process's
+// context has ended. It answers whether the release reached the database.
 func (r *runner) end(hold *duty.Hold) bool {
-	releasing, cancel := context.WithTimeout(context.Background(), holdOptions.Renew)
+	releasing, cancel := r.fill.clock.WithTimeout(context.Background(), holdOptions.Renew)
 	defer cancel()
 	if err := hold.Release(releasing); err != nil {
 		r.fill.logger.Error("dispatch: the keyword fill could not release its hold", "holder", r.fill.holder, "error", err)
