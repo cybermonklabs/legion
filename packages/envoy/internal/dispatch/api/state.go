@@ -218,6 +218,9 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A command-bar call's landing records the state this write left beside it, so a second
+	// try of the call answers it (goingRecordAnswer).
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return value })
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

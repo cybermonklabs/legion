@@ -95,7 +95,7 @@ case "$mode" in
       delete "$family" "which the new entry supersedes"
     ;;
   build)
-    if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
+    if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout|going-release)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
       echo "::error::the kept key does not have the shape dispatch-builds gives it, so nothing is deleted"
       exit 1
     fi

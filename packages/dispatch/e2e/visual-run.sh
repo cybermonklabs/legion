@@ -15,15 +15,22 @@
 #   1. gh run download <failed full-lane run id> --repo <owner>/<repo> \
 #        --name dispatch-browser-visual-<attempt>
 #   2. A failed row's -actual.png is under the results directory this script names on a failed
-#      run, at the same path inside the download.
-#   3. Copy it over e2e/__screenshots__/<project>/<route>-<scheme>.png only if every pixel that
-#      moved was meant to and a second run gave the same bytes (else the page is not settled),
-#      and say why in the commit message.
+#      run, at the same path inside the download. A shot no tree holds a baseline of yet - a
+#      page or a state of the command bar the layer gained - fails its row and is written as
+#      the baseline itself, at packages/dispatch/e2e/__screenshots__/<project>/<shot>.png inside
+#      the download, and the row's other shots are still taken.
+#   3. Copy it over e2e/__screenshots__/<project>/<shot>.png (a page row's shot is
+#      <route>-<scheme>, a command bar row's <state>-<shot>) only if every pixel that moved was
+#      meant to and a second run gave the same bytes (else the page is not settled), and say why
+#      in the commit message. A new baseline is read whole, against the design it stands for.
 #
 # ONE SEED, NO WRITES. One seed serves the whole run, so a page that writes state as it draws
 # would change what every row after it compares. The review seed writes each read mark a page of
 # the shot set writes before any row runs (`seedReviewRoutes`, e2e/review-seed.ts), and every
 # other write a row's page tries is stopped and fails that row by name (e2e/visual-guard.ts).
+# The command bar's rows (`visual-bar`) are the one exception: what they write is the state they
+# compare, so they run last, after every page row has drawn (e2e/playwright.config.ts), and each
+# writes only on project OPS and as a login of its own (e2e/going-bar.visual.e2e.ts).
 #
 # WHY THE SEED RUNS ON THE HOST AND THE SHOTS IN THE CONTAINER. `e2e/psql.ts` spawns the `psql`
 # binary, and both `resetDatabase()` (e2e/seed.ts) and the delivery fixtures
@@ -68,7 +75,7 @@ cd "$package"
 # WHY ONE STACK IS ENOUGH, AND WHY NO SECOND ONE CAN ARISE. The seed below runs on the host,
 # outside any Playwright worker, so `TEST_PARALLEL_INDEX` is unset and `e2e/visual-seed.ts`
 # writes the corpus into stack 0's database alone (e2e/harness-ports.ts), and the container's
-# Playwright runs one project at a time, each of the two with a single worker of its own
+# Playwright runs one project at a time, each of the three with a single worker of its own
 # (e2e/playwright.config.ts). A second stack would be a database nothing seeded, and a row that
 # opened it would fail nothing - a readiness locator such as the Inbox's heading is drawn by an
 # empty page too - but would compare, or with `--update-snapshots` WRITE, a baseline of an empty
@@ -103,6 +110,18 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# WHY THE FAKE MODELS. The command bar's rows (e2e/going-bar.visual.e2e.ts, the `visual-bar`
+# project) draw what only a model's answer makes: a run's steps, its answer, its plan. So the
+# stack is the models lane's (e2e/harness-models.ts): DISPATCH_E2E_MODELS=fake makes the harness
+# start the fake writing model and the fake decision model and a models directory - the
+# certificate both serve and a token each - and hands the server both models. It is set here,
+# over any value the caller has, so a person's run and CI's start the same stack; the sweep below
+# forwards it to the container, where the bar's rows script the fakes. The pages' rows open no
+# bar, and only the bar asks the server whether it has a model, so they draw as on a stack with
+# none.
+DISPATCH_E2E_MODELS=fake
+export DISPATCH_E2E_MODELS
+
 # The fifo carries the stack's variables, DATABASE_URL among them with any password it holds, so it
 # is made for this user alone: under a umask of 022 a plain mkfifo would make it prw-r--r--, and any
 # user of the machine could open it and read those lines.
@@ -136,6 +155,12 @@ done
   echo "e2e/visual-run.sh: the stack stopped before it had printed its variables." >&2
   exit 1
 }
+# The models directory the stack made, which the container's rows read the fakes' certificate
+# from and the mount below hands them. A stack that printed none started no fake model.
+[ -n "${DISPATCH_E2E_MODELS_DIR:-}" ] || {
+  echo "e2e/visual-run.sh: the stack printed no DISPATCH_E2E_MODELS_DIR, so it serves no fake model to the command bar's rows." >&2
+  exit 1
+}
 
 bun e2e/visual-seed.ts "$seed_json"
 
@@ -154,10 +179,12 @@ for name in $(env | sed -n 's/^\(DISPATCH_E2E_[A-Za-z0-9_]*\)=.*/\1/p'); do
     forward="$forward -e $name"
   fi
 done
-# The listeners whose names carry no `DISPATCH_E2E_` prefix (e2e/harness-ports.ts), the base URL
-# a deployed run targets, and CI, which the config reads for its retry count.
-for name in DEV_OIDC_ISSUER_PORT FAKE_BROKER_PORT FAKE_EMBEDDER_PORT FAKE_ENVOY_PORT \
-  FAKE_GITHUB_PORT PLAIN_HTTP_PORT REAL_BROKER_PORT PLAYWRIGHT_BASE_URL CI; do
+# The listeners whose names carry no `DISPATCH_E2E_` prefix (e2e/harness-ports.ts) - the two fake
+# models among them, which the bar's rows script - the base URL a deployed run targets, and CI,
+# which the config reads for its retry count.
+for name in DEV_OIDC_ISSUER_PORT FAKE_BROKER_PORT FAKE_CHAT_MODEL_PORT FAKE_DECISION_MODEL_PORT \
+  FAKE_EMBEDDER_PORT FAKE_ENVOY_PORT FAKE_GITHUB_PORT PLAIN_HTTP_PORT REAL_BROKER_PORT \
+  PLAYWRIGHT_BASE_URL CI; do
   forward="$forward -e $name"
 done
 
@@ -168,20 +195,23 @@ done
 # beside it. `--ipc=host` is Playwright's own recommendation for Chromium, whose shared memory
 # would otherwise be the container's 64 MB /dev/shm. `--user` keeps every file the run writes -
 # a new baseline, a diff, a trace - owned by the person who ran it, and `HOME=/tmp` gives that
-# uid, which the image has no home for, a writable one.
+# uid, which the image has no home for, a writable one. The stack's models directory is mounted
+# read-only at its own path, the one DISPATCH_E2E_MODELS_DIR names on both sides: it is under the
+# host's temporary directory, which the repository root's mount does not reach.
 status=0
 # shellcheck disable=SC2086
 docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   --cpus 2 --memory 4g \
   -v "$root:$root" \
   -v "$seed_json:$seed_in_container:ro" \
+  -v "$DISPATCH_E2E_MODELS_DIR:$DISPATCH_E2E_MODELS_DIR:ro" \
   -w "$root/packages/dispatch" \
   -e HOME=/tmp \
   $forward \
   -e "DISPATCH_E2E_VISUAL_SEED=$seed_in_container" \
   ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
-  --project=visual --project=visual-phone "$@" || status=$?
+  --project=visual --project=visual-phone --project=visual-bar "$@" || status=$?
 
 # A failed run says where a failed row's shots go, as what holds if a row ran and failed: the
 # script cannot tell that a row ran.

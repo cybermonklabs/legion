@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  A command-bar run's `reply` frame of prose that the check for a missing plan judged, held back or
+  not, carries `check_ms`, what that check's model call took, which the run's working time counts
+  and its model time does not, and `check_tokens`, the tokens the check spent, its prompt's and its
+  reply's; every other `reply` frame carries neither. The eval of the command bar (`going-eval
+  run`) reports, for each level, the p99 and the max of one model call's output tokens, its
+  reasoning among them, and of its reasoning tokens, over every model call of the level's tries,
+  beside the level's bound; each run stopped `OUTPUT_TOKEN_BUDGET`, with the tokens of its last
+  model call; each run stopped `TIME_BUDGET`, with how long the pacer held its model calls of the
+  time it worked; and, for each kind of task, answer and status first, the turns that made a check,
+  the checks made, and the median and the p99 of the time the checks added to a turn, with how many
+  checks the run made and the tokens they spent. Each `--answers-out` line adds the try's `level`,
+  and its outcome adds the run's `working_ms` and `pace_ms`, its `turns`, each model call's
+  `output_tokens` and `reasoning_tokens` (`model_calls`), and each check's `turn`, `ms` and
+  `tokens` (`checks`).

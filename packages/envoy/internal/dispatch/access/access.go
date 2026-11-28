@@ -14,7 +14,8 @@
 // every caller did before.
 //
 // One home. The rule is written once in SQL (store.PersonSeesProjectSQL, which the store's own
-// writes of a member kind read too, and VisibleProjectsSQL) and once in Go over a person already
+// writes of a member kind read too, VisibleProjectsSQL, and ScopeCoversSQL for a credential scoped
+// to one project) and once in Go over a person already
 // resolved (CredentialCovers, Credential.Sees), and a test holds the two equal over every
 // combination. The outside sign-in's question, whether some project names an email directly, is
 // listed.go's, the same rule's direct arm read from the other side. Every SQL fragment this

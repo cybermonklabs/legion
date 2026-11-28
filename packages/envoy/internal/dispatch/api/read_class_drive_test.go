@@ -109,6 +109,9 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture-source":  {target: "/api/v1/projects/$project/architecture-source", statement: statementOf(`\bfrom\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
+	// The drive project's issues hold the seed's events, which the read counts by week.
+	"GET /api/v1/projects/{key}/activity": {target: "/api/v1/projects/$project/activity",
+		statement: statementOf(`\bwith\s+span\s+as\s*\(\s*select\s+week\s+from\s+generate_series\b`)},
 	// A project's spec check results at one commit, which only a CI run's results token writes.
 	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=0123456789abcdef0123456789abcdef01234567",
 		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\b`)},
@@ -252,6 +255,9 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/me/state":                 {target: "/api/v1/me/state", statement: statementOf(`\bfrom\s+user_issue_state\s+where\s+login\b`)},
 	"GET /api/v1/me/agents/state":          {target: "/api/v1/me/agents/state", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
 	"GET /api/v1/me/documents/{id}/read":   {target: "/api/v1/me/documents/$notes/read", statement: statementOf(`\bfrom\s+user_document_reads\b`)},
+	"GET /api/v1/me/going/settings":        {target: "/api/v1/me/going/settings", statement: statementOf(`\bselect\s+mode\s+from\s+user_going_settings\s+where\s+login\b`)},
+	"GET /api/v1/me/going-runs":            {target: "/api/v1/me/going-runs", statement: statementOf(`\bwith\s+conversations\s+as\s*\(\s*select\s+coalesce\(r\.conversation_id,\s*r\.id\)`)},
+	"GET /api/v1/me/going-plans":           {target: "/api/v1/me/going-plans", statement: statementOf(`\bfrom\s+going_plans\s+where\s+run_id\s*=\s*r\.id\s+order\s+by\s+plan\s+desc\s+limit\s+1\b`)},
 	"GET /api/v1/events/log":               {target: "/api/v1/events/log?after=0", statement: statementOf(`\bselect\s+e\.id,\s*e\.issue_key,\s*e\.artifact_id::text\b`)},
 	"GET /api/v1/credential-requests":      {target: "/api/v1/credential-requests?approver=me", fromMemory: noBroker},
 	"GET /api/v1/credential-grants":        {target: "/api/v1/credential-grants?approver=me", fromMemory: noBroker, status: http.StatusNotFound},
@@ -275,7 +281,9 @@ var readRowDrives = map[string]rowDrive{
 // pipeline reads seven days, which hold all three. So each is sent after the drives whose runs
 // it reaches (sendAfter): timeline, then measures, then pipeline. Sent in the order the routes
 // are declared, by pattern, the measures went first and its read wrote the timeline's warning
-// (envoy-go-race-api job 139500583275).
+// (envoy-go-race-api job 139500583275). Each command-bar run row reads a run of its own
+// (seedGoingRuns), since a run stopped, or a row that shows what its item holds, is written
+// nothing again.
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -298,6 +306,21 @@ var getWriteDrives = map[string]rowDrive{
 		target:    "/api/v1/going/requests/$going/stream",
 		statement: statementOf(`\binsert\s+into\s+going_events\b`),
 		stored:    "select count(*) from going_events where request_id = '$going'::uuid",
+	},
+	"GET /api/v1/going/runs/{id}/plan": {
+		target:    "/api/v1/going/runs/$planRun/plan",
+		statement: statementOf(`\bupdate\s+going_plan_rows\s+set\s+shown\b`),
+		stored:    "select count(*) from going_plan_rows where run_id = '$planRun'::uuid and shown->'now'->>'title' = '" + driveRetitled + "'",
+	},
+	"GET /api/v1/going/runs/{id}": {
+		target:    "/api/v1/going/runs/$commentWithdrawnRun",
+		statement: statementOf(`\bupdate\s+going_runs\s+set\s+state\s*=\s*'stopped'`),
+		stored:    "select count(*) from going_runs where id = '$commentWithdrawnRun'::uuid and state = 'stopped'",
+	},
+	"GET /api/v1/going/runs/{id}/events": {
+		target:    "/api/v1/going/runs/$messageWithdrawnRun/events",
+		statement: statementOf(`\bupdate\s+going_runs\s+set\s+state\s*=\s*'stopped'`),
+		stored:    "select count(*) from going_runs where id = '$messageWithdrawnRun'::uuid and state = 'stopped'",
 	},
 }
 
@@ -757,12 +780,14 @@ func statementList(statements []drivenStatement) string {
 // TestEveryGETThatWritesMakesItsWrite: every GET row of the table that writes (readWritesState),
 // sent with a writing token, the golden machine-login answer with the project scope person and no
 // read, makes the write its WriteNote names: the going stream stores the end frame of a run past
-// its deadline in going_events, and each delivery read inserts delivery_run_warnings for the
-// deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
-// only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
-// sent in a window as the reads are, which must hold that write, and the store must hold none of
-// the row's rows before it and one after. Each row runs after the rows its drive's sendAfter
-// names, the order getWriteDrives's runs need (sendOrder), and otherwise in the table's order.
+// its deadline in going_events; each delivery read inserts delivery_run_warnings for the deploy
+// run with no production job that is its own; the plan read of P's waiting run stores in its row's
+// shown the title another writer gave the row's item; and the read of a withdrawn run of P's, and
+// its stream, each stop their own run. It runs on the drive rig (newDriveRig) with only the state
+// those writes read (driveWorld.seedWrites), not the whole seeded store. Each is sent in a window
+// as the reads are, which must hold that write, and the store must hold none of the row's rows
+// before it and one after. Each row runs after the rows its drive's sendAfter names, the order
+// getWriteDrives's runs need (sendOrder), and otherwise in the table's order.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)

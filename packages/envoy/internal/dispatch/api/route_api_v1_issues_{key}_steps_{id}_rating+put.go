@@ -16,6 +16,9 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).putIssueStepRating,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for the run of a retro"},
+
+	// Only a Legion daemon's session rates a retro, 403 STEP_WRITER for every other writer.
+	DaemonWrites: &daemonWrite{Check: daemonRecordWriter, Record: "a step record"},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
 	},

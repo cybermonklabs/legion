@@ -103,6 +103,22 @@ func TestVerifySessionRejectsExpiredCookie(t *testing.T) {
 	}
 }
 
+// A verified session names when its cookie stops verifying: the expiry the cookie signs, which a
+// run's grant keeps in place of the cookie. A cookie Dispatch issues expires 30 days after it.
+func TestAVerifiedSessionNamesItsCookiesExpiry(t *testing.T) {
+	expiry := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	session, ok := VerifySession(signedCookie("sami@example.com", 2, expiry.UnixMilli(), "signing-key"), testKeys)
+	if !ok || !session.Expires.Equal(expiry) {
+		t.Fatalf("verify: got %#v valid=%t, want the expiry the cookie signs, %s", session, ok, expiry)
+	}
+	before := time.Now()
+	issued, ok := VerifySession(cookieValue(t, IssueSessionCookie("sami@example.com", 2, testKeys, false)), testKeys)
+	thirtyDays := time.Duration(sessionMaxAgeSeconds) * time.Second
+	if !ok || issued.Expires.Before(before.Add(thirtyDays).Truncate(time.Millisecond)) || issued.Expires.After(time.Now().Add(thirtyDays)) {
+		t.Fatalf("an issued cookie's session expires %s, want 30 days after %s", issued.Expires, before)
+	}
+}
+
 // parseKeys is ParseSigningKeys for a setting the test knows is valid.
 func parseKeys(t *testing.T, setting string) SigningKeys {
 	t.Helper()

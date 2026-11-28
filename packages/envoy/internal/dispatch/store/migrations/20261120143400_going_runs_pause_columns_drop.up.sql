@@ -1,0 +1,17 @@
+-- 20261120143400_going_runs_pause_columns_drop.up.sql — a run's record holds nothing of a pause's
+-- answer.
+--
+-- hits, decision, proposal and structured_output were what a pause of the command bar found, what
+-- its decision model chose, what its answer offered and how its structured output went
+-- (20261112173940), while a row of going_runs was the record of one answered pause. A pause now
+-- writes no run: its answer is a going request with its going events (api/going_runs.go). A run's
+-- record is what its agent works on, with its steps, events and plans (20261119201453). Nothing
+-- reads or writes the four columns any more, so they go.
+--
+-- A drop without cascade is a catalog change: Postgres marks the columns dropped and rewrites no
+-- row, under going_runs' ACCESS EXCLUSIVE lock for that write alone. No release names the columns:
+-- going_runs is new on the branch that drops them (20261112173940), so no build of an earlier
+-- release reads or writes them while this one rolls (cmd/dispatch/README.md, "Database
+-- migrations"). The identifier is the UTC moment this was written, as `migrationid` requires of
+-- every migration past the numbered series.
+alter table going_runs drop column hits, drop column decision, drop column proposal, drop column structured_output;

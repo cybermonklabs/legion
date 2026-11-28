@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The command bar draws a step the model slipped on, such as "Tried a step Dispatch does not
+  have", as a grey line, and no folded line counts it: "1 step failed" counts only a failure the
+  person can act on, such as no access. Where a link to an ask, a comment, a message or a block
+  has a title cut to fit, ending in "…", and the text after the link starts with a full stop, the
+  link's "…" is the only stop drawn. A short answer that failed says why in one
+  sentence and its next step, such as "Dispatch could not reach the model. Ask for the full
+  answer.", and never shows the failure's code.

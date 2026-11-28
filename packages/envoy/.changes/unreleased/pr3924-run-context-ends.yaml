@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  A run of the command bar's agent that ends no longer leaves its context in the agent's process
+  until the process exits. Before, each run that answered, failed or proposed a plan that waits
+  for its person kept about 490 bytes of the agent's memory until the agent exited.

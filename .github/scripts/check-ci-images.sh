@@ -338,6 +338,7 @@ REACH = (
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
+    "packages/envoy/cmd/dispatch/agent_memory_group_test.go",
     "packages/envoy-client/test/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
     ".github/scripts/dispatch-browser-visual-suite.sh",
@@ -356,7 +357,7 @@ IMAGE_FROM = {
         "each image is read from a Go string constant the caller's `consts:` input names "
         "(packages/daemon/internal/testnats/nats.go, packages/daemon/internal/ompsessions/searchpath_test.go, "
         "packages/envoy/internal/testnats/nats.go, packages/envoy/internal/testpg/testpg.go, "
-        "packages/envoy/internal/tests3/seaweedfs.go), "
+        "packages/envoy/internal/tests3/seaweedfs.go, packages/envoy/cmd/dispatch/agent_memory_group_test.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"

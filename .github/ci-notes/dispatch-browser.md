@@ -1205,32 +1205,75 @@ exactly one - and the only thing that can read a count back is the fake embedder
 (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
 (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
 no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
-This job is where it runs.
+This job is where it runs, and the models lane beside it: the command bar's answers,
+and blocks against the fake writing model and the fake decision
+model (e2e/fake-chat-model.ts, e2e/fake-decision-model.ts) under DISPATCH_E2E_MODELS=fake
+(e2e/harness-models.ts), a switch of the server's too, whose rows skip everywhere else. A
+second step of this job rather than a job of its own, since this job already holds the
+server's build and the browser install that lane needs.
 
 On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
-alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
-pull request it is on (check k2 of the embedding bar's issue, the bar's embedding count) rather
-than a clock reading or a second server shape. A lane that skipped it would leave the claim
-unread until the merge queue. Not on `references`, which its `if:` holds it off: that lane
-runs the spec files its arm of .github/scripts/dispatch-browser-shard-suite.sh names, and
-e2e/search-tiers.e2e.ts is none of them, and this job's check stays the pull-request lane's,
-which runs it.
+alone: this is one Chromium install, two rows of about 90 s and the models lane's specs, and it
+holds checks of the pull request it is on (check k2 of the embedding bar's issue, the bar's
+embedding count, and the command bar's answer checks) rather than a clock reading or a second
+server shape. A lane that skipped it would leave those claims unread until the merge queue. Not
+on `references`, which its `if:` holds it off: that lane runs the spec files its arm of
+.github/scripts/dispatch-browser-shard-suite.sh names, and e2e/search-tiers.e2e.ts is none of
+them, and this job's checks stay the pull-request lane's, which runs them.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
 shard and alone legs, and this job's own conclusion is what the calling job (ci.yaml's
 dispatch-browser or dispatch-browser-pr) reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
 null leg and is passed over by reading one, exactly as multiprocess is.
 
-No budget measured on this file's own runs yet, so the embedder job's two step budgets are derived from the
+No budget measured on this file's own runs yet, so the embedder job's step budgets are derived from the
 multiprocess job's measured steps, which are the same steps on the same machine: its install
-step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
-budget is those two plus that job's measured 135 s maximum for every step without one,
-rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-their own, as this file's head requires. Its Postgres then moved from a `services:`
-container to the harness's own, for the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
+step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The
+models step reuses the contracts and the dashboard the "Browser-test the bar's two tiers
+against a counting embedder" step has just built, as the multiprocess job's sign-in step
+reuses its neighbour's, and runs the four model spec files its two filters match
+(`going-answer` also matches `going-answer-cancel` and `going-answer-safety`) on this
+config's one worker. Its reading is an estimate made when the step ran six files, two since
+deleted with the writes they tested: the six ran their 21 and 16 rows in 1.6 and 1.7 min of
+wall time on 3 workers on a farm runner, so on one worker about three times 3.3 min, 9.9 min,
+and under this file's rule 9.9 min plus 15 per cent, rounded up, is 12 min, until its first
+runs give it a reading of its own. The job budget is those three plus the multiprocess job's
+measured 135 s maximum for every step without one, rounded up: 4 + 4 + 12 min plus 135 s =
+23 min. The first runs replace these with readings of their own, as this file's head
+requires. Its Postgres then moved from a `services:` container to the harness's own, for
+the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
 added that job's two steps for it at that job's figures: the pull at 120 s and the
-connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
--> 15 min.
+connections read at its two-minute floor. 4 + 4 + 12 + 2 min plus 135 s and 120 s = 26 min
+15 s -> 27 min.
+
+The models step first ran without the agent's spec files: its two filters matched going-answer,
+going-answer-cancel, going-answer-safety and going-blocks, and none of the nine
+going-agent-*.e2e.ts files, so no lane ran the rows of the command bar's agent (INFRA-1588's
+checks c1, c2, c3, c4, c7, c8, c9, c10 and c16). It now names `going-agent-` as `e2e:models`
+does, and the Firefox row of `e2e:models:firefox` (going-agent-place) runs in a step of its own
+after a Firefox install. Its first reading on this runner: 76 s for its 20 rows, in job
+139500196866 at 8a3e562b. Its first run with the agent rows, job 139585382100 at 5da78ef4,
+passed the agent rows in 47 s of row time, and reached its 4 minutes after 46 rows, since the
+four rows of going-agent-answer-length.e2e.ts were red tests then, three of which waited 41 s
+for an answer that did not come, and once more on their retry. With every row passing it read
+121 s and 122 s at 61e9cbf6 (jobs 140094660234 and 140094660196), still with those four rows;
+three of them went with the hold of a long answer they tested, and the fourth is now
+going-agent-list-total.e2e.ts. ba54d858 then added eight rows: going-agent-answer's
+short-answer row became two, a brief reply and a longer one, beside a new row for a long reply
+in the panel, and going-agent-place went from five rows to eleven. With five rows more than at
+that reading, the step read 129 s at 6660cfff (job 140266025645, 02:09:13Z to 02:11:22Z) and
+128 s at 92209719 (job 140278869851). So 129 s x 1.15 = 149 s -> 3 min. The
+Firefox install is the Chromium install's figure, 4 min: one browser's archives, with no apt,
+for the reason
+.github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is
+gives, and a library the image lacked would fail the launch visibly. The Firefox step runs one
+row, the one row of going-agent-place tagged `@firefox`: the `firefox` project selects a row by
+that tag (e2e/playwright.config.ts), so the file's ten other rows are not run again here. The
+models step runs all eleven, the `@firefox` row among them, since the `chromium` project drops
+no engine tag. When the file had five rows they ran in 3.5 s of row time on Chromium, so the
+step takes the 4 min of the step before the models step, whose two rows are as short, until
+its first runs give it a reading. 4 + 4 + 3 + 2 + 4 + 4 min plus 135 s and 120 s = 25 min 15 s
+-> 26 min.
 
 ## Why the embedder job builds contracts
 
@@ -1246,12 +1289,49 @@ finds it current and starts in seconds. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
 
+## What the embedder job's models step runs, and why it calls Playwright directly
+
+The models lane: run-server.sh points the server at the two fake models the harness
+starts over TLS on loopback, and finds the server the "Build the Dispatch server for the
+embedder lane" step made current. Playwright directly, as the multiprocess job's sign-in
+step runs it: `bun run e2e:models` would build the contracts and the dashboard a second
+time, and the "Browser-test the bar's two tiers against a counting embedder" step before it
+built both from this checkout. `e2e:models` stays the command for a local run.
+
+Its Postgres is the harness's own, from the image and with the connections the "Pull the
+embedder stack's Postgres image" and "Read the connections the embedder stack's Postgres must
+allow" steps pulled and read, as the step before runs it. Its 4 minutes, and the Firefox
+install's and the Firefox step's, are derived in
+.github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets.
+
+## Why the embedder job's upload runs on failure alone, and serves both browser steps
+
+`if: failure()`, as the multiprocess job's upload is: the chromium project retries a
+failed row, but a row that fails after its retries fails this job and this upload runs.
+One upload serves both browser steps: a failed step skips the one after it, and each
+Playwright run empties e2e/test-results before it starts, so the directory holds the
+results of the step that failed.
+
 ## The visual review, its docker run and its budgets
 
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
-set compared against a committed baseline, in light and in dark, at a desktop width and two
-of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
-number of PNGs under `packages/dispatch/e2e/__screenshots__`.
+set compared against a committed baseline, in light and in dark, at a desktop width and six
+of them again at a phone width - twenty-three pages and six, so fifty-eight comparisons, in the
+`visual` and `visual-phone` projects - and each state of the command bar's design compared
+against its own, in the `visual-bar` project (packages/dispatch/e2e/going-bar.visual.e2e.ts):
+fourteen rows, one per state, which take twenty-eight shots, since eleven of the rows shoot their
+state more than once: among them, those of states 2, 3, 4 and 6 over the page and again in the
+panel at the side, and that of state 10 in the panel at its side width and again widened. Eighty-six
+baselines, which is the number of PNGs under `packages/dispatch/e2e/__screenshots__`: the pages'
+fifty-eight and the bar's twenty-eight (the upload's section below says how a new baseline
+reaches the tree).
+
+The bar's rows draw what only a model's answer makes, so the stack this job starts is the
+models lane's: packages/dispatch/e2e/visual-run.sh sets `DISPATCH_E2E_MODELS=fake` itself, so
+the job and a person run the same command, and the harness starts the fake writing model and
+the fake decision model beside the server, on the host, as the embedder job's models step
+does. The pages' rows open no bar, and only the bar asks the server whether it has a model, so
+the pages' fifty-eight baselines are drawn as before.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
 or a layout regression is refused at the merge rather than found the next morning, and the
@@ -1339,6 +1419,17 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
+The command bar's fourteen rows (the `visual-bar` project) run inside the same browser step.
+Five runs of this job at heads of #3924 (runs 45120752749, 45120693969, 45176245187,
+45214980814 and 45268550216), before the guard of the next section reached the page rows, read
+that step with the bar's rows in it at 134-188 s, the largest 188 s (run 45120693969, job
+137514366021), and the bar's rows inside it, from the last page row's end to the last bar
+row's, at 39.7-60.6 s, the largest 60.6 s (run 45268550216, job 138023190950). No bar baseline
+was committed then, so each bar row wrote its shots rather than compared them; where that job's
+reverse-order step compared them, the bar's rows took 45.9 s. So 188 x 1.15 = 216 s -> 4 min,
+the step's budget as before, and the job's stays 240 + 333 + 120 = 693 s -> 12 minutes: the
+bar's rows add no budget.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the two-process job's step of this name gives:
@@ -1420,6 +1511,15 @@ head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a pa
 and writes a version the shot would draw, and a result's commit is one the Verification tab's read
 asks GitHub the pull request of, writing what it learns.
 
+The command bar's rows (the `visual-bar` project, e2e/going-bar.visual.e2e.ts) are the one
+exception, and the guard is not on their pages: what they write - a run, a plan applied and
+undone, a filed issue - is the state each row compares, so stopping it would leave nothing to
+draw. They run after every page row instead: the job's run has one worker, which takes the three
+visual projects in the order e2e/playwright.config.ts declares them, `visual-bar` last, so no page
+row draws after any of their writes. Each signs in as a login of its own, writes only on project
+OPS, which no page of the shot set draws, and stops, discards or undoes what it starts; that
+file's header names the little that stays and why no other bar row draws it.
+
 This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
 s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's
 shot happened to draw it, and could not say a row passes alone; the guard names the row that
@@ -1428,9 +1528,16 @@ wrote, whatever any other row draws, and stops the write before any other row ca
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
-that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
-which is how that file reaches the pull request from a machine with no container. It
-holds the run's results under test-results.
+that wrote a baseline no tree holds yet - a route or a command bar state this layer gained -
+leaves it here, which is how that file reaches the pull request from a machine with no
+container. Playwright writes a shot that has no baseline as the baseline itself, at
+`packages/dispatch/e2e/__screenshots__/<project>/<shot>.png`, which this upload takes, and fails
+the row that took it; that failure is soft, so the row goes on to its other shots, and every
+other row runs (`updateSnapshots` is `"default"` when neither the config nor the command line
+names it, at node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:531,
+and `handleMissing` in lib/matchers/expect.js writes the file and answers a soft error for that
+mode). So the first full-lane run of a change that adds a shot fails this job by design, and its
+artifact holds the new baselines. It holds the run's results under test-results.
 
 ## Why the visual upload keeps a pattern that matches no file
 

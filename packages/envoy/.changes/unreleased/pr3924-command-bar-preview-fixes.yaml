@@ -1,0 +1,76 @@
+kind: Changed
+body: |-
+  The command bar mends what a real-model preview showed. A chip in the side panel opens its item
+  in the page with the router, and the panel stays; a chip in the bar opens it without loading the
+  whole page. History offers Undo only while the run still holds a change Undo can take back, as
+  the run's record says (`undoable`), and its Undo says what it takes back ("Undo 2 changes"); a
+  message stays sent, so a plan of messages alone offers no Undo. A row Undo took back reads
+  reverted - grey, the value it wrote struck out beside the old value it put back, and no check -
+  and each row has one status line, so a sent message reads "Sent, not undone" alone; the answer
+  of an undone run turns grey under "Undone", and a run undone before the page was opened reads
+  "Undone" at that time on its card, from its record (`undone_at`), and offers no Undo. Once a
+  plan's rows ran, the run's fold line says "applied 3 changes" in place of "proposed a plan". The
+  run chip floats over the top of the page, so the page never moves when a run starts
+  or ends. A run's fold line names what each block step drew: "drew a table", "drew a chart",
+  "showed a number", and a chart labels each bar with its value. The filing line names the project
+  and then the parent the new issue takes ("File as a new issue in DEMO, under DEMO-6") and draws
+  no short answer, and the box's clear button keeps a gap from the words before it. An issue the
+  short answer names twice
+  is its chip once, and an item of an issue the text already draws, such as its spec, is no second
+  link of its title. A chip is one box on one line that never wraps and takes no underline: a long
+  title is cut with "…" and shows whole on hover, and the full stop or comma after a chip stays
+  against it on its line. The box keeps room for what it says whole, and its context chip gives
+  way first. A time the agent writes as a `dispatch-time:` link draws as that time with its full
+  date on hover, in an answer, the short answer, a plan's summary and the line beside the agent's
+  calls, and Copy takes the words shown. A plan card reads "Approval: Ask ›", lists each change's
+  fields under its chip, keeps every tick in one column, gives each field one Edit, shows a status
+  by its word, and its Discard stands as tall as Approve. A working run with no call running ends
+  with "Thinking…" and its timer, its step lines read larger and darker, and the fold line is grey.
+  A bound, a Stop and a failure end in one grey card with one next step under what the run found
+  so far, its steps folded: a Stop reads "Stopped · read 1 item" with Continue. A run the model's
+  provider stopped reads "The model's provider refused to read part of what this run found", then
+  "Continue, or ask in other words" with Continue (and no Continue in Deep) where its end offers
+  Continue, else "Ask in other words"; never as a level's limit. A History row of such a run says
+  so under it. A cut link title on any page is cut at 60 characters again, as before the bar.
+  The search opens with its box on top and "Continue: ‹title›" and Recent under it, History and
+  the move in its foot, and Esc in the foot's hints as its one Close. The header is one set over
+  the page and at the side: History, New, the move as an icon and × for Close. History names
+  itself in the header with a back arrow, is the one box on the screen, and draws its first row
+  selected. A conversation's title starts with a capital wherever it is named. The filters are one
+  pill each, naming the field and its value, and "Updated since" is a menu of days back with a
+  day of your own. A project's context chip shows its key, "OPS", with the full words on hover.
+  A hit's status shows once, in a column of its own. The short answer carries the ✦ mark. A table
+  stands in a card, heads its issues "Issue" and keeps its cells level with their chips. Stop is
+  a filled button with a stop square; the mode button keeps one width and its menu wears the
+  page's focus ring. Settings names the setting "Approval mode" (Ask, Auto-review), in a card like
+  the other sections, says when a choice was saved, and draws radios that read in dark mode. The
+  bar says a run was undone only once Dispatch's record says an undo landed; a run undone in part
+  reads "Partly undone · 1 change stays" and offers Undo of what its record says Undo can still
+  take back ("Undo 1 change"). A plan row that sets a project's default
+  repository names it, and a clear says so in red. Enter approves a plan only when Approve would.
+  A filing belongs to the open of the bar it was made in, Try again files with its first context,
+  and a refused filing names the near copy. A run's step that sets a project's default repository
+  names it ("to none" for a clear), and a filing that fails says why in words, never a status or
+  a model service's own: "Dispatch could not file it just now", "Dispatch stopped before it filed
+  the issue", or a failed run's sentence, such as "Dispatch could not reach the model". While a
+  plan waits, the view shows its card from the question down with Approve and Discard pinned at
+  its foot and "↵ Approve" under the box, in the bar and the panel alike; a hit's snippet stands
+  formatted on a grey second line, with no directive fence or attributes a cut window left in
+  it; a stopped run's steps fold closed with its answer so far above its card, and a Stop reads
+  "Stopped · read 1 item" with Continue; a header over ended calls reads in the past tense; a
+  long plan title counts ("Change 4 items and send 1 message");
+  a message on an issue names the sessions it reaches, or the agents that follow the issue where
+  the page knows none; an undone run's fold line still says what the run applied; Recent rows
+  show the item's chip; New puts the cursor back in the box; the chip sits clear of the screen's
+  top; and Settings says "Saved" beside the mode it saved, for a moment.
+  After the third visual review and the class search: Approve and Discard are pinned to the
+  bottom edge of the conversation's scroll, with no row showing under them; every message row
+  reads "Message to ‹whom› on ‹issue›", naming the sessions the issue's route, claim and followers
+  give; the hint under the box starts at the box's left edge; a snippet the server cut out of a
+  longer text ends with "…" and stops before the status, which keeps a column of its own; the run
+  chip is 24 px tall; the filed notice names the issue by its title too ("Filed OPS-9: A weather
+  station on the roof"); an Undo line in History is named by its plan row, so a setting's line
+  names its project and the value it set; a run reads "Undone" only where its record says no
+  change stays, and the card's Undo counts what the record says it can take back; Continue takes
+  the empty box's highlight again after New; a conversation opened in the side panel starts at
+  its foot; and a table's Show all is not carried over to the next answer's table.

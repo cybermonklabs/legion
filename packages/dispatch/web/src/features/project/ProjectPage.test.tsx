@@ -17,6 +17,7 @@ import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -617,6 +618,7 @@ function todo(key: string, title: string): IssueSummary {
     priority_from: null,
     resolved_priority: null,
     progress: { tasks: null, children: null },
+    project: issueProject(key),
     rank: "a",
     repo: null,
     resolved_repo: null,

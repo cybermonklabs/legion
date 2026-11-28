@@ -1467,3 +1467,183 @@ test("API client exposes the current state with a stale state-write conflict", a
 
   expect(error).toMatchObject({ code: "STATE_STALE", state: staleState, status: 409 });
 });
+
+// A frame the page could not take is not in hand: the stream is opened again after the last frame
+// it did take, so that frame comes again rather than being skipped, and the connection it threw
+// out of is closed rather than left open behind the new one.
+test("an answer stream resumes after the last frame handed on, and closes the body it left", async () => {
+  const encoder = new TextEncoder();
+  let firstCancelled = false;
+  const bodies = [
+    new ReadableStream<Uint8Array>({
+      cancel() {
+        firstCancelled = true;
+      },
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'id: 1\nevent: text\ndata: {"text":"One "}\n\nid: 2\nevent: text\ndata: {"text":"two"}\n\n'
+          )
+        );
+      },
+    }),
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'id: 2\nevent: text\ndata: {"text":"two"}\n\nid: 3\nevent: end\ndata: {"items":0,"words":2}\n\n'
+          )
+        );
+        controller.close();
+      },
+    }),
+  ];
+  const stub = stubFetch(
+    () => new Response(bodies.shift() ?? null, { headers: { "Content-Type": "text/event-stream" } })
+  );
+  const api = createApiClient(stub.fetch);
+  const handed: string[] = [];
+  let refused = false;
+
+  await api.streamGoingAnswer(
+    "run-1",
+    (frame) => {
+      const text = frame.event === "text" ? frame.data.text : frame.event;
+      if (text === "two" && !refused) {
+        refused = true;
+        throw new Error("the page could not take this frame");
+      }
+      handed.push(text);
+    },
+    new AbortController().signal
+  );
+
+  expect(handed).toEqual(["One ", "two", "end"]);
+  expect(
+    stub.requests.map((request) => new Headers(request.init?.headers).get("Last-Event-ID"))
+  ).toEqual(["0", "1"]);
+  expect(firstCancelled).toBe(true);
+});
+
+/** An agent run's event stream that carries `frames`, each its sequence (none for a keepalive),
+ *  its name and its data, and then closes. */
+function runStream(...frames: readonly (readonly [number | undefined, string, unknown])[]) {
+  const text = frames
+    .map(
+      ([id, name, data]) =>
+        `${id === undefined ? "" : `id: ${id}\n`}event: ${name}\ndata: ${JSON.stringify(data)}\n\n`
+    )
+    .join("");
+  return new Response(text, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+/** The `Last-Event-ID` of each request of `requests`. */
+function lastEventIds(requests: readonly RecordedRequest[]): readonly (string | null)[] {
+  return requests.map((request) => new Headers(request.init?.headers).get("Last-Event-ID"));
+}
+
+// A run's stream that drops - a connection that fails, a gateway's 5xx while Dispatch restarts,
+// or a close before the run's end with no keepalive - says so, waits, and is opened again after
+// the last frame it took; once a connection is answered again it says the stream came back. A
+// drop that brought a frame waits the first wait again; each that brought nothing waits twice as
+// long as the one before.
+test("a run's stream that drops says so, waits, opens again after its last frame, and says when it came back", async () => {
+  const answers: (() => Response)[] = [
+    () => runStream([1, "call", { kind: "read", label: "Reading CORE-1", step: 2, tool: "read" }]),
+    () => {
+      throw new TypeError("Failed to fetch");
+    },
+    () => new Response("Bad Gateway", { status: 502 }),
+    () =>
+      runStream(
+        [2, "tool", { kind: "read", label: "Read CORE-1", step: 2, tool: "read" }],
+        [3, "end", { offers: [], reason: "", state: "done" }]
+      ),
+  ];
+  const stub = stubFetch(() => {
+    const next = answers.shift();
+    if (next === undefined) throw new Error("the stream was opened once too often");
+    return next();
+  });
+  const waits: number[] = [];
+  const api = createApiClient(stub.fetch, undefined, async (ms) => {
+    waits.push(ms);
+  });
+  const heard: string[] = [];
+  await api.streamGoingRunEvents(
+    "run-1",
+    (name) => heard.push(name),
+    new AbortController().signal,
+    (dropped) => heard.push(dropped ? "dropped" : "back")
+  );
+  expect(heard).toEqual(["call", "dropped", "back", "tool", "end"]);
+  expect(lastEventIds(stub.requests)).toEqual(["0", "1", "1", "1"]);
+  expect(waits).toEqual([500, 500, 1000]);
+});
+
+// A stream the server closed for being idle is a run that waits for its person: it is opened
+// again, and nothing says it dropped.
+test("a run's stream closed after a keepalive opens again with no drop", async () => {
+  const answers = [
+    () => runStream([undefined, "keepalive", {}]),
+    () => runStream([1, "end", { offers: [], reason: "", state: "done" }]),
+  ];
+  const stub = stubFetch(() => {
+    const next = answers.shift();
+    if (next === undefined) throw new Error("the stream was opened once too often");
+    return next();
+  });
+  const api = createApiClient(stub.fetch, undefined, async () => {});
+  const dropped: boolean[] = [];
+  await api.streamGoingRunEvents(
+    "run-1",
+    () => {},
+    new AbortController().signal,
+    (drop) => dropped.push(drop)
+  );
+  expect(dropped).toEqual([]);
+  expect(stub.requests).toHaveLength(2);
+});
+
+// A run goes on through a restart of the server (R11), so its stream waits one out: it is given
+// up only once it has waited two minutes through drops that brought nothing, its waits doubling
+// to 5 s. A refusal of the route itself is the answer at once.
+test("a run's stream that keeps failing is given up once it waited two minutes, and a refusal below 500 at once", async () => {
+  const failing = stubFetch(() => {
+    throw new TypeError("Failed to fetch");
+  });
+  const waits: number[] = [];
+  const api = createApiClient(failing.fetch, undefined, async (ms) => {
+    waits.push(ms);
+  });
+  const dropped: boolean[] = [];
+  const failed = await api
+    .streamGoingRunEvents(
+      "run-1",
+      () => {},
+      new AbortController().signal,
+      (drop) => dropped.push(drop)
+    )
+    .then(
+      () => undefined,
+      (error: unknown) => error
+    );
+  expect(failed).toBeInstanceOf(NetworkError);
+  expect(dropped).toEqual([true]);
+  expect(waits.slice(0, 6)).toEqual([500, 1000, 2000, 4000, 5000, 5000]);
+  const waited = waits.reduce((sum, wait) => sum + wait, 0);
+  expect(waited).toBeGreaterThanOrEqual(120_000);
+  expect(waited - (waits.at(-1) ?? 0)).toBeLessThan(120_000);
+
+  const refusing = stubFetch(() =>
+    Response.json({ code: "GOING_RUN_NOT_FOUND", error: "no such run" }, { status: 404 })
+  );
+  const refused = await createApiClient(refusing.fetch, undefined, async () => {})
+    .streamGoingRunEvents("run-1", () => {}, new AbortController().signal)
+    .then(
+      () => undefined,
+      (error: unknown) => error
+    );
+  expect(refused).toBeInstanceOf(ApiError);
+  expect(refusing.requests).toHaveLength(1);
+});

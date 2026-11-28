@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -153,7 +154,12 @@ type AppContextOptions struct {
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
-	Answerer      api.Answerer
+	Answerer api.Answerer
+	// AnswerModel is the model the Answerer was configured with. See api.DepsInput.
+	AnswerModel string
+	// Decider is the measured decision model, nil for none; cmd/dispatch builds it
+	// (newDecider). See api.DepsInput.
+	Decider       *api.Decider
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -202,6 +208,9 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// AgentCallHook is for end-to-end test processes only (cmd/dispatch:
+	// DISPATCH_TEST_AGENT_CALL_HOOK); see api.Deps.AgentCallHook.
+	AgentCallHook api.AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -216,6 +225,12 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// GoingRuns wakes the command-bar agent's waiting claims and renews; cmd/dispatch registers it
+	// on its listener hub for api.GoingRunsChannel. See api.Deps.GoingRuns.
+	GoingRuns *api.GoingRunSignal
+	// GoingRunEvents wakes the streams of a command-bar run's events; cmd/dispatch registers it on
+	// its listener hub for api.GoingRunEventsChannel. See api.Deps.GoingRunEvents.
+	GoingRunEvents *api.GoingRunEventSignal
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
 	// See api.Deps.ParentStatusRule.
 	ParentStatusRule api.ParentStatusRule
@@ -254,7 +269,9 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
 	// The canonical origin is the first of the server's origins: whoami names it first, and a
-	// request whose Host the table names no other origin of is answered as it.
+	// request whose Host the table names no other origin of is answered as it. The API reads the
+	// address a request came to from this table too (api.Deps.RequestOrigin): its cookie-origin
+	// check the router and the command bar's in-process writes are both held to.
 	hosts, err := newHostOrigins(opts.ServerURL, opts.ServedOrigins, opts.FormerOrigins)
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -270,6 +287,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ServedOrigins:          opts.ServedOrigins,
 		FormerOrigins:          opts.FormerOrigins,
 		WhoamiOrigins:          hosts.origins,
+		RequestOrigin:          api.RequestOrigin{Public: hosts.publicOrigin, AtFormer: hosts.atFormer},
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
@@ -277,6 +295,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
+		AnswerModel:            opts.AnswerModel,
+		Decider:                opts.Decider,
 		Events:                 opts.Events,
 		Renames:                opts.Renames,
 		App:                    opts.App,
@@ -296,11 +316,15 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		AgentCallHook:          opts.AgentCallHook,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		GoingRuns:              opts.GoingRuns,
+		GoingRunEvents:         opts.GoingRunEvents,
+		WouldDeliver:           outbox.WouldDeliver,
 		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
@@ -1024,62 +1048,15 @@ func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
-// cookie or an IAP assertion, unless its Origin is the origin of the request's own Host
-// (hostOrigins.publicOrigin: the canonical origin or a served address), or it carries none and the
-// browser says the write is same-origin: so neither another site's page nor a page on one of the
-// server's addresses can write as a person signed in on another. A browser sends the credential
-// with a request another site's page makes: its cookie, or under IAP the IAP cookie, for which IAP
-// adds a valid assertion. A request with an Authorization header is an agent's. At a former
-// address's host, at any port, every such request is refused, whatever its Origin and
-// Sec-Fetch-Site say (hostOrigins.atFormer): the server no longer serves that address, and a page
-// there writes as no one. A document socket (opensDocumentSocket) is such a write there too, though
-// its upgrade is a GET: it carries the person's edits on the cookie alone, and it reads no
-// Authorization header, so one beside the cookie makes it no agent's. Everywhere else it is left
-// to the socket's own upgrade, which holds it to the page's origin.
+// enforceCookieOrigin is the cross-site check every write a browser's credential carries is held
+// to (api.EnforceCookieOrigin), at the address the router answers a request at by its Host, from
+// its one table (hostOrigins.publicOrigin, hostOrigins.atFormer): its Origin must be the origin
+// of the request's own Host, the canonical origin or a served address, and at a former address's
+// host, at any port, such a write and a document socket are refused. It reads the table as
+// BuildAppContext handed it to the API (api.Deps.RequestOrigin), which holds the command bar's
+// in-process writes to the same rule at the same table.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// The method and the headers are read before any cookie is parsed, as most requests are
-		// safe ones that open no document socket.
-		docSocket := opensDocumentSocket(req)
-		if !docSocket && (!unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "") ||
-			!auth.HasSessionCookie(req) && !identity.HasIAPAssertion(req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if r.ctx.hosts.atFormer(req) {
-			writeError(w, http.StatusForbidden, "invalid request origin")
-			return
-		}
-		if docSocket {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == r.ctx.hosts.publicOrigin(req) {
-			next.ServeHTTP(w, req)
-			return
-		}
-		if req.Header.Get("Origin") == "" && req.Header.Get("Sec-Fetch-Site") == "same-origin" {
-			next.ServeHTTP(w, req)
-			return
-		}
-		writeError(w, http.StatusForbidden, "invalid request origin")
-	})
-}
-
-func unsafeMethod(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		return true
-	default:
-		return false
-	}
-}
-
-// opensDocumentSocket reports whether req opens a document room's socket (api's GET /ws/doc/{room}),
-// which writes a document as the person whose session cookie opened it.
-func opensDocumentSocket(req *http.Request) bool {
-	return req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/ws/doc/")
+	return api.EnforceCookieOrigin(r.ctx.apiDeps.RequestOrigin, next)
 }
 
 // sanitizeNext restricts post-login redirect targets to local paths. An

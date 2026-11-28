@@ -2158,6 +2158,31 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "message",
   },
   {
+    file: `${FEATURES}/going/ConversationView.tsx`,
+    holds: "the dashboard's own status message for the run's ending",
+    written: "words.text",
+  },
+  {
+    file: `${FEATURES}/going/Notice.tsx`,
+    holds: "the dashboard's notification for the command that just ended",
+    written: "notice.text",
+  },
+  {
+    file: `${FEATURES}/going/PlanRows.tsx`,
+    holds: "the dashboard's status message for the proposed step's outcome",
+    written: "outcome.text",
+  },
+  {
+    file: `${FEATURES}/search/AnswerPanel.tsx`,
+    holds: "the dashboard's error explanation for a short answer",
+    written: "errorText(answer.error)",
+  },
+  {
+    file: `${FEATURES}/search/AnswerPanel.tsx`,
+    holds: "the dashboard's status message for the run's ending",
+    written: "words?.text",
+  },
+  {
     file: `${FEATURES}/conversation/held-sends.ts`,
     holds: "the words a mention was typed as, matched against the draft and drawn nowhere",
     written: "mention.text",
@@ -2343,7 +2368,7 @@ interface UntreedRow {
 const UNTREED_ROWS: readonly UntreedRow[] = [
   {
     surface: "agent-turn-text",
-    why: "A session's live transcript, which Dispatch stores nothing of, so the server has no text to read a tree of.",
+    why: "A model turn or answer handled as a live transcript: the renderer reads the text as frames arrive, before a stored tree could exist.",
   },
   {
     surface: "agent-turn-reasoning",

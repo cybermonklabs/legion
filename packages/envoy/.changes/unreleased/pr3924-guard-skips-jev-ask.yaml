@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  The command bar's check for a missing plan no longer delays an answer to a question. A run
+  started from the line Ask, or from no line (a follow-up typed in a box, a Continue), asks the
+  decision model Jev what its words ask, beside the run's first model call, so the call adds no
+  wait: the agent makes one `line` call of agent/v1 (`agentwire.KindLine`), and the server puts the
+  run's words and page to Jev as the bar's own decision does. A turn Jev reads as Ask ends with its
+  prose and no check; a turn Jev reads as Do or File, a turn whose line call failed or had not
+  answered when the reply came, and every run started from Do or File are checked as before. A run's
+  claim carries its `line` and whether the server names a decision model (`decider`); with none, the
+  agent asks Jev nothing. A `reply` frame the guard decided on says what Jev read the words as
+  (`jev_line`: `ask`, `do`, `file`, `none` or `late`), and one it did not check says why
+  (`check_skipped: "jev_read_ask"`), with no `check_ms`. The eval of the command bar (`going-eval
+  run`) gives its server the decision model that `DISPATCH_DECISION_MODEL`,
+  `DISPATCH_DECISION_MODEL_ENDPOINT` and `DISPATCH_DECISION_MODEL_TOKEN_FILE` name in its own
+  environment, and its report counts, for each kind of task, the turns whose check was skipped and
+  the turns the guard decided on with no line from Jev, those whose line call was still out among
+  them; each check of `--answers-out` adds `skipped` and `jev`.

@@ -1537,11 +1537,15 @@ test("the header's keys and the palette reach their controls", async ({ browser 
       "a focus given back to Edit title opened the title's editor"
     ).toBe("The header's issue");
 
-    // The palette offers Close issue and Set priority P2, and not Reopen issue.
+    // The palette offers Close issue and Set priority P2, and not Reopen issue. The words typed
+    // narrow the actions to those whose name holds them (design v3, state 1): `e` is in all
+    // three, so one list says which of them is offered.
     await page.keyboard.press("Control+k");
+    const search = page.getByRole("combobox", { name: "Search" });
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
+    await search.fill("e");
     await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
     await expect(actions.getByRole("option", { name: "Set priority P2" })).toBeVisible();
     await expect(actions.getByRole("option", { name: "Reopen issue" })).toHaveCount(0);
@@ -1567,6 +1571,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(priority, "the priority refuses input while the status is saved").toBeEnabled();
     await focusThePage(page);
     await page.keyboard.press("Control+k");
+    await search.fill("set priority");
     await expect(
       actions.getByRole("option", { name: "Set priority P2" }),
       "the palette hides Set priority while the priority takes input"
@@ -1587,6 +1592,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     // opens once the page has taken in the close and has no write in flight.
     await focusThePage(page);
     await page.keyboard.press("Control+k");
+    await search.fill("close");
     await actions.getByRole("option", { name: "Close issue" }).click();
     await expect(palette, "Close issue did not close the palette").toHaveCount(0);
     await expect.poll(() => getIssue(key).then((read) => read.status)).toBe("done");
@@ -1594,6 +1600,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     await expect(header.getByRole("status"), "the close is still being saved").toHaveCount(0);
     await focusThePage(page);
     await page.keyboard.press("Control+k");
+    await search.fill("e");
     const reopen = actions.getByRole("option", { name: "Reopen issue" });
     await expect(reopen, "the closed issue's palette offers no Reopen issue").toBeVisible();
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
@@ -3031,10 +3038,16 @@ test("the key card and the palette offer the approval chip's two keys while the 
     }
 
     const palette = page.getByRole("dialog", { name: "Search" });
+    const search = page.getByRole("combobox", { name: "Search" });
     const actions = palette.getByRole("group", { name: "Actions" });
     await focusThePage(page);
     await page.keyboard.press("Control+k");
     await expect(palette, "Control+k did not open the palette").toBeVisible();
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `e` is in both and in Create issue, which the palette offers anywhere on the page, so one
+    // list says whether either is offered.
+    await search.fill("e");
+    await expect(actions.getByRole("option", { name: "Create issue" })).toBeVisible();
     for (const [label] of lines) {
       await expect(
         actions.getByRole("option", { name: label }),
@@ -3046,6 +3059,7 @@ test("the key card and the palette offer the approval chip's two keys while the 
     await chip.focus();
     await expect(chip).toBeFocused();
     await page.keyboard.press("Control+k");
+    await search.fill("approval request");
     for (const [label] of lines) {
       await expect(
         actions.getByRole("option", { name: label }),
@@ -3111,6 +3125,8 @@ test("the palette's Close issue, run from a header control, leaves the focus in 
       await page.keyboard.press("Control+k");
       const palette = page.getByRole("dialog", { name: "Search" });
       await expect(palette, "Control+k did not open the palette").toBeVisible();
+      // The words typed narrow the actions to the row this step presses (design v3, state 1).
+      await page.getByRole("combobox", { name: "Search" }).fill("close");
       await palette
         .getByRole("group", { name: "Actions" })
         .getByRole("option", { name: "Close issue" })

@@ -21,7 +21,7 @@ import {
   badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
-import { useIssueAssignee } from "./useIssueAssignee";
+import { type IssueAssigneeWrite, useIssueAssignee } from "./useIssueAssignee";
 
 /** The name the assignee picker answers to, in its words on every page: the property it sets
  *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
@@ -32,22 +32,8 @@ export function assigneeControlName(issueKey: string): string {
 }
 
 /**
- * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
- * email, or a muted "Unassigned" tag) and, on click, tap, Enter or Space, opens a native
- * `<select>` over everyone who has signed in (`GET /users`) with Unassigned first — the same
- * picker on desktop and iPhone, laid invisibly over the badge exactly as `PriorityControl` does.
- * The list is read only once the reader reaches for the control (pointer over it, a
- * touch on it, or focus) and then kept for the session: a fresh issue load makes no request
- * for it, and the badge never waits on it. Anyone signed in may reassign. The write
- * goes through `useIssueAssignee`, so the issue detail, the project lists and the inbox's
- * partitions update at once and roll back together; a refused person shows the server's
- * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
- * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Named by `assigneeControlName`.
- *
- * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
- * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
- * grey. The select over it is the same either way.
+ * The assignee editor of a surface that owns no write of its own - the issue page's header, the
+ * new issue page - where this control writes the issue's assignee (`useIssueAssignee`).
  */
 export function AssigneeControl({
   assignee: host,
@@ -60,11 +46,44 @@ export function AssigneeControl({
   issueKey: string;
   variant?: "badge" | "header";
 }): ReactNode {
+  const write = useIssueAssignee(issueKey, host);
+  return <AssigneeEditor disabled={disabled} issueKey={issueKey} variant={variant} write={write} />;
+}
+
+/**
+ * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
+ * email, or a muted "Unassigned" tag) and, on click, tap, Enter or Space, opens a native
+ * `<select>` over everyone who has signed in (`GET /users`) with Unassigned first — the same
+ * picker on desktop and iPhone, laid invisibly over the badge exactly as `PriorityControl` does.
+ * The list is read only once the reader reaches for the control (pointer over it, a
+ * touch on it, or focus) and then kept for the session: a fresh issue load makes no request
+ * for it, and the badge never waits on it. Anyone signed in may reassign. The write
+ * goes through `write`: `useIssueAssignee` for the issue itself, so the issue detail, the project
+ * lists and the inbox's partitions update at once and roll back together, and a refused person
+ * shows the server's reason; or a host's own, such as a command-bar plan row's edit of the value
+ * it writes. Like `PriorityControl`, the select stays enabled while a save is in flight - a
+ * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
+ * is queued behind the save. Named by `assigneeControlName`.
+ *
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
+ * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
+ * grey. The select over it is the same either way.
+ */
+export function AssigneeEditor({
+  disabled = false,
+  issueKey,
+  variant = "badge",
+  write,
+}: {
+  disabled?: boolean;
+  issueKey: string;
+  variant?: "badge" | "header";
+  write: IssueAssigneeWrite;
+}): ReactNode {
   const page = usePageWords();
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
-  const write = useIssueAssignee(issueKey, host);
   /** The assignee as the badge and the select draw it (`IssueFieldWrite.shown`). */
   const assignee = write.shown;
   const logins = (users.data ?? []).map((user) => user.login);

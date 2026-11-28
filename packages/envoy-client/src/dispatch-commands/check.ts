@@ -80,6 +80,15 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_architecture_sync: true,
 };
 
+/** Whether `tool` names its own arguments and no owner: an issue-free tool, or one whose spec
+ *  binds its routes, whose arguments fill the route it calls and which LEGION_ISSUE never fills. */
+function ownsNoIssue(tool: string): boolean {
+  return (
+    issueFreeTools[tool] === true ||
+    dispatchToolSpecs.some((spec) => spec.name === tool && "routes" in spec)
+  );
+}
+
 function canonicalExternalIssueRef(value: string): string {
   const match = value.trim().match(externalIssueRefPattern);
   return match ? `${canonicalRepo(match[1] ?? "", match[2] ?? "")}#${match[3]}` : value;
@@ -517,7 +526,7 @@ export async function resolveOwnerArguments(
   context: OwnerContext,
   problems: string[]
 ): Promise<OwnerResolution> {
-  if (issueFreeTools[tool] === true) return { args: input, ref: null, owner: null };
+  if (ownsNoIssue(tool)) return { args: input, ref: null, owner: null };
   const refArgument = input.ref;
   let ref: ParsedDispatchRef | null = null;
   let args = input;
@@ -734,10 +743,9 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
   const owner = await resolveOwnerArguments(tool, args, input, problems);
   // Judged on the caller's own arguments, before the ref filled any: the ref as resolved, read
   // back from a dashboard URL when it was one.
-  const conflicts =
-    issueFreeTools[tool] === true
-      ? []
-      : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
+  const conflicts = ownsNoIssue(tool)
+    ? []
+    : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
   problems.push(...conflicts);
   // A call left without an owner, or one whose owners conflict, already has its owner said: an
   // owner-missing exit (`OwnerResolution.ownerMissing`) pushed the actionable line, a call that
@@ -746,8 +754,7 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
   // "issue is required" and the owner rule a refusal of the tool's rule opens with would only
   // restate that, so they are left out; every other part of the rule the call broke stays, so the
   // refusal names all of the call's problems at once.
-  const ownerAlreadySaid =
-    issueFreeTools[tool] !== true && (owner.owner === null || conflicts.length > 0);
+  const ownerAlreadySaid = !ownsNoIssue(tool) && (owner.owner === null || conflicts.length > 0);
   const schema = toolSchema(tool);
   // An owner-missing call is parsed with `ownerStandInIssue` as its issue; see there for why.
   const standIn = owner.ownerMissing === true;

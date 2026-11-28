@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  The command bar's look follows its design more closely. A run that stopped or failed folds its
+  steps into one line, as an answered run does, so that line and the stop's card count the same
+  items ("read 6 items so far"), and the line's mark turns when it opens. One step past the
+  newest three keeps its own line in its own words ("Looked for a way to list an issue's
+  messages") instead of a fold of one. The short answer draws an issue it names as the issue's
+  chip, in its text where the text writes the key, and beneath it otherwise. A plan row of a
+  document change names the issue whose document it changes by its chip ("Suggest a change to
+  spec on DEMO-15"). A value now in a plan row, and "Done" under an answer, are the page's grey,
+  not a link's blue. In a list in an answer, a line whose first word is a chip draws no bullet,
+  whatever is written after the chip (a colon, a comma, a full stop or a word), and a line of
+  words keeps its bullet, whether or not a chip follows its words. A chart by status puts its
+  places in the order of the board's columns. The side panel moves back over the page with an
+  icon whose tooltip says so, and its context chip stands inside its box, as the bar's does.

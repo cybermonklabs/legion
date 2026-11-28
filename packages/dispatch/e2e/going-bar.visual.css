@@ -1,0 +1,22 @@
+/* The command bar's words that read the run's own pace, held to one width while the visual lane's
+ * bar rows take a shot (`stylePath`, e2e/going-bar.visual.e2e.ts) and nowhere else. Each counts
+ * seconds from the person's Enter on the page's clock - the timer beside "Thinking…", the timer of
+ * a run's newest step line, and the time in "Worked for 1 min 48 s · read 14 items", the line a
+ * run's steps fold into once it no longer works - so one run of a row reads "2 s" and the next
+ * "3 s".
+ *
+ * The shot masks each of them (`shoot`), as it masks a `<time>`: the mask's box shows where the
+ * time stands, and the row reads the words around it with an assertion. A mask paints the
+ * element's own box, and these boxes change width with the seconds they count, so each is held
+ * here to one width, wide enough for "1 min 48 s" and cut past it: what stands beside it then
+ * keeps its place whatever the time reads. */
+
+[data-testid="going-step-timer"],
+[data-testid="going-thinking-timer"],
+[data-testid="going-steps-fold-time"] {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: bottom;
+  white-space: nowrap;
+  width: 4.5em;
+}

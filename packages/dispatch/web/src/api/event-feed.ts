@@ -3,6 +3,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import { reaskHeldCredentialList } from "../features/credentials/pending";
+import { rereadEveryRun } from "../features/going/going-store";
 import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
@@ -281,6 +282,11 @@ export function useEventFeed({
           // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
           // read of the post whose refetch fails keeps the answer this marks.
           markCorrectedPost(queryClient, event);
+          // A delete withdraws each command-bar run that read the post, which the page cannot
+          // tell from the event: every run it holds reads its record again (`rereadEveryRun`).
+          if (event.type === "comment.deleted" || event.type === "message.deleted") {
+            rereadEveryRun();
+          }
           const targets = eventRefreshTargets(event, viewer);
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);

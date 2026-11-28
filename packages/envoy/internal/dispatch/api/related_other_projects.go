@@ -95,9 +95,9 @@ select b.issue_key, b.issue_title, b.issue_status, b.owner_artifact_id::text, b.
 //
 // Each row becomes one model.SearchResult of kind "ask". Owner.Project carries the project of the
 // row for every row, an issue's as well as a project document's, so that a reader of the item
-// knows which project answered the question; the shared scan (scanSearchRows) fills it for a
-// document owner alone, and the items of the asking project keep that shape. The row carries its
-// own state and answer, so this leg reads no ask state a second time (attachAskStates).
+// knows which project answered the question, as the shared scan (scanSearchRows) fills it for
+// the items of the asking project. The row carries its own state and answer, so this leg reads
+// no ask state a second time (attachAskStates).
 //
 // reader is the display tree reader each answer's text is registered with, which is the leg's
 // own and never the request's: this runs on a goroutine the check may abandon at its grace, and

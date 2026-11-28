@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The command bar's four post-correction tools are first-class. A plan row of an edit or a delete
+  of a comment or an issue message shows the post's author and body (`now`), and once its author
+  deletes the post the row reads `deleted: true` with the delete's mark and no body; approving
+  such a row is refused `409 POST_DELETED` with nothing written. An edit and a delete each wait
+  for the person in Ask and in Auto-review. Undo writes an edit's replaced body back through the
+  edit route, which answers that body as `previous: {body}` and refuses the write back
+  `409 COMMENT_CHANGED` or `409 MESSAGE_CHANGED` where the post holds another body; a body its
+  author wrote since is kept and its writer named, and a post deleted since is named deleted with
+  no word of it. A delete is not undone: Undo names it "deleted, not undone", and it is in no undo
+  count. A run withdrawn only by its own deletes reads stopped with
+  `ANSWER_WITHDRAWN_BY_RUN: Dispatch withdrew this answer because this run deleted a comment or
+  message it read.`; its stream writes its plan frames and that end, and its plan reads as an
+  ended run's, with no summary. A run where any other writer deleted a post it read keeps
+  `ANSWER_WITHDRAWN`.
+  Before a post correction, resolve or reopen, the command bar resolves short post references
+  within their owner and refuses missing or ambiguous prefixes.

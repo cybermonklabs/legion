@@ -120,3 +120,33 @@ func rankBoundary(ctx context.Context, q queryer, project, issueKey, key string)
 	}
 	return neighborRank, nil
 }
+
+// issueRankPlace is an issue's place in its project's ranking: its rank, and the issues just
+// before it (After, an update's rank `after`) and just after it (Before, its `before`) among every
+// issue of the project in rank order, the ordering an update places an issue in (rankForInput). A
+// neighbour is nil where the issue is first or last. An update that ranks the issue answers the
+// place it found and the place it left (issueUpdated), and a write back of the rank names the
+// neighbours of the place it found.
+type issueRankPlace struct {
+	Rank   string  `json:"rank"`
+	After  *string `json:"after"`
+	Before *string `json:"before"`
+}
+
+// readIssueRankPlace reads the issue's place in its project's ranking through q: an update's own
+// transaction, which holds the project's rank allocation (lockProjectRankAllocation), or the pool.
+func readIssueRankPlace(ctx context.Context, q queryer, key string) (issueRankPlace, error) {
+	var place issueRankPlace
+	err := q.QueryRow(ctx, `
+		select i.rank,
+		  (select p.key from issues p where p.project_key = i.project_key and p.key <> i.key and p.rank < i.rank
+		     order by p.rank desc limit 1),
+		  (select n.key from issues n where n.project_key = i.project_key and n.key <> i.key and n.rank > i.rank
+		     order by n.rank limit 1)
+		from issues i where i.key = $1
+	`, key).Scan(&place.Rank, &place.After, &place.Before)
+	if err != nil {
+		return issueRankPlace{}, fmt.Errorf("read %s's place in its project's ranking: %w", key, err)
+	}
+	return place, nil
+}

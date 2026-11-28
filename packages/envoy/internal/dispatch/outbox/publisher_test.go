@@ -130,6 +130,7 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 	// ones its own role routes read (resolveDestinations, resolveRoleHolders).
 	resolvedRoles := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
 	to, resolveErr := eventDestinations(ctx, deps, single, found)
+	resolveErr = holdFallbackCopies(to.holds, resolveErr)
 	single.destinationsOf, single.mentionPending = to.list, to.mentionPending
 	resolveRoleHolders(ctx, deps, []*batchEvent{single}, resolvedRoles)
 	sender := deps.Publisher.WindowUntil(nil)

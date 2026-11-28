@@ -71,7 +71,7 @@ func TestTheDisplayCacheHoldsItsBound(t *testing.T) {
 func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
-	tree := DisplaySnippetJSON("Keep the "+start+"astrolabe"+stop+" here", start, stop)
+	tree := DisplaySnippetJSON("Keep the "+start+"astrolabe"+stop+" here", start, stop, SnippetCut{})
 	var root struct {
 		Content []struct {
 			Content []struct {
@@ -107,7 +107,9 @@ func TestDisplaySnippetJSONMarksWhatTheQueryMatched(t *testing.T) {
 
 // A headline the window cut is balanced by SearchSnippet before DisplaySnippetJSON reads it, so
 // the palette is shown no delimiter the parser would have paired across the cut. The headline is
-// ts_headline's for this source (fragment_test.go, "a long body cut in the middle of prose").
+// ts_headline's for this source (fragment_test.go, "a long body cut in the middle of prose"), and
+// the short window is a headline not in its source cut where the search statement measured it:
+// balanced when cut and kept whole when not.
 func TestDisplaySnippetJSONReadsTheBalancedSnippet(t *testing.T) {
 	t.Parallel()
 	const start, stop = "\uE000", "\uE001"
@@ -116,12 +118,52 @@ func TestDisplaySnippetJSONReadsTheBalancedSnippet(t *testing.T) {
 		"after it for the rest of the week until friday comes around again"
 	headline := "eight nine ten eleven twelve thirteen fourteen fifteen sixteen the new " + start + "anchor" + stop +
 		" build today** and then more words after it for the rest"
-	tree := DisplaySnippetJSON(SearchSnippet(headline, source, start, stop), start, stop)
+	snippet, cut := SearchSnippet(headline, source, start, stop, SnippetCut{})
+	tree := DisplaySnippetJSON(snippet, start, stop, cut)
 	if bytes.Contains(tree, []byte("**")) {
 		t.Errorf("the cut's unmatched delimiter reached the tree: %s", tree)
 	}
-	if bytes.Contains(tree, []byte("strong")) {
-		t.Errorf("the cut's unmatched delimiter opened a mark: %s", tree)
+	window := "the " + start + "anchor" + stop + "** after the"
+	for _, measured := range []SnippetCut{{Start: true}, {End: true}, {Start: true, End: true}} {
+		balanced, gotCut := SearchSnippet(window, "", start, stop, measured)
+		tree := DisplaySnippetJSON(balanced, start, stop, gotCut)
+		if bytes.Contains(tree, []byte("**")) {
+			t.Errorf("cut %+v: the cut's unmatched delimiter reached the tree: %s", measured, tree)
+		}
+		if bytes.Contains(tree, []byte("strong")) {
+			t.Errorf("cut %+v: the cut's unmatched delimiter opened a mark: %s", measured, tree)
+		}
+	}
+	if tree := DisplaySnippetJSON(window, start, stop, SnippetCut{}); !bytes.Contains(tree, []byte(`"** after the"`)) {
+		t.Errorf("a whole headline lost the delimiter its author typed: %s", tree)
+	}
+}
+
+// A snippet tree's doc says which ends its window cut, each only where it was cut, and a whole
+// snippet's doc carries nothing: the dashboard draws "…" at the ends the doc names.
+func TestDisplaySnippetJSONWritesTheCutOnItsDoc(t *testing.T) {
+	t.Parallel()
+	const start, stop = "\uE000", "\uE001"
+	for _, cut := range []SnippetCut{{}, {Start: true}, {End: true}, {Start: true, End: true}} {
+		tree := DisplaySnippetJSON("table. "+start+"needs"+stop+" Draw each page and read", start, stop, cut)
+		var doc struct {
+			Type  string         `json:"type"`
+			Attrs map[string]any `json:"attrs"`
+		}
+		if err := json.Unmarshal(tree, &doc); err != nil {
+			t.Fatalf("decode the snippet tree %s: %v", tree, err)
+		}
+		want := map[string]any{}
+		if cut.Start {
+			want[SnippetCutStartAttr] = true
+		}
+		if cut.End {
+			want[SnippetCutEndAttr] = true
+		}
+		if doc.Type != "doc" || len(doc.Attrs) != len(want) || doc.Attrs[SnippetCutStartAttr] != want[SnippetCutStartAttr] ||
+			doc.Attrs[SnippetCutEndAttr] != want[SnippetCutEndAttr] {
+			t.Errorf("cut %+v: the tree's doc is %s %v, want doc %v: %s", cut, doc.Type, doc.Attrs, want, tree)
+		}
 	}
 }
 
@@ -200,8 +242,8 @@ func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			snippet := SearchSnippet(test.headline, test.source, start, stop)
-			tree := DisplaySnippetJSON(snippet, start, stop)
+			snippet, cut := SearchSnippet(test.headline, test.source, start, stop, SnippetCut{})
+			tree := DisplaySnippetJSON(snippet, start, stop, cut)
 			var text, highlighted strings.Builder
 			linked := false
 			for _, run := range snippetRuns(t, tree) {
@@ -247,7 +289,7 @@ func TestNoSentinelReachesASnippetsAttributes(t *testing.T) {
 		"A <span title=\"" + marked + "\">x</span> here",
 		"A note[^" + marked + "].\n\n[^" + marked + "]: The " + marked + " note.\n",
 	} {
-		tree := DisplaySnippetJSON(markdown, start, stop)
+		tree := DisplaySnippetJSON(markdown, start, stop, SnippetCut{})
 		if bytes.Contains(tree, []byte(start)) || bytes.Contains(tree, []byte(stop)) {
 			t.Errorf("a sentinel of %q reached the tree: %s", markdown, tree)
 		}

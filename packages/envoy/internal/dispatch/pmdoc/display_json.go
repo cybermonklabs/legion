@@ -167,9 +167,32 @@ func DisplayTreeBuilds() uint64 { return displayTreeBuilds.Load() }
 // markTypes, which is the schema of what Dispatch keeps.
 const DisplayHighlightMark = "searchHighlight"
 
+// SnippetCut is where a search hit's snippet is cut out of the text it was read out of: Start
+// where it begins after a word of that text, End where it stops before one. The search statement
+// measures what the scan cannot see (searchPageAndTailSQL, internal/dispatch/api/search.go), and
+// SearchSnippet adds the words of the source its snippet leaves out. A snippet that holds every
+// word of its text is cut at neither end, whatever ts_headline dropped around those words - the
+// spaces, the punctuation and the markup at its two edges.
+type SnippetCut struct {
+	Start, End bool
+}
+
+// SnippetCutStartAttr and SnippetCutEndAttr are the attributes DisplaySnippetJSON writes on a
+// snippet tree's doc node for the ends its window cut, each `true` where that end was cut and
+// absent where it was not; the dashboard draws "…" at each end of the line they name. They are
+// attributes of the doc because the doc is the snippet. They are absent rather than false so a
+// whole snippet's tree is the bytes it always was, and a dashboard built before them draws a cut
+// one as it did: it builds the doc with ProseMirror's NodeType.create (documentFromJSON), which
+// keeps no attribute its schema does not declare.
+const (
+	SnippetCutStartAttr = "cutStart"
+	SnippetCutEndAttr   = "cutEnd"
+)
+
 // DisplaySnippetJSON is the display tree of a search hit's snippet: markdown, the snippet already
 // read out of its source and balanced where it is a cut (SearchSnippet), read for display as it
-// stands, with DisplayHighlightMark over every range the sentinels start and stop named. It does
+// stands, with DisplayHighlightMark over every range the sentinels start and stop named, and the
+// ends cut says it was cut at written on the doc (SnippetCutStartAttr, SnippetCutEndAttr). It does
 // not balance the markdown again: SearchSnippet decided where the snippet is a cut and where it is
 // code, which no balancing of the snippet alone can see. The sentinels ride through the read
 // rather than being taken out before it, because they are private-use characters, which the
@@ -179,14 +202,29 @@ const DisplayHighlightMark = "searchHighlight"
 // address or a caption in the attribute they fall in, and the walk takes those out
 // (highlightSnippet).
 //
+// The cut rides in this tree and nowhere else: the tree goes only to a caller that asked for
+// trees (`Dispatch-Trees: 1`), which is the dashboard, so the snippet every other caller reads -
+// an agent's search among them - carries no cut of its own.
+//
 // The snippet is read fresh rather than from the cache: every query cuts its own headline, so a
 // cached snippet would be a tree nothing asks for again, taking the room of a body many readers
 // do share.
-func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
+func DisplaySnippetJSON(markdown, start, stop string, cut SnippetCut) json.RawMessage {
 	if markdown == "" {
 		return nil
 	}
 	tree := ReadForDisplay(markdown, DisplayLatest)
+	if cut.Start || cut.End {
+		// A display read's doc holds no attribute of its own (displayDocument), so these are
+		// the only ones it carries.
+		tree.Attrs = make(Attrs, 2)
+		if cut.Start {
+			tree.Attrs[SnippetCutStartAttr] = true
+		}
+		if cut.End {
+			tree.Attrs[SnippetCutEndAttr] = true
+		}
+	}
 	highlightSnippet(tree, start, stop, false)
 	encoded, err := json.Marshal(tree.toDisplayJSON())
 	if err != nil {
@@ -404,3 +442,8 @@ func keepDisplayTree(key displayCacheKey, tree json.RawMessage) {
 func displayCacheEntrySize(tree json.RawMessage) int64 {
 	return int64(cap(tree)) + int64(unsafe.Sizeof(displayCacheKey{})) + displayCacheEntryBytes
 }
+
+// DisplayCacheHeld is the bytes the display-tree cache charges its entries now - their trees'
+// arrays, their keys and the entries themselves - at most DisplayCacheBytes, which the server's
+// /metrics shows.
+func DisplayCacheHeld() int64 { return displayCache.Held() }

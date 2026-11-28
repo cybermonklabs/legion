@@ -11,7 +11,9 @@ most two lines stays where it is, beside the pattern or the step it is about, un
 at the byte limit `.github/scripts/check-workflow-files.sh#LIMIT`: then a derivation of two lines
 moves here too, as that check's refusal says, and its place keeps a `# why:` line. A value's own
 arithmetic stays, and so does a comment inside a `run:` body, which is shell and stays with its
-command.
+command. So the two-line blocks beside four of the `changes` job's outputs, and those above the
+test-fixtures, broker-client and worker-image jobs, each moved to a section of its own here when
+ci.yaml reached that limit.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
 where every one of these comments first stood, the filters' comments among them, and a section
 that names a pattern of `.github/ci-filters.yaml` names what the filter selected then.
@@ -799,7 +801,7 @@ The text checks of the three Go modules, the Dispatch API's eleven static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' twenty-four tests
+which the three Go lanes leave out of their own runs, those checks' twenty-five tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -872,7 +874,8 @@ this job runs cmd/listener's alone.
 
 What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
 not, so listener_command, which is that build closure, leaves them to the jobs
-that run the tests: the chat client and the router.
+that run the tests: the chat client and the shared model loop it reaches its
+models through, and the router.
 
 ## airlock_lean: The Lean model of the airlock and the Go code it covers
 
@@ -1305,9 +1308,9 @@ docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
 Caches: no step of the jobs this workflow calls saves an Actions cache entry itself; three
 actions its jobs call can save one, and only in a dispatched run (setup-bun, and
-architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the two
+architecture-check and spec-check at this paragraph's end). dispatch-two-builds restores the three
 earlier Dispatch builds it runs (ci-job-dispatch-two-builds.yaml) and builds one on a miss;
-ci-caches.yaml's dispatch-builds job fills both on main (the two-build section below says why).
+ci-caches.yaml's dispatch-builds job fills all three on main (the two-build section below says why).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of the families below with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles internal/daemon's
@@ -1432,6 +1435,8 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     own pair (ci-job-envoy-go-build.yaml says what the arm64 runner built instead);
   * envoy-go-checks, whose script tests drive this image's own Compose plugin and its en_US.UTF-8
     locale, which the job generates only where the image lacks it, and have run on no other image;
+  * dispatch-memory-group, whose test's 50 ms margin is a measurement of the architecture
+    production runs on (.github/ci-notes/ci.md#the-memory-group-test);
   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
     half.
 Every Go cache family carries the runner's architecture in its key, as the paragraph above
@@ -1870,6 +1875,11 @@ The browser image's build. No `full-ci` term, and none is wanted: the image is w
 shard and alone jobs of .github/workflows/dispatch-browser.yaml pin, so gating its build behind a label would leave a pull request that edits
 the Dockerfile writing a row whose digest the package does not hold, which the
 ci-images job then refuses.
+
+## The dispatch_ui output
+
+The dashboard's and the proof editor's fast checks: no `full-ci` term, only the every-job
+one, so they come back on every push.
 
 ## The browser suite's two outputs, one per lane
 
@@ -2335,6 +2345,11 @@ the migration check and the build and pack of the envoy commands), split out so 
 on every push: no `full-ci` term, only the every-job one,
 `steps.scope.outputs.every_job && 'true'`.
 
+## The text_checks output
+
+The checks whose subject is text, in a job with no database: no `full-ci` term, only the
+every-job one, since it is one of the cheapest jobs of the file.
+
 ## The two-build job builds the previous release and runs both halves against
 
 The two-build job builds the previous release and runs both halves against it (the Go
@@ -2346,6 +2361,11 @@ gated like the other slow suites.
 The two-build job's Go step alone, behind a gate of its own (ci-job-dispatch-two-builds.yaml
 says why). The dispatch_two_builds output decides whether the job runs at all, the `full-ci` term with
 it, so this one carries only the every-job term.
+
+## The airlock_lean output
+
+The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term, so it
+comes back on every push that selects it, as listener_server_change and broker_multiprocess do.
 
 ## Why the tool fallback proof carries no full-ci term
 
@@ -2678,21 +2698,23 @@ So a job split in two takes no file of its own for its new half, and a new job t
 either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
 ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
 envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
-ci-job-envoy-e2e-local.yaml, and plugin-pack and step-models-chain call ci-job-plugin-pack.yaml.
-Such a file holds one job per caller and takes a `job` input. Each of its jobs carries exactly
-`if: inputs.job == '<its id>'`, and each caller passes `job: <its own id>`. Each job ends with the
-ci-ok-report step under its own id. A call runs the one job named for its caller, and the other
-reads `skipped` under it.
+ci-job-envoy-e2e-local.yaml, dispatch-memory and dispatch-memory-group call
+ci-job-dispatch-memory.yaml (the memory-group test a pull request runs joined the file of the
+memory suite the merge queue runs, which tests the same package), and plugin-pack and
+step-models-chain call ci-job-plugin-pack.yaml. Such a file holds one job per caller and takes a
+`job` input. Each of its jobs carries exactly `if: inputs.job == '<its id>'`, and each caller
+passes `job: <its own id>`. Each job ends with the ci-ok-report step under its own id. A call
+runs the one job named for its caller, and the other reads `skipped` under it.
 
 .github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
 ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, envoy-refill and
-step-models-chain to the file it shares, so its gates find their steps there. Each job keeps a
-filter of its own, and both name the shared file, so a change to it selects both.
-dispatch-browser.yaml has three callers,
+`.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, envoy-refill,
+dispatch-memory-group and step-models-chain to the file it shares, so its gates find their steps
+there. Each job keeps a filter of its own, and both name the shared file, so a change to it
+selects both. dispatch-browser.yaml has three callers,
 dispatch-browser, dispatch-browser-pr and dispatch-references, but every job of it runs under
 any of them: it takes the caller's id as `job` for its artifact names, its read of its own jobs
 and its report, never to pick a job
@@ -2864,12 +2886,22 @@ GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow refe
 needs are declared here. `contents: read` is its checkout's; `actions: read` and
 `checks: write` are its last step's, the ci-ok report this call turns on.
 
+## The test-fixtures job
+
+The shared test fixtures package has no build: nothing imports it at run time, and its
+consumers read its sources through the workspace.
+
 ## Why the session message-wait suite carries a database of its own
 
 The session message-wait suite, which creates a session-store database of its own and
 refuses without one. It was a step of the test job until dispatch://INFRA-1413: the one step
 of that job that needs a database, which is why it has one here instead of a Postgres
 service on a job whose other steps would start it for nothing.
+
+## The broker-client job
+
+The secrets broker's TypeScript client, which packages/envoy-client's broker credential
+imports. It has no build: its consumers read its sources through the workspace.
 
 ## The pi-legion plugin's suite and its build
 
@@ -3249,7 +3281,7 @@ The checks whose subject is text: each module's internal/textcheck package, the 
 eleven static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those twenty-four tests and those two pins out of their own runs
+packages, those twenty-five tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
@@ -3382,6 +3414,24 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
+## The memory-group test
+
+The test of c20 of INFRA-1588 (packages/envoy/cmd/dispatch, TestTheServerEndsTheAgentBeforeTheKernel)
+runs the Dispatch server in a Docker container whose memory limit is 8 GiB, makes the server's
+agent process allocate at full speed while the server's heap is held near its peak, and reads
+the container's memory.events: the server must kill its agent, which it watches every 50 ms,
+before the kernel's OOM killer acts. It needs a cgroup v2 host with a container runtime, which
+envoy-go's runners are not asked to be, so the test skips with its reason unless
+DISPATCH_TEST_MEMORY_GROUP is set, and this job alone sets it. The runner is ubuntu-24.04, amd64,
+because the margin the test measures (the agent's fastest growth in 50 ms) is a measurement of
+the architecture production runs on. The job runs on a pull request, as it is a standard runner
+of a public repository, which GitHub does not bill, and its one test takes minutes, not the
+tens of minutes the held-back suites take. The image the server runs in is the test's own Go
+constant (`memoryGroupImage`, a digest of .github/ci-images.yaml), which
+.github/actions/pull-test-images pulls in a step of its own, so a failed pull is told apart from a
+failed test. Its steps are the dispatch-memory-group job of ci-job-dispatch-memory.yaml, beside
+dispatch-memory's (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+
 ## The Dispatch server's two-process tests
 
 The two-process tests (packages/envoy/cmd/dispatch/multiprocess_test.go, INFRA-66): each row
@@ -3402,6 +3452,13 @@ The rows run beside each other, up to the package's eight process slots at once
 (cmd/dispatch/process_slots_test.go): run one after another they took 13 minutes, nearly all
 of it waiting, with the runner's four cores 91% idle.
 
+The tests of the server's agent process (packages/envoy/cmd/dispatch/agent_loop_test.go,
+agent_supervisor_test.go and agent_soak_test.go, INFRA-1588) carry the same tag and run here: each
+row starts a server and its agent, two processes, and waits out real leases, holds and bounds,
+about 1,130 s together in envoy-go's unit step at 2da9ac1c, which took that step's cmd/dispatch
+past its 20 minutes. The agent's limits and environment (agent_environment_test.go) take seconds
+and stay in envoy-go, and the harness every build shares is agent_harness_test.go, untagged.
+
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
 The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
@@ -3420,21 +3477,24 @@ the whole repository, 3,242 branches and 3,710 tags on 2026-11-23, took the chec
 The first-rollout row runs the first-rollout build instead, the newest release before the first
 that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
 resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
-it the same way.
-Each build is cached by its commit and the hash of the script that built it. The script removes
-the archive it built in (src/) once it has copied the parts out, since the test reads only those
-parts, so the entry holds the build alone. The `!<dir>/src` line the cache steps' path lists
-carried before left nothing out: actions/cache resolves its list with @actions/glob and
-`implicitDescendants: false`, so `<dir>` yields that one directory and tar archives it whole (a
-round trip of a `!` line under a listed directory kept every file it named: run 45722872215, job
-139585272669). The job restores each and
-saves neither: .github/workflows/ci-caches.yaml's dispatch-builds job builds both on a push to
-main, and again when release-envoy-listener.yaml has tagged a release (it dispatches
-ci-caches.yaml with `only: dispatch-builds`), and saves them in main's scope, which every pull
-request and merge group reads; its dispatch-builds-superseded job then deletes main's older
-entries of each build and every entry of it on any other ref. The job saved them itself before,
-in the scope of its run's own ref, where a merge group's entry is read by no later run and a pull
-request's by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
+it the same way. The going-runs row uses a third build, the release
+legion-envoy-v32.15.0, pinned by its commit (GOING_RELEASE_COMMIT) in the same way and for a
+reason of its own: that release's sweep deletes going_requests older than an hour, which the
+newest release need not do, so only a fixed release shows that a run of the head survives it.
+Each of the three builds is cached by its commit and the hash of the script that built it. The
+script removes the archive it built in (src/) once it has copied the parts out, since the test
+reads only those parts, so the entry holds the build alone. The `!<dir>/src` line the cache
+steps' path lists carried before left nothing out: actions/cache resolves its list with
+@actions/glob and `implicitDescendants: false`, so `<dir>` yields that one directory and tar
+archives it whole (a round trip of a `!` line under a listed directory kept every file it named:
+run 45722872215, job 139585272669). The job restores each and saves none:
+.github/workflows/ci-caches.yaml's dispatch-builds job builds all three on a push to main, and
+again when release-envoy-listener.yaml has tagged a release (it dispatches ci-caches.yaml with
+`only: dispatch-builds`), and saves them in main's scope, which every pull request and merge
+group reads; its dispatch-builds-superseded job then deletes main's older entries of each build
+and every entry of it on any other ref. The job saved them itself before, in the scope of its
+run's own ref, where a merge group's entry is read by no later run and a pull request's by that
+pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the
 repository's 25 GB cache and main held none, and on 2026-11-22 308 of 351 successful jobs built
 the previous release again (107 s at the median, against 11 s to restore it). A run that resolves
 a release main holds no entry of (one tagged minutes ago, or an older one a pull request's merge
@@ -3448,12 +3508,41 @@ get a database of their own, since they truncate it. In a merge-group run the ca
 dispatch-two-builds-same job also runs the Go suite with this tree's own build as the previous
 build, beside this job and not after it (that job's comment says why).
 
+ci-caches.yaml's dispatch-builds job keys each entry on the key dispatch-two-builds restores,
+from the same steps: the previous build's commit from build-dispatch-build.sh, and the
+first-rollout and going-runs commits from that job's own env (FIRST_ROLLOUT_COMMIT and
+GOING_RELEASE_COMMIT), each its one pin in CI, which this job reads rather than copies. It looks
+each key up first, so a run after which neither the newest release nor the script nor a pin
+changed builds nothing. Its run after a release's tag (the `only: dispatch-builds` dispatch
+above) fills that release within minutes of the tag, for the pull requests and merge groups that
+resolve it from then on. It runs on ubuntu-24.04, the runner dispatch-two-builds runs on.
+
+Its dispatch-builds-superseded job deletes, on main and once dispatch-builds has looked its keys
+up, the entries of the three builds this repository keeps no more. For each build it keeps main's
+entry under the key dispatch-builds found or saved, and every main entry created after it, which
+a run that resolved a newer release beside this one saved (a release's dispatch-builds run can
+overlap a push's). It deletes the main entries created before it, of an older release or an older
+script, and every entry of that build, runner and architecture on any other ref, which only that
+ref's runs could read: the entries dispatch-two-builds saved in its runs' own refs before it
+stopped saving. That is a retention choice, not a proof that nothing reads them: a pull request
+whose merge base is older than main's newest release still resolves the older release, misses,
+and builds it (107 s at the median), as most runs did before. A run that is downloading a deleted
+entry at that moment gets a cache miss: actions/cache/restore warns and the job builds the
+release, slower but not failed. It runs on main alone, since dispatch-builds saves nothing on
+another branch. It deletes none unless the kept key is among main's entries and has the shape
+dispatch-builds gives it (the build, the runner's OS and architecture, the script's 64-hex hash,
+the 40-hex commit), from which the step takes the prefix it deletes under; the entries come from
+GitHub newest first and the step reads every one of them, so "created before" is GitHub's own
+order. It is as safe as ci-caches.yaml's envoy-infra-superseded job, for the reasons that job's
+comment gives: a job of its own, the list kept as JSON, jq selecting numeric ids, each id checked
+to be a number before `gh cache delete` gets it.
+
 ## Why the two-builds jobs restore go-envoy-test
 
 Both jobs of ci-job-dispatch-two-builds.yaml restore go-envoy-test and save nothing, as
 envoy-go-claim-model and dispatch-browser.yaml's multiprocess job do. setup-go's own cache is off,
 so without a restore their Go steps start on an empty module cache and an empty build cache.
-When the two earlier builds come out of their own cache entries, the ceiling step's
+When the earlier builds come out of their own cache entries, the ceiling step's
 `go run ./internal/dispatch/store/cmd/connections` and the twobuild test step are the first
 go commands of the job, and they download and compile the set from nothing. In the 10 green
 merge groups after 2026-11-24T08:40Z, the ceiling step (then called the sizing step, which
@@ -3670,6 +3759,11 @@ The proof that no install of this repository fetches the proof editor's upstream
 the network: a frozen install runs behind a proxy that answers HTTP 504 for the hosts of the
 old `github:sjawhar/proof-sdk` route, pinned to a commit, and the job fails when the proxy's log holds a
 single refusal. The steps, and why those hosts, are in the called file.
+
+## The worker-image job
+
+The worker image's pull-request build: worker-image.yaml builds the head and publishes its
+sha- tag only. Main's image builds are release.yaml's call of the same workflow.
 
 ## Why the worker-image job grants every scope the called workflow declares
 

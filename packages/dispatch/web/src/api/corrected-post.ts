@@ -13,6 +13,8 @@ import {
   replaceEqualDeep,
 } from "@tanstack/react-query";
 
+import { objectOf } from "../features/going/fields";
+import { postToolOf } from "../features/going/post-tools";
 import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
@@ -30,6 +32,7 @@ import type {
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
+  GoingPlanAnswer,
   GraphEdge,
   GraphReferences,
   IDCandidate,
@@ -150,6 +153,9 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       ? markedPages(answer, (page) => markEach(page, marked))
       : markEach(rowsOf<DispatchEvent>(answer), marked);
   },
+  /** A command-bar run's plan (`goingPlanQuery`, `["going-plan", run]`): each row that edits or
+   *  deletes the post, whose value now is the post's author and body as the plan read them. */
+  "going-plan": (answer, post) => markedPlan(answer as GoingPlanAnswer, post),
   /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
   inbox: ofKind("comment", markedAskRows),
   /** An issue's details (`["issue", key]`): the name of each version of each of its documents.
@@ -285,6 +291,13 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
   github: "GitHub's own answer for an unfurl",
   "github-link": "a linked pull request as GitHub answers it",
   "github-link-checks": "a linked pull request's checks as GitHub answers them",
+  "going-capability":
+    "what the command bar can do on this deployment, and the label and session a new issue from it takes",
+  "going-conversations":
+    "the reader's command-bar runs: the words they typed, each run's state and what it spent; a run that read a comment or an issue message deleted since reads stopped with ANSWER_WITHDRAWN, or ANSWER_WITHDRAWN_BY_RUN where only its own plan's deletes withdrew it, and a delete reads the family again (`eventRefreshTargets`)",
+  "going-settings": "the reader's command-bar mode",
+  "going-waiting-plans":
+    "the reader's command-bar runs whose plan waits for them, a withdrawn run left out, which a delete reads again (`eventRefreshTargets`)",
   handoff: "one phase handoff with its body: a handoff is no comment or message",
   handoffs: "an issue's phase handoffs, without their bodies",
   "issue-ancestors": "the parents of the issues a listing holds: keys and titles",
@@ -346,6 +359,8 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  *   answers (`["me", "answers"]`, `body` empty);
  * - a row of a person's page (`["people", login, "nodes"]`) that is the post: an empty `title`;
  * - a search hit of the post (`["search", …]`): an empty `snippet` and no `snippet_tree`;
+ * - each row of a command-bar run's plan (`["going-plan", run]`) that edits or deletes the post:
+ *   its value now the post's author and the delete's mark, with no `body`, and `deleted`;
  * - a graph read (`["references", "to", …]`) whose node is the post or a block of it, and each of
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
  *   with no excerpt. The server answers a read of a deleted post's block 404, which no cached
@@ -1079,6 +1094,44 @@ function markedMessageRead(read: MessageRead, post: CorrectedPost): MessageRead 
  *  message, is corrected; undefined where none holds a copy of the post. */
 function markedMessageReads(answer: unknown, post: CorrectedPost): MessageRead[] | undefined {
   return markEach(rowsOf<MessageRead>(answer), (read) => markedMessageRead(read, post));
+}
+
+/**
+ * A command-bar run's plan once `post` is deleted: each row of a tool that edits or deletes a post
+ * of its kind (`postToolOf`) whose item is the post, as the plan's read answers a row of a post
+ * deleted since (`maskDeletedPosts` in `api/going_plan.go`): marked deleted, with its value now the
+ * post's author beside the delete's mark and no body, whatever state the row is in. Undefined where
+ * no row is of the post, and for an edit, which writes nothing here: a row's value now carries no
+ * edit time, and keeps the body the plan read, as every other copy keeps its words until a read
+ * gives the new ones. The words an edit row would write are its run's, not the post's, and stay.
+ */
+function markedPlan(plan: GoingPlanAnswer, post: CorrectedPost): GoingPlanAnswer | undefined {
+  const { mark } = post;
+  if (mark.kind !== "deleted") {
+    return undefined;
+  }
+  const { at, by } = mark.deletion;
+  const rows = markEach(plan.rows, (row) => {
+    if (
+      postToolOf(row.tool)?.kind !== post.kind ||
+      row.item.toLowerCase() !== post.id.toLowerCase()
+    ) {
+      return undefined;
+    }
+    // The read gives each actor as its kind and id alone (`goingHolder`), and no `deleted_by` for
+    // a delete that names nobody; a row a withdrawn run's plan gives no value now keeps none.
+    const { author } = objectOf(row.now);
+    const now =
+      author === undefined
+        ? row.now
+        : {
+            author,
+            deleted_at: at,
+            ...(by === null ? {} : { deleted_by: { id: by.id, kind: by.kind } }),
+          };
+    return { ...row, deleted: true, now };
+  });
+  return rows === undefined ? undefined : { ...plan, rows };
 }
 
 /** One page of Threads' message threads (`messageThreadsQuery`) once `post` is corrected: each

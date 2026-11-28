@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `DISPATCH_TEST_AGENT_NOW`, an RFC 3339 time, is the time now the Dispatch server's agent tells
+  each run's model, and from which it writes each time it gives the model relative to now, in place
+  of the clock's. The server hands it on to its agent and reads it for nothing else, so its leases,
+  timeouts and stored times stay on the clock. It is a test-only setting: it needs
+  `DISPATCH_TEST_HOOKS=1`, and a deployment never sets it. The command bar's eval sets it to its
+  seed's day, and its fake Envoy answers each agent session last seen when the seed says, so the
+  seed's times, written for that day, read as of that day.

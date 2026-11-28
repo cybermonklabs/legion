@@ -32,6 +32,7 @@ function readText(text: string | readonly string[], facts: TextReferenceFacts): 
 /** The empty question map, shared so a body that needs none keeps one identity across renders
  *  and the link pass it is a dependency of never re-runs for a fresh empty object. */
 const NO_MAP: Readonly<Record<string, string>> = {};
+const NO_ISSUES: readonly string[] = [];
 
 /** Everything a rendered body needs to link what it cites, and the two readings it was found
  *  in: the one reader's pass over the body once every fact it waits on is in (`reading`), and
@@ -69,7 +70,8 @@ export interface TextReferences extends ReferenceLinking {
  */
 export function useTextReferences(
   text: string | readonly string[],
-  source?: TextSource
+  source?: TextSource,
+  knownIssues: readonly string[] = NO_ISSUES
 ): TextReferences {
   const origins = dispatchOrigins();
   // The first reading: it resolves every `dispatch://` reference and dashboard address on its
@@ -82,8 +84,8 @@ export function useTextReferences(
   // (`project-keys.ts`).
   const projects = useProjectKeys();
   const keys = useMemo(
-    () => writtenKeys.filter((key) => keyMayNameIssue(key, projects)),
-    [projects, writtenKeys]
+    () => writtenKeys.filter((key) => !knownIssues.includes(key) && keyMayNameIssue(key, projects)),
+    [knownIssues, projects, writtenKeys]
   );
 
   // `combine` is held to its last answer by structural sharing, so these keep one identity
@@ -121,13 +123,15 @@ export function useTextReferences(
   });
 
   const facts = useMemo(
-    () => ({ issues, items, origins, questions: askedQuestions }),
-    [askedQuestions, issues, items, origins]
+    () => ({ issues: [...knownIssues, ...issues], items, origins, questions: askedQuestions }),
+    [askedQuestions, issues, items, knownIssues, origins]
   );
   const reading: TextReading = useMemo(
     () =>
-      keys.length === 0 && prefixes.length === 0 && !questions ? written : readText(text, facts),
-    [facts, keys.length, prefixes.length, questions, text, written]
+      keys.length === 0 && knownIssues.length === 0 && prefixes.length === 0 && !questions
+        ? written
+        : readText(text, facts),
+    [facts, keys.length, knownIssues.length, prefixes.length, questions, text, written]
   );
   return useMemo(() => {
     const cited = new Set<string>();

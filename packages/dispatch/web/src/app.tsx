@@ -25,6 +25,11 @@ import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { movePanel, resetGoingStore, setPlace, useGoingValue } from "./features/going/going-store";
+import { Notice } from "./features/going/Notice";
+import { RunChip } from "./features/going/RunChip";
+import { SidePanel } from "./features/going/SidePanel";
+import { panelIsWide, wideInsetOf } from "./features/going/wide-inset";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
@@ -66,9 +71,9 @@ import {
   routeFillsViewport,
   routeHasMargin,
   routeIsInbox,
-  routeProjectOf,
   unknownToShell,
 } from "./features/refs/routes";
+import { projectOfPage } from "./features/search/bar-scope";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
@@ -90,12 +95,14 @@ import {
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
+  SM_VIEWPORT_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
 import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
+import { useShellBarBottom } from "./features/shell/useShellBarBottom";
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
@@ -575,10 +582,16 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [inboxDrawerOpen, setInboxDrawerOpen] = useState(false);
-  // Whether the bar is open. `$mod+k`, `/`, `g p` and the rail's Search control open the one
-  // bar: this page's actions, the person's recent items, the projects a query names and the
-  // hits, with a chip saying what it will act on.
-  const [barOpen, setBarOpen] = useState(false);
+  // Where the command bar's conversation is (`features/going/panel-states.ts`): closed, over the
+  // page, or at the side. `$mod+k`, `/`, `g p` and the rail's Search control open the one bar
+  // over the page - this page's actions, the person's recent items, the projects a query names,
+  // the hits and the conversation - with a chip saying what it will act on; `$mod+Shift+k` keeps
+  // the conversation in a panel at the side, which stays open on every navigation. The shell
+  // reads where it is and whether it is widened alone, so a frame of a run draws only the parts
+  // that show the run again.
+  const place = useGoingValue((going) => going.place);
+  const widened = useGoingValue((going) => going.wide);
+  const barOpen = place === "over";
   // What the person opened, for the bar to list back while its box is empty. It is recorded in
   // the shell rather than on each page, so every way into an item - a link, the bar itself, a
   // reload - records it.
@@ -639,14 +652,28 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         : undefined,
     [detailsFor, detailsIssue, drawerPage, issueFrame]
   );
+  // While the conversation is kept at the side (design v3, state 10), the margin folds to its
+  // rail, so the page's main column keeps a usable width beside the 420 px panel; the reader's
+  // stored preference is not written, and the margin comes back as they left it when the panel
+  // closes. The toggle key, and a compose the margin opens for, open it beside the panel, and
+  // that stands until the panel closes.
+  const panelAtSide = place === "side";
+  const [marginBesidePanel, setMarginBesidePanel] = useState<boolean | undefined>(undefined);
+  if (!panelAtSide && marginBesidePanel !== undefined) setMarginBesidePanel(undefined);
+  const marginCollapsed = panelAtSide ? (marginBesidePanel ?? true) : marginHidden;
+  const setMarginCollapsed = useCallback(
+    (hidden: boolean) => (panelAtSide ? setMarginBesidePanel(hidden) : setMarginHidden(hidden)),
+    [panelAtSide, setMarginHidden]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
-  // padding beside a rail that is not there. "Full width" means no expanded column on either
+  // padding beside a rail that is not there. The side panel covers the rail, and the shell
+  // keeps the docked panel's width free instead. "Full width" means no expanded column on either
   // side - on a route with no margin, a hidden sidebar is enough.
   const hasMargin = routeHasMargin(location.pathname, location.search);
-  const marginRailShown = hasMargin && marginHidden;
-  const marginColumnShown = hasMargin && !marginHidden;
+  const marginRailShown = hasMargin && marginCollapsed && !panelAtSide;
+  const marginColumnShown = hasMargin && !marginCollapsed;
   const fullWidth = sidebarHidden && !marginColumnShown;
   const mainLayoutClass =
     sidebarHidden && marginRailShown
@@ -726,6 +753,25 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useFootInset(statusCornerRef, true, "status");
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
+  const fromSm = useMediaQuery(SM_VIEWPORT_QUERY);
+  // Where the panel at the side starts once the person widens it (A6, `wide-inset.ts`): at the
+  // edge of the navigation that stands beside the page, which stays in view - the sidebar's
+  // 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue page's icon
+  // rail - or, below `xl`, where the navigation is a header and a drawer above the page, across
+  // the whole width under the top bar there (see `WideInset` for a page scrolled past that bar).
+  // Below `sm` the panel is the whole width already, and offers no widening.
+  const wideInset = wideInsetOf({
+    compact: isCompactViewport,
+    iconRail: iconRailShown,
+    sidebarHidden,
+    sm: fromSm,
+  });
+  // The room the shell keeps for the panel at the side (`panelIsWide`): its 420 px at the page's
+  // right while it is docked, from `sm` up, so the page and the top bar stand beside it; none
+  // while it is wide, so the top bar spans the whole window above it.
+  const panelDocked = panelAtSide && !panelIsWide(widened, wideInset);
+  // Publish the bottom edge of the compact navigation, whether the shell or the issue draws it.
+  const shellBarRef = useShellBarBottom();
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
   // open over the page at every width, as the Menu control opens it below `xl` on every page.
   const drawer = useDialog<HTMLElement>({
@@ -738,9 +784,9 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const shellNavigation = useMemo<ShellNavigation | undefined>(
     () =>
       issueFrame && !railFits
-        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen }
+        ? { onOpen: () => setNavigationOpen(true), open: navigationOpen, topBarRef: shellBarRef }
         : undefined,
-    [issueFrame, navigationOpen, railFits]
+    [issueFrame, navigationOpen, railFits, shellBarRef]
   );
   const navigate = useNavigate();
   // The registry as described when `?` fired (focus still on the caller); `null` while closed.
@@ -752,17 +798,27 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // An address of the new issue page alone is none the shell knows where the reader draws
   // today's page, as on `main` (`unknownToShell`): it names no project and no issue here.
   const unknownRoute = unknownToShell(location.pathname, issuePageChoice === "outline");
-  const routeProject = unknownRoute ? undefined : routeProjectOf(location.pathname);
+  const routeProject = projectOfPage(location.pathname, issuePageChoice === "outline");
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
-      // the key reaches the bar from inside a document's editor too.
+      // the bar's own `$mod+k` binding closes it; from the side it brings the conversation over
+      // the page. It fires while the reader is writing, so the key reaches the bar from inside a
+      // document's editor too.
       id: "search",
       inEditable: true,
       keys: "$mod+k",
       label: "Search and actions",
-      run: () => setBarOpen(true),
+      run: () => movePanel({ kind: "mod_k" }, user.login),
+    },
+    {
+      // The conversation at the side of the page, which leaves the page usable; pressed there,
+      // it closes the panel.
+      id: "search-side",
+      inEditable: true,
+      keys: "$mod+Shift+k",
+      label: "Command bar at the side",
+      run: () => movePanel({ kind: "mod_shift_k" }, user.login),
     },
     {
       // The same bar. No row: chosen from the bar it would only reopen the bar. Not
@@ -772,7 +828,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "/",
       label: "Search",
       palette: false,
-      run: () => setBarOpen(true),
+      run: () => setPlace("over"),
     },
     {
       id: "help",
@@ -802,7 +858,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       keys: "g p",
       label: "Go to project…",
       palette: false,
-      run: () => setBarOpen(true),
+      run: () => setPlace("over"),
     },
     {
       id: "inbox-drawer",
@@ -831,7 +887,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
       run: () =>
         detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
+          ? setMarginCollapsed(!marginCollapsed)
           : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
@@ -915,7 +971,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       onCreateIssue={() => setCreateOpen(true)}
       onHideSidebar={() => setSidebarHidden(true)}
       onOpenInboxDrawer={() => setInboxDrawerOpen(true)}
-      onSearch={() => setBarOpen(true)}
+      onSearch={() => setPlace("over")}
       onSignOut={() => {
         // Signing out discards the person's own writes in every tab of this browser, so it asks
         // first while any is unsent, naming each once - this tab's, and every other tab's, which
@@ -962,7 +1018,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
-        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${canvasText}`}
+        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${panelDocked ? "sm:pr-[420px]" : ""} ${canvasText}`}
         data-testid="app-shell"
       >
         <a
@@ -971,20 +1027,22 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           Skip to content
         </a>
-        {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. It is a float of the foot's status
-            layer (`hooks/useFootInset.ts` lists the foot's layers and the elements in each): it
-            stands 1rem above the banner layer's property, which the hook chooses so the corner
-            lies over nothing else fixed or stuck at the foot of the screen, and never lower than
-            its floor (`--foot-floor`, which its classes set per breakpoint). Only what it shows
-            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
-            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
-            offers a reload, and the page keeps trying underneath. */}
+        {/* The shell's status corner: the pending-writes indicator, the bar's notice and the word
+            on drafts the tab cannot keep for a reload above the connection pill. It is a float of
+            the foot's status layer (`hooks/useFootInset.ts` lists the foot's layers and the
+            elements in each): it stands 1rem above the banner layer's property, which the hook
+            chooses so the corner lies over nothing else fixed or stuck at the foot of the screen,
+            and never lower than its floor (`--foot-floor`, which its classes set per breakpoint),
+            and it stands left of the command bar's panel while that panel is at the side. Only
+            what it shows takes the pointer. A socket Dispatch refuses carries no status the page
+            can read, so nothing in the pill is terminal: once reconnecting has gone on for two
+            minutes it offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto"
+          className={`pointer-events-none fixed right-4 bottom-[max(var(--foot-floor),calc(var(--foot-banner-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 [--foot-floor:5rem] xl:[--foot-floor:0px] *:pointer-events-auto ${place === "side" ? "sm:right-[436px]" : ""}`}
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
+          <Notice />
           <DraftsNotKept />
           {connection === "stuck" ? (
             <p
@@ -1010,6 +1068,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         {isCompactViewport && !issueFrame ? (
           <header
             className={`flex items-center justify-between border-b px-3 ${railBorder} ${railBg} ${railText}`}
+            ref={shellBarRef}
           >
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <Link className="shrink-0 text-lg font-semibold" to="/">
@@ -1058,13 +1117,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           <>
             <div
               aria-hidden="true"
-              className={`fixed inset-0 z-20 ${backdrop50}`}
+              className={`fixed inset-0 ${place === "side" ? "z-[45]" : "z-20"} ${backdrop50}`}
               onClick={() => setNavigationOpen(false)}
             />
             <aside
               aria-label="Navigation"
               aria-modal="true"
-              className={`fixed inset-y-0 left-0 z-30 flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
+              className={`fixed inset-y-0 left-0 ${place === "side" ? "z-[46]" : "z-30"} flex w-80 max-w-[calc(100vw-2rem)] flex-col overflow-y-auto border-b p-5 shadow-2xl ${railBorder} ${railBg} ${railText}`}
               ref={drawer.containerRef}
               role="dialog"
             >
@@ -1133,6 +1192,20 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           ref={mainRef}
           tabIndex={-1}
         >
+          {/* The command bar's run chip (design v3, state 11) floats over the top of the page:
+              from the band of `<main>`'s own 24 px top padding, over the middle of its column,
+              and at the top of the screen as the page scrolls. Its row is no height and is moved
+              up into that band by a transform, which moves nothing else, so the page never moves
+              when a run starts or ends. The chip is 24 px tall with room above it (`RunChip`),
+              so its foot reaches a few pixels over the page's first row, short of where a title
+              in that row starts. The issue page's frame has no such padding, so there the row
+              starts where the frame does. Only the chip takes the pointer. */}
+          <div
+            className={`pointer-events-none sticky z-30 flex h-0 items-start justify-center *:pointer-events-auto ${issueFrame ? "top-0" : "top-6 -translate-y-6"}`}
+            data-testid="going-chip-row"
+          >
+            <RunChip />
+          </div>
           <ErrorBoundary region="this page" resetKey={location.pathname}>
             <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
               <Routes>
@@ -1179,13 +1252,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
-            collapsed={marginHidden}
-            onCollapsedChange={setMarginHidden}
+            collapsed={marginCollapsed}
+            onCollapsedChange={setMarginCollapsed}
             onWidthChange={setMarginWidth}
             width={marginWidth}
           />
         </ErrorBoundary>
-        <SearchPalette onClose={() => setBarOpen(false)} open={barOpen} />
+        <SearchPalette onClose={() => setPlace("closed")} open={barOpen} />
+        <SidePanel wideInset={wideInset} />
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? (
@@ -1312,10 +1386,16 @@ export function AuthGate(): ReactNode {
   // tab's, another tab's, or one a lapse lands (`Writes.onSignedOut`). Whoever signs in next here
   // must find nothing they typed, so every draft store forgets their drafts, in the page and in
   // the tab's storage, and takes none until someone signs in, the ones a field hands it as the
-  // shell goes among them (`DraftStore.signedOut`). It listens before the effect below tells the
-  // write store who is signed in, since a lapse that effect tells of can land a sign-out.
+  // shell goes among them (`DraftStore.signedOut`); and nothing of their command bar, whose runs
+  // and conversation the store forgets, its streams stopped (`resetGoingStore`). It listens before
+  // the effect below tells the write store who is signed in, since a lapse that effect tells of
+  // can land a sign-out.
   useEffect(
-    () => writesOf(queryClient).onSignedOut((person) => draftStoresSignedOut(queryClient, person)),
+    () =>
+      writesOf(queryClient).onSignedOut((person) => {
+        draftStoresSignedOut(queryClient, person);
+        resetGoingStore();
+      }),
     [queryClient]
   );
   // A write belongs to the person who pressed it: once someone else is signed in here - in place,

@@ -68,7 +68,11 @@ const cadenceXid = uint64(1) << 40
 // fallback timer is an hour here, so only the immediate second observation can publish it, and the
 // relay is idle again once it has.
 func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
-	t.Parallel()
+	// Not parallel: settle takes 300 ms with no observation for the relay having connected and
+	// caught up, but the relay's listener dials and LISTENs on a goroutine of its own after
+	// subscribe returns, and its catch-up read follows that LISTEN. Among this package's parallel
+	// tests under the race detector that read can come after settle, inside the 600 ms the idle
+	// relay must observe nothing in (envoy-go-race-api at 37c11565 counted 1 observation there).
 	_, database, deps := newTestServer(t, testServerOptions{})
 	relay, horizon := newCadenceRelay(t, deps, database, time.Millisecond)
 	subscription, _, _ := subscribeRelay(t, relay)

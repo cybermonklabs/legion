@@ -1,5 +1,15 @@
 {
-  "broadcast": "426122b2-72c7-43b0-acbd-551b834df58f",
+  "bar": {
+    "craters": "OPS-18",
+    "dome": "OPS-20",
+    "eyepiece": "OPS-22",
+    "finder": "OPS-23",
+    "mirror": "OPS-19",
+    "mount": "OPS-17",
+    "project": "OPS",
+    "shutter": "OPS-21"
+  },
+  "broadcast": "265b56f3-1937-4108-82b1-39b7e1361da3",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
@@ -9,11 +19,11 @@
   "readMarks": {
     "agents": {
       "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01": [
-        "15a9f78a-4e7a-46cb-bb49-5f1044e1f5c8"
+        "4d16324d-b88f-4c7e-82ed-824f62b9cf1d"
       ]
     },
     "documents": {
-      "c77dd820-b049-4237-9deb-0aad4f86326a": 1
+      "6df54df5-d9ca-4e4f-9982-f071100d2232": 1
     }
   },
   "priority": "every-change-that-reaches-the-build-fleet-is-verified-before-a-person-reads-it",
@@ -21,5 +31,5 @@
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-28T00:38:06.885Z"
+  "seededAt": "2026-11-28T11:05:06.988Z"
 }

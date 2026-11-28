@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The command bar's agent reads an uploaded file with `dispatch_doc_read` as `dispatch doc-read`
+  does. The server reads the record of the item the call names first, and reads a file or a
+  picture at the version the call names, or at its latest version, through that version's route.
+  The model is told a UTF-8 text file's text after a line that names the file, its type, the
+  version and its size. A file that is not UTF-8 text, and a picture, is told by those facts and
+  the route that serves its bytes, and its bytes are not sent. A call for a file's blocks is
+  refused in the command's words. Before, a read of a file that named no version was sent to the
+  file's text route, which answers `400 NOT_DOCUMENT`, and the agent then read the file's record
+  and version itself, as two more calls of the step; a file that was not text failed its step
+  with "it is a file that is not text". Now the read is one call. A document reads its text as
+  before.

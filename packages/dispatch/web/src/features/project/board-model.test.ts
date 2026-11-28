@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 
+import shownValues from "../../../../../contracts/fixtures/shown-values.json";
 import type { IssueSummary } from "../../api/types";
 import {
   dropTarget,
   groupIssuesByLane,
   groupIssuesByStatus,
+  issueStatuses,
   laneColumnId,
   laneDropTarget,
   laneFromKey,
@@ -14,6 +16,7 @@ import {
   moveIssueToLane,
   priorityLanes,
   rankInputForInsertion,
+  statusText,
 } from "./board-model";
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
@@ -27,6 +30,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     route_holder: null,
     route_status_reason: null,
     key: "CORE-1",
+    project: "CORE",
     title: "Core work",
     status: "todo",
     priority: null,
@@ -349,6 +353,20 @@ test("moveIssueToLane under a filter names visible neighbours within the lane+st
   expect(moved?.input).toEqual({ rank: { after: "CORE-1" } });
   // CORE-2 stays in place even though it is invisible to the filter.
   expect(moved?.issues.map((item) => item.key)).toEqual(["CORE-1", "CORE-3", "CORE-2"]);
+});
+
+// packages/contracts/fixtures/shown-values.json holds the words the board and the issue page
+// write for each status. The command bar's eval reads an answer's count of a status by its value
+// or by these words (packages/envoy/going/eval/answer.go), and its Go test holds it to the same
+// rows, so a change of a status's words fails a test until the fixture and the eval follow it.
+test("the web writes each status as packages/contracts' shown-values fixture says", () => {
+  const statuses = shownValues.rows.filter((row) => row.kind === "status");
+  expect(statuses.map((row) => row.value)).toEqual([...issueStatuses]);
+  for (const row of statuses) {
+    expect(`status ${row.value}: ${statusText(String(row.value))}`).toBe(
+      `status ${row.value}: ${row.shown}`
+    );
+  }
 });
 
 const priorityBoard = [

@@ -56,4 +56,5 @@ export const UPLOADED = {
     number: 2,
     summary: null,
   },
+  previous_version: 1,
 };

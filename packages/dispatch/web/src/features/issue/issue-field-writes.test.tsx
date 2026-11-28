@@ -73,6 +73,7 @@ const summary: IssueSummary = {
   priority_from: null,
   resolved_priority: null,
   progress: { tasks: null, children: null },
+  project: issue.project,
   rank: "U",
   repo: null,
   resolved_repo: null,

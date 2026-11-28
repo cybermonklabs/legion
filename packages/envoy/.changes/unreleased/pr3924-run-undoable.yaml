@@ -1,0 +1,52 @@
+kind: Added
+body: |-
+  A command-bar run's record (`GET /api/v1/going/runs/{id}`, and each run of
+  `GET /api/v1/me/going-runs`) says whether Undo can still take it back and when it was undone.
+  `undoable` is true while a call of the run landed a change Undo would still try to take back,
+  decided from the call's record by the same function the undo itself decides with: its undo has
+  not landed, its tool's undo is not `not_undone`, its last landed request is its own, not a
+  close's reason sent before it, and its record says what it found and left and that it changed
+  something, so a claim its route answered `claim_changed` false, a create answered 200 for an
+  issue Dispatch already held and a call whose record cannot be read are not undoable; it is false
+  for a run that changed nothing. `undone_at` is when the run's Undo landed, its newest undo
+  landing, and null for a run never undone. Both are read in the statement that reads the run, so
+  History makes no extra read for each run it lists; of an issue's update, create or claim, whose
+  answer carries the whole issue, it reads only the members that decision reads. History offered
+  Undo on a run already undone, and an undone run could not say when after a reload.
+  The record also counts the run's changes, each a required integer decided by that same function
+  in that same statement: `undoable_count`, how many Undo can still take back now; `undone_count`,
+  how many an Undo took back, one for each undo that landed a change; and `standing_count`, how
+  many Undo tried and could not take back, so their change stands: a call whose undo the record
+  refuses with nothing sent (409 `GOING_UNDO_AFTER_UNREAD`, `GOING_UNDO_BEFORE_UNREAD`,
+  `GOING_UNDO_UNKNOWN`, `GOING_UNDO_NOT_CALLERS_CLAIM`, 501 `GOING_UNDO_UNSERVED`, or a record
+  with nothing to write back), and one whose undo kept what another writer changed since the run
+  (409 `GOING_UNDO_CHANGED`). A call that is sent, not undone by design (a message, a broadcast, a
+  review, every write Dispatch does not undo), a call that changed nothing, and one whose undo
+  changed nothing are in none of them. Before, a page could only infer from `undoable` and
+  `undone_at`, and read a run whose refused change still stood as undone. An undo whose request
+  its route answers below 300 while it commits nothing, as a follow of a session that follows the
+  ask already answers 204, now says the undo changed nothing and there is nothing to undo, and
+  records that as the call's undo landing (`going_landings`, phase `undo`, marked `unchanged`), so
+  a second press answers it again and sends nothing, and History no longer offers Undo for it.
+  Before, it said the change was reversed, and each press sent the request again. An undo that
+  keeps a change another writer made since the run is recorded the same way, whether its read
+  found the change or its route refused the request for it, so a second press answers it as kept
+  and History offers no Undo for it. A press of Undo under an Idempotency-Key binds the run as its
+  key's recovery point before it sends anything, so a repeat under the key after a press whose
+  process ended mid-walk walks the run again, sending each remaining undo once, and answers its
+  lines (`Idempotency-Replayed: ?1`) rather than 409 `KEY_COMMITTED`.
+  A call whose recorded `last_seq` is not a whole number is a record Undo cannot read: Undo answers
+  409 `GOING_UNDO_AFTER_UNREAD` and puts nothing back, and History, which now reads `last_seq` among
+  those members, does not offer Undo for it. Before, Undo dropped the bad value and went on, and a
+  field it kept named "another writer". Undo of a document edit now writes the earlier content back
+  under the document's slug, which no other document of its owner holds, not under its name. A
+  name can be another document's slug, and the upload route takes that document first, so such an
+  undo was refused as another writer's change, or, where the other document held the same content,
+  wrote over it. The write back names the document's token Undo's read returned as the upload's
+  `precondition`, so a document another writer changed since that read is refused, 409
+  `PRECONDITION_FAILED`, and Undo keeps it. It also names the document by its id, which the upload
+  route checks under the owner's lock, so a document removed and another made under its slug since
+  Undo read it is refused, 409 `DOCUMENT_CHANGED`, and never written over.
+  Where an edit's approval holds no read of the document, or a read that does not hold its
+  content, Undo's 409 `GOING_UNDO_BEFORE_UNREAD` now says so, where it said another writer changed
+  the document.

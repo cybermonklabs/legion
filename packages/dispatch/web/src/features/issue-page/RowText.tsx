@@ -1,5 +1,4 @@
 import {
-  type MouseEvent,
   type ReactNode,
   type RefObject,
   useCallback,
@@ -7,20 +6,18 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 
-import { dispatchOrigins } from "../../api/origins";
 import type { DisplayTree } from "../../api/types";
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
-import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { joinSplitLinks } from "./joined-links";
 import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
@@ -311,42 +308,6 @@ function dropDirectiveLines(root: HTMLElement): void {
       block.hidden = true;
   }
 }
-
-/**
- * Follows an address of this application in a node's words in place, on a plain click, as a link
- * the router draws does: the words are drawn as HTML (`MarkdownBody`, `linkRowReferences`), and
- * their links would load the whole page again. An address at any origin of this Dispatch
- * (`dispatchOrigins`) is followed on the page's own, where the reader holds a session. A click
- * with a key held or with another button, a link to a download, to another window, to an origin
- * Dispatch does not name or to a path the server answers itself (`SERVER_ROOT`), and a click a
- * picture already answered (`DispatchPicture`) are the browser's. A link to the address the
- * reader is at replaces it, as the router's `Link` does, so Back leaves the page as it does from a
- * tie's chip to that address.
- */
-function useFollowInPlace(): (event: MouseEvent<HTMLElement>) => void {
-  const navigate = useNavigate();
-  const here = useLocation();
-  const current = `${here.pathname}${here.search}${here.hash}`;
-  return useCallback(
-    (event: MouseEvent<HTMLElement>) => {
-      if (event.defaultPrevented || !isPlainClick(event.nativeEvent)) return;
-      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
-      if (!(anchor instanceof HTMLAnchorElement) || !event.currentTarget.contains(anchor)) return;
-      if (anchor.hasAttribute("download") || anchor.getAttribute("target") !== null) return;
-      const url = new URL(anchor.href, window.location.href);
-      if (!dispatchOrigins().includes(url.origin) || SERVER_ROOT.test(url.pathname)) return;
-      event.preventDefault();
-      const path = `${url.pathname}${url.search}${url.hash}`;
-      navigate(path, { replace: path === current });
-    },
-    [current, navigate]
-  );
-}
-
-/** The path roots the server answers itself and the page has no route for: its API, sign-in,
- *  sockets, health and built assets (`serverRoots` and `assetRoots` of
- *  `packages/envoy/internal/dispatch/routes/router.go`). */
-const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";

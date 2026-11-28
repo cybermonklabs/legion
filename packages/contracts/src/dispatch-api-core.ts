@@ -93,6 +93,11 @@ export type DispatchTokenScope = (typeof DISPATCH_TOKEN_SCOPES)[number];
  *  proved, and the personal token presented, by id and name. It is absent wherever the person
  *  acted themselves, which is every act made at a browser.
  *
+ *  `agent` and `run` name Dispatch's own agent when it made the act: `agent` is `"command-bar"`
+ *  (Go's `model.ActAgentCommandBar`) and `run` the command-bar run whose call it was, beside the
+ *  scopes of the credential the run acts with and, for a personal token, that token. The server
+ *  alone sets them; `actorActText` reads them as the person through the command bar.
+ *
  *  `scopes` is the set of `DISPATCH_SCOPES` (`person`, `approve`, `p0`) that credential held at
  *  the act (a Legion daemon's `legion-status` and `read` are never recorded), recorded with it and
  *  never read back from the token. A person who narrows a token afterwards narrows what it may do
@@ -108,6 +113,8 @@ export const ActorActSchema = z
     token_id: z.string().optional(),
     token_name: z.string().optional(),
     scopes: z.array(z.enum(DISPATCH_SCOPES)).optional(),
+    agent: z.string().optional(),
+    run: z.string().optional(),
   })
   .readonly();
 

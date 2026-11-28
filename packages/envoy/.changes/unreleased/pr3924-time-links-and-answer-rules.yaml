@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  The command bar's agent writes each time in an answer as a link:
+  `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`. Its words are the page's relative words, or
+  the time with its zone and year where the person asks when, such as "at 11:35 UTC on 18 Nov
+  2026", and its address is the time the read gives, which the page shows with its full date on
+  hover. Each time the agent gives its model is again the relative words alone, beside the time
+  itself. The short answer's filter passes on such a link whose address is `dispatch-time:` and an
+  RFC 3339 time, its words escaped and counted as every word is, and counts it as no change; any
+  other target of that scheme is still cut to its words. The eval's judge reads a time link as its
+  words and the full date its hover shows, "5 days ago (18 Nov 2026, 11:35 UTC)". The system
+  prompt also says, for what the eval's judge found missing: a count of asks, comments, documents
+  or sessions comes with its items, linked; a quote or a summary of someone's words starts with
+  who wrote them, with an example; an answer about an issue gives its priority and assignee, or
+  that it has none; it names the item it is about by its link and a document by its project or
+  issue; it lists an issue's done children beside its open ones, with an example; and it names a
+  claim's holder by the title the claim gives.

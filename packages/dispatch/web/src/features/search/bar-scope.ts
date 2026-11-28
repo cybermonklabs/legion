@@ -6,9 +6,10 @@
  * the project where the page names nothing narrower. `Tab` narrows that to the block the writing
  * cursor was in as the bar opened, and `Backspace` widens it to the project.
  *
- * This is not the project chip of the filter bar, which narrows the search and carries its own
- * `Remove Project INFRA` control: that chip says which items are searched, this one says what the
- * bar acts on. They sit on either side of the box, and only the filter chip can be removed.
+ * This is not the project chip of the filters behind the bar's Filters button, which narrows the
+ * search and carries its own `Remove Project INFRA` control: that chip says which items are
+ * searched, this one, inside the box on its left, says what the bar acts on, and only the filter
+ * chip can be removed.
  */
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import {
@@ -61,6 +62,13 @@ function blockText(text: string): string {
   return `${(lastSpace === -1 ? cut : cut.slice(0, lastSpace)).trimEnd()}…`;
 }
 
+/** The block the writing cursor is in: its id, which the bar's answer is told the words were
+ *  typed in, and the words the chip names it by. */
+export interface CursorBlock {
+  readonly id: string;
+  readonly scope: string;
+}
+
 /**
  * The block the writing cursor is in, as the DOM has it right now. The bar reads this on the
  * render that opens it, while focus is still where the reader left it: a moment later the dialog
@@ -70,7 +78,7 @@ function blockText(text: string): string {
  * the id the editor stamps on it (`BLOCK_ID_ATTRIBUTE`). The cursor has to be inside the writing
  * surface: a reader scrolling an issue page has a selection somewhere too, and that is no cursor.
  */
-export function scopeAtCursor(): string | undefined {
+export function blockAtCursor(): CursorBlock | undefined {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLElement) || !focused.isContentEditable) {
     return undefined;
@@ -80,15 +88,16 @@ export function scopeAtCursor(): string | undefined {
   const inside = focused.contains(from) ? from : focused;
   const block = inside.closest<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}]`);
   const text = block === null ? "" : blockText(block.textContent ?? "");
-  return text === "" ? undefined : `the block “${text}”`;
+  return block === null || text === ""
+    ? undefined
+    : { id: block.getAttribute(BLOCK_ID_ATTRIBUTE) ?? "", scope: `the block “${text}”` };
 }
 
 /** The project of the page the bar was opened from, which `Backspace` widens the chip to. */
 export function scopeOfProject(pathname: string, newPage = false): string | undefined {
   // Each answer of this file is `main`'s at an address of the new issue page alone, where the
   // reader draws today's page (`newPage` false, the default): no project, page or issue.
-  if (unknownToShell(pathname, newPage)) return undefined;
-  const project = routeProjectOf(pathname);
+  const project = projectOfPage(pathname, newPage);
   return project === undefined ? undefined : `the project ${project}`;
 }
 
@@ -125,6 +134,13 @@ export function scopeOfPage(
 export function issueOfPage(pathname: string, search: string, newPage = false): string | undefined {
   if (unknownToShell(pathname, newPage)) return undefined;
   return parseIssuePath(pathname, search)?.key;
+}
+
+/** The project the page under the bar is in, its own page or an issue of it (`routeProjectOf`),
+ *  and undefined on every other page: the project's key, as against the chip's words for it
+ *  (`scopeOfProject`). */
+export function projectOfPage(pathname: string, newPage = false): string | undefined {
+  return unknownToShell(pathname, newPage) ? undefined : routeProjectOf(pathname);
 }
 
 /** How far the two keys have moved the chip from what the page put under the bar: the page's

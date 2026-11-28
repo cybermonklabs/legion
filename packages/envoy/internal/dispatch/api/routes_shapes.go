@@ -201,6 +201,13 @@ type deliveryPipelineQuery struct {
 	At string `query:"at"`
 }
 
+// projectActivityQuery is GET /api/v1/projects/{key}/activity's query.
+type projectActivityQuery struct {
+	// Weeks is how many ISO weeks the read spans, this week included: 1 to 52, default 8. Any
+	// other value is 400 INVALID_QUERY.
+	Weeks int `query:"weeks"`
+}
+
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
 type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins
@@ -387,11 +394,24 @@ type inboxQuery struct {
 	AsOf string `query:"as_of"`
 }
 
-// myAnswersQuery is the offset page GET /api/v1/me/answers and
-// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
-// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
-// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
+// myAnswersQuery is the offset page GET /api/v1/me/answers, GET /api/v1/me/going-plans and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. None of them takes a
+// kind, a filter or a traversal from its caller, so this struct is the whole of what each reads
+// (answers.go's parseMyAnswersPage, which each parses its page with).
 type myAnswersQuery struct {
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
+// conversations by, and the offset page GET /api/v1/me/answers answers.
+type myGoingRunsQuery struct {
+	// Issue keeps the conversations with a run whose landed requests touched that issue key.
+	Issue string `query:"issue"`
+	// Q keeps the conversations with a run whose words hold that text, in any case.
+	Q string `query:"q"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -500,6 +520,13 @@ type nearCopyChecksQuery struct {
 	// After is the id of the row the page starts after: the last page's next_after.
 	After string `query:"after"`
 	// Limit is the page size, 1 to 1000, default 1000.
+	Limit int `query:"limit"`
+}
+
+// agentListQuery is GET /api/v1/agents's query.
+type agentListQuery struct {
+	// Limit is how many of the newest seen sessions the list answers, one or more; absent, it
+	// answers every session.
 	Limit int `query:"limit"`
 }
 

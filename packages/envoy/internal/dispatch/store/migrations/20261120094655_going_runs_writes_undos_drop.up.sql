@@ -1,0 +1,17 @@
+-- 20261120094655_going_runs_writes_undos_drop.up.sql — a run's record holds no writes or undos of
+-- its own.
+--
+-- writes and undos were JSON arrays of a run's record (20261112173940): each write the command bar
+-- made and each undo of one, which the bar's writes route and its undo appended to and read. A
+-- run's writes are now the rows of its approved plan, and each request of them lands in
+-- going_landings (20261119201453); its undo reads those landings, and each request of the undo
+-- lands there too, phase undo, its answer holding the line the undo answers, so a second undo sends
+-- nothing twice. Nothing reads or writes writes or undos any more, so they go.
+--
+-- A drop without cascade is a catalog change: Postgres marks the columns dropped and rewrites no
+-- row, under going_runs' ACCESS EXCLUSIVE lock for that write alone. No release names the columns:
+-- going_runs is new on the branch that drops them (20261112173940), so no build of an earlier
+-- release reads or writes them while this one rolls (cmd/dispatch/README.md, "Database
+-- migrations"). The identifier is the UTC moment this was written, as `migrationid` requires of
+-- every migration past the numbered series.
+alter table going_runs drop column writes, drop column undos;

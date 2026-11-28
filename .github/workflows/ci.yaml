@@ -71,6 +71,7 @@ env:
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
       "dispatch-memory": "dispatch_memory",
+      "dispatch-memory-group": "dispatch_memory_group",
       "dispatch-multiprocess": "dispatch_multiprocess",
       "dispatch-two-builds": "dispatch_two_builds",
       "listener-server-change": "listener_server_change",
@@ -155,8 +156,7 @@ jobs:
       pi_legion: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && steps.filter.outputs.pi_legion || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       pi_legion_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.pi_legion_build }}
-      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
-      # every-job one above, so they come back on every push.
+      # why: .github/ci-notes/ci.md#the-dispatch_ui-output
       dispatch_ui: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_ui }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
@@ -172,14 +172,15 @@ jobs:
       envoy_infra_go: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && steps.filter.outputs.envoy_infra_go || 'false' }}
       # why: .github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push
       envoy_infra_build: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_infra_build }}
-      # The checks whose subject is text, in a job with no database: no `full-ci` term, only
-      # the every-job one above, since it is one of the cheapest jobs of the file.
+      # why: .github/ci-notes/ci.md#the-text_checks-output
       text_checks: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.text_checks }}
       envoy_go_race: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_claim_model: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_claim_model')) && steps.filter.outputs.envoy_go_claim_model || 'false' }}
       envoy_go_race_docs: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_docs')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
       dispatch_memory: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_memory')) && steps.filter.outputs.dispatch_memory || 'false' }}
+      # why: .github/ci-notes/ci.md#the-memory-group-test
+      dispatch_memory_group: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_memory_group }}
       dispatch_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_multiprocess')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       # why: .github/ci-notes/ci.md#the-two-build-job-builds-the-previous-release-and-runs-both-halves-against
       dispatch_two_builds: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_two_builds')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
@@ -187,8 +188,7 @@ jobs:
       dispatch_two_builds_go: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.dispatch_two_builds_go }}
       listener_server_change: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
-      # so it comes back on every push that selects it, as the two suites above do.
+      # why: .github/ci-notes/ci.md#the-airlock_lean-output
       airlock_lean: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.airlock_lean }}
       envoy_smoke: ${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ steps.scope.outputs.every_job && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -512,8 +512,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The shared test fixtures package has no build: nothing imports it at run time, and its
-  # consumers read its sources through the workspace.
+  # why: .github/ci-notes/ci.md#the-test-fixtures-job
   test-fixtures:
     needs: changes
     if: needs.changes.outputs.test_fixtures == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -548,8 +547,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The secrets broker's TypeScript client, which packages/envoy-client's broker credential
-  # imports. It has no build: its consumers read its sources through the workspace.
+  # why: .github/ci-notes/ci.md#the-broker-client-job
   broker-client:
     needs: changes
     if: needs.changes.outputs.broker_client == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -827,6 +825,22 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-dispatch-memory.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: dispatch-memory
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # why: .github/ci-notes/ci.md#the-memory-group-test
+  dispatch-memory-group:
+    needs: changes
+    if: needs.changes.outputs.dispatch_memory_group == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-dispatch-memory.yaml
+    with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
+      job: dispatch-memory-group
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-dispatch-servers-two-process-tests
@@ -966,8 +980,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
-  # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
+  # why: .github/ci-notes/ci.md#the-worker-image-job
   worker-image:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.worker_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -1004,7 +1017,7 @@ jobs:
     # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
     name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
+    # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
@@ -1044,7 +1057,7 @@ jobs:
   # why: .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
+    # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     env:
@@ -1107,6 +1120,7 @@ jobs:
       - envoy-go-claim-model
       - envoy-go-race-docs
       - dispatch-memory
+      - dispatch-memory-group
       - dispatch-multiprocess
       - dispatch-two-builds
       - listener-server-change
@@ -1121,7 +1135,7 @@ jobs:
       - worker-image
       - browser-image
     if: ${{ always() }}
-    # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
+    # why: .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64
     runs-on: ubuntu-24.04-arm
     # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
     # hold does not), with three over for the checkout and the two refusals.

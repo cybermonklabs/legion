@@ -34,7 +34,6 @@ import {
   pagePathRingFolded,
   pagePointRing,
 } from "../../theme/classes";
-import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
 import { composerNameOf } from "../conversation/useKeptDrafts";
@@ -95,6 +94,9 @@ import {
   CONTROL_LABELS,
   UNASKED_SOURCES,
 } from "./page-words";
+
+/** What the upload write answers with, which the cases below hold back or refuse. */
+type StoredUpload = Awaited<ReturnType<typeof api.uploadArtifact>>;
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -1235,9 +1237,10 @@ test("the writer's answer, its change and an option's press open nothing in the 
 test("an edit saves the comment's words", async () => {
   const user = userEvent.setup();
   const editComment = stub(
-    spyOn(api, "editComment").mockImplementation(async (id, input) =>
-      commentRecord(id, ALICE, input.body ?? "")
-    )
+    spyOn(api, "editComment").mockImplementation(async (id, input) => ({
+      ...commentRecord(id, ALICE, input.body ?? ""),
+      previous: { body: "" },
+    }))
   );
   const page = renderPage();
 
@@ -2185,7 +2188,7 @@ test("the box draws an upload's lines and a late send's in the page's colours", 
   stub(
     spyOn(api, "uploadArtifact")
       .mockImplementationOnce(() => {
-        const { promise, reject } = Promise.withResolvers<UploadResult>();
+        const { promise, reject } = Promise.withResolvers<StoredUpload>();
         refuseUpload = reject;
         return promise;
       })
@@ -3143,7 +3146,7 @@ test("every string the box draws, in each of its states, is a word or sentence o
   const uploadArtifact = stub(
     spyOn(api, "uploadArtifact")
       .mockImplementationOnce(() => {
-        const { promise, reject } = Promise.withResolvers<UploadResult>();
+        const { promise, reject } = Promise.withResolvers<StoredUpload>();
         refuseUpload = reject;
         return promise;
       })

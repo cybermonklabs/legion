@@ -20,50 +20,72 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project := r.PathValue("key")
-	pool := s.deps.Store.Pool
-	var tree model.ArchitectureTree
-	rows, err := pool.Query(r.Context(), `
-		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
-		where project_key = $1 order by id
-	`, project)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if len(tree.Sources) == 0 {
-		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+project)
-		return
-	}
-	components, byID, err := loadTreeComponents(r.Context(), pool, project)
+	tree, err := architectureTree(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// Each component's prose and each Not architectural row's reason are registered with the
-	// request's reader as the answer is shaped below: the trees are the table's rows where it
-	// holds them, and the read stores what it did not.
+	// request's reader as the answer is shaped: the trees are the table's rows where it holds
+	// them, and the read stores what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	issues, err := loadTreeIssues(r.Context(), pool, project)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	components := make([]architectureComponentRead, len(tree.Components))
+	for index, component := range tree.Components {
+		components[index].ArchitectureTreeComponent = component
+		reader.text(&components[index].ProseTree, component.Prose)
 	}
-	if err := attachTreeIssues(r.Context(), pool, project, issues, byID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	notArchitectural := make([]architectureTreeNoneRead, len(tree.NotArchitectural))
+	for index, row := range tree.NotArchitectural {
+		notArchitectural[index].ArchitectureTreeNone = row
+		reader.text(&notArchitectural[index].ReasonTree, row.Reason)
+	}
+	// The trees are filled before the answer is written, and the store of what the table did
+	// not hold runs on a goroutine of its own, beside the rest of the request.
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, architectureTreeRead{
+		ArchitectureTree: tree,
+		NotArchitectural: notArchitectural,
+		RetiredLinks:     tree.RetiredLinks,
+		Components:       components,
+	})
+}
+
+// architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404
+// SOURCE_NOT_FOUND apiError for a project with no architecture source. The route and the going
+// run's architecture read (going_reads.go) answer through it alike.
+func architectureTree(ctx context.Context, q queryer, project string) (model.ArchitectureTree, error) {
+	var tree model.ArchitectureTree
+	rows, err := q.Query(ctx, `
+		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
+		where project_key = $1 order by id
+	`, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	if len(tree.Sources) == 0 {
+		return model.ArchitectureTree{}, errorf(http.StatusNotFound, "SOURCE_NOT_FOUND", "no architecture source configured for %s", project)
+	}
+	components, byID, err := loadTreeComponents(ctx, q, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	issues, err := loadTreeIssues(ctx, q, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	if err := attachTreeIssues(ctx, q, project, issues, byID); err != nil {
+		return model.ArchitectureTree{}, err
 	}
 
-	shaped := make([]architectureComponentRead, len(components))
+	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}
 	tree.RetiredLinks = []model.ArchitectureTreeRetired{}
-	for index, component := range components {
+	for _, component := range components {
 		for _, row := range component.Issues {
 			component.Total++
 			if row.Status == "done" {
@@ -79,8 +101,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		if component.Total == 0 && !component.External {
 			tree.Totals.ComponentsWithoutWork++
 		}
-		shaped[index].ArchitectureTreeComponent = *component
-		reader.text(&shaped[index].ProseTree, component.Prose)
+		tree.Components = append(tree.Components, *component)
 	}
 	for _, issue := range issues {
 		tree.Totals.IssuesTotal++
@@ -108,20 +129,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
-	notArchitectural := make([]architectureTreeNoneRead, len(tree.NotArchitectural))
-	for index, row := range tree.NotArchitectural {
-		notArchitectural[index].ArchitectureTreeNone = row
-		reader.text(&notArchitectural[index].ReasonTree, row.Reason)
-	}
-	// The trees are filled before the answer is written, and the store of what the table did
-	// not hold runs on a goroutine of its own, beside the rest of the request.
-	reader.resolve()
-	WriteJSON(w, http.StatusOK, architectureTreeRead{
-		ArchitectureTree: tree,
-		NotArchitectural: notArchitectural,
-		RetiredLinks:     tree.RetiredLinks,
-		Components:       shaped,
-	})
+	return tree, nil
 }
 
 // architectureTreeNoneRead is one issue of the Not architectural list with the tree of the reason

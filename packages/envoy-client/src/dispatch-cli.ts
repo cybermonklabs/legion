@@ -34,7 +34,7 @@ import {
   documentFileRead,
   uploadedFile,
 } from "./dispatch-commands/stored-text";
-import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
+import { dispatchCommandOf } from "./dispatch-commands/table";
 import {
   checkDispatchCall,
   dispatchServerUrls,
@@ -502,7 +502,7 @@ export async function runDispatchCli(
   // where it runs, and the call, which read the file and throw the read's own error. It does not
   // read a FIFO, a device or a socket, whose read can wait forever, so the dry run's step asks
   // Dispatch nothing about it, and the call uploads it unchecked, for Dispatch's upload to judge.
-  const command = dispatchCommands[parsed.tool as DispatchToolName];
+  const command = dispatchCommandOf(parsed.tool);
   const documentFields = command?.documentFields ?? [];
   if (parsed.kind === "unstorable") {
     const { tool, field, bytes } = parsed;
@@ -892,8 +892,9 @@ export async function runDispatchCli(
       entry = { tool, details: { landed_without_answer: error.code } };
       code = OK;
     } else {
-      // `dispatch api`'s refusal of a write in a session AskGate gates carries AskGate's mark, as
-      // the CLI's own refusal of a gated write does, so pi-envoy counts it.
+      // The refusal of a write `dispatch api` or a command whose spec binds its routes would send,
+      // in a session AskGate gates (`ApiGateRefusal`), carries AskGate's mark, as the CLI's own
+      // refusal of a gated write does, so pi-envoy counts it.
       entry = {
         tool,
         error: text,

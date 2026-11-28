@@ -73,6 +73,12 @@ export function exactTimeLabel(at: Date): string {
   return at.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
 }
 
+/** The instant whole, as the tooltip of a time the page draws in words ("4 minutes ago") shows
+ *  it: its full date and time in the reader's locale. */
+export function timeTitle(at: Date): string {
+  return at.toLocaleString();
+}
+
 export interface TimestampProps {
   at: string;
   className?: string;
@@ -111,7 +117,7 @@ export function Timestamp({ at, className, exact = false }: TimestampProps): Rea
     <time
       className={shownClassName}
       dateTime={at}
-      title={tooltips ? date.toLocaleString() : undefined}
+      title={tooltips ? timeTitle(date) : undefined}
       {...page?.authorText}
     >
       {relativeTimeLabel(date, Date.now())}

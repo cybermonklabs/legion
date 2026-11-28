@@ -216,11 +216,13 @@ func ClearSessionCookie(secure bool) string {
 	return strings.Join(attrs, "; ")
 }
 
-// Session is the signed browser session identity, the person's email, and its server-revocable
-// generation.
+// Session is the signed browser session identity, the person's email, its server-revocable
+// generation, and when the cookie stops verifying: the expiry it signs, 30 days after the sign-in
+// that issued it.
 type Session struct {
 	Login      string
 	Generation int64
+	Expires    time.Time
 }
 
 // VerifySession validates the dsession cookie value and returns its signed session generation on
@@ -248,7 +250,7 @@ func VerifySession(value string, keys SigningKeys) (Session, bool) {
 	if err != nil || len(email) == 0 {
 		return Session{}, false
 	}
-	return Session{Login: string(email), Generation: generation}, true
+	return Session{Login: string(email), Generation: generation, Expires: time.UnixMilli(expiry)}, true
 }
 
 // SessionFromRequest returns the valid signed session identity, its cookie signed with any key of

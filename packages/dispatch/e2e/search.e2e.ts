@@ -742,7 +742,8 @@ test("the palette's keyboard hints show for a pointer and not for a touch reader
     const hints = page.getByTestId("search-keyboard-hints");
     if (testInfo.project.name === "chromium") {
       await expect(hints).toBeVisible();
-      await expect(hints).toContainText("to open");
+      // The keys of the highlighted row alone, a hit here (design v3, state 1).
+      await expect(hints).toHaveText("↵ Open · Esc Close");
     } else {
       await expect(hints).toBeHidden();
     }

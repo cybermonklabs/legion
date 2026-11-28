@@ -215,34 +215,40 @@ const (
 // The names of the frames one answer's stream carries: text as the answer arrives, item for each
 // thing the answer cites, cut when the answer reached its word cap, changed when the server did
 // not pass the answer on as the model wrote it, none when the model produced no answer text at
-// all, and end and error, the two that end a stream. A text frame carries plain text, every
-// ASCII punctuation byte of it backslash-escaped, which closes markdown's own constructs, so a
-// renderer makes no link, image, tag or code span of any of it; an escape closes none of GFM's
-// literal autolinks, so a word a renderer would link on its own is dropped from the answer
-// rather than sent; and an item frame is where the links of an answer live, each carrying a
-// cited item's own href.
+// all, decision for what the decision model chose before the answer, block for a typed block
+// drawn beside the answer, roster for how fresh the roster the answer read was, and end and error,
+// the two that end a stream. A text frame carries plain text, every ASCII punctuation byte of it
+// backslash-escaped, which closes markdown's own constructs, so a renderer makes no link, image,
+// tag or code span of any of it; an escape closes none of GFM's literal autolinks, so a word a
+// renderer would link on its own is dropped from the answer rather than sent; and an item frame
+// is where the links of an answer live, each carrying a cited item's own href.
 // Generated from GOING_EVENT_TEXT, GOING_EVENT_ITEM, GOING_EVENT_CUT,
-// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_END and GOING_EVENT_ERROR in
-// packages/contracts so the frames the server writes and the frames the page reads cannot drift
-// apart.
+// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_DECISION, GOING_EVENT_BLOCK,
+// GOING_EVENT_ROSTER, GOING_EVENT_END and GOING_EVENT_ERROR in packages/contracts so the frames
+// the server writes and the frames the page reads cannot drift apart.
 const GoingEventText = "text"
 const GoingEventItem = "item"
 const GoingEventCut = "cut"
 const GoingEventChanged = "changed"
 const GoingEventNone = "none"
+const GoingEventDecision = "decision"
+const GoingEventBlock = "block"
+const GoingEventRoster = "roster"
 const GoingEventEnd = "end"
 const GoingEventError = "error"
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, the model service refused or failed, and a post the run was
-// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
-// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
-// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// has no text model configured, the model service refused or failed, a post the run was given was
+// deleted after it, and every such post was deleted by a delete call of the run itself. Generated
+// from GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED,
+// GOING_ERROR_ANSWER_FAILED, GOING_ERROR_ANSWER_WITHDRAWN and GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN
+// in packages/contracts so the code the server writes and the wording the page keys on it cannot
 // drift apart.
 const GoingErrorAnswerDidNotArrive = "ANSWER_DID_NOT_ARRIVE"
 const GoingErrorNoModelConfigured = "NO_MODEL_CONFIGURED"
 const GoingErrorAnswerFailed = "ANSWER_FAILED"
 const GoingErrorAnswerWithdrawn = "ANSWER_WITHDRAWN"
+const GoingErrorAnswerWithdrawnByRun = "ANSWER_WITHDRAWN_BY_RUN"
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -403,6 +409,7 @@ var DispatchEventTypes = []string{
 	"comment.resolved",
 	"decision.kept",
 	"deploy.recorded",
+	"going_plan.updated",
 	"handoff.recorded",
 	"issue.claimed",
 	"issue.closed",

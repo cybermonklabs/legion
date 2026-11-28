@@ -57,6 +57,21 @@ export function issuePriority(issue: PriorityFields): PriorityView {
   return { from: level === null ? null : (issue.priority_from ?? null), level, own };
 }
 
+/** The priority of a row whose members are unknown - a table's row, a plan row's read - as every
+ *  surface draws one (`issuePriority`): its own, a number in its `priority`, and, where the row
+ *  carries them, the priority it works at and the issue that comes from (`resolved_priority`, a
+ *  number, and `priority_from`, a string), so a row that inherits its priority shows the one it
+ *  works at and where from. A member of another type reads as none, so a row that carries neither
+ *  of the last two shows its own. */
+export function issuePriorityOf(read: Readonly<Record<string, unknown>>): PriorityView {
+  const { priority, priority_from, resolved_priority } = read;
+  return issuePriority({
+    priority: typeof priority === "number" ? priority : null,
+    priority_from: typeof priority_from === "string" ? priority_from : null,
+    resolved_priority: typeof resolved_priority === "number" ? resolved_priority : null,
+  });
+}
+
 /**
  * The words of an inherited priority where a surface names it in text rather than draws its
  * source beside it: "P0, from ACME-1", in an accessible name or description, a tooltip, or the

@@ -34,9 +34,9 @@ export const MAX_ISSUE_LABELS = 20;
 /**
  * The longest label, in UTF-16 units, counted after the trim the issue routes apply; a blank or
  * longer one is `400 LABELS_INPUT`. Generated into Go as `contracts.IssueLabelMax`, which those
- * routes enforce, and which the label the dashboard gives an issue it files from a person's typed
- * words (`DISPATCH_NEW_ISSUE_LABEL`) is held to at boot; the issue tools' labels take it as each
- * item's bound.
+ * routes enforce, and which the label the command bar's File as a new issue gives the issue it
+ * files from a person's words (`DISPATCH_NEW_ISSUE_LABEL`) is held to at boot; the issue tools'
+ * labels take it as each item's bound.
  */
 export const ISSUE_LABEL_MAX = 40;
 

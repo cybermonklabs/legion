@@ -1173,3 +1173,156 @@ func TestFilterCountsTheWordsStringsFieldsCounts(t *testing.T) {
 		}
 	}
 }
+
+// timeLinkShape is a time link as a renderer of the text frames reads one, the web's TIME_LINK:
+// its words, with no bracket in them, and its target under the time scheme.
+var timeLinkShape = regexp.MustCompile(`\[([^\[\]\n]*)\]\(dispatch-time:[^)\s]*\)`)
+
+// timeWords is text with each time link written as its words alone, as the web's Copy does: what
+// is left of an answer once the one link a text frame may carry is read.
+func timeWords(text string) string {
+	return timeLinkShape.ReplaceAllString(text, "$1")
+}
+
+// TestFilterPassesOnATimeLink: the agent writes a time as a link whose words are the time as the
+// page writes it and whose target is the time scheme and an RFC 3339 time, which the web draws as
+// a <time> with the whole time on hover (dispatch-time.tsx). The filter passes such a link on as
+// the model wrote it and counts no change: its words are escaped, judged and counted as every
+// word is, wherever the text around it joins them, and its markup goes out unescaped around them.
+// A text frame never carries the [ of a time link whose closing markup it has not carried too, so
+// every frame so far reads as plain text but for whole time links. A cited link beside it still
+// raises its item.
+func TestFilterPassesOnATimeLink(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer string
+		want   string
+		items  int
+	}{
+		{
+			"a time in relative words",
+			"The issue closed [5 days ago](dispatch-time:2026-11-18T11:35:00Z).",
+			escaped("The issue closed ") + "[5 days ago](dispatch-time:2026-11-18T11:35:00Z)" + escaped("."),
+			0,
+		},
+		{
+			"an exact time with a fraction and an offset, inside parentheses",
+			"It started ([at 09:59:01 UTC](dispatch-time:2026-11-15T09:59:01.250+01:00)).",
+			escaped("It started (") + "[" + escaped("at 09:59:01 UTC") + "](dispatch-time:2026-11-15T09:59:01.250+01:00)" + escaped(")."),
+			0,
+		},
+		{
+			"two in one word",
+			"Seen [today](dispatch-time:2026-11-18T09:00:00Z)/[yesterday](dispatch-time:2026-11-17T09:00:00Z) here.",
+			"Seen [today](dispatch-time:2026-11-18T09:00:00Z)" + escaped("/") + "[yesterday](dispatch-time:2026-11-17T09:00:00Z)" + escaped(" here."),
+			0,
+		},
+		{
+			"words that open with a space",
+			"Seen [ 2 hours ago](dispatch-time:2026-11-18T09:40:00Z).",
+			"Seen [ 2 hours ago](dispatch-time:2026-11-18T09:40:00Z)" + escaped("."),
+			0,
+		},
+		{
+			"beside a cited link",
+			"See [Answer a question](/issues/INFRA-1279), closed [last week](dispatch-time:2026-11-10T12:00:00Z).",
+			escaped("See Answer a question, closed ") + "[last week](dispatch-time:2026-11-10T12:00:00Z)" + escaped("."),
+			1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, size := range []int{1, 4, 1000} {
+				emitted := drive(t, citationsOf(citedIssue, citedComment), pieces(tc.answer, size)...)
+				got := emitted.text()
+				if got != tc.want {
+					t.Errorf("deltas of %d bytes: answer = %q, want %q", size, got, tc.want)
+				}
+				var sent strings.Builder
+				for _, event := range emitted.events {
+					if event.Name == contracts.GoingEventText {
+						sent.WriteString(event.Data.(TextData).Text)
+						plainText(t, timeWords(sent.String()))
+					}
+				}
+				noAutolink(t, got)
+				if dropped := emitted.dropped(t); dropped != 0 {
+					t.Errorf("deltas of %d bytes: changed dropped = %d, want none for a time link: %v", size, dropped, emitted.names())
+				}
+				if items := emitted.count(contracts.GoingEventItem); items != tc.items {
+					t.Errorf("deltas of %d bytes: stream holds %d item events, want %d: %v", size, items, tc.items, emitted.names())
+				}
+				if got, want := emitted.terminal(t).Data.(EndData).Words, len(strings.Fields(timeWords(got))); got != want {
+					t.Errorf("deltas of %d bytes: end words = %d, want the %d words a reader reads", size, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestFilterCutsAMalformedTimeLinkToItsWords: a link under the time scheme whose target is not
+// exactly the scheme and an RFC 3339 time - a time to the minute, no time, a day no month has,
+// spaces or a title around it, the scheme in capitals - is reduced to its words and counted, as
+// every link the filter does not pass on is, and so is a time link written as an image or inside
+// another link's words. A time link whose first or last word joins a word a renderer links on
+// its own goes out as its words alone, that word dropped, and counted once beside it: no [ or
+// closing markup reaches a reader without the other.
+func TestFilterCutsAMalformedTimeLinkToItsWords(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answer  string
+		want    string
+		dropped int
+	}{
+		{"a time to the minute", "Closed [5 days ago](dispatch-time:2026-11-18T11:35Z).", escaped("Closed 5 days ago."), 1},
+		{"no time", "Closed [soon](dispatch-time:tomorrow).", escaped("Closed soon."), 1},
+		{"a day no month has", "Closed [then](dispatch-time:2026-11-31T09:00:00Z).", escaped("Closed then."), 1},
+		{"spaces around the target", "Closed [then]( dispatch-time:2026-11-18T11:35:00Z ).", escaped("Closed then."), 1},
+		{"the scheme in capitals", "Closed [then](DISPATCH-TIME:2026-11-18T11:35:00Z).", escaped("Closed then."), 1},
+		{"a title", `Closed [then](dispatch-time:2026-11-18T11:35:00Z "when").`, escaped("Closed then."), 1},
+		{"an image", "Closed ![then](dispatch-time:2026-11-18T11:35:00Z).", escaped("Closed then."), 1},
+		{"inside another link's words", "Closed [[then](dispatch-time:2026-11-18T11:35:00Z)](" + outsideHref + ").", escaped("Closed then."), 2},
+		{"its only word joins a host", "Down www[.example.com](dispatch-time:2026-11-18T11:35:00Z) today.", escaped("Down  today."), 2},
+		{"its last word joins a host", "[5 days ago www](dispatch-time:2026-11-18T11:35:00Z).example.com is down.", escaped("5 days ago  is down."), 2},
+		{"its first word joins a host", "www.example.com[ 5 days](dispatch-time:2026-11-18T11:35:00Z) ago.", escaped(" 5 days ago."), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, size := range []int{1, 4, 1000} {
+				emitted := drive(t, citationsOf(citedIssue, citedComment), pieces(tc.answer, size)...)
+				got := emitted.text()
+				if got != tc.want {
+					t.Errorf("deltas of %d bytes: answer = %q, want %q", size, got, tc.want)
+				}
+				plainText(t, got)
+				noAutolink(t, got)
+				if dropped := emitted.dropped(t); dropped != tc.dropped {
+					t.Errorf("deltas of %d bytes: changed dropped = %d, want %d: %v", size, dropped, tc.dropped, emitted.names())
+				}
+				emitted.terminal(t)
+			}
+		})
+	}
+}
+
+// TestFilterDropsATimeLinkTheCutWouldSplit: the cap falls inside a time link's words, after its
+// first word went out, so the answer ends at the cap with that word as plain text and no part of
+// the link's markup, and the drop is the cut's doing, as a cited link the cut splits is: it
+// raises no changed.
+func TestFilterDropsATimeLinkTheCutWouldSplit(t *testing.T) {
+	answer := words(contracts.GoingAnswerWordMax-1) + " [5 days ago](dispatch-time:2026-11-18T11:35:00Z) and more words after it."
+	for _, size := range []int{1, 9, 1000} {
+		emitted := drive(t, citationsOf(citedIssue), pieces(answer, size)...)
+		got := emitted.text()
+		if want := escaped(words(contracts.GoingAnswerWordMax-1)) + " 5 "; got != want {
+			t.Errorf("deltas of %d bytes: answer ends %q, want it to end %q, with no part of the link's markup",
+				size, got[max(0, len(got)-40):], want[len(want)-40:])
+		}
+		plainText(t, got)
+		if words := emitted.only(t, contracts.GoingEventCut).Data.(CutData).Words; words != contracts.GoingAnswerWordMax {
+			t.Errorf("deltas of %d bytes: cut words = %d, want %d", size, words, contracts.GoingAnswerWordMax)
+		}
+		if got := emitted.count(contracts.GoingEventChanged); got != 0 {
+			t.Errorf("deltas of %d bytes: stream holds %d changed events, want none: the cut ended that link", size, got)
+		}
+		emitted.terminal(t)
+	}
+}

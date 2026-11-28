@@ -74,7 +74,13 @@ const ScopeRead = "read"
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
 // scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
 // never recorded). A browser's cookie is the person themselves acting, so it names
-// no agent and carries none of this.
+// no agent and carries none of this, unless the command bar acted for them (Agent, below).
+//
+// Agent and Run name Dispatch's own agent when it made the act for the person: Agent is
+// ActAgentCommandBar and Run the command-bar run whose call it was, beside the scopes of the
+// credential the run acts with (a sign-in's every scope, a personal token's own) and that token's
+// id and name. Both are empty on every other act, and only the server sets them: an act a
+// request body names is never taken.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
@@ -90,7 +96,14 @@ type ActorAct struct {
 	TokenID       string   `json:"token_id,omitempty"`
 	TokenName     string   `json:"token_name,omitempty"`
 	Scopes        []string `json:"scopes,omitempty"`
+	Agent         string   `json:"agent,omitempty"`
+	Run           string   `json:"run,omitempty"`
 }
+
+// ActAgentCommandBar is ActorAct.Agent for an act the command bar made for its person: a read
+// or a write of one of its runs (api/going_grant.go). @legion/contracts' actorActText reads it as
+// "<person>, through the command bar".
+const ActAgentCommandBar = "command-bar"
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
 // live credential. A nil act is the person themselves acting, who holds every scope, so it holds
@@ -222,8 +235,9 @@ type Actor struct {
 	Service *string      `json:"service,omitempty"`
 	Project *string      `json:"project,omitempty"`
 	// Act names the agent that made this act for the person, and is set only where a
-	// credential acted as its person (actingPerson). A browser's act carries none, and so
-	// does an agent's own write on a route that always took tokens, which is recorded as the
+	// credential acted as its person (actingPerson) or the command bar acted for its person (the
+	// caller a run's call is made as, api/going_grant.go). A browser's own act carries none, and
+	// so does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
 	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
@@ -1084,7 +1098,9 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key      string `json:"key"`
+	Key string `json:"key"`
+	// Project is the key of the project the issue belongs to.
+	Project  string `json:"project"`
 	Title    string `json:"title"`
 	Status   string `json:"status"`
 	Priority *int   `json:"priority"`
@@ -1134,8 +1150,8 @@ type IssueSummaryPage struct {
 }
 
 // SearchOwner identifies the issue or standalone project document that owns a search result.
-// An issue owner carries Key, Title and Status; a document owner carries Project, Slug,
-// ArtifactID and Name.
+// An issue owner carries Key, Project, Title and Status, Project being the issue's own; a
+// document owner carries Project, Slug, ArtifactID and Name.
 type SearchOwner struct {
 	// Kind is "issue" or "document": scanSearchRows reads the column the search query writes as
 	// `case when r.owner_artifact_id is null then 'issue' else 'document' end` (search.go).
@@ -4166,6 +4182,16 @@ const (
 type UserThreadStateEventPayload struct {
 	Login    string `json:"login"`
 	ThreadID string `json:"thread_id,omitempty"`
+}
+
+// GoingPlanEventPayload is `going_plan.updated`: what one person's command-bar plans wait on
+// changed - a run's plan began to wait for them, or a waiting plan was answered, stopped or made
+// to wait again. It names the person alone, so their open pages read their Inbox and History again,
+// and nothing of the plan, which a page reads at GET /api/v1/going/runs/{id}/plan as the person. A
+// run belongs to no issue, document or project, so the event names no owner, and it never
+// notifies.
+type GoingPlanEventPayload struct {
+	Login string `json:"login"`
 }
 
 // MessageDeliveryEventPayload is the user-visible result of one target delivery attempt.

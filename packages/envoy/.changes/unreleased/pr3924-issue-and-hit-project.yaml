@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  Each issue `GET /api/v1/issues` lists carries `project`, the key of the project it belongs to, so
+  a listing of every project can be grouped by project. A search hit an issue owns (the issue
+  itself, or its document, comment, ask or message) carries the issue's project in
+  `owner.project`, where it carried none before.

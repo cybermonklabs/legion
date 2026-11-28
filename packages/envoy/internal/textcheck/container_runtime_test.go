@@ -52,16 +52,29 @@ const containerModule = "github.com/testcontainers/testcontainers-go"
 var dockerDriver = regexp.MustCompile(
 	`exec\.Command(Context)?\([^\n]*` + `"docker"` + `|NewDockerClient` + `WithOpts`)
 
+// allowedDockerDrivers are the files of this module, by their path from packages/envoy, that may
+// drive docker by hand, each with why: a test whose claim only a container's own limits can
+// prove. The walk leaves each out (dockerDriverFiles); every other file that drives docker is a
+// finding.
+var allowedDockerDrivers = map[string]string{
+	"cmd/dispatch/agent_memory_group_test.go": "check c20: the kernel's out-of-memory killer acts on " +
+		"the agent before the server in an 8 GiB memory group with swap off, which only a container " +
+		"gives; it skips unless DISPATCH_TEST_MEMORY_GROUP=1, which the dispatch-memory-group job alone " +
+		"sets, on a runner that has Docker",
+}
+
 // No package of this module outside the rigs above imports a container runtime directly or drives
 // docker by hand: Envoy's agents have no container runtime, and a test that needs one cannot run
 // where they do. This pins those two ways to get one — a direct import of testcontainers by a file
 // an untagged build of the package or of its tests compiles, and a hand-driven docker in any file —
-// against the packages allowed to have them. It does not prove that no other package needs a
-// runtime: a package that imports an allowlisted rig passes and still starts that rig's container,
-// as cmd/listener's tests do through testpg.URL whenever DISPATCH_TEST_DATABASE_URL is unset.
-// internal/smoke's containers are behind the smoke build tag and the NATS rig's own behind natslive,
-// so the untagged build reads neither import. The docker walk does not go by tag: it reads every
-// .go file, those included, and passes them because none drives docker by hand.
+// against the packages allowed to have them, and a hand-driven docker also against its two
+// exceptions, the nested infra module and the files allowedDockerDrivers names with their reasons.
+// It does not prove that no other package needs a runtime: a package that imports an allowlisted
+// rig passes and still starts that rig's container, as cmd/listener's tests do through testpg.URL
+// whenever DISPATCH_TEST_DATABASE_URL is unset. internal/smoke's containers are behind the smoke
+// build tag and the NATS rig's own behind natslive, so the untagged build reads neither import. The
+// docker walk does not go by tag: it reads every .go file, those included, and passes them because
+// none drives docker by hand.
 func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
 	t.Parallel()
 	t.Run("imports", func(t *testing.T) {
@@ -230,9 +243,10 @@ func importersUnder(t *testing.T, root string) ([]containerImport, int) {
 }
 
 // dockerDriverFiles lists every Go file under packages/envoy that drives a container runtime
-// itself, by its path from there, and how many it read. The nested infra module is left out: its
-// pulumilive lane runs a real stack of containers on a host that has a runtime, which is the one
-// place in this tree that legitimately drives Docker.
+// itself, by its path from there, and how many it read. Two exceptions are left out: the nested
+// infra module, whose pulumilive lane runs a real stack of containers on a host that has a
+// runtime, and the files allowedDockerDrivers names, each with the reason it needs a container of
+// its own.
 func dockerDriverFiles(t *testing.T) ([]string, int) {
 	t.Helper()
 	var drivers []string
@@ -260,7 +274,9 @@ func dockerDriverFiles(t *testing.T) ([]string, int) {
 			if err != nil {
 				return err
 			}
-			drivers = append(drivers, filepath.ToSlash(relative))
+			if relative = filepath.ToSlash(relative); allowedDockerDrivers[relative] == "" {
+				drivers = append(drivers, relative)
+			}
 		}
 		return nil
 	})

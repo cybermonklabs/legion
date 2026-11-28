@@ -158,6 +158,7 @@ var askOpeningWriterCensus = map[string]string{
 	"createAskBlock":      "internal/dispatch/docs/ask_blocks.go",
 	"restoreRetractedAsk": "internal/dispatch/docs/ask_blocks.go",
 	"writeAsks":           "cmd/dispatch-seed/write_items.go",
+	"writeEvalAsks":       "going/eval/write.go",
 }
 
 // approvalCallers is each call the gate's census rests on, by the functions that make it, one
@@ -335,11 +336,11 @@ func plantedSource(t *testing.T, code string) moduleSource {
 	return moduleSource{path: planted, file: file, positions: positions}
 }
 
-// Every statement of the module that opens an ask is one of the six writers of the census, and only
+// Every statement of the module that opens an ask is one of the seven writers of the census, and only
 // requestArtifactApproval opens or hands back an approval request, only prepareRestoration writes
 // a withdrawn ask open again, and only queueApprovalReviews writes a person's review, each beside
 // its call of the form gate; a person's review and the carry judge the documents of an approval by
-// one function (approvalDocuments). A scan that read nothing names fewer than six and fails; each
+// one function (approvalDocuments). A scan that read nothing names fewer than seven and fails; each
 // control plants one writer the census must name, or one the patterns must leave out, or a second
 // caller that the caller part must refuse, or a plan review's write that it must leave out. The gate
 // a carry asks is set in one place too (formGateSetter); its control plants a second setter.

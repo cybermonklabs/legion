@@ -213,6 +213,7 @@ test("the rail's Search control shows the same actions as the keyboard palette @
 
   const dialog = page.getByRole("dialog", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
+  // The empty box lists the page's actions, as main lists them (design v3, state 1).
   await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
   await expect(actions.getByRole("option", { name: "Go to Inbox" })).toBeVisible();
 });
@@ -233,6 +234,11 @@ inboxTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `row` is in the row's own action and in each movement row, so one list says which of them
+    // is offered.
+    const input = page.getByRole("combobox", { name: "Search" });
+    await input.fill("row");
     await expect(
       actions.getByRole("option", { name: "Open the row's issue, document or thread" })
     ).toHaveCount(1);
@@ -241,7 +247,6 @@ inboxTest(
 
     // Filtering re-renders the palette; the list is the one the opener's focus produced, so a
     // row a reader can see must still be there once they have typed enough to reach it.
-    const input = page.getByRole("combobox", { name: "Search" });
     await input.fill("open the row");
     const open = actions.getByRole("option", { name: "Open the row's issue, document or thread" });
     await expect(open).toHaveCount(1);
@@ -266,21 +271,27 @@ boardTest(
     await expect(card).toBeFocused();
 
     await page.keyboard.press("Control+k");
+    const input = page.getByRole("combobox", { name: "Search" });
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
-    await expect(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1).
+    // Each list holds a row the card offers, so the rows it must not hold are read from a list
+    // that was drawn.
     // `Enter` on the card opens it too, and `Open issue` is already that action's row. Soft, so
     // one run names every row that should not be there.
-    for (const absent of [
-      "Next card",
-      "Previous card",
-      "Next column",
-      "Previous column",
-      "Open the focused card's issue",
-    ]) {
-      await expect.soft(actions.getByRole("option", { name: absent })).toHaveCount(0);
+    for (const [words, offered, absent] of [
+      ["open", "Open issue", ["Open the focused card's issue"]],
+      ["next", "Move card to the next status", ["Next card", "Next column"]],
+      ["previous", "Move card to the previous status", ["Previous card", "Previous column"]],
+    ] as const) {
+      await input.fill(words);
+      await expect(actions.getByRole("option", { name: offered })).toHaveCount(1);
+      for (const name of absent) {
+        await expect.soft(actions.getByRole("option", { name })).toHaveCount(0);
+      }
     }
+    await input.fill("open");
     await actions.getByRole("option", { name: "Open issue" }).click();
     await expect(page).toHaveURL(new RegExp(`/issues/${scene.issue}`));
   }
@@ -317,6 +328,7 @@ test("a fresh open starts on an empty query, so it lists the new page's actions 
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   await expect(input).toHaveValue("");
+  // The empty box lists the new page's actions, as main lists them (design v3, state 1).
   await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
 });
 
@@ -336,6 +348,10 @@ listTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `issue` is in the row's own action and in each movement row, so one list says which of
+    // them is offered.
+    await page.getByRole("combobox", { name: "Search" }).fill("issue");
     await expect(actions.getByRole("option", { name: "Open issue" })).toHaveCount(1);
     // `Enter` from the row opens it too, and `Open issue` is already that action's row.
     // Soft, so one run names every row that should not be there.
@@ -365,11 +381,15 @@ inboxTest(
     await expect(bar).toContainText("1 selected");
 
     const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
     const snooze = actions.getByRole("option", {
       name: "Snooze the focused ask, or every selected ask",
     });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `ask` is in the snooze and in the mark's row, so one list says which of them is offered.
     await page.keyboard.press("Control+k");
+    await input.fill("ask");
     await expect(snooze).toHaveCount(1);
     await expect
       .soft(actions.getByRole("option", { name: "Select or deselect the selected ask" }))
@@ -384,6 +404,8 @@ inboxTest(
     await expect(row).not.toBeFocused();
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("Control+k");
+    // `the` is in the snooze and in the clearing row.
+    await input.fill("the");
     await expect(snooze).toHaveCount(1);
     await expect.soft(actions.getByRole("option", { name: "Clear the selection" })).toHaveCount(0);
 
@@ -407,6 +429,9 @@ test("below xl the margin is the route's own sheet, so Shift+M and its row chang
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Search" });
   const actions = dialog.getByRole("group", { name: "Actions" });
+  // The words typed narrow the actions to those whose name holds them (design v3, state 1): `e`
+  // is in Create issue and in both toggles, so one list says which of them is offered.
+  await page.getByRole("combobox", { name: "Search" }).fill("e");
   await expect(actions.getByRole("option", { name: "Create issue" })).toBeVisible();
   // Soft, so one run names both rows if either is offered.
   for (const absent of ["Toggle margin", "Toggle sidebar"]) {
@@ -439,6 +464,10 @@ architectureTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `component` is in the Open row and in each movement row, so one list says which of them is
+    // offered.
+    await page.getByRole("combobox", { name: "Search" }).fill("component");
     const open = actions.getByRole("option", {
       name: "Open the focused component: its children, else its details",
     });
@@ -461,8 +490,12 @@ test("Keyboard shortcuts is a row that opens its own dialog, and a project is a 
   const actions = dialog.getByRole("group", { name: "Actions" });
 
   // `Go to project…` is no row of its own: its key opens this same bar, where the projects
-  // are rows the reader types their way to, and Enter opens the one they chose.
+  // are rows the reader types their way to, and Enter opens the one they chose. The words typed
+  // narrow the actions to those whose name holds them (design v3, state 1), and `go to` leads to
+  // every other `Go to …` row.
   await page.keyboard.press("Control+k");
+  await page.getByRole("combobox", { name: "Search" }).fill("go to");
+  await expect(actions.getByRole("option", { name: "Go to Inbox" })).toHaveCount(1);
   await expect(actions.getByRole("option", { name: "Go to project…" })).toHaveCount(0);
   await page.getByRole("combobox", { name: "Search" }).fill("operations");
   await dialog.getByRole("group", { name: "Projects" }).getByRole("option").click();
@@ -472,6 +505,7 @@ test("Keyboard shortcuts is a row that opens its own dialog, and a project is a 
   // A row runs once the bar has closed, so a row that opens another dialog opens it.
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
+  await page.getByRole("combobox", { name: "Search" }).fill("keyboard");
   await actions.getByRole("option", { name: "Keyboard shortcuts" }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
@@ -484,6 +518,9 @@ test("the arrows keep the highlighted row in view when the list is longer than t
   await openIssue(page, scene.longList, "Long list");
   await page.keyboard.press("Control+k");
   const input = page.getByRole("combobox", { name: "Search" });
+  // One letter, `s`, which the Set priority rows start and most of the page's rows hold: the
+  // rows it starts lead the list, the rest are listed further down (design v3, state 1).
+  await input.fill("s");
   const rows = page
     .getByRole("dialog", { name: "Search" })
     .getByRole("group", { name: "Actions" })
@@ -517,6 +554,10 @@ nestedArchitectureTest(
     const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
       name: "Actions",
     });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // `e` is in Up one level and in the row into children, so one list says which of them is
+    // offered.
+    await page.getByRole("combobox", { name: "Search" }).fill("e");
     const up = actions.getByRole("option", { name: "Up one level" });
     await expect(up).toHaveCount(1);
     // `l` into children is `o`'s Open row where there are children and nothing on a leaf, so
@@ -547,10 +588,14 @@ test("on a short window the palette fits the screen and each highlighted row sho
     await page.setViewportSize({ height, width });
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
-    await expect(dialog.getByRole("group", { name: "Actions" })).toBeVisible();
+    // One letter, `s`, which the Set priority rows start and most of the page's rows hold, so
+    // the list runs past what the window shows (design v3, state 1).
+    await input.fill("s");
+    await expect(dialog.getByRole("group", { exact: true, name: "Actions" })).toBeVisible();
     await expect.soft(dialog, `${width}x${height}`).toBeInViewport({ ratio: 1 });
-    // The input names a row as the palette opens, and each ArrowDown moves it on. Each move is
-    // waited for, so every step reads the row its press moved to and not the one before it.
+    // The input names the first row the letter leads to, and each ArrowDown moves it on. Each
+    // move is waited for, so every step reads the row its press moved to and not the one before
+    // it.
     await expect(input, `${width}x${height}`).toHaveAttribute("aria-activedescendant", /./);
     for (let step = 0; step < 6; step += 1) {
       const active = await input.getAttribute("aria-activedescendant");
@@ -576,8 +621,13 @@ test("a window that shrinks under an open palette keeps the highlighted row in v
   await openIssue(page, scene.shrinkingWindow, "Shrinking window");
   await page.keyboard.press("Control+k");
   const input = page.getByRole("combobox", { name: "Search" });
+  // One letter, `s`, which the Set priority rows start and most of the page's rows hold, so
+  // the list runs past what the window shows (design v3, state 1).
+  await input.fill("s");
   await expect(
-    page.getByRole("dialog", { name: "Search" }).getByRole("group", { name: "Actions" })
+    page
+      .getByRole("dialog", { name: "Search" })
+      .getByRole("group", { exact: true, name: "Actions" })
   ).toBeVisible();
   // Down to the eleventh row, near the foot of the list at this height. Each press is waited
   // for, the highlight leaving the row it was on, so the row read below is the one the tenth

@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The command bar refuses a plan row that breaks a bound of its tool's schema or the rule its
+  spec states beside its arguments when the row is proposed, approved and run, in the spec's
+  words, so no approved row is refused 400 by its route; an edit naming its document by id goes
+  to that document's own route; a second try of a call whose write landed answers that landing;
+  and a request the bar sends in-process to an edit route is refused a member the route does not
+  declare.

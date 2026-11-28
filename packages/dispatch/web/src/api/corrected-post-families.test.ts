@@ -753,6 +753,44 @@ const messageBlockReferences = (): IssueReferences => ({
   truncated: false,
 });
 
+/** A command-bar run's plan whose rows edit and delete the post as a post of `kind`, each holding
+ *  its author and its words as the plan read them (`goingPostNow`), and a row that edits another
+ *  post, which the post's delete leaves as it is. The edit's own new words are its run's. */
+function planOfPost(kind: "comment" | "message") {
+  const postRow = (row: number, tool: string, post: string, words: string) => ({
+    arguments: {
+      [kind]: post,
+      ...(tool.includes("edit") ? { body: "Hold it until Monday." } : {}),
+    },
+    changed: false,
+    claim: null,
+    class: "text",
+    fields: ["body"],
+    issue: "CORE-1",
+    item: post,
+    needs: [],
+    now: { author: { id: "alice", kind: "user" }, body: words },
+    result: null,
+    row,
+    state: "waiting",
+    tool,
+    waits: [],
+  });
+  return {
+    mode: "ask",
+    plan: 1,
+    rows: [
+      postRow(0, `dispatch_edit_${kind}`, POST, OLD_WORDS),
+      postRow(1, `dispatch_delete_${kind}`, POST, OLD_WORDS),
+      postRow(2, `dispatch_edit_${kind}`, OTHER, "Words of another post."),
+    ],
+    run: "run-1",
+    state: "waiting",
+    summary: "",
+    version: "v1",
+  };
+}
+
 const ROWS: readonly WriteRow[] = [
   {
     answer: askThread(),
@@ -1135,6 +1173,31 @@ const ROWS: readonly WriteRow[] = [
     key: ["search", "deploy", {}],
     kind: "comment",
   },
+  // A command-bar run's plan: each row that edits or deletes the post holds its author and its
+  // words, which a delete marks; an edit writes nothing there, as a row's value now carries no
+  // edit time.
+  {
+    answer: planOfPost("comment"),
+    copies: () => [],
+    deletedCopies: (answer) => [
+      marksAt(answer, "rows", 0, "now"),
+      marksAt(answer, "rows", 1, "now"),
+    ],
+    family: "going-plan",
+    key: ["going-plan", "run-1"],
+    kind: "comment",
+  },
+  {
+    answer: planOfPost("message"),
+    copies: () => [],
+    deletedCopies: (answer) => [
+      marksAt(answer, "rows", 0, "now"),
+      marksAt(answer, "rows", 1, "now"),
+    ],
+    family: "going-plan",
+    key: ["going-plan", "run-2"],
+    kind: "message",
+  },
 ];
 
 test("every family a correction writes has a row that proves the write", () => {
@@ -1184,6 +1247,33 @@ for (const row of ROWS) {
     expect(JSON.stringify(answer)).toContain(OLD_WORDS);
   });
 }
+
+// A delete marks each row of a command-bar plan that edits or deletes the post as the plan's read
+// gives a row of a post deleted since (`maskDeletedPosts` in `api/going_plan.go`): deleted, its
+// author kept beside the delete's mark, and no body. A row of another post, and the delete of a
+// post of the other kind, leave the plan as it was.
+test("a delete marks the plan rows of the post deleted, with its author and no body, and leaves another post's row", () => {
+  const client = new QueryClient();
+  const key: QueryKey = ["going-plan", "run-1"];
+  client.setQueryData(key, planOfPost("comment"));
+  markCorrectedPost(client, POST_DELETES.message);
+  const untouched: unknown = client.getQueryData(key);
+  expect(untouched).toEqual(planOfPost("comment"));
+  markCorrectedPost(client, POST_DELETES.comment);
+  const rows = at(client.getQueryData(key), "rows") as readonly Record<string, unknown>[];
+  const mark = {
+    author: { id: "alice", kind: "user" },
+    deleted_at: DELETION.deleted_at,
+    deleted_by: DELETION.deleted_by,
+  };
+  expect(rows.map((row) => [row.deleted, row.now])).toEqual([
+    [true, mark],
+    [true, mark],
+    [undefined, planOfPost("comment").rows[2]?.now],
+  ]);
+  // The words the edit would write are its run's, and stay.
+  expect(at(rows[0], "arguments", "body")).toBe("Hold it until Monday.");
+});
 
 // The issue's references read names the row of the post, or of a block of it, by the head of the
 // post's words: a delete empties that name beside the node's mark, and leaves the row of another

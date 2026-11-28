@@ -858,7 +858,7 @@ func receiverName(fields *ast.FieldList) string {
 // The writers of comments are held to the commentsRowWriters names, each by the function the
 // scan reports its statement in: another function that makes, unmakes or sets a projected column
 // of a comments row fails, even where a store write reaches it, and so does a name of the list
-// the scan no longer finds there. The seed's is one of them, the one writer of comments
+// the scan no longer finds there. The two seeds' are two of them, the writers of comments
 // outside internal/dispatch, so a scan that read less of the repository than it should fails
 // too rather than passing on the writers it did find.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
@@ -919,13 +919,18 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 // column of it a tuple projects, by the file each is in and the function that issues the
 // statement, as the scan names a write: the comment create's row, which the comment route and the
 // comment an issue write leaves both queue (queueCommentRow), the comment reply, the seed's
-// batches of comments, each beside the nodes the batch's rows project, and the comment write of
-// the backfill and of the block-index tick (c-projection-write, Verification v108).
+// batches of comments, each beside the nodes the batch's rows project, the comment write of the
+// backfill and of the block-index tick (c-projection-write, Verification v108), and the eval's
+// seed's write of one comment (going/eval), beside the node its row names and the node of its
+// author, in the one transaction that writes the seed. The eval's seed makes each row itself,
+// dated at the time the seed fixes, which no route can set, and the backfill's write only names
+// the node of a row that is there already, so none of the others can make that row for it.
 var commentsRowWriters = []string{
 	"packages/envoy/internal/dispatch/api/comment_create.go#api.queueCommentRow",
 	"packages/envoy/internal/dispatch/api/comment_delivery.go#api.*server.replyComment",
 	"packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments",
 	"packages/envoy/internal/dispatch/refs/comment_nodes.go#refs.CommentWrite.Queue",
+	"packages/envoy/going/eval/write.go#eval.*seedWriter.writeComment",
 }
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was

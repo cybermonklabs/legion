@@ -19,6 +19,7 @@ import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { aliceWrite, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
+import { goingState, resetGoingStore, startRun } from "./features/going/going-store";
 import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";
 import { setReplyDraft, useReplyDraft } from "./features/inbox/reply-drafts";
 import { OTHER_TABS_ANSWER_MS, type UnsentChange } from "./features/shell/sign-in-channel";
@@ -483,6 +484,70 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
     expect(keptWrites()).toEqual([]);
   } finally {
     tab.close();
+    app.teardown();
+  }
+});
+
+// A sign-out that lands ends the person's command bar with their session: whoever signs in next in
+// this tab finds none of their runs - no chip at the top of the page names one - and none of their
+// runs' streams is read any more.
+test("a sign-out forgets the command bar's runs and stops reading their streams", async () => {
+  const user = userEvent.setup();
+  let login: string | undefined = "alice";
+  const app = renderApp({
+    whoAmI: async () => {
+      if (login === undefined) throw new ApiError(401, { error: "unauthorized" });
+      return { event_head: "0", kind: "user", login };
+    },
+    logout: async () => {
+      login = undefined;
+      return { ok: true };
+    },
+  });
+  let reading: AbortSignal | undefined;
+  const start = spyOn(api, "createGoingRun").mockResolvedValue({
+    context: null,
+    continues: null,
+    conversation: "c-1",
+    created_at: new Date().toISOString(),
+    finished_at: null,
+    id: "r-1",
+    issues: [],
+    level: "standard",
+    line: null,
+    mode: "ask",
+    standing_count: 0,
+    state: "queued",
+    stop_reason: null,
+    undoable: false,
+    undoable_count: 0,
+    undone_at: null,
+    undone_count: 0,
+    used: { calls: 0, tokens: 0, working_ms: 0 },
+    words: "count the moons",
+  });
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, _onFrame, signal) => {
+    reading = signal;
+    return Promise.withResolvers<void>().promise;
+  });
+  try {
+    await screen.findByText(wholeText("Signed in as alice"));
+    await act(() => startRun("count the moons", { path: "/" }, "alice"));
+    expect(await screen.findByTestId("going-chip")).toHaveTextContent("Working · Count the moons");
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByRole("link", { name: "Sign in with Google" });
+    expect(reading?.aborted).toBe(true);
+    expect(goingState().runs.size).toBe(0);
+
+    login = "bob";
+    await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
+    await screen.findByText(wholeText("Signed in as bob"));
+    expect(screen.queryByTestId("going-chip")).not.toBeInTheDocument();
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+    resetGoingStore();
     app.teardown();
   }
 });

@@ -17,9 +17,10 @@ import (
 // takes its value from that read through settingValues, which refuses a name the table does not
 // list. The libraries Dispatch links read a few variables for themselves, outside the table:
 // `HOME` (os.UserHomeDir), libpq's `PG*` (pgx), `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
-// (net/http), `SSL_CERT_FILE` and `SSL_CERT_DIR` (crypto/x509), the AWS SDK's `AWS_*` and its
-// shared config files (the file store's region and credentials), and the Go runtime's `GO*` and
-// `TZ`. `envoy-dispatch settings` prints the table, and the docs site's configuration reference is
+// (net/http), `SSL_CERT_DIR` (crypto/x509, which reads `SSL_CERT_FILE` for itself too, beside the
+// row that hands it on to the agent process), the AWS SDK's `AWS_*` and its shared config files
+// (the file store's region and credentials), and the Go runtime's `GO*` and `TZ`.
+// `envoy-dispatch settings` prints the table, and the docs site's configuration reference is
 // generated from that output. A new setting is a new row here, never an os.Getenv;
 // TestNoReaderBypassesTheSettingsTable holds cmd/dispatch and internal/dispatch to that.
 type setting struct {
@@ -42,7 +43,7 @@ type setting struct {
 // listener, projects, the issues the search bar files and the rule between a parent's status and
 // its children's, the GitHub App, cookies, service-account tokens, the secrets broker and the
 // Legion status scope it grants, meaning search's model service, the model the server generates
-// text with, the dashboard, and local and test runs.
+// text with, the model the command bar decides with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written."},
@@ -80,6 +81,8 @@ var settings = []setting{
 		Description: "Most browser connections to document rooms the server holds at once; one more document socket is refused (503) until one leaves. A positive integer."},
 	{Name: "XDG_CONFIG_HOME", Default: "`~/.config`", Required: "no",
 		Description: "Directory whose `legion/envoy.json` is the user `envoy.json`, which `DISPATCH_SERVER_URL` and `NATS_URLS` fall back to; set but empty, it is `~/.config` too, and a path that is not absolute refuses startup."},
+	{Name: "XDG_RUNTIME_DIR", Default: "a directory of the process's own under the system's temporary directory", Required: "no",
+		Description: "Directory of the process's runtime files: the server makes the socket its agent process (`envoy-dispatch agent`) calls it at in `dispatch-agent` under it, with mode 0700, so only the server's user can open it."},
 	{Name: "DISPATCH_SERVER_URL", Default: "`dispatch.serverUrl` from `envoy.json`", Required: "no",
 		Description: "The origin people open in a browser, and, where the `DISPATCH_SIGNIN_*` settings configure browser sign-in, the sign-in callback origin (`<origin>/auth/callback`): an absolute http(s) URL with no path. Set, it overrides `envoy.json`; set but empty, it refuses startup."},
 	{Name: "DISPATCH_SERVED_ORIGINS", Required: "no",
@@ -121,9 +124,9 @@ var settings = []setting{
 	{Name: "DISPATCH_PROJECT_OWNER_FALLBACK", Required: "when a project has no owner: the boot refuses to serve while one has none",
 		Description: "The lowercase email of a full member who has signed in, whom the boot makes the owner of every project with no owner: a project whose default assignee had never signed in when migration `20261116015736_project_access` gave each project its default assignee as owner. Unset, or naming nobody who is a full member, the boot refuses to start naming each such project and both repairs, this setting and `envoy-dispatch project-owner <KEY> <email>`. A value that is not a lowercase email refuses startup."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
-		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
-	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
-		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+		Description: "Label an issue carries that the command bar's File as a new issue files from the words a person typed; it is added to that issue alone."},
+	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made with no route", Required: "no",
+		Description: "Envoy session an issue the command bar's File as a new issue files from a person's typed words is routed to, written as the session's own id: the issue is made with its route set to that session, and no first message is posted on it, since a message to an agent is a change of a plan the person approves."},
 	{Name: "DISPATCH_SPEC_ROOTS", Default: "no document is judged for the form of The Spec", Required: "no",
 		Description: "Issue keys of the roots of The Spec, separated by commas. Dispatch judges the spec and Verification documents under each root, and the root's terms.md. It refuses an approval request or an approval when one of their texts breaks the form of The Spec. `backfill-block-ids` and `backfill-anchor-blocks` read it too: a settlement they run carries an approval only through the same form gate."},
 	{Name: "DISPATCH_PARENT_STATUS_RULE", Default: "`off`", Required: "no",
@@ -196,6 +199,18 @@ var settings = []setting{
 		Description: "Path of the file holding the bearer token every call to that endpoint presents, re-read on each call, as `DISPATCH_AZURE_FEDERATED_TOKEN_FILE` is, so a rotation needs no restart. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_CHAT_TOKEN`."},
 	{Name: "DISPATCH_CHAT_MODEL", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
 		Description: "The model each request names."},
+	{Name: "DISPATCH_AGENT_SOCKET", Required: "no",
+		Description: "The Unix socket `envoy-dispatch agent`, the command bar's agent process, calls its server at. The server sets it for that process, which it starts itself with an environment of the chat model's settings and this one, and nothing else sets it: the server never reads it, and `envoy-dispatch agent` refuses to start without it."},
+	{Name: "DISPATCH_AGENT_SLOTS", Default: "8", Required: "no",
+		Description: "How many runs `envoy-dispatch agent` works at once: the server sets it for that process from the agent's slots, and nothing else sets it; the server never reads it."},
+	{Name: "SSL_CERT_FILE", Default: "the system's certificate authorities", Required: "no",
+		Description: "File of the certificate authorities Go's TLS trusts in place of the system's, which Go reads for itself and the server hands on to its agent process (`envoy-dispatch agent`), so the agent trusts the chat model's endpoint as the server does: for a harness whose model service has a certificate of its own."},
+	{Name: "DISPATCH_DECISION_MODEL", Required: "no",
+		Description: "The System One model the command bar's one decision call is put to before it answers: which action the words ask for, whether they point at the page's item, and chart or prose. It must be a model the committed measurement holds (`packages/envoy/going/decision_models.json`, which marks the model its rule chose); a name the record does not hold is no decision model, and the server starts, logs why and decides nothing, as it does unset or with no endpoint."},
+	{Name: "DISPATCH_DECISION_MODEL_ENDPOINT", Required: "when `DISPATCH_DECISION_MODEL_TOKEN_FILE` is set",
+		Description: "The base URL of the System One decision API, which `/v1/systemone` is appended to: an absolute https URL with a host and no query or fragment. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone. Set together with `DISPATCH_DECISION_MODEL_TOKEN_FILE` or not at all."},
+	{Name: "DISPATCH_DECISION_MODEL_TOKEN_FILE", Required: "when `DISPATCH_DECISION_MODEL_ENDPOINT` is set",
+		Description: "Path of the file holding the bearer token every decision call presents, re-read on each call, so a rotation needs no restart. A file that is absent or empty at a call makes that call fail as the decision model that cannot be reached, which the capability route reports, and never refuses boot. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_DECISION_MODEL_TOKEN`."},
 	{Name: "DISPATCH_WEB_DIST", Default: "the `packages/dispatch/web/dist` directory found from the binary's location", Required: "no",
 		Description: "Directory of the built dashboard the server serves."},
 	{Name: "DISPATCH_DEV_SIGNIN", Required: "no",
@@ -254,6 +269,28 @@ var settings = []setting{
 		Description: "How long a test process booted with `DISPATCH_SEARCH_FILL=off` waits on its own deadline for each read of whether a table the keyword fill writes holds a row, in place of the four seconds past the statement timeout a deployment waits (ten seconds in all at a deployment's lock timeout); Postgres's own lock timeout (`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT`) and statement timeout still end the read at the server. A Go duration longer than the statement timeout, for an end-to-end test that stages it past its run so that only Postgres ends the read, and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_HTTP_DRAIN", Default: "`11s`", Required: "no",
 		Description: "How long a test process's shutdown waits for the requests in flight before its document service settles the documents owed with requests still running, in place of the eleven seconds a deployment waits; a positive Go duration of at most `11s`, so the document service's budget after it still ends at least five seconds inside the thirty-second stop grace, for an end-to-end test whose request holds the drain. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_CEILING", Default: "the ceiling the container's memory limit gives: the smaller of 4 GiB and a sixth of it", Required: "no",
+		Description: "The resident memory, in bytes, above which a test process kills its agent process (`envoy-dispatch agent`), in place of the ceiling a deployment's container gives; a positive whole number, for an end-to-end test of the kill only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_GOMEMLIMIT", Default: "75% of the agent's ceiling", Required: "no",
+		Description: "The `GOMEMLIMIT`, in bytes, a test process starts its agent process with, in place of the one its ceiling gives; a positive whole number, for an end-to-end test of the agent's claim gate, which takes no run above 70% of it, and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_HOOKS", Required: "no",
+		Description: "Set to `1` so a test process starts its agent process with the agent's test hooks on: tools that hang, panic, panic past every recover, and work the agent at its soft limit until the run ends, and a reply whose words hang the stream, which an end-to-end test's fake chat model asks for; a collection of the agent's heap at each `SIGUSR1`, whose live heap and goroutines the agent logs; and, at each `SIGUSR2`, the agent's runtime figures as they stand, which it logs with no collection. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
+	{Name: "DISPATCH_TEST_AGENT_CALL_HOOK", Required: "no",
+		Description: "Rules on the calls a test process makes for its agent, apart by `;`, each on a route every such call of which panics in it (`panic GET /api/v1/search`), or is held for a Go duration or until the call's own 60 s end, before its route answers (`hold 20s GET /api/v1/search`) or once its route answered and before the call hears it (`after 20s PATCH /api/v1/issues/A-1`), for an end-to-end test of the recover around such a call, of the 16 calls at once, of a call's 60 s, of a second try of its key and of a killed agent or server; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_SLOTS", Default: "8", Required: "no",
+		Description: "How many runs a test process's agent works at once, from 1 to 64, in place of the slots its limits give, for an end-to-end test whose runs make more calls at once than 8 runs can; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_PROCS", Default: "as many CPUs as the process schedules on, 4 at the most", Required: "no",
+		Description: "The `GOMAXPROCS`, from 1 to 4, a test process starts its agent process with, in place of the CPUs it gives it, so an end-to-end test on a runner of few CPUs gives the agent production's share of them (4 of a container's 16); never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_GROW_AFTER", Required: "no",
+		Description: "How long after each start a test process's agent process (`envoy-dispatch agent`) waits before it allocates memory as fast as it can, on as many goroutines as its `GOMAXPROCS`, writing each page so it is resident, until its server kills it for memory; a positive Go duration, for the end-to-end test of the agent's memory in a container and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
+	{Name: "DISPATCH_TEST_AGENT_NOW", Required: "no",
+		Description: "An RFC 3339 time a test process's agent process (`envoy-dispatch agent`) tells each run's model as the time now, in place of the clock's at the run's turn, and from which it writes each time it gives the model relative to now, so an eval whose seeded times are written for one day reads them as of that day. The server's leases, timeouts and stored times stay on the clock. For an end-to-end test or an eval only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
+	{Name: "DISPATCH_TEST_SERVER_HEAP", Required: "no",
+		Description: "Bytes a test process allocates on its own heap as it boots, before it starts its agent process, writing each page so it is resident, and holds until it exits, so the end-to-end test of the agent's memory in a container holds the server near its peak beside the agent; a positive whole number, never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_KEEP_CLOSED_ROOMS", Required: "no",
+		Description: "Set to `1` so a test process keeps, until it exits, a copy of the document of each room a document socket leaves, decoded with ygo from the room's stored state as a room's load decodes it: a leak of the rooms' heap that `dispatch_rooms` does not count once the room has gone, for the negative control of the comparison of production's heap and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_KEEP_REQUEST_MEGABYTES", Required: "no",
+		Description: "Set to `1` so a test process stores 1 MB for each request its HTTP port serves, in a package-level map that nothing prunes: a leak outside the rooms and the read cache, for the negative control of the comparison of production's heap and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

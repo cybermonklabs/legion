@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The command bar shows each step of a run as one line of words, never a tool's name, JSON, a
+  status code or a result: "Reading the comments of DEMO-7…" while the call runs, then "Read the
+  comments of DEMO-7", "Searched DEMO for "three things" · 3 hits", "Looked for a way to list an
+  issue's messages", or, for a call that failed, one sentence such as "Could not read DEMO-12: you
+  have no access". The agent fills each call's words from its tool's label and its arguments.
+  A run's `reply` frame now carries `labels`, the present form of each call's words in the order of
+  `tools`, and `withheld`, how many tool results the run withheld from the model on the reply that
+  ends its turn; that reply's `text` is the answer alone, and the bar says in a line under it that
+  results were held back. A `tool` frame now carries `label`, the call's words once it ended;
+  `kind`, `read`, `search`, `look`, `chart`, `plan`, `review` or `write`; `count`, the results of a
+  list or a search; and `items`, the keys and references the call named and answered. Each field
+  is added, and `note` is unchanged. The bar draws no line for a change an approved plan made,
+  which the plan's card shows, and the model's prose beside its calls shows while those calls run,
+  never as part of the answer.

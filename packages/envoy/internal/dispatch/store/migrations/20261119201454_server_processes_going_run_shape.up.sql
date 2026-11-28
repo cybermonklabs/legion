@@ -1,0 +1,21 @@
+-- 20261119201454_server_processes_going_run_shape.up.sql — the highest saved shape of a command
+-- bar run each registered server process reads.
+--
+-- A run's steps are saved in a shape a build reads (going_runs.shape, 20261119201453), and a
+-- run that one build saved can be claimed by another while two builds serve one database, during
+-- a roll or after a rollback. Each process writes here the highest shape it reads, and a build
+-- claims only a run whose shape is at or below its own, so a run a newer build saved waits for a
+-- build that reads it rather than failing on one that does not.
+--
+--   going_run_shape   the highest going_runs.shape the process reads; null for a process of a
+--                     build that runs no run, every build before this one among them.
+--
+-- One nullable column with no default: Postgres records it in the catalog and rewrites no row, so
+-- the ALTER takes ACCESS EXCLUSIVE on server_processes only for the catalog write. The release
+-- before this one names its columns in every insert and select it makes on the table (migration
+-- 0135, internal/dispatch/processes), so it neither reads nor writes this one and its rows read
+-- null, which is what a rolling update requires of a migration (cmd/dispatch/README.md, "Database
+-- migrations"). The identifier is the UTC moment this was written, as `migrationid` requires of
+-- every migration past the numbered series.
+alter table server_processes
+  add column going_run_shape integer;

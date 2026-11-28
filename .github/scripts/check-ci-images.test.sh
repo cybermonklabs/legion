@@ -109,7 +109,8 @@ fixture() {
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy-client/test" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts"
+    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts" \
+    "$root/packages/envoy/cmd/dispatch"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
@@ -204,7 +205,7 @@ YAML
   for go_file in packages/daemon/internal/testnats/nats.go \
     packages/daemon/internal/ompsessions/searchpath_test.go \
     packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
-    packages/envoy/internal/tests3/seaweedfs.go; do
+    packages/envoy/internal/tests3/seaweedfs.go packages/envoy/cmd/dispatch/agent_memory_group_test.go; do
     cat > "$root/$go_file" <<YAML
 package testimage
 

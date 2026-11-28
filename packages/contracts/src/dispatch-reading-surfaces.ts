@@ -128,6 +128,7 @@ export type DispatchReadingSurface =
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
+  | "going-write-quote"
   | "delivery-production-jobs"
   | "delivery-population-authors"
   | "delivery-excluded-repos";
@@ -345,10 +346,14 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // A session's live conversation, which Dispatch stores nothing of and indexes nothing from.
   {
     cannotCarry: NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/agent-view/AgentThread.tsx"],
-    reach: "/agents/<SESSION>/live, a turn's text part",
+    files: [
+      "packages/dispatch/web/src/features/agent-view/AgentThread.tsx",
+      "packages/dispatch/web/src/features/going/ConversationView.tsx",
+      "packages/dispatch/web/src/features/search/AnswerPanel.tsx",
+    ],
+    reach: "A live agent turn, or a model's short or full answer in the command bar",
     reason:
-      "A session's own turn is no record of the reference graph - it is the live transcript, which Dispatch stores nothing of and indexes nothing from - so a `#id` in it declares nothing and names nothing.",
+      "These model turns are not addressable records in the reference graph. The text arrives as a stream of frames, and a question id in it has no source document.",
     record: false,
     rendered: true,
     surface: "agent-turn-text",
@@ -1381,6 +1386,14 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: true,
     surface: "search-result",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/going/PlanRows.tsx"],
+    reach: "A command-bar plan's post or message row, before or after approval",
+    reason: "The quote shows the exact characters of a proposed tool argument, as a diff does.",
+    record: false,
+    rendered: false,
+    surface: "going-write-quote",
   },
   // A row of the reference picker, in every box that carries it.
   {

@@ -68,6 +68,12 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  callRoute: (client) =>
+    client.callRoute(
+      { method: "PATCH", path: "/api/v1/priorities/{id}" },
+      ["api", "v1", "priorities", "ship-it"],
+      { body: { title: "Ship" } }
+    ),
   readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me", AT),

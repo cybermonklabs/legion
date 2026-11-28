@@ -229,6 +229,8 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/me/agents/state":                     "/api/v1/me/agents/state",
 		"/api/v1/me/answers":                          "/api/v1/me/answers",
 		"/api/v1/me/documents/{id}/read":              "/api/v1/me/documents/" + c.spec + "/read",
+		"/api/v1/me/going-plans":                      "/api/v1/me/going-plans",
+		"/api/v1/me/going/settings":                   "/api/v1/me/going/settings",
 		"/api/v1/me/replies":                          "/api/v1/me/replies",
 		"/api/v1/me/state":                            "/api/v1/me/state",
 		"/api/v1/people/{login}/nodes":                "/api/v1/people/" + shotPerson + "/nodes?limit=50&offset=0",

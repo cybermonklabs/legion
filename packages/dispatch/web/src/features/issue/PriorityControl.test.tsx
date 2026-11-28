@@ -89,6 +89,7 @@ const summary: IssueSummary = {
   route_holder: null,
   route_status_reason: null,
   key: issue.key,
+  project: issue.project,
   labels: [],
   last_seq: 1,
   open_asks: 0,

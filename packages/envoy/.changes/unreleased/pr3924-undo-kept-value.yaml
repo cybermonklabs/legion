@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  An Undo of a command-bar run (`POST /api/v1/going/runs/{id}/undo`) names a field another writer
+  changed after the run as data as well as in words: its `GoingUndoField` carries `now`, the
+  value the field holds now as the item's read answers it, and `by`, who changed that field after
+  the call landed (`kind` and `id`, absent where no event after the landing names a writer). The
+  command bar words the value as the item's page shows it, "Title stays Bob's dome: bob changed it
+  after this run", where before it showed the value's raw JSON from `message`. `message` is
+  unchanged, for a bar that does not read the new fields. Who changed a kept value is read from
+  what came after the call's landing - the issue's events after the sequence the call left whose
+  changed list names that field, the ask's later edits of that part, the writer of the document's
+  version now - never from the item's newest event, which named whoever commented, claimed or
+  changed another field since.

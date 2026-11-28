@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  A command-bar run no longer tells its person that a change was made when it proposed no plan.
+  Before a reply in prose ends a turn that holds no plan, the agent makes one check call on its own
+  chat model: low effort, no tool, a structured answer of a few hundred tokens, through the agent's
+  pacer. The call is given the person's words and the reply, and answers whether the reply says a
+  change is made, is being made or will be made, or leaves unproposed a change the words ask for.
+  A flagged reply is held back once: it is saved with `no_plan` in its body, its `reply` frame
+  carries `no_plan` true and no `text`, so the bar shows nothing of it, and the model is told that
+  nothing changed and that words asking for a change end with `propose_plan`, or with `ask_person`
+  saying what stops the change. A worker that starts again from the saved steps goes on past such a
+  reply. A reply flagged again, or on the run's last model call, ends the turn `done` with "Nothing
+  changed, because no plan was proposed." before its text. A new-issue run's reply in prose is held
+  back the same way with no check, and its model is told to file the issue now. A check that draws
+  no answer leaves the reply to end the turn as before, with a warning that names the run and the
+  cause. The check is charged to the pacer, its time to the run's working time and its output
+  tokens to the run's tokens; it is no model call of the level. The last model call is told that,
+  where the words ask for a change no plan proposed, the answer says nothing changed and why.
+  A plan whose `dispatch_issue_update` change reopens a closed issue beside a field the issue route
+  refuses on a closed issue - anything but the status, the rank, the components and links the issue
+  already holds - is refused `CALL_REFUSED`, telling the model to propose the reopen alone and the
+  other fields as a second change whose needs name the first; the system prompt says the same.
+  Such a row used to fail `409 ISSUE_CLOSED` once approved.

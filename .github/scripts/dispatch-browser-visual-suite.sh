@@ -52,8 +52,9 @@ export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361e
 export DISPATCH_E2E_PG_CONNECTIONS=$connections
 # One stack, which e2e/visual-run.sh starts on the host and stops however it ends: the
 # Playwright run inside the container reads DISPATCH_E2E_REUSE_SERVERS=1 among that
-# stack's variables and starts none of its own. Each project of the two runs one
+# stack's variables and starts none of its own. Each project of the three runs one
 # worker (e2e/playwright.config.ts), since two comparisons drawing at once on one
 # machine is the contention that makes one read a half-drawn frame, so a second stack
-# would stand idle.
+# would stand idle. The script starts that stack with the fake models, which the command
+# bar's rows script (DISPATCH_E2E_MODELS=fake, set by the script itself).
 e2e/visual-run.sh

@@ -2034,6 +2034,12 @@ ENV_ALLOWED = frozenset({
     # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
     # the same tests with it set as without.
     "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    # ci-job-dispatch-memory.yaml's switch for the memory-group test (its dispatch-memory-group
+    # job): the test reads it, go does not, and it moves nothing go compiles.
+    "DISPATCH_TEST_MEMORY_GROUP",
+    # ci-job-dispatch-two-builds.yaml's going-runs build (check c25 of INFRA-1588), read by the
+    # test as DISPATCH_FIRST_ROLLOUT_BUILD is; go reads neither.
+    "DISPATCH_GOING_RELEASE_BUILD", "GOING_RELEASE_COMMIT",
     "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of

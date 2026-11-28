@@ -53,7 +53,11 @@ test(
   "a run that selects no stub project is given no web server to start",
   async () => {
     expect(
-      await webServerCommand(["--project=visual", "--project=visual-phone"]),
+      await webServerCommand([
+        "--project=visual",
+        "--project=visual-phone",
+        "--project=visual-bar",
+      ]),
       "The containerised `visual` job runs this config with no bun on its PATH, so a `webServer` " +
         "declared for a run that holds no stubbed row kills the full lane with exit 127 before " +
         "its first row. Declare the stubbed layer's static file server for the runs that select " +

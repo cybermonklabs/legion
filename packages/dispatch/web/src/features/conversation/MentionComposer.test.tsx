@@ -22,6 +22,7 @@ import type {
   Agent,
   AskRead,
   Comment,
+  CommentEdited,
   IssueCollaborators,
   IssueReferenceSummary,
   ItemBlock,
@@ -123,6 +124,9 @@ const createdComment: Comment = {
   suggestion: null,
   turn: null,
 };
+
+/** The edit's answer for `createdComment`: the comment, with the body the edit replaced. */
+const editedComment: CommentEdited = { ...createdComment, previous: { body: "sent" } };
 
 interface ComposerOptions {
   agents?: readonly Agent[];
@@ -1964,7 +1968,7 @@ test("/btw in the body and /btwx stay ordinary text despite a mention", async ()
 
 test("editing a comment patches only its body and never creates a delivery", async () => {
   const user = userEvent.setup();
-  const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
+  const editComment = spyOn(api, "editComment").mockResolvedValue(editedComment);
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   // The editor reads the comment's blocks when it opens: this comment carries none.
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue(alphaBetaBlocks(false));
@@ -2008,7 +2012,7 @@ function alphaBetaBlocks(indexed: boolean): ItemBlocks {
 async function saveEditOfAlphaBeta(blocks: Promise<ItemBlocks>): Promise<unknown[]> {
   const user = userEvent.setup();
   const commentBlocks = spyOn(api, "commentBlocks").mockReturnValue(blocks);
-  const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
+  const editComment = spyOn(api, "editComment").mockResolvedValue(editedComment);
   const { view } = renderComposer({ edit: { body: "Alpha\n\nBeta", id: "comment-1" } });
   try {
     await waitFor(() => expect(commentBlocks).toHaveBeenCalledWith("comment-1"));
@@ -2087,7 +2091,7 @@ test("an unchanged edit of a comment stored with CR LF carries each block's id",
     item: graphNode({ id: "comment-1", issue_key: "CORE-1", kind: "comment" }),
     revision: 3,
   });
-  const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
+  const editComment = spyOn(api, "editComment").mockResolvedValue(editedComment);
   const { view } = renderComposer({ edit: { body: "Alpha\r\n\r\nBeta", id: "comment-1" } });
   try {
     await waitFor(() => expect(commentBlocks).toHaveBeenCalledWith("comment-1"));
@@ -2145,7 +2149,7 @@ test("an edit's save an older server refuses keeps the draft", async () => {
 test("a block cut and pasted elsewhere keeps its id in the edit's save", async () => {
   const user = userEvent.setup();
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue(alphaBetaBlocks(true));
-  const editComment = spyOn(api, "editComment").mockResolvedValue(createdComment);
+  const editComment = spyOn(api, "editComment").mockResolvedValue(editedComment);
   const { view } = renderComposer({ edit: { body: "Alpha\n\nBeta", id: "comment-1" } });
   const beforeInput = (field: HTMLTextAreaElement, start: number, end: number, type: string) => {
     field.setSelectionRange(start, end);
@@ -4004,6 +4008,7 @@ test("a host move in the paste's own task cannot move the upload", async () => {
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue({
     artifact: { slug: "notes-md" } as never,
     version: {} as never,
+    previous_version: null,
   });
   const { rerender, view } = renderComposer();
 
@@ -4183,6 +4188,7 @@ function uploaded(slug: string, name: string, version: number) {
   return {
     artifact: { kind: "image", name, slug } as never,
     version: { number: version } as never,
+    previous_version: null,
   };
 }
 

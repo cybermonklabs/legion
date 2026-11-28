@@ -175,8 +175,9 @@ const actor = InboundActorSchema;
  *  `postFileRoundTrip`, parse and render the text and answer it, and call no store), the
  *  related-item check (`related`, `POST /api/v1/projects/{key}/related`: its
  *  handler's `answerRelated` runs `relatedCheck` with `record` unset, so no related_checks record
- *  is written), and a result's dry run (`dryRunResult`, a validation-only preview, which records
- *  nothing). */
+ *  is written), a result's dry run (`dryRunResult`, a validation-only preview, which records
+ *  nothing), and either of those routes a spec binds (`callRouteStoringNothing`,
+ *  `BOUND_POSTS_STORING_NOTHING`). */
 const STORE_NOTHING = new WeakSet<z.ZodType>();
 
 /** `row`, marked as the row of a route that stores nothing (`rowStores`). */
@@ -190,6 +191,16 @@ function storesNothing<Row extends z.ZodType>(row: Row): Row {
 export function rowStores(row: z.ZodType): boolean {
   return !STORE_NOTHING.has(row);
 }
+
+/** The pattern of each POST a tool spec binds (`DispatchToolSpec.routes`, `@legion/contracts`)
+ *  that stores nothing, which `DispatchClient.callRoute` reads into `callRouteStoringNothing`:
+ *  the round trip `dispatch_check_markdown` binds, `markdownRoundTrip`'s route, and the dry run
+ *  `dispatch_check_result` binds, `dryRunResult`'s. Every other POST and PATCH a spec binds
+ *  stores what it is sent, and `callRoute` reads it into `callRoute`'s row. */
+export const BOUND_POSTS_STORING_NOTHING: Readonly<Partial<Record<string, true>>> = {
+  "/api/v1/markdown/round-trip": true,
+  "/api/v1/issues/{key}/results/dry-run": true,
+};
 
 /** A priority an issue advances and a link it carries, in the payload's forms (`issueFields`,
  *  `ExternalLinkSchema`), whose items refuse a member they do not name: here each keeps it, as
@@ -403,4 +414,10 @@ export const WRITE_ROWS = {
     version: pictureUpload.version,
     advice,
   }),
+  /** `callBoundRoute` (`dispatch-commands/route-tools.ts`) prints a bound write's answer as it
+   *  came and reads no member of it, so any object Dispatch answers is the row: every POST and
+   *  PATCH a spec binds answers one. */
+  callRoute: z.looseObject({}),
+  /** The same, for a bound POST that stores nothing (`BOUND_POSTS_STORING_NOTHING`). */
+  callRouteStoringNothing: storesNothing(z.looseObject({})),
 } satisfies Record<string, z.ZodType>;

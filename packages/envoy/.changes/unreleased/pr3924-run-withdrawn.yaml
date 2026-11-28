@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A command-bar run that read a comment or an issue message is withdrawn once that post is
+  deleted, as a short answer is. Each answer a call of a run gets records, before the agent is
+  given it, the posts whose words it carries (`going_run_posts`), and a follow-up records the posts
+  of the earlier runs whose notes it is handed. From the delete on, the run's stream writes one
+  `end` frame with `ANSWER_WITHDRAWN` and none of its frames, its record and History read it
+  stopped with that reason, its plan gives no summary, arguments or value now, the Inbox no longer
+  lists it, an approval or a revision of its plan is refused `409 GOING_RUN_WITHDRAWN`, and a run
+  that had not ended is stopped, so it stores nothing more. What the run stored keeps its words.
+  The bar draws a withdrawn run as one line in place of its answer, steps and blocks, and the
+  short answer names `ANSWER_WITHDRAWN` in the same words.

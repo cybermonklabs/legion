@@ -24,6 +24,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
+	"go.uber.org/goleak"
 
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -41,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -68,17 +70,27 @@ import (
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const apiTestParallelism = 8
 
-// TestMain runs the package's tests through the Dispatch harness's Main, which drops their
-// databases and their templates, inside the broker harness's Run, which then drops the database
-// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
-// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
-// harness's may have reached that bound, still waits testdb's floor for its own drop.
+// TestMain sets the package's default -parallel (apiTestParallelism) and runs the package's tests
+// through the Dispatch harness's Main, which drops their databases and their templates, inside the
+// broker harness's Run, which then drops the database brokerstoretest.URL made the contract rows'
+// broker schemas in. Both waits end at the bound testdb.TeardownDeadline gives the test binary, and
+// the broker's, which begins where the Dispatch harness's may have reached that bound, still waits
+// testdb's floor for its own drop. Then it fails the run where a goroutine a test started outlives
+// it (goleak): the agent's loop, which the background-run checks of this package run in the test
+// process, among them.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+	goleak.VerifyTestMain(testRun(func() int {
+		return brokerstoretest.Run(func() int { return storetest.Main(m) })
+	}))
 }
+
+// testRun is a run of the package's tests as goleak.VerifyTestMain makes one.
+type testRun func() int
+
+func (run testRun) Run() int { return run() }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
 func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
@@ -204,6 +216,10 @@ type testServerOptions struct {
 	// routes' own) is the deployment with no model configured, where a run is recorded and its
 	// stream carries the no-model-configured error.
 	answerer Answerer
+	// answerModel is the model the answerer was configured with, as the capability route names
+	// it; decider is the decision model, nil (every test but the capability's own) for none.
+	answerModel string
+	decider     *Decider
 	// files is the uploaded-file store; nil keeps every upload's bytes in Postgres, as a
 	// deployment with no bucket does.
 	files files.Store
@@ -466,6 +482,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentPublisher:         agentPublisher,
 		Embedder:               options.embedder,
 		Answerer:               options.answerer,
+		AnswerModel:            options.answerModel,
+		Decider:                options.decider,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		BuildCommit:            options.buildCommit,
@@ -475,6 +493,9 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
 		Clock:                  options.clock,
+		// The command bar's plan reads each row by the outbox's own delivery rule, as every
+		// process that serves Dispatch does (routes.BuildAppContext).
+		WouldDeliver: outbox.WouldDeliver,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

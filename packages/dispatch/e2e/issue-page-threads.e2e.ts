@@ -2275,7 +2275,7 @@ test("with the setting off, today's page draws for /threads what main draws", as
         `${path} adds ${seed.key} to Recents`
       ).toHaveCount(0);
       await expect(
-        bar.getByTestId("search-scope"),
+        bar.getByTestId("going-box-chip"),
         `the search bar opened over ${path} acts on an issue`
       ).toHaveCount(0);
       await page.keyboard.press("Escape");

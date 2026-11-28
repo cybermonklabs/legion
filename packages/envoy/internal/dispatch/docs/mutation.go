@@ -1922,7 +1922,7 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 		if err != nil {
 			return EditOutcome{}, err
 		}
-		return EditOutcome{Token: token}, nil
+		return EditOutcome{Token: token, PreviousToken: token}, nil
 	}
 	var (
 		err       error
@@ -2051,7 +2051,7 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		if err != nil {
 			return EditOutcome{}, err
 		}
-		return EditOutcome{Token: token}, nil
+		return EditOutcome{Token: token, PreviousToken: token}, nil
 	}
 	var outcome EditOutcome
 	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {

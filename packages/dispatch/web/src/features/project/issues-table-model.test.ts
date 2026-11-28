@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { IssueSummary } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import {
   buildItems,
   clearPicked,
@@ -25,6 +26,7 @@ import {
 function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
     key,
+    project: issueProject(key),
     advances: [],
     advances_revision: 0,
     title: key,

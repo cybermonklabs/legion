@@ -675,6 +675,7 @@ describe("every committed recording answers the display tree of every stored tex
       "AskAnswerWithTrees.selected",
       "AskAnswerWithTrees.text",
       "AskEditPreviousWithTrees.question",
+      "AskEdited.question",
       "AskOptionWithTrees.description",
       "AskOptionWithTrees.label",
       "AskResolutionWithTrees.reason",
@@ -686,6 +687,7 @@ describe("every committed recording answers the display tree of every stored tex
       "BroadcastSummary.body",
       "CheckBlock.text",
       "CheckResult.observed",
+      "CommentEdited.body",
       "CommentWithTrees.body",
       "CommentWriteResponse.body",
       "Decision.text",
@@ -704,6 +706,7 @@ describe("every committed recording answers the display tree of every stored tex
       "ReferenceLink.name",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",
+      "ResolvedComment.body",
       "SearchResult.snippet",
     ]);
   });

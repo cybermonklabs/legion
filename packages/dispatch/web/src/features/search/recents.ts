@@ -24,9 +24,9 @@ import { buildIssuePath, buildProjectPath, parseIssuePath, unknownToShell } from
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { documentRouteOf } from "./bar-scope";
 
-/** How many recent items the browser keeps, which is also how many the bar lists: enough to hold
- *  a morning's work, short enough that the list a person opens is still one glance. */
-export const RECENT_LIMIT = 8;
+/** How many recent items the browser keeps, which is also how many the bar lists (design v3,
+ *  state 1: at most 5), so the list a person opens is one glance. */
+export const RECENT_LIMIT = 5;
 
 export interface RecentItem {
   /** What the row reads: an issue's key and title, a document's name. */

@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The command bar's agent is told that an issue's read lists the issues it blocks beside those
+  that block it.

@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A command-bar step that looked for a tool by the tool's name reads that tool's work in words,
+  "Looked for a way to draw a table, a chart or one number", never the name. A read Dispatch
+  answers 404 is no failed step: its `tool` frame carries `error: false` and its past form with
+  " · none found", while the model is still told what Dispatch answered; a 403, a 5xx and every
+  other refusal stay failures. The agent's answer says each fact once, and the short answer names
+  each item by its key as its link's text, with no title and no status in parentheses beside it,
+  since the answer panel lists each linked item by its title beneath the text.

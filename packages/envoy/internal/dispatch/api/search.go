@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -376,6 +377,28 @@ var (
 // comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
 // store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
 // item's (refs.ParseItemBlockNode).
+//
+// The page selects each headline and the 4,000-character excerpt it was read from. When the
+// excerpt contains the headline, cut_start and cut_end say whether the excerpt itself was cut
+// out of a longer text. SearchSnippet widens the headline back to its source constructs and
+// checks for words before and after the widened range. Its tree alone carries the two flags;
+// the dashboard uses them to draw ellipses.
+//
+// A headline need not be verbatim: ts_headline writes a space for an HTML tag (for example the
+// `<string>` of `Array<string>`). Where the headline cannot be found in the excerpt, we instead
+// find it in the excerpt as ts_headline prints all of it. A query that matches no word makes
+// ts_headline print the first MinWords words, here every token. The second pass costs as much
+// as the first, so the planner gates it on located.at = 0. An end is cut if the excerpt was
+// itself cut there or a letter or digit stands past the located window; punctuation alone does
+// not count. If neither search locates the headline, both ends are treated as cut. Counting
+// whitespace-delimited runs in the headline cannot tell us where it is cut: ts_headline counts
+// parser tokens, and a URL or directive can consume many tokens without a space.
+//
+// Every lateral from the text's on ends in `offset 0`, which keeps the planner from pulling it up
+// into the select. A pulled-up subquery's column is its expression written out again wherever the
+// column is read, so the text's subselect, the excerpt and the headline would each run once per
+// reference rather than once per row: measured, the headline's lateral pulled up ran ts_headline
+// three times a row, and the text's ran a document's subselect at each of its references.
 func searchPageAndTailSQL(legsSource string, seen int) string {
 	return searchPageAndTailReading(legsSource, searchPresentTexts, "", seen)
 }
@@ -395,6 +418,7 @@ const searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/doc
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
 `
 
@@ -424,18 +448,40 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+       hl.headline, excerpt.text,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start > 1
+            else (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true end as cut_start,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start + 4000 <= length(txt.text)
+            else (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true end as cut_end
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
-%[2]s  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
+%[2]s  -- The excerpt ts_headline reads: 4,000 characters of the text from 1,500 before the query's
+  -- first term, or from the text's start where the term is not in it, under search_text. It is
+  -- selected beside the headline as well, so the scan has the very text ts_headline read and can
+  -- set the headline back into it (pmdoc.SearchSnippet).
   left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+    select cut.start, search_text(substr(txt.text, cut.start, 4000)) as text
+      from (select greatest(1, coalesce(nullif(case when q.term <> '' then strpos(lower(txt.text), lower(q.term)) end, 0), 1) - 1500) as start
+            offset 0) cut
+    offset 0
+  ) excerpt on true
+  left join lateral (select ts_headline('english', excerpt.text, q.tsq, $5) as headline offset 0) hl on true
+  -- Whether the headline, its two sentinels taken out, stands in the excerpt as it is, and where
+  -- it does not (a tag ts_headline wrote a space into), the text before and after it in the
+  -- excerpt as ts_headline prints all of it. Where the excerpt holds it as it is, SearchSnippet
+  -- widens it in Go and measures the excerpt's own edges beside excerpt.start above.
+  left join lateral (
+    select shown.words, strpos(excerpt.text, shown.words) as at
+      from (select replace(replace(hl.headline, '%[6]s', ''), '%[7]s', '') as words) shown
+    offset 0
+  ) located on true
+  left join lateral (
+    select left(printed.text, printed.at - 1) as before, substr(printed.text, printed.at + length(located.words)) as after
+      from (select whole.text, strpos(whole.text, located.words) as at
+              from (select ts_headline('english', excerpt.text, $$' '$$::tsquery, 'MaxWords=1000000, MinWords=999999, MaxFragments=1') as text
+                    offset 0) whole) printed
+     where length(located.words) > 0 and located.at = 0 and printed.at > 0
+  ) edge on true
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -465,7 +511,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, texts, visibleBlock, page, shown)
+`, legsSource, texts, visibleBlock, page, shown, markStart, markEnd)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -495,6 +541,23 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // $11 the issues the query names by key, $12 status, $13 author, $14 updated_since
 // (searchQueryArguments), and $15 the acting credential (refs.VisibilityArg).
 var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "", searchSeenParam)
+
+// The short answer has no project filter when the question names none. Filter the owners by
+// the credential's project scope before ranking or paging. The meaning statement also
+// filters within each candidate limit, so a hidden match cannot take a visible match's place.
+// An issue-owned row's project is read from its key, as scanSearchRows reads an issue owner's:
+// an issue's key is its project's key, a hyphen and its number (createIssue), a project's key
+// holds no hyphen (contracts.ProjectKeyPattern), every issue_key an arm carries references an
+// issue, and no issue moves between projects (project_scope.go), so no row reads issues again.
+const goingSearchOwnerProject = `case when arms.issue_key is not null then
+	split_part(arms.issue_key, '-', 1) else arms.owner_project end`
+
+var (
+	goingCoveredKeywordSearch = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL,
+		"not "+access.ScopeCoversSQL(goingSearchOwnerProject, searchParam(searchSeenParam+1)), searchSeenParam)
+	goingCoveredMeaningSearch = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL,
+		"not "+access.ScopeCoversSQL(goingSearchOwnerProject, searchParam(searchMeaningSeenParam+1)), searchMeaningSeenParam, meaningCoveredProjects)
+)
 
 // searchSeenParam and searchMeaningSeenParam are where each of search's own two queries binds
 // the acting credential: after every parameter the query already had, the opener's own six
@@ -1006,12 +1069,15 @@ var (
 // other arm carries them in every shape, and above it in the arm the other two scopes take,
 // which is why a request narrowing by one of them runs the joined statement whatever project it
 // names (meaningStatementFor).
+// meaningCoveredProjects uses the joined form, and adds the short answer author's scope
+// before each meaning arm's limit.
 type meaningProjectScope int
 
 const (
 	meaningEveryProject meaningProjectScope = iota
 	meaningOneProject
 	meaningOneProjectJoined
+	meaningCoveredProjects
 )
 
 func (scope meaningProjectScope) candidateProject(column string) string {
@@ -1020,6 +1086,9 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 		return " and e.project_key = $2"
 	case meaningOneProjectJoined:
 		return " and ($2 = '' or " + column + " = $2)"
+	case meaningCoveredProjects:
+		return meaningOneProjectJoined.candidateProject(column) + " and " +
+			access.ScopeCoversSQL(column, searchParam(searchMeaningSeenParam+1))
 	default:
 		return ""
 	}
@@ -1254,8 +1323,8 @@ totals as (
 // ever sees a row, so a comment the acting person may not see would otherwise take a place in
 // that cut and hide one they may.
 func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
-	if scope == meaningOneProjectJoined {
-		return searchMeaningCommentArmJoined(seen)
+	if scope == meaningOneProjectJoined || scope == meaningCoveredProjects {
+		return searchMeaningCommentArmJoined(scope, seen)
 	}
 	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
@@ -1329,7 +1398,7 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // seen is the parameter the acting credential is bound at, and the comment predicate rides
 // inside this arm's candidate limit beside the project one, for the reason every other
 // candidate CTE binds its own: the limit is spent before anything above it filters.
-func searchMeaningCommentArmJoined(seen int) string {
+func searchMeaningCommentArmJoined(scope meaningProjectScope, seen int) string {
 	return `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, c.created_at) as updated_at,
@@ -1340,7 +1409,7 @@ func searchMeaningCommentArmJoined(seen int) string {
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
-		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+		scope.candidateProject(searchMeaningCommentProject) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
@@ -1617,7 +1686,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // is then stamped with the edit times and the delete marks of its comments and messages
 // (stampSearchPostMarks), one read by id of the page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
+	keys, err := s.searchOwnIssueKeys(ctx, parameters)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1771,11 +1840,13 @@ func (s *server) runKeywordsOnly(ctx context.Context, parameters searchParameter
 
 // runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
 // or at a cut searchAsOfQuery for whether this search ranks first
-// (searchParameters.ranksFirstAtACut) over those same kinds, assuming nodes > 0 or an issue named
-// by key already, which its callers (runKeywordOnlyDegraded, and runKeywordsOnly for a request
-// that asked for keywords only, both after runSearch's checks) must have established first. The
-// text is assumed already validated (length, non-empty after trimming); an empty project searches
-// every project, an empty filter narrows nothing, and the kinds leave at least one kind in.
+// (searchParameters.ranksFirstAtACut) over those same kinds, or, for a search with goingScope, the
+// covered statement (goingCoveredKeywordSearch) with the scope bound after the credential,
+// assuming nodes > 0 or an issue named by key already, which its callers (runKeywordOnlyDegraded,
+// and runKeywordsOnly for a request that asked for keywords only, both after runSearch's checks)
+// must have established first. The text is assumed already validated (length, non-empty after
+// trimming); an empty project searches every project, an empty filter narrows nothing, and the
+// kinds leave at least one kind in.
 //
 // It runs in a read transaction of its own (beginKeywordScan), whose settings hold the statement
 // to the server's bound and check that its client is still connected, at a cut as at the
@@ -1791,10 +1862,15 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 	statement := parameters.kinds.statements().keyword
-	if parameters.versions != nil {
+	arguments := searchQueryArguments(parameters)
+	switch {
+	case parameters.versions != nil:
 		statement = searchAsOfQuery(*parameters.versions, parameters.ranksFirstAtACut(), parameters.kinds.exclusion())
+	case parameters.goingScope != "":
+		statement = goingCoveredKeywordSearch
+		arguments = append(arguments, parameters.goingScope)
 	}
-	rows, err := tx.Query(ctx, statement, searchQueryArguments(parameters)...)
+	rows, err := tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1817,11 +1893,13 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 // the one row that says whether the fill has labelled the corpus (embeddingProjectKeysFilled);
 // meaningProjectScope says why the choice is made here, in Go, rather than written as one
 // "$2 is empty, or it matches" predicate the planner would have to serve all three ways. The
-// arguments are the same seventeen whichever it is, $2 among them: the keyword legs read it in
+// arguments are the same eighteen whichever it is, $2 among them: the keyword legs read it in
 // all three. Each of the three is held to the kinds this search ranks, so the choice of scope
 // and the kind parameter compose. A search at a cut runs searchAsOfMeaningQuery, of one shape for
 // each answer of searchParameters.ranksFirstAtACut and held to those same kinds, with the same
-// arguments.
+// arguments. A search with goingScope runs none of these: it runs the covered statement
+// (goingCoveredMeaningSearch) with the scope bound after the credential, a nineteenth argument,
+// and reads no fill.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -1836,11 +1914,16 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	arguments := searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())
 	var statement, shape string
-	if parameters.versions != nil {
+	switch {
+	case parameters.versions != nil:
 		statement = searchAsOfMeaningQuery(*parameters.versions, parameters.ranksFirstAtACut(), parameters.kinds.exclusion())
 		shape = searchShapeMeaningAsOf
-	} else {
+	case parameters.goingScope != "":
+		statement = goingCoveredMeaningSearch
+		arguments = append(arguments, parameters.goingScope)
+	default:
 		// Each flag is read only where it can change the statement: a filtered search runs the
 		// joined one whatever the fill has reached, and a search naming no project runs the
 		// unscoped one, so neither pays for the progress row's savepoint. The choice is made over
@@ -1851,8 +1934,7 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 		statement, shape = meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
 	}
 	parameters.noteShape(ctx, shape)
-	rows, err := tx.Query(ctx, statement,
-		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)
+	rows, err := tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -2005,8 +2087,9 @@ const embeddingProjectKeysFilledLockWait = `set local lock_timeout = '200ms'`
 const embeddingProjectKeysFilledQuery = `select done from embeddings_project_key_backfill`
 
 // scanSearchRows reads searchQuery's and searchQueryMeaning's shared column shape - every column
-// through the headline and the text it was cut from - into a SearchResponse. q is the original
-// query text, for each result's href (searchHref's own query-string echo).
+// through the headline, the text it was cut from and where its window cut its text - into a
+// SearchResponse. q is the original query text, for each result's href (searchHref's own
+// query-string echo).
 func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (model.SearchResponse, error) {
 	response := model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}
 	for rows.Next() {
@@ -2017,6 +2100,7 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		var blockID *string
 		var matchBlockID *string
 		var rank *float64
+		var cut pmdoc.SnippetCut
 		if err := rows.Scan(
 			&response.Total,
 			&response.Reachable,
@@ -2038,6 +2122,8 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 			&rank,
 			&headline,
 			&source,
+			&cut.Start,
+			&cut.End,
 		); err != nil {
 			return model.SearchResponse{}, err
 		}
@@ -2047,7 +2133,12 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		}
 		result.Kind, result.ID, result.Rank, result.BlockID = *kind, *id, *rank, matchBlockID
 		if *ownerKind == "issue" {
-			result.Owner = model.SearchOwner{Kind: *ownerKind, Key: *ownerKey, Title: *ownerTitle, Status: *ownerStatus}
+			// owner_project is a document's project, and the issue and message arms select none,
+			// so an issue owner's project is read from its key: an issue's key is its project's
+			// key, a hyphen and its number (createIssue), and no issue moves between projects
+			// (project_scope.go).
+			project, _, _ := strings.Cut(*ownerKey, "-")
+			result.Owner = model.SearchOwner{Kind: *ownerKind, Key: *ownerKey, Project: project, Title: *ownerTitle, Status: *ownerStatus}
 			result.Issue = &model.SearchIssue{Key: *ownerKey, Title: *ownerTitle, Status: *ownerStatus}
 		} else {
 			result.Owner = model.SearchOwner{
@@ -2072,15 +2163,18 @@ func scanSearchRows(rows pgx.Rows, q string, limit, offset int, trees bool) (mod
 		headlineText := deref(headline)
 		// The snippet is the headline set back into the text ts_headline read and widened to the
 		// constructs it cut into (pmdoc.SearchSnippet), read once for both the HTML snippet and its
-		// tree, so the two show the same text.
-		snippet := pmdoc.SearchSnippet(headlineText, deref(source), markStart, markEnd)
+		// tree, so the two show the same text. cut starts with what the SQL statement measured and
+		// comes back with each end past which a word of source stands outside the widened snippet.
+		snippet, cut := pmdoc.SearchSnippet(headlineText, deref(source), markStart, markEnd, cut)
 		result.Snippet = markSnippet(snippet)
 		// A snippet's tree is no stored tree and is never primed from the table or stored in it:
 		// it is one query's own headline, cut and marked for this search alone
 		// (pmdoc.DisplaySnippetJSON), so there is nothing two readers would share. A null
-		// headline is the empty snippet here too, for the reason above: the tree of no text.
+		// headline is the empty snippet here too, for the reason above: the tree of no text. The
+		// tree alone says where the snippet was cut out of its text (searchPageAndTailSQL and
+		// pmdoc.SearchSnippet).
 		if trees {
-			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(snippet, markStart, markEnd))
+			result.SnippetTree = model.DisplayTree(pmdoc.DisplaySnippetJSON(snippet, markStart, markEnd, cut))
 		}
 		result.Href = searchHref(result.Kind, result.Owner, result.Artifact, primary, result.ID, blockID, matchBlockID, q)
 		response.Results = append(response.Results, result)

@@ -405,7 +405,9 @@ func searchAsOfDocumentLegs(cut string) string {
 
 // searchAsOfTexts is the page's texts at a cut (searchPageAndTailReading): a document hit's
 // newest version at the cut (the artifact_versions shadow), and every other hit's version in the
-// keyword table at the cut, the text its arm matched.
+// keyword table at the cut, the text its arm matched. It ends in `offset 0`, as searchPresentTexts
+// does, so the page reads each hit's text once however many of its columns read it
+// (searchPageAndTailSQL).
 const searchAsOfTexts = `  -- At a cut, each hit's text as it stood at the cut: a document's newest version at the cut,
   -- and every other kind's version in the keyword table, which its arm matched.
   left join lateral (
@@ -413,6 +415,7 @@ const searchAsOfTexts = `  -- At a cut, each hit's text as it stood at the cut: 
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1)
       else (select tv.body from text_versions tv where tv.kind = r.kind and tv.id = r.id)
     end as text
+    offset 0
   ) txt on true
 `
 

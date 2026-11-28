@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `IssueSummary` carries `project`, the key of the project the issue belongs to, in
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`.

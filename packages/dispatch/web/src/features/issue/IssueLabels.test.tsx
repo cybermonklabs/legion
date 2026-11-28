@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { api } from "../../api/client";
 import type { IssueSummary } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { IssueLabels } from "./IssueLabels";
 
 function summary(key: string, labels: string[]): IssueSummary {
@@ -18,6 +19,7 @@ function summary(key: string, labels: string[]): IssueSummary {
     route_holder: null,
     route_status_reason: null,
     key,
+    project: issueProject(key),
     labels,
     last_seq: 1,
     open_asks: 0,

@@ -254,8 +254,21 @@ func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
 	if got := summaryKeys(decodeBody[[]model.IssueSummary](t, response)); !slices.Equal(got, test) {
 		t.Fatalf("?project=TEST lists %v, want every TEST issue %v", got, test)
 	}
-	if got := listedKeys(t, handler, ""); len(got) != len(test)+len(other) {
-		t.Fatalf("unfiltered listing = %v, want all %d issues", got, len(test)+len(other))
+	every := decodeBody[[]model.IssueSummary](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues", nil, "alice"))
+	if len(every) != len(test)+len(other) {
+		t.Fatalf("unfiltered listing = %v, want all %d issues", summaryKeys(every), len(test)+len(other))
+	}
+	// Each row names its project, so a listing of every project can be grouped by it.
+	projects := make(map[string]string, len(every))
+	for _, issue := range every {
+		projects[issue.Key] = issue.Project
+	}
+	for project, keys := range map[string][]string{"TEST": test, "OTHER": other} {
+		for _, key := range keys {
+			if projects[key] != project {
+				t.Fatalf("the unfiltered listing names %s's project %q, want %s", key, projects[key], project)
+			}
+		}
 	}
 }
 

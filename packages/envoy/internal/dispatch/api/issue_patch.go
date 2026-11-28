@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -59,6 +61,153 @@ type updateIssueInput struct {
 	RefuseOpenForeignChildren bool `json:"refuse_open_foreign_children"`
 }
 
+// checkIssueRoute refuses a route an issue cannot take, 400 ROUTE_INVALID: one that is neither
+// role:<name> nor session:<id> (model.ParseRoute). None, and a route written empty, which an
+// update clears the issue's route with, pass. An update (PATCH /api/v1/issues/{key}) and a create
+// (POST /api/v1/issues) hold a route to it alike.
+func checkIssueRoute(route *string) error {
+	if route == nil || *route == "" {
+		return nil
+	}
+	if _, err := model.ParseRoute(*route); err != nil {
+		return errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
+	}
+	return nil
+}
+
+// issueExpectableFields are the fields of an issue a write back's condition may name
+// (goingCondition.Expect): those an update writes.
+var issueExpectableFields = map[string]bool{
+	"status": true, "title": true, "labels": true, "priority": true, "assignee": true, "route": true, "parent": true,
+	"blocked_by": true, "components": true, "repo": true, "external_links": true, "rank": true,
+}
+
+// issueExpectationRefusal is the refusal of an update whose condition (goingCondition.Expect, on
+// the request's context of the command bar's in-process undo) names a field the issue, as the
+// update's transaction read it under the issue's lock, no longer holds as expected, nil where it
+// holds every one: a write back undoing another write puts its value back only while the issue
+// still holds what that write left, decided under the lock the update itself takes, so a change
+// another writer makes in between is never written over. Values are compared as the issue's own
+// read answers them, whatever their spelling (goingIssueFieldValue, goingSameJSON). One 409
+// ISSUE_CHANGED refuses the whole write, naming what each field that changed holds now; a
+// condition naming a field no update writes (issueExpectableFields) is 400 INVALID_ISSUE.
+func issueExpectationRefusal(issue model.Issue, expect map[string]json.RawMessage) error {
+	if len(expect) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(issue)
+	if err != nil {
+		return err
+	}
+	var held map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &held); err != nil {
+		return err
+	}
+	var changed []string
+	for _, field := range slices.Sorted(maps.Keys(expect)) {
+		if !issueExpectableFields[field] {
+			return errorf(http.StatusBadRequest, "INVALID_ISSUE", "the condition names %q, which is no field of an issue an update writes", field)
+		}
+		value, err := goingIssueFieldValue(held, field)
+		if err != nil {
+			return err
+		}
+		if now := goingJSONOrNull(value); !goingSameJSON(now, expect[field]) {
+			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
+		}
+	}
+	if len(changed) > 0 {
+		return errorf(http.StatusConflict, "ISSUE_CHANGED", "the issue no longer holds what the write expected: %s", strings.Join(changed, "; "))
+	}
+	return nil
+}
+
+// issueUpdated is what PATCH /api/v1/issues/{key} answers: the issue as the update left it, flat,
+// and beside it what the update found. Previous is each field the update names as the issue held
+// it when the update took the issue's lock, spelled as the issue's own read answers it, with
+// advances_revision beside advances; rank is the place the issue held (issueRankPlace), whose
+// neighbours a write back of the rank names. RankPlace is the place the update left the issue in,
+// present where it names a rank. A caller that undoes the update reads both here: what it reads of
+// the issue before or after the update may have moved on either side of the update's own
+// transaction.
+type issueUpdated struct {
+	model.Issue
+	Previous  map[string]json.RawMessage `json:"previous"`
+	RankPlace *issueRankPlace            `json:"rank_place,omitempty"`
+}
+
+// issueFieldsNamed is each field of the issue an update writes, by the name its read answers it
+// under, but the rank, which the update answers as a place (issueUpdated).
+func issueFieldsNamed(input updateIssueInput, priority, assignee, parent, components, repo bool) []string {
+	var fields []string
+	named := func(writes bool, field string) {
+		if writes {
+			fields = append(fields, field)
+		}
+	}
+	named(input.Title != nil, "title")
+	named(input.Status != nil, "status")
+	named(input.Labels != nil || input.LabelsAdd != nil, "labels")
+	named(priority, "priority")
+	named(assignee, "assignee")
+	named(input.Route != nil, "route")
+	named(parent, "parent")
+	named(input.BlockedBy != nil, "blocked_by")
+	named(input.Advances != nil, goingAdvances)
+	named(components, "components")
+	named(repo, "repo")
+	named(input.ExternalLinks != nil, "external_links")
+	return fields
+}
+
+// issueFieldValues is each of fields as issue holds it, spelled as the issue's own read answers
+// it: the advances relation with its revision beside it, under advances_revision.
+func issueFieldValues(issue model.Issue, fields []string) (map[string]json.RawMessage, error) {
+	values := make(map[string]json.RawMessage, len(fields)+1)
+	for _, field := range fields {
+		var value any
+		switch field {
+		case "title":
+			value = issue.Title
+		case "status":
+			value = issue.Status
+		case "labels":
+			value = issue.Labels
+		case "priority":
+			value = issue.Priority
+		case "assignee":
+			value = issue.Assignee
+		case "route":
+			value = issue.Route
+		case "parent":
+			value = issue.Parent
+		case "blocked_by":
+			value = issue.BlockedBy
+		case goingAdvances:
+			value = issue.Advances
+			revision, err := json.Marshal(issue.AdvancesRevision)
+			if err != nil {
+				return nil, err
+			}
+			values["advances_revision"] = revision
+		case "components":
+			value = issue.Components
+		case "repo":
+			value = issue.Repo
+		case "external_links":
+			value = issue.ExternalLinks
+		default:
+			return nil, fmt.Errorf("%q is no field of an issue an update writes", field)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		values[field] = encoded
+	}
+	return values, nil
+}
+
 // patchIssue is PATCH /api/v1/issues/{key}: it decodes the body, resolves who writes it, and
 // answers what the write core (writeIssue) wrote.
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -78,12 +227,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		fields:      input,
 		outliving:   outlivingTheClient(r),
 		adviceRoute: "PATCH /api/v1/issues/{key}",
+		condition:   goingConditionOf(r),
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, withAdvice(written.issue, written.advice))
+	WriteJSON(w, http.StatusOK, withAdvice(issueUpdated{Issue: written.issue, Previous: written.previous, RankPlace: written.rankPlace}, written.advice))
 }
 
 // issueWriteCall is one write of one issue through the PATCH's write core (writeIssue).
@@ -108,6 +258,9 @@ type issueWriteCall struct {
 	// step is what the write of one step of a status change (status_change.go) or of R25's fix
 	// (parent_status_fix.go) carries beside the PATCH's fields, or nil for a PATCH.
 	step *issueWriteCallStep
+	// condition is the compare-and-set the command bar's in-process write back carries to the
+	// PATCH (goingConditionOf), the zero value for every other write.
+	condition goingCondition
 }
 
 // issueWriteCallStep is what the write of one step of a status change (POST
@@ -207,6 +360,11 @@ type issueWriteResult struct {
 	// moved is what the write of a step of an option changed (issueWriteCallStep.moved): nil for
 	// every other write, and for a write that wrote nothing.
 	moved *statusChangeMove
+	// previous is each field the write names as the issue held it when the write took its owner
+	// lock, and rankPlace the place a rank write left the issue in, nil for none: what the PATCH
+	// answers beside the issue (issueUpdated).
+	previous  map[string]json.RawMessage
+	rankPlace *issueRankPlace
 }
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
@@ -254,10 +412,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.RefuseOpenForeignChildren && status != "retro" && status != "done" {
 		return issueWriteResult{}, errorf(http.StatusBadRequest, "INVALID_ISSUE", "refuse_open_foreign_children goes only with status retro or done")
 	}
-	if input.Route != nil && *input.Route != "" {
-		if _, err := model.ParseRoute(*input.Route); err != nil {
-			return issueWriteResult{}, errorf(http.StatusBadRequest, "ROUTE_INVALID", "invalid route")
-		}
+	if err := checkIssueRoute(input.Route); err != nil {
+		return issueWriteResult{}, err
 	}
 	var labels, labelsAdd []string
 	if input.Labels != nil && input.LabelsAdd != nil {
@@ -306,6 +462,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		for i := range *input.ExternalLinks {
 			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
 		}
+	}
+	// The command bar's undo conditions every field its write back writes (going_conditions.go):
+	// each the condition's Expect names, the advances relation by its revision.
+	condition := call.condition
+	written := issueFieldsNamed(input, priorityProvided, assigneeProvided, parentProvided, componentsProvided, repoProvided)
+	if input.Rank != nil {
+		written = append(written, goingRank)
+	}
+	expected := slices.DeleteFunc(slices.Clone(written), func(field string) bool { return field == goingAdvances })
+	decided := len(written) > 0 && condition.expects(expected) && (input.Advances == nil || input.AdvancesRevision != nil)
+	if refusal := condition.writeBackRefusal(decided, "expected value for every field it writes"); refusal != nil {
+		return issueWriteResult{}, refusal
 	}
 
 	key := call.key
@@ -497,6 +665,9 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
 		return issueWriteResult{}, errIssueChanged()
 	}
+	if refusal := issueExpectationRefusal(before, condition.Expect); refusal != nil {
+		return issueWriteResult{}, refusal
+	}
 	// A step of a status change decides here, from the issue as it reads it under its own lock,
 	// whether it writes at all. A step that leaves the issue as it stands rolls back.
 	if step != nil && step.leaves != nil && step.leaves(before) {
@@ -637,6 +808,22 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	var previousClaim *model.IssueClaim
 	if closing {
 		previousClaim = before.Claim
+	}
+	// What the update answers it found (issueUpdated.Previous): each field it names as this
+	// transaction read the issue under its lock, and the place a rank write moves it from, read
+	// under the project's rank allocation the write holds.
+	previous, err := issueFieldValues(before, issueFieldsNamed(input, priorityProvided, assigneeProvided, parentProvided, componentsProvided, repoProvided))
+	if err != nil {
+		return issueWriteResult{}, err
+	}
+	if input.Rank != nil {
+		place, err := readIssueRankPlace(ctx, tx, before.Key)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		if previous["rank"], err = json.Marshal(place); err != nil {
+			return issueWriteResult{}, err
+		}
 	}
 	// Every provided column lands in one UPDATE, updated_at with it; a components-only PATCH
 	// still touches updated_at. The row write runs before the components write so a component
@@ -823,7 +1010,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		if err := ledger.Commit(ctx); err != nil {
 			return issueWriteResult{}, err
 		}
-		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq}, nil
+		return issueWriteResult{issue: before, advice: advice, previousLastSeq: before.LastSeq, previous: previous}, nil
 	}
 	// Every owner this transaction appends to must be in one LockOwners call before the
 	// first append: the issue itself, the status-change parent, both ends of a reparent, and each
@@ -874,6 +1061,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	after, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
+	}
+	var rankPlace *issueRankPlace
+	if input.Rank != nil {
+		// The place the update left the issue in, read under the rank allocation it still holds.
+		place, err := readIssueRankPlace(ctx, tx, after.Key)
+		if err != nil {
+			return issueWriteResult{}, err
+		}
+		rankPlace = &place
 	}
 	eventType := "issue.updated"
 	if statusChanged && after.Status == "done" {
@@ -1070,6 +1266,16 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			}
 		}
 	}
+	if step == nil {
+		// What the PATCH answers it found and left, with the last_seq the write phase's events
+		// leave: the record the command bar's landing of this request makes in this transaction
+		// (goingRecordAnswer), the same value patchIssue answers.
+		goingRecordAnswer(ctx, http.StatusOK, func() any {
+			answered := after
+			answered.LastSeq = appendedIssueLastSeq(key, appended)
+			return issueUpdated{Issue: answered, Previous: previous, RankPlace: rankPlace}
+		})
+	}
 	if err := ledger.Commit(ctx); err != nil {
 		return issueWriteResult{}, err
 	}
@@ -1093,6 +1299,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	return issueWriteResult{
 		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
 		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn, moved: moved,
+		previous: previous, rankPlace: rankPlace,
 	}, nil
 }
 

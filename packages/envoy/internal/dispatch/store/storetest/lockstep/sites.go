@@ -89,6 +89,13 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeComments":      "cmd/dispatch-seed#TestTheSeedsCommentWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "cmd/dispatch-seed#TestTheSeedsFollowerWriteTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_items.go#writeMessages":      "cmd/dispatch-seed#TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder",
+	// The eval's seed (going/eval's WriteSeed), which writes a seeded Dispatch in one transaction
+	// as cmd/dispatch-seed's writers do: a comment's node and its author's person node in one
+	// graphstore.Write, before the comments row that names the comment's node, and a document's
+	// version, whose block index it appends under the sentinel through Caused, since the seed
+	// records no event of a version. Its test drives both in the seed writer's own code.
+	"going/eval/write.go#writeComment":         "going/eval#TestTheSeedsStoreWritesTakeTheStoreLockOrder",
+	"going/eval/write.go#writeDocumentVersion": "going/eval#TestTheSeedsStoreWritesTakeTheStoreLockOrder",
 	// The backfill command's five batches: the blocks, the block references and the comments
 	// written before the store existed, the role and page nodes of the roles the census holds to
 	// one (addressedRoles), and the session nodes of the sessions it holds to one

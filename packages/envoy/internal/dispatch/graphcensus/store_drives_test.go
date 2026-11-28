@@ -31,8 +31,8 @@ type StoredKind struct{ From, Kind string }
 
 // StoreDrive is one run of writers of the store whose tuples TestTheSizingCountsEveryTupleTheWritersAppend
 // reads off graph_tuples (writeTheStore). It is exported, with its fields, for this package's
-// external test (imported_drives_test.go), which drives the sites of the API and the document
-// service.
+// external test (imported_drives_test.go), which drives the sites of the API, the document
+// service and the eval's seed.
 type StoreDrive struct {
 	// Name is the drive as a failure names it: the site it drives, and what it drives that site
 	// over where the test drives one site twice.
@@ -53,11 +53,11 @@ type StoreDrive struct {
 	Counts map[StoredKind][]string
 }
 
-// ImportedDrives builds the drives this package's external test package runs on one rig: the
-// API's and the document service's. Its value is set by this package's external test package as
-// it starts (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own;
-// while it is nil, every site only those drives run is listed and not driven, and the test fails
-// naming it.
+// ImportedDrives builds the drives this package's external test package runs: the API's and the
+// document service's on one rig, and the eval's seed's, each over an empty database of its own.
+// Its value is set by this package's external test package as it starts
+// (imported_drives_test.go), and writeTheStore runs the drives it builds beside its own; while it
+// is nil, every site only those drives run is listed and not driven, and the test fails naming it.
 var ImportedDrives func(*testing.T) []StoreDrive
 
 // requireEveryListedSiteDriven fails on every site the register of the store's writers lists that

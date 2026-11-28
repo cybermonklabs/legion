@@ -51,6 +51,15 @@ import (
 // these are. They are frozen: they never follow an edit to the package's statements, since that
 // edit is what they exist to be compared with.
 //
+// The last two output columns of every page tail here are not main's: where the headline's
+// window cut the text it was read out of (cut_start, cut_end), which this branch's page measures
+// beside the headline (searchPageAndTailReading). They are no part of what these oracles hold the
+// head to, and what they answer is what the headline and the text answer, which both sides
+// compute alike; so every tail holds the laterals that measure them, the excerpt and the headline
+// among them, letter for letter as document_search_oracle_test.go's mainSearchPageAndTailSQL
+// copies them, rather than each comparison taught to read past two columns. The columns and the
+// laterals are two pieces every tail shares (searchOracleCutColumns, searchOracleCutLaterals).
+//
 // The end of the file is R3's two oracle tests. TestSearchAnswersMainsRowsOrderTotalAndReachable
 // holds search's four statements to main's, for every set of kinds a request can name, over a
 // corpus whose word matches more items of each kind than any arm's limit.
@@ -71,6 +80,39 @@ const mainAt4975VisibilityHead = `coalesce((select visible_node.visibility <> 'a
 			then jsonb_build_object('kind', coalesce(visible_node.made_by->>'kind', ''), 'id', case when coalesce(visible_node.made_by->>'kind', '') = 'person' then user_threads_login(visible_node.made_by->>'id') else visible_node.made_by->>'id' end)
 		when coalesce(visible_node.made_by->>'service', '') <> ''
 			then jsonb_build_object('kind', 'service', 'id', case when 'service' = 'person' then user_threads_login(visible_node.made_by->>'service') else visible_node.made_by->>'service' end)`
+
+// searchOracleCutColumns is the last output columns of every page tail here: the headline, the
+// excerpt it was read out of, and whether the excerpt was cut at its start and at its end
+// (cut_start, cut_end), which are not main's. Each tail puts it after its score.
+const searchOracleCutColumns = `       hl.headline, excerpt.text,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start > 1
+            else (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true end as cut_start,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start + 4000 <= length(txt.text)
+            else (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true end as cut_end`
+
+// searchOracleCutLaterals is the laterals every page tail here reads searchOracleCutColumns from,
+// after the lateral that reads its text (txt): the excerpt of that text, the excerpt's headline,
+// where the headline's words stand in the excerpt (located) and, where they do not, the text
+// either side of them (edge).
+const searchOracleCutLaterals = `  left join lateral (
+    select cut.start, search_text(substr(txt.text, cut.start, 4000)) as text
+      from (select greatest(1, coalesce(nullif(case when q.term <> '' then strpos(lower(txt.text), lower(q.term)) end, 0), 1) - 1500) as start
+            offset 0) cut
+    offset 0
+  ) excerpt on true
+  left join lateral (select ts_headline('english', excerpt.text, q.tsq, $5) as headline offset 0) hl on true
+  left join lateral (
+    select shown.words, strpos(excerpt.text, shown.words) as at
+      from (select replace(replace(hl.headline, E'\uE000', ''), E'\uE001', '') as words) shown
+    offset 0
+  ) located on true
+  left join lateral (
+    select left(printed.text, printed.at - 1) as before, substr(printed.text, printed.at + length(located.words)) as after
+      from (select whole.text, strpos(whole.text, located.words) as at
+              from (select ts_headline('english', excerpt.text, $$' '$$::tsquery, 'MaxWords=1000000, MinWords=999999, MaxFragments=1') as text
+                    offset 0) whole) printed
+     where length(located.words) > 0 and located.at = 0 and printed.at > 0
+  ) edge on true`
 
 // mainAt4975SearchKeywordLegs is main's searchKeywordLegsSQL: the five kinds' keyword arms, the
 // issue kind twice (its matches and the issues the query names by key), each ranked by
@@ -194,7 +236,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+` + searchOracleCutColumns + `
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -210,16 +252,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
-  left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+` + searchOracleCutLaterals + `
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -727,7 +762,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+` + searchOracleCutColumns + `
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -743,16 +778,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
-  left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+` + searchOracleCutLaterals + `
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -1375,7 +1403,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+` + searchOracleCutColumns + `
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -1391,16 +1419,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
-  left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+` + searchOracleCutLaterals + `
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -1889,7 +1910,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+` + searchOracleCutColumns + `
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -1905,16 +1926,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
-  left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+` + searchOracleCutLaterals + `
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message
@@ -2220,7 +2234,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+` + searchOracleCutColumns + `
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- At a cut, each hit's text as it stood at the cut: a document's newest version at the cut,
@@ -2230,16 +2244,9 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1)
       else (select tv.body from text_versions tv where tv.kind = r.kind and tv.id = r.id)
     end as text
+    offset 0
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
-  -- query's first term, or the text's head. It is selected beside the headline as well, so the
-  -- scan has the very text ts_headline read and can set the headline back into it
-  -- (pmdoc.SearchSnippet).
-  left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+` + searchOracleCutLaterals + `
   -- The block of r.covers that matched, if the row carries a window. Each covered block's own
   -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
   -- block texts are kept per version or revision, the latest being the current text. A message

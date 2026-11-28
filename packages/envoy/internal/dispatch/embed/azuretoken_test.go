@@ -344,3 +344,61 @@ func TestEntraExchangeNeverFollowsARedirect(t *testing.T) {
 		t.Fatal("the exchange followed the redirect and answered no error, want the 302 refused")
 	}
 }
+
+// stallFirst is a transport whose first request fails as a TLS handshake that timed out does,
+// before any answer, and whose every later one reaches base.
+type stallFirst struct {
+	base  http.RoundTripper
+	calls atomic.Int32
+}
+
+func (s *stallFirst) RoundTrip(r *http.Request) (*http.Response, error) {
+	if s.calls.Add(1) == 1 {
+		return nil, errors.New("net/http: TLS handshake timeout")
+	}
+	return s.base.RoundTrip(r)
+}
+
+// TestEntraTokenSourceMakesAnUnansweredExchangeAgain: an exchange that drew no answer - its TLS
+// handshake timed out, as one did under load in the eval's runs - is made again within the
+// caller's time, and its token is the caller's; one stalled exchange fails no call.
+func TestEntraTokenSourceMakesAnUnansweredExchangeAgain(t *testing.T) {
+	fake := &fakeEntra{expiresIn: "3599"}
+	source, _, _ := testEntra(t, fake, "assertion")
+	transport := &stallFirst{base: source.http.Transport}
+	if transport.base == nil {
+		transport.base = http.DefaultTransport
+	}
+	client := *source.http
+	client.Transport = transport
+	source.http = &client
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	token, err := source.Token(ctx)
+	if err != nil || token != "token-1" {
+		t.Fatalf("Token = %q, %v; want token-1 from the exchange made again", token, err)
+	}
+	if calls, hits := transport.calls.Load(), fake.hits.Load(); calls != 2 || hits != 1 {
+		t.Errorf("the source made %d requests, %d of which reached Entra; want 2, the second answered", calls, hits)
+	}
+}
+
+// TestEntraTokenSourceDoesNotMakeARefusedExchangeAgain: an exchange Entra answered with a refusal
+// is not made again: the answer would be the same.
+func TestEntraTokenSourceDoesNotMakeARefusedExchangeAgain(t *testing.T) {
+	var hits atomic.Int32
+	source, _, _ := testEntra(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
+	}), "assertion")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := source.Token(ctx); err == nil || !strings.Contains(err.Error(), "invalid_client") {
+		t.Fatalf("Token answered %v, want Entra's refusal", err)
+	}
+	if n := hits.Load(); n != 1 {
+		t.Errorf("Entra was asked %d times, want once: a refusal is not asked again", n)
+	}
+}

@@ -26,6 +26,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -80,6 +81,7 @@ function issue(
 ): IssueSummary {
   return {
     key,
+    project: issueProject(key),
     advances: advances.map((id) => ({ id, inherited: false })),
     advances_revision: 0,
     title: `Work ${key}`,

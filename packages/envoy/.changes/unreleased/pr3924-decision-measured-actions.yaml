@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The command bar's decision call offers the decision model Jev only the twenty actions the
+  bake-off measured it on (`going/decision_models.json`), those of them the caller may run. Before,
+  it offered every write tool the caller could call: sixty to a person at a browser, forty of which
+  no measurement had put to Jev. The bake-off's cases (`going/bakeoff/cases.json`) hold one case
+  more, outside the 117 R13 names: the search words "board drag" typed on an issue's page,
+  labelled none, for which Jev chose `dispatch_issue_update`, so the line on top read Do for words
+  that ask for nothing to change. The decision record is measured again over R13's 117 cases, 90
+  repeats each: jev-latest is right on 10,511 of 10,530 answers and jev-preview on 10,507, so R13's
+  rule now names jev-latest (the paired test, 18 against 14 pairs, p = 0.597, names no model);
+  both chose `dispatch_issue_update` for "board drag" in all 90 repeats, which the record keeps
+  apart.

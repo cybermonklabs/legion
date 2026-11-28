@@ -123,6 +123,8 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
  * `inertLinks`), since the host is the one thing a click follows, and a preview a reader reads
  * as a record keeps them real. A host says which it is once, for everything under it
  * (`ReferenceHostIs`).
+ * A search row's `linkLook="text"` removes the link styling from those inert links without
+ * changing what the host links or what the references display.
  *
  * `lines` is the clamp (`1` is `truncate`-like but keeps the inline markup; `2` and `3` wrap
  * then clamp). `className` styles the element, whose `display` is the clamp's own, so a parent
@@ -147,8 +149,10 @@ export function MarkdownPreview({
   highlightClassName = "",
   lead,
   lines,
+  linkLook,
   markdown,
   source,
+  trail,
   surface,
   tree,
 }: {
@@ -168,10 +172,16 @@ export function MarkdownPreview({
    *  `Replying to Planner — `. Clamped with the text as one line. */
   lead?: string;
   lines: 1 | 2 | 3;
+  /** Show inert links as surrounding text instead of styling them as links. */
+  linkLook?: "text";
   markdown: string;
   /** The record this text is - the ask, comment, message or document version whose text it is
    *  (`TextSource`); none for text of no record, which links no `#id`. */
   source?: TextSource;
+  /** The app's own mark after the text, plain and never parsed: the "…" of a search hit's snippet
+   *  that the server cut out of a longer text. Clamped with the text, so a text the clamp cuts
+   *  shows the clamp's own ellipsis alone. */
+  trail?: string;
   /** The row of the reading list this preview is drawn on (`DISPATCH_READING_SURFACES`). The
    *  preview draws nothing from it: it names the surface a mount draws, which is how the list's
    *  unit test ties each mount to its row (`surface-lists.test.ts`), and the plain-text title
@@ -186,6 +196,11 @@ export function MarkdownPreview({
     (element) => {
       // The marks the paint drew; a mark a reference draws is React's, and it reads the class
       // from the context around the portals.
+      if (linkLook === "text") {
+        for (const link of element.querySelectorAll("[data-markdown-link]")) {
+          link.setAttribute("data-link-look", "text");
+        }
+      }
       if (highlightClassName !== "") {
         for (const mark of element.querySelectorAll<HTMLElement>(SEARCH_HIGHLIGHT_SELECTOR)) {
           mark.className = highlightClassName;
@@ -194,8 +209,11 @@ export function MarkdownPreview({
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
+      if (trail !== undefined && trail !== "") {
+        element.append(document.createTextNode(trail));
+      }
     },
-    [highlightClassName, lead]
+    [highlightClassName, lead, linkLook, trail]
   );
   const references = useTextReferences(markdown, source);
   const { isFallback, isPending, portals } = useRenderedMarkdown(

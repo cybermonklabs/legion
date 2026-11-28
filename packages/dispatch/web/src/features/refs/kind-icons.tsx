@@ -41,8 +41,8 @@ function kindShapes(kind: RefPickerKind): ReactNode {
   if (kind === "issue") {
     return (
       <>
-        <circle cx="12" cy="12" r="8" />
-        <path d="M12 8v4l2.5 2" />
+        <rect height="14" rx="2.5" width="16" x="4" y="5" />
+        <path d="M8 10h8M8 14h5" />
       </>
     );
   }

@@ -100,11 +100,14 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 # already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
+# dispatch-memory-group is no half of a split: it is a job a pull request runs, beside the memory
+# suite the merge queue runs, and it joined that job's file for the same reason.
 SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
     "envoy-refill": "envoy-e2e-local",
+    "dispatch-memory-group": "dispatch-memory",
     "step-models-chain": "plugin-pack",
 }
 
@@ -718,10 +721,16 @@ MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
 {gotestsum_prefix('dispatch-memory', verbose=True)} -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+# The memory-group test of INFRA-1588's c20 (ci-job-dispatch-memory.yaml's dispatch-memory-group
+# job, which SHARED_FILE sends there): one untagged test of ./cmd/dispatch, named by an anchored
+# -run, which is outside the simple form, so the step is pinned whole. envoy-go's unit step
+# compiles the same package and the test skips there.
+MEMORY_GROUP_STEP = "The server ends its agent before the kernel"
+MEMORY_GROUP_SCRIPT = f"{gotestsum_prefix('dispatch-memory-group', verbose=True)} -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch"
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
-{gotestsum_prefix('dispatch-multiprocess', verbose=True)} -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch"""
+{gotestsum_prefix('dispatch-multiprocess', verbose=True)} -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch"""
 # The two-build job's Go step, which runs only what the twobuild tag adds, as the two above do:
 # envoy-go's unit step runs ./cmd/dispatch's untagged tests, so a run of them here would be a
 # second one. The step is a gate of its own (dispatch_two_builds_go), so the TAG_RUNS pairing
@@ -2204,10 +2213,10 @@ def go_top_level_spans(code: str, path) -> list:
 # The eleven static checks of internal/dispatch/api, keyed by their path in this repository: the
 # ten source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all twenty-four of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-five of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# twenty-fifth such test cannot quietly rejoin the plain step: a file named here that does not
+# twenty-sixth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -2221,7 +2230,8 @@ TEXT_CHECK_TESTS = {
         "TestTheDecisionBlockGuardSeesWhatItGuards",
         "TestTheGuardReadsABodyStringOffARequestType"},
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
-        "TestOnlyTheBrokerInsertsEvents"},
+        "TestOnlyTheBrokerInsertsEvents",
+        "TestTheEventInsertGuardSeesAPlantedInserter"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
         "TestNoServerPackageImportsTheFixtureWriters",
         "TestOnlyTheIssuePatchWritesTheRoute",
@@ -2541,12 +2551,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the twenty-four tests of the Dispatch API's
+# The text-check job: the three modules' text checks, and the twenty-five tests of the Dispatch API's
 # eleven static checks - its ten source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-four out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-five out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2623,6 +2633,8 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
+BROWSER_MODELS_SPECS = "Browser-test the bar's answers and its agent against fake models"
+BROWSER_MODELS_FIREFOX_SPECS = "Browser-test the bar's side place in Firefox against fake models"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
@@ -2647,13 +2659,15 @@ BROWSER_RECORD_STEP = "What the run left behind"
 # in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
 # pinned build step in the gate below names already, so this job adds no command of its own.
 BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
-# The six steps that run the browser suite, named together wherever a Run or a read cites the
+# The eight steps that run the browser suite, named together wherever a Run or a read cites the
 # whole suite: one list, so a step renamed above reaches every citation of it. It is declared
-# here, below the six names, rather than beside the first of them.
+# here, below the eight names, rather than beside the first of them.
 BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
     f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}, "
-    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} and "
+    f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)}, "
+    f"{at_browser(BROWSER_MODELS_FIREFOX_SPECS, BROWSER_EMBEDDER)} and "
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
@@ -2878,6 +2892,11 @@ def browser_gate(filter, job):
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#pmdocFixtures` and `packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts#TABLE_PATH`, from the new URL TABLE_PATH holds, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", "read at `packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` and `packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, for that spec's rows, which are the list's rows in each combination the spec runs"),
         ("scripts/e2e/lib/held-port.py", "`packages/dispatch/e2e/run-server.sh#held_port` holds each stack's server port through it"),
+        (f"{ENVOY}/going/decision_models.json",
+         f"{at_browser(BROWSER_MODELS_SPECS, BROWSER_EMBEDDER)}, {at_browser(BROWSER_MODELS_FIREFOX_SPECS, BROWSER_EMBEDDER)} and the visual-bar rows of "
+         f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} read it: e2e/visual-run.sh starts its stack with "
+         "the fake models, `packages/dispatch/e2e/run-server.sh#decision_record` hands the server the model it marks chosen, and "
+         "`packages/dispatch/e2e/fake-models-helpers.ts#decisionRecord` reads that model for the rows"),
         (f"{ENVOY}/scripts/lib/pg-url.sh", "`packages/dispatch/e2e/run-broker.sh#$e2e_dir/../../envoy/scripts/lib/pg-url.sh` sources it, and `packages/dispatch/e2e/harness-listeners.ts#realBrokerListeners` "
                                            f"starts that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
                                            f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),

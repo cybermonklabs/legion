@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` give `GoingUndoField` two
+  optional members: `now`, the value a field holds now where another writer changed it after a
+  command-bar run, and `by` (`GoingHolder`), who wrote it. Both are absent on any other field, and
+  `by` is absent where no event names a writer. `message` is unchanged.

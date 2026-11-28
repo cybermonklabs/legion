@@ -1,0 +1,1117 @@
+[
+  {
+    "model": "jev-latest",
+    "endpoint": "https://api.typesafe.ai",
+    "measured_at": "2026-11-24T01:11:08Z",
+    "release_date": "2026-10-22T02:00:00+00:00",
+    "cases": 117,
+    "named_cases": 45,
+    "other_cases": 72,
+    "chart_worthy_cases": 25,
+    "unanswered": 0,
+    "named_accuracy": 0.9953086419753087,
+    "other_accuracy": 1,
+    "p50_ms": 108.738,
+    "p95_ms": 182.981,
+    "display_rates": [
+      {
+        "label": "chart_worthy",
+        "answered": "chart",
+        "count": 2248,
+        "of": 2250,
+        "rate": 0.9991111111111111
+      },
+      {
+        "label": "chart_worthy",
+        "answered": "prose",
+        "count": 2,
+        "of": 2250,
+        "rate": 0.0008888888888888889
+      },
+      {
+        "label": "chart_worthy",
+        "answered": "unanswered",
+        "count": 0,
+        "of": 2250,
+        "rate": 0
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "chart",
+        "count": 0,
+        "of": 8280,
+        "rate": 0
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "prose",
+        "count": 8280,
+        "of": 8280,
+        "rate": 1
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "unanswered",
+        "count": 0,
+        "of": 8280,
+        "rate": 0
+      }
+    ],
+    "repeats": 90,
+    "repeat_rights": [
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      }
+    ],
+    "total_spread": {
+      "mean": 116.78888888888889,
+      "min": 116,
+      "max": 117,
+      "sd": 0.4103833353069151
+    },
+    "inconsistent_cases": [
+      {
+        "words": "propose an edit to the spec of DEMO-12: change p95 under 1 s to p95 under 500 ms",
+        "right": 71,
+        "of": 90
+      }
+    ],
+    "paired_tests": [
+      {
+        "against": "jev-preview",
+        "pairs": 10530,
+        "better": 18,
+        "worse": 14,
+        "p_value": 0.5966148958541453,
+        "real": false,
+        "mean_difference": 0.044444444444444446,
+        "interval": [
+          -0.0807953094533988,
+          0.1696841983422877
+        ]
+      }
+    ],
+    "outside_cases": [
+      {
+        "words": "board drag",
+        "note": "Added after spec v61, whose R13 names the 117 cases before it: the preview's line on top read Do for these search words (INFRA-1588).",
+        "action": "none",
+        "right": 0,
+        "of": 90,
+        "chose": [
+          {
+            "action": "dispatch_issue_update",
+            "count": 90
+          }
+        ],
+        "unanswered": 0
+      }
+    ],
+    "chosen": true,
+    "chosen_by": "right_choices"
+  },
+  {
+    "model": "jev-preview",
+    "endpoint": "https://api.typesafe.ai",
+    "measured_at": "2026-11-24T01:11:20Z",
+    "release_date": "2026-10-14T20:14:00+00:00",
+    "cases": 117,
+    "named_cases": 45,
+    "other_cases": 72,
+    "chart_worthy_cases": 25,
+    "unanswered": 0,
+    "named_accuracy": 0.994320987654321,
+    "other_accuracy": 1,
+    "p50_ms": 108.398,
+    "p95_ms": 181.293,
+    "display_rates": [
+      {
+        "label": "chart_worthy",
+        "answered": "chart",
+        "count": 2243,
+        "of": 2250,
+        "rate": 0.9968888888888889
+      },
+      {
+        "label": "chart_worthy",
+        "answered": "prose",
+        "count": 7,
+        "of": 2250,
+        "rate": 0.003111111111111111
+      },
+      {
+        "label": "chart_worthy",
+        "answered": "unanswered",
+        "count": 0,
+        "of": 2250,
+        "rate": 0
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "chart",
+        "count": 0,
+        "of": 8280,
+        "rate": 0
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "prose",
+        "count": 8280,
+        "of": 8280,
+        "rate": 1
+      },
+      {
+        "label": "not_chart_worthy",
+        "answered": "unanswered",
+        "count": 0,
+        "of": 8280,
+        "rate": 0
+      }
+    ],
+    "repeats": 90,
+    "repeat_rights": [
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 44,
+        "other": 72,
+        "total": 116
+      },
+      {
+        "named": 45,
+        "other": 72,
+        "total": 117
+      }
+    ],
+    "total_spread": {
+      "mean": 116.74444444444444,
+      "min": 116,
+      "max": 117,
+      "sd": 0.43861659721311413
+    },
+    "inconsistent_cases": [
+      {
+        "words": "propose an edit to the spec of DEMO-12: change p95 under 1 s to p95 under 500 ms",
+        "right": 67,
+        "of": 90
+      }
+    ],
+    "paired_tests": [
+      {
+        "against": "jev-latest",
+        "pairs": 10530,
+        "better": 14,
+        "worse": 18,
+        "p_value": 0.5966148958541453,
+        "real": false,
+        "mean_difference": -0.044444444444444446,
+        "interval": [
+          -0.1696841983422877,
+          0.0807953094533988
+        ]
+      }
+    ],
+    "outside_cases": [
+      {
+        "words": "board drag",
+        "note": "Added after spec v61, whose R13 names the 117 cases before it: the preview's line on top read Do for these search words (INFRA-1588).",
+        "action": "none",
+        "right": 0,
+        "of": 90,
+        "chose": [
+          {
+            "action": "dispatch_issue_update",
+            "count": 90
+          }
+        ],
+        "unanswered": 0
+      }
+    ],
+    "chosen": false
+  }
+]

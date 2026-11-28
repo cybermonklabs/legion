@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  The command bar's agent runs the tool calls of one model reply in the order the model asked for
+  them. They ran one at a time in the order the Go scheduler started them, which was usually the
+  last call first, so a reply that read two issues read and showed the second before the first.

@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The command bar shows a run's tool call as a live line while it runs, "Reading DEMO-15…", and
+  turns it to "Read DEMO-15" when it ends; a run that ended no longer shows a "Reading …" line
+  beside the "Read …" line of the same call. The agent saves a model call's reply only once its
+  calls ran, so the reply's frame came after them. Each tool call now sends a `call` frame as it
+  starts: `step`, the step its `tool` frame will carry, `tool`, `kind` and `label`, the present
+  form of its words, and on the first call of a model call `text`, the prose the model streamed so
+  far beside its calls. The agent sends it through a new call of agent/v1, `frames`, which appends
+  frames to a run's events without saving a step, under the run's lease and within a step's
+  limits. The bar keys each step by its number: a `call` frame starts its line, its `tool` frame
+  ends it in either order, a `reply` frame adds a line only for a call no frame named, and a call
+  no `tool` frame ended draws no line once the run ended. Every existing frame and field is
+  unchanged.

@@ -1,0 +1,17 @@
+-- 20261120164500_going_runs_kind.up.sql — the kind of a command-bar run.
+--
+-- A run of the command bar works on its person's words (20261119201453). The bar's line File as
+-- a new issue starts a run of its own kind:
+--
+--   kind   'new_issue', a Fast run whose one task is to file the person's words as one new
+--          issue, whose one change, that issue's create, the Enter that started the run approved;
+--          or null, a run of the person's words. The check holds the column to that one value.
+--
+-- One nullable column with no default and a check that null passes: Postgres records the column
+-- in the catalog and rewrites no row, and the check reads each row of going_runs under the
+-- ALTER's ACCESS EXCLUSIVE lock. Every stored row reads null, a run of the person's words, which
+-- is what each was. going_runs is new on the branch that adds this column (20261112173940), so no
+-- build of an earlier release reads or writes it while this one rolls (cmd/dispatch/README.md,
+-- "Database migrations"). The identifier is the UTC moment this was written, as `migrationid`
+-- requires of every migration past the numbered series.
+alter table going_runs add column kind text check (kind in ('new_issue'));

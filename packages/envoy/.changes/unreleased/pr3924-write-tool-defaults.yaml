@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  The command bar sends a call its tool's spec takes where it refused one before any request:
+  `dispatch_doc_edit` naming an issue and no artifact edits the issue's spec,
+  `dispatch_plan_approve` naming no artifact approves the issue's plan.md, and
+  `dispatch_request_approval` naming an issue and no artifact asks for approval of the issue's
+  spec.

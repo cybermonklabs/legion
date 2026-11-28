@@ -1,0 +1,33 @@
+kind: Changed
+body: |-
+  The command bar's agent answers shorter and in fewer model calls. A run asked on an issue's
+  page reads that issue as the person before its first model call, saved as the run's step 1 with
+  a read's `call` and `tool` frames, and each model call is given its result, marked as data, in
+  the person's message, so no model call is spent on it. `call_tool` runs any read by its exact
+  name, and the system prompt names the reads a question about how an issue stands needs, with
+  their arguments, so the model calls `find_tools` for any other tool; it asks for the reads of one
+  reply at once. `call_tool` refuses a name no tool has before any call and tells the model the
+  nearest names. `find_tools` answers each tool with the first sentence of its description
+  and its whole argument schema, within the 32 KiB every tool result keeps to, and a note names a
+  tool it left out; a need that is one tool's name answers that tool whole. The preview's three
+  lookups had answered 76,767 bytes, which every later model call was given again. The prompt
+  says how an answer reads: the direct answer first, concise unless the person asks for more,
+  each item once by its link alone, beside which it writes only what the bar's chip does not
+  show, never the title or the status, no correction of itself, and each value as the issue page
+  shows it, a priority as P0 to P3, a time as "2 days ago" from the time now that each model call
+  is told, any other value in words rather than raw in parentheses, and an agent session by its
+  title or role.
+  The `tool` frame of a call the model made that failed by its own slip - a name no tool has, a
+  change `call_tool` does not run, arguments the tool or its route refuses - carries `slip` true
+  and `error` false, with words for what it tried, such as "Tried a step Dispatch does not have";
+  a call its person can act on, such as one with no access, keeps `error` and its failure words.
+  The model has a sixth tool, `ask_person` with a `question`, to ask the person something it
+  needs before it can go on: which changes to make, a choice, or words only they can give. A
+  reply that calls it ends the turn `done`, saves no tool step and sends no `call` or `tool` frame
+  of the ask; its `reply` frame carries the question as its `text`, names no call, and carries
+  `waits_for_person` true, which every other reply carries false. The question is the answer of
+  that turn in the model's later history. No model call asks for a structured reply: a reply that
+  ends the turn is prose. The system prompt says that words that ask for a change end the turn
+  with `propose_plan`, that an answer never says a change is made, is being made or will be made,
+  since nothing changes until the person approves a plan, and that an answer says what stops a
+  change no plan can be proposed for. Every other frame and field is unchanged.

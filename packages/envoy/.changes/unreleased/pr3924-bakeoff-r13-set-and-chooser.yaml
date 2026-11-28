@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The decision-model bake-off (`cmd/going-bakeoff`) counts only the cases R13 names. A case of
+  `going/bakeoff/cases.json` marked `"outside_r13": true`, with a `note` saying why it was added,
+  is asked like any other, but its table, floors, rule and record leave it out: the report gives it
+  a line of its own with what each model chose, and each model's record keeps that apart
+  (`outside_cases`). The table also gives each model's right choices over R13's cases. A tie-break
+  now names who broke the tie: `--tie-chooser` goes with `--tie-break` and `--tie-reason`, and the
+  record reads `chosen_by: tie_break` with the `chooser` beside the reason, in place of
+  `chosen_by: person`.

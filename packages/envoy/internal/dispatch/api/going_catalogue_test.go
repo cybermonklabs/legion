@@ -1,7 +1,6 @@
 // going_catalogue_test.go holds the catalogue to the tool specs it is built from and to the
-// route table it is served beside: every row a tool names is a write of that table, and every
-// write no catalogue action performs is named in a committed list rather than failing the build
-// (TestTheMutatingRoutesNoToolSpecNames).
+// route table it is served beside: every row a write tool names is a write of that table, and
+// the actions the catalogue serves are the twenty the answer run's decision was measured over.
 package api
 
 import (
@@ -12,135 +11,49 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// goingMutatingRoutesWithNoTool is every write of the served table no action of the catalogue
-// performs. Nearly all of them are the catalogue's gap and this tree's follow-up work: an
-// operation the bar cannot yet propose. Four are not, the two review routes and the two routes
-// of the proven-sessions setting, and their rows say why.
-// TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a write added later is
-// named here or in goingToolRoutes and never silently missing.
-var goingMutatingRoutesWithNoTool = []string{
-	"DELETE /api/v1/artifacts/{id}",
-	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
-	"DELETE /api/v1/delivery/session-groups/{id}",
-	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
-	"DELETE /api/v1/me/agent-tokens/{id}",
-	"DELETE /api/v1/me/asks/{id}/snooze",
-	"DELETE /api/v1/priorities/{id}",
-	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
-	"DELETE /api/v1/projects/{key}/legion/daemon",
-	// The proven-sessions setting's two routes, which dispatch_project_update performs.
-	// goingToolRoutes gives neither a row on purpose: each turns a check of a project on or off,
-	// and the loop that proposes operations on Dispatch's graph must never propose that. Keep
-	// both here; never give either a row.
-	"DELETE /api/v1/projects/{key}/proven-sessions",
-	"PATCH /api/v1/artifacts/{id}",
-	"PATCH /api/v1/delivery/session-groups/{id}",
-	"PATCH /api/v1/me/agent-tokens/{id}",
-	"PATCH /api/v1/priorities/{id}",
-	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
-	"POST /api/v1/artifacts/{id}/rebuild",
-	// The two review routes: this one, the document header's, and the one dispatch_review
-	// performs (below). goingToolRoutes gives neither a row on purpose: a review records an
-	// approval or a changes request in a person's name, and the loop that proposes operations on
-	// Dispatch's graph must never propose one. Keep both here; never give either a row.
-	"POST /api/v1/artifacts/{id}/reviews",
-	"POST /api/v1/artifacts/{id}/versions",
-	// dispatch_review's review, kept here for the reason the document header's above is.
-	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",
-	"POST /api/v1/asks/{id}/answer",
-	"POST /api/v1/asks/{id}/decline",
-	"POST /api/v1/broadcasts",
-	"POST /api/v1/comments/{id}/accept",
-	"POST /api/v1/comments/{id}/deliveries",
-	"POST /api/v1/comments/{id}/reject",
-	"POST /api/v1/comments/{id}/reopen",
-	"POST /api/v1/comments/{id}/reply",
-	"POST /api/v1/credential-grants/{id}/revoke",
-	"POST /api/v1/credential-requests/machine-lookup",
-	"POST /api/v1/credential-requests/{id}/approve",
-	"POST /api/v1/credential-requests/{id}/deny",
-	"POST /api/v1/credential-requests/{id}/dismiss",
-	"POST /api/v1/delivery/session-groups",
-	"POST /api/v1/going/requests",
-	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
-	// A result's dry run, which writes nothing: dispatch_result's record row is the write.
-	"POST /api/v1/issues/{key}/results/dry-run",
-	"POST /api/v1/machine-logins/{id}/revoke",
-	"POST /api/v1/markdown/file-round-trip",
-	"POST /api/v1/markdown/round-trip",
-	"POST /api/v1/me/agent-tokens",
-	"POST /api/v1/me/inbox/dismiss",
-	"POST /api/v1/me/inbox/read",
-	"POST /api/v1/messages/{id}/deliveries",
-	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept",
-	"POST /api/v1/priorities",
-	"POST /api/v1/projects/{key}/architecture-source/sync",
-	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
-	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
-	"POST /api/v1/projects/{key}/related",
-	// Only a CI job's results token writes this row, and the going loop acts as an agent session,
-	// so no tool of the catalogue performs it.
-	"POST /api/v1/projects/{key}/results",
-	"POST /api/v1/signins/{id}/revoke",
-	"PUT /api/v1/asks/{id}/asked-of",
-	"PUT /api/v1/issues/{key}/design-gates",
-	"PUT /api/v1/issues/{key}/plans/{id}",
-	"PUT /api/v1/issues/{key}/role-holders",
-	"PUT /api/v1/issues/{key}/steps/{id}",
-	"PUT /api/v1/issues/{key}/steps/{id}/experiment",
-	"PUT /api/v1/issues/{key}/steps/{id}/rating",
-	"PUT /api/v1/me/agents/{session_id}/state",
-	"PUT /api/v1/me/asks/{id}/snooze",
-	"PUT /api/v1/me/documents/{id}/read",
-	"PUT /api/v1/me/issues/{key}/state",
-	"PUT /api/v1/me/threads/{id}/read",
-	"PUT /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
-	"PUT /api/v1/projects/{key}/default-assignee",
-	"PUT /api/v1/projects/{key}/default-repository",
-	"PUT /api/v1/projects/{key}/gated-steps",
-	"PUT /api/v1/projects/{key}/legion/daemon",
-	// The proven-sessions setting's other route, kept here for the reason its DELETE above is.
-	"PUT /api/v1/projects/{key}/proven-sessions",
-	"PUT /api/v1/settings/delivery",
-}
-
 // withThrowawayToolRoutes gives one tool a set of rows for the length of a test, so a build is
-// shown failing on a row that is no write of the table. It writes those rows into goingToolRoutes,
+// shown failing on a row that is no write of the table. It writes those rows into goingWriteTools,
 // the package's own map that every server reads at Register, and takes them out at the test's
 // end, so a test that calls it does not run in parallel.
 func withThrowawayToolRoutes(t *testing.T, tool string, rows ...goingToolRoute) {
 	t.Helper()
-	if _, held := goingToolRoutes[tool]; held {
+	if _, held := goingWriteTools[tool]; held {
 		t.Fatalf("%q already names rows; name a tool the catalogue does not hold", tool)
 	}
-	goingToolRoutes[tool] = rows
-	t.Cleanup(func() { delete(goingToolRoutes, tool) })
+	goingWriteTools[tool] = goingWriteTool{Routes: rows, Undo: goingUndoNotUndone, Class: goingClassField, Event: goingNoEvent}
+	t.Cleanup(func() { delete(goingWriteTools, tool) })
 }
 
-// TestTheCatalogueIsTheDispatchToolsThatWrite: the catalogue is the mutating tool specs and
-// nothing else — each entry carries that spec's own description and its own argument schema,
-// unchanged — and every row an entry names is a write of the table the server mounts.
+// goingDecisionActionNames is the twenty actions the answer run's decision offers, which
+// going/decision_models.json's measurement was made over.
+var goingDecisionActionNames = []string{
+	"dispatch_issue", "dispatch_issue_update", "dispatch_claim", "dispatch_ask", "dispatch_edit_ask",
+	"dispatch_resolve_ask", "dispatch_resolve_comment", "dispatch_follow", "dispatch_comment",
+	"dispatch_suggest", "dispatch_message", "dispatch_send_to_agent", "dispatch_doc_edit",
+	"dispatch_request_approval", "dispatch_plan_approve", "dispatch_result", "dispatch_artifact",
+	"dispatch_project", "dispatch_architecture_sync", "dispatch_handoff_write",
+}
+
+// TestTheCatalogueIsTheDispatchToolsThatWrite: the catalogue holds every write tool and nothing
+// else — each entry carries that spec's own description and its own argument schema, unchanged
+// — every row an entry names is a write of the table the server mounts, and the actions it
+// serves are the twenty the answer run's decision offers, dispatch_review not among them.
 func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
-	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
-	// server of the package reads at Register.
+	// Not parallel: it writes tools' rows into goingWriteTools (withThrowawayToolRoutes, and an
+	// entry of its own below), the table every server of the package reads at Register.
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
 	catalogue, err := buildGoingCatalogue(routes)
 	if err != nil {
 		t.Fatalf("build the catalogue of the served table: %v", err)
-	}
-	actions := catalogue.Actions()
-	t.Logf("the catalogue holds %d actions, one per mutating tool spec", len(actions))
-	if len(actions) != len(goingToolRoutes) {
-		t.Fatalf("the catalogue holds %d actions, want the %d tool specs that write", len(actions), len(goingToolRoutes))
 	}
 
 	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
@@ -148,34 +61,42 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 		specs[spec.Name] = spec
 	}
 	mutating := mutatingRoutes(routes)
-	held := map[string]bool{}
-	for _, action := range actions {
-		if held[action.Action] {
-			t.Errorf("the catalogue holds %q twice", action.Action)
-		}
-		held[action.Action] = true
-		spec, isTool := specs[action.Action]
-		if !isTool {
-			t.Errorf("the catalogue holds %q, which is no dispatch tool", action.Action)
+	for name := range goingWriteTools {
+		action, held := catalogue.Lookup(name)
+		if !held {
+			t.Errorf("the catalogue holds no %q, a write tool", name)
 			continue
 		}
+		spec := specs[name]
 		if action.Description != spec.Description {
-			t.Errorf("%q serves a description the tool spec does not: %q", action.Action, action.Description)
+			t.Errorf("%q serves a description the tool spec does not: %q", name, action.Description)
 		}
 		if !reflect.DeepEqual(action.Request, spec.Arguments) {
-			t.Errorf("%q serves arguments the tool spec does not", action.Action)
+			t.Errorf("%q serves arguments the tool spec does not", name)
 		}
 		if string(action.Example) != string(spec.Example) {
-			t.Errorf("%q serves the example %s, want the tool spec's %s", action.Action, action.Example, spec.Example)
+			t.Errorf("%q serves the example %s, want the tool spec's %s", name, action.Example, spec.Example)
 		}
 		if len(action.Routes) == 0 {
-			t.Errorf("%q names no route, so nothing performs it", action.Action)
+			t.Errorf("%q names no route, so nothing performs it", name)
 		}
 		for _, route := range action.Routes {
 			if !mutating[route.Method+" "+route.Pattern] {
-				t.Errorf("%q names %s %s, which is no write of the route table", action.Action, route.Method, route.Pattern)
+				t.Errorf("%q names %s %s, which is no write of the route table", name, route.Method, route.Pattern)
 			}
 		}
+	}
+	if _, held := catalogue.Lookup("dispatch_search"); held {
+		t.Error("the catalogue holds dispatch_search, a tool that writes nothing")
+	}
+
+	proposed := make([]string, 0, len(catalogue.Actions()))
+	for _, action := range catalogue.Actions() {
+		proposed = append(proposed, action.Action)
+	}
+	t.Logf("the catalogue holds %d write tools and serves %d actions", len(goingWriteTools), len(proposed))
+	if !slices.Equal(proposed, goingDecisionActionNames) {
+		t.Fatalf("the catalogue serves the actions %v, want the twenty the decision was measured over %v", proposed, goingDecisionActionNames)
 	}
 
 	t.Run("a tool naming a row the table does not hold fails the build", func(t *testing.T) {
@@ -219,32 +140,62 @@ func TestTheCatalogueIsTheDispatchToolsThatWrite(t *testing.T) {
 			t.Fatalf("the build answered %v, want the binding refused", err)
 		}
 	})
+
+	t.Run("an entry naming rows for a tool whose spec binds its routes fails the build", func(t *testing.T) {
+		tool := goingWriteTools["dispatch_rename_document"]
+		t.Cleanup(func() { goingWriteTools["dispatch_rename_document"] = tool })
+		named := tool
+		named.Routes = []goingToolRoute{{Method: http.MethodPatch, Pattern: "/api/v1/artifacts/{id}",
+			Path: map[string]string{"id": "document"}, Translate: goingTranslateNoBody}}
+		goingWriteTools["dispatch_rename_document"] = named
+		_, err := buildGoingCatalogue(routes)
+		if err == nil || !strings.Contains(err.Error(), "dispatch_rename_document: its rows are stated by its entry and its spec's routes both") {
+			t.Fatalf("the build answered %v, want the two statements of the rows refused", err)
+		}
+	})
 }
 
-// TestTheMutatingRoutesNoToolSpecNames: the catalogue's gap, named rather than refused. A write
-// of the served table no catalogue action performs is an operation the bar cannot yet propose,
-// or, for the two review routes and the two routes of the proven-sessions setting, one it must
-// never propose, and the list is committed here so a write added later is either given a tool or
-// added to it.
-func TestTheMutatingRoutesNoToolSpecNames(t *testing.T) {
+// TestTheCatalogueRefusesAToolTheBarNeitherServesNorLeavesOut: find_tools answers every tool of
+// Dispatch going.UnofferedTools leaves in, so a tool of Dispatch that binds no route, that neither
+// goingWriteTools nor goingReadTools names and that the list does not name - a tool main adds -
+// would be found by the bar's model and refused when it called it. The build refuses such a tool
+// by name, as it refuses a spec that binds its routes and that neither table names; each tool the
+// list names, a read tool of the table and the served table's own build are the controls.
+func TestTheCatalogueRefusesAToolTheBarNeitherServesNorLeavesOut(t *testing.T) {
 	t.Parallel()
-	routes := (&server{}).routes()
-	performed := map[string]bool{}
-	for _, rows := range goingToolRoutes {
-		for _, row := range rows {
-			performed[row.Method+" "+row.Pattern] = true
+	unserved := contracts.DispatchTool{Name: "dispatch_paint_widget", Arguments: []contracts.ToolField{
+		{Name: "widget", Kind: contracts.ToolFieldString, Required: true},
+	}}
+	// Each refusal names the tool and the place a developer settles it: the list that leaves a tool
+	// out for one that binds no route, the tables for one that binds its routes.
+	if refusal := goingUnheldTool(unserved); !strings.HasPrefix(refusal, "dispatch_paint_widget: ") || !strings.Contains(refusal, "going.UnofferedTools") {
+		t.Errorf("the build judges a tool that binds no route and that no table and no list names %q, want it refused by name, naming going.UnofferedTools", refusal)
+	}
+	bound := unserved
+	bound.Routes = []contracts.ToolRoute{{Method: http.MethodGet, Pattern: "/api/v1/widgets/{id}", Path: map[string]string{"id": "widget"}}}
+	if refusal := goingUnheldTool(bound); !strings.HasPrefix(refusal, "dispatch_paint_widget: ") || !strings.Contains(refusal, "goingWriteTools") {
+		t.Errorf("the build judges a tool that binds its routes and that no table names %q, want it refused by name, naming the tables", refusal)
+	}
+
+	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
+	for _, spec := range contracts.DispatchTools {
+		specs[spec.Name] = spec
+	}
+	for name := range going.UnofferedTools {
+		spec, stated := specs[name]
+		if !stated {
+			t.Errorf("going.UnofferedTools names %s, which is no tool of Dispatch", name)
+			continue
+		}
+		if refusal := goingUnheldTool(spec); refusal != "" {
+			t.Errorf("the build refuses %s, which going.UnofferedTools leaves out: %s", name, refusal)
 		}
 	}
-	gap := make([]string, 0, len(routes))
-	for name := range mutatingRoutes(routes) {
-		if !performed[name] {
-			gap = append(gap, name)
-		}
+	if refusal := goingUnheldTool(specs["dispatch_whoami"]); refusal != "" {
+		t.Errorf("the build refuses dispatch_whoami, a read tool of goingReadTools: %s", refusal)
 	}
-	sort.Strings(gap)
-	t.Logf("%d writes of the route table no dispatch tool performs:\n%s", len(gap), strings.Join(gap, "\n"))
-	if !slices.Equal(gap, goingMutatingRoutesWithNoTool) {
-		t.Fatalf("the writes no tool performs are:\n%s\n\nupdate goingMutatingRoutesWithNoTool, or give the new write a tool in goingToolRoutes", strings.Join(gap, "\n"))
+	if _, err := BuildGoingCatalogue(); err != nil {
+		t.Fatalf("build the catalogue of the served table: %v", err)
 	}
 }
 
@@ -364,39 +315,6 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 		}
 	})
 
-	// Each option of the status change is the argument that picks its route: the PATCH takes no
-	// option and would drop it. A status change with no option still takes the PATCH.
-	t.Run("an option of the status change picks its route, and a call with none the PATCH", func(t *testing.T) {
-		for _, option := range []string{optionIncludeChildren, optionUnlinkChildren, optionIncludeParent} {
-			doer := &countingDoer{}
-			caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
-			arguments := map[string]any{"issue": "INFRA-1042", "status": "in_progress", option: true}
-			if _, err := caller.Do(context.Background(), "dispatch_issue_update", arguments); err != nil {
-				t.Fatalf("a status change with %s: %v", option, err)
-			}
-			sent := doer.requests[0]
-			if sent.Method != http.MethodPost || sent.URL.Path != "/api/v1/issues/INFRA-1042/status-change" {
-				t.Fatalf("a status change with %s was sent as %s %s", option, sent.Method, sent.URL.Path)
-			}
-			var body map[string]any
-			if err := json.NewDecoder(sent.Body).Decode(&body); err != nil {
-				t.Fatalf("read the body of a status change with %s: %v", option, err)
-			}
-			if want := map[string]any{"status": "in_progress", option: true}; !reflect.DeepEqual(body, want) {
-				t.Fatalf("a status change with %s sent %v, want %v", option, body, want)
-			}
-		}
-		doer := &countingDoer{}
-		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
-		if _, err := caller.Do(context.Background(), "dispatch_issue_update", map[string]any{"issue": "INFRA-1042", "status": "in_progress"}); err != nil {
-			t.Fatalf("a status change with no option: %v", err)
-		}
-		sent := doer.requests[0]
-		if sent.Method != http.MethodPatch || sent.URL.Path != "/api/v1/issues/INFRA-1042" {
-			t.Fatalf("a status change with no option was sent as %s %s", sent.Method, sent.URL.Path)
-		}
-	})
-
 	t.Run("a row addressing the calling session takes it from the caller", func(t *testing.T) {
 		doer := &countingDoer{}
 		caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Session: "sess-7", Doer: doer}
@@ -422,6 +340,76 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 			t.Fatalf("the caller sent %d request(s) for a call no row takes", len(doer.requests))
 		}
 	})
+}
+
+// TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade: a call naming what the bar has no way to
+// send - a picture file, a place given by a dispatch:// link that names no place such a write goes
+// (the link of a comment, of a block or of a version of a document), a file to upload, an upload
+// with no text, a closing note on an update that does not close the issue, a sync's repository not
+// written as owner/name - is refused as the call's own argument error before any request, read or
+// write, is made; the same call without it goes on to its requests. A picture list written empty
+// names no picture, and the schema's bound refuses it first: a list of pictures holds one at least.
+func TestACallTheBarCanNeverSendIsRefusedWithNoRequestMade(t *testing.T) {
+	t.Parallel()
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatalf("build the catalogue: %v", err)
+	}
+	const issue = "INFRA-1042"
+	edit := []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}}
+	for _, tc := range []struct {
+		name, action      string
+		refused, sendable map[string]any
+	}{
+		{"a comment with a picture", "dispatch_comment",
+			map[string]any{"issue": issue, "body": "Reads well.", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "body": "Reads well."}},
+		{"a comment with a list of no picture", "dispatch_comment",
+			map[string]any{"issue": issue, "body": "Reads well.", "images": []any{}},
+			map[string]any{"issue": issue, "body": "Reads well."}},
+		{"a comment placed by the link of a comment", "dispatch_comment",
+			map[string]any{"issue": issue, "body": "Reads well.", "ref": "dispatch://" + issue + "/comment/1"},
+			map[string]any{"issue": issue, "body": "Reads well."}},
+		{"a question with a picture", "dispatch_ask",
+			map[string]any{"issue": issue, "question": "Ship it?", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "question": "Ship it?"}},
+		{"a message with a picture", "dispatch_message",
+			map[string]any{"issue": issue, "body": "Where are we?", "images": []any{"shot.png"}},
+			map[string]any{"issue": issue, "body": "Where are we?"}},
+		{"a suggestion placed by the link of a block", "dispatch_suggest",
+			map[string]any{"quote": "says hello", "replace_with": "says hi", "ref": "dispatch://" + issue + "/spec#b-intro"},
+			map[string]any{"issue": issue, "artifact": "spec", "quote": "says hello", "replace_with": "says hi"}},
+		{"an edit placed by the link of a version", "dispatch_doc_edit",
+			map[string]any{"ops": edit, "ref": "dispatch://" + issue + "/artifact/notes@v2"},
+			map[string]any{"issue": issue, "artifact": "notes", "ops": edit}},
+		{"an upload of a file", "dispatch_artifact",
+			map[string]any{"issue": issue, "name": "notes.md", "path": "notes.md"},
+			map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n"}},
+		{"an upload with no text", "dispatch_artifact",
+			map[string]any{"issue": issue, "name": "notes.md"},
+			map[string]any{"issue": issue, "name": "notes.md", "content": "# Notes\n"}},
+		{"a closing note on an update that does not close the issue", "dispatch_issue_update",
+			map[string]any{"issue": issue, "status": "in_progress", "reason": "Shipped in the last release."},
+			map[string]any{"issue": issue, "status": "done", "reason": "Shipped in the last release."}},
+		{"a sync of a repository not written as owner/name", "dispatch_architecture_sync",
+			map[string]any{"project": "INFRA", "repo": "acme"},
+			map[string]any{"project": "INFRA", "repo": "acme/arch"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doer := &countingDoer{}
+			// In-process, as the bar calls: an upload carries its create-only condition on its
+			// context, which only an in-process request takes.
+			caller := GoingCaller{Catalogue: catalogue, Doer: doer}
+			_, err := caller.Do(context.Background(), tc.action, tc.refused)
+			var refused GoingArgumentError
+			if !errors.As(err, &refused) || len(doer.requests) != 0 {
+				t.Fatalf("the call answered %v after %d request(s), want it refused as its own argument error with none made", err, len(doer.requests))
+			}
+			if _, err := caller.Do(context.Background(), tc.action, tc.sendable); len(doer.requests) == 0 {
+				t.Fatalf("the same call without what the bar cannot send answered %v with no request made, want it to go on to its requests", err)
+			}
+		})
+	}
 }
 
 // TestAGoingResultCallNamingAProjectFillsNoRoute: dispatch_result's project form is a CI job's
@@ -453,7 +441,7 @@ func TestAGoingResultCallNamingAProjectFillsNoRoute(t *testing.T) {
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is
 // refused, so no entry can promise an edge the graph has no kind for.
 func TestAGoingRelationOutsideBothEdgeFamiliesFails(t *testing.T) {
-	// Not parallel: it adds a tool's rows to goingToolRoutes (withThrowawayToolRoutes), the table every
+	// Not parallel: it adds a tool's rows to goingWriteTools (withThrowawayToolRoutes), the table every
 	// server of the package reads at Register.
 	families := edgeFamilies()
 	for _, relation := range append(slices.Clone(model.GraphEdgeKinds), pmdoc.LinkKinds()...) {
@@ -488,8 +476,8 @@ func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 		t.Fatalf("GET the catalogue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	body := decodeBody[goingCatalogueBody](t, response)
-	if body.Total != len(body.Actions) || body.Total != len(goingToolRoutes) {
-		t.Fatalf("the catalogue served %d of %d actions, want the %d tool specs that write", len(body.Actions), body.Total, len(goingToolRoutes))
+	if body.Total != len(body.Actions) || body.Total != len(goingDecisionActionNames) {
+		t.Fatalf("the catalogue served %d of %d actions, want the %d the decision offers", len(body.Actions), body.Total, len(goingDecisionActionNames))
 	}
 	for _, action := range body.Actions {
 		if action.Action != "dispatch_issue" {

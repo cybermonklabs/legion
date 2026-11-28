@@ -5,115 +5,44 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/goingtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// goingModelBearer is the bearer the chat client presents to the fake model. The client under
-// test is the production one, so it signs each call; a static source is the whole credential this
-// test needs, and no deployment's own is read.
+// goingModelBearer is the bearer the model's endpoint presents to the fake model. The model loop
+// under test is the production one, so it signs each call; a static token is the whole
+// credential this test needs, and no deployment's own is read.
 const goingModelBearer = "going-test-bearer"
 
-type goingModelTokens struct{}
-
-func (goingModelTokens) Token(context.Context) (string, error) { return goingModelBearer, nil }
-
-// newGoingModelAnswerer is the answerer a deployment runs - going.NewAnswerer over
-// going.NewHTTPClient - pointed at goingtest's chat-completions model over httptest. The model is
-// the one thing faked: the search, the bodies, the filter, the client's route, its sign-in and its
-// reading of the stream are production's, and nothing here calls a service or names a real model
-// endpoint. held holds each reply after its first frame until it is closed (heldAfterFirstFrame).
-func newGoingModelAnswerer(t *testing.T, held <-chan struct{}, replies ...goingtest.Reply) (*going.Answerer, *goingtest.Model) {
+// newGoingModelAnswerer is the answerer a deployment runs - going.NewAnswerer over agentloop's
+// openai-chat model - pointed at goingtest's chat-completions model over httptest. The model is
+// the one thing faked: the search, the bodies, the filter, the model loop's route, its sign-in
+// and its reading of the stream are production's, and nothing here calls a service or names a
+// real model endpoint.
+func newGoingModelAnswerer(t *testing.T, replies ...goingtest.Reply) (*going.Answerer, *goingtest.Model) {
 	t.Helper()
 	model := goingtest.NewModel(t, replies...)
-	client, err := going.NewHTTPClient(going.HTTPConfig{
-		Place:      "test",
-		Endpoint:   model.URL + "/openai/v1",
-		Model:      "going-test-deployment",
-		Tokens:     goingModelTokens{},
-		HTTPClient: &http.Client{Transport: heldAfterFirstFrame{rest: held}},
-	})
-	if err != nil {
-		t.Fatalf("build the chat client: %v", err)
-	}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: client})
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: agentloop.Model{
+		Endpoint: agentloop.Endpoint{
+			Kind:    agentloop.OpenAIChat,
+			BaseURL: model.URL + "/openai/v1",
+			Token:   func(context.Context) (string, error) { return goingModelBearer, nil },
+		},
+		ID: "going-test-deployment",
+	}})
 	if err != nil {
 		t.Fatalf("build the answerer: %v", err)
 	}
 	return answerer, model
-}
-
-// heldAfterFirstFrame is the chat client's transport to the model: it passes each completion on
-// as the model streams it up to the end of its first frame, and every byte after that only once
-// rest is closed or the call's context ends. The model is held mid-reply, the rest of its frames
-// still to come, for as long as the test needs, so no clock decides what reached the client
-// before the reply ended.
-type heldAfterFirstFrame struct {
-	rest <-chan struct{}
-}
-
-func (h heldAfterFirstFrame) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := http.DefaultTransport.RoundTrip(request)
-	if err != nil {
-		return nil, err
-	}
-	response.Body = &heldBody{ReadCloser: response.Body, rest: h.rest, ctx: request.Context()}
-	return response, nil
-}
-
-// heldBody is a completion's body that heldAfterFirstFrame holds after its first frame, which
-// ends at the event stream's first blank line. newline says the last byte read was a newline,
-// passed whether the first frame has been passed on, held and err what the read that ended it
-// returned past it, kept for the reads after the hold.
-type heldBody struct {
-	io.ReadCloser
-	rest     <-chan struct{}
-	ctx      context.Context
-	newline  bool
-	passed   bool
-	released bool
-	held     []byte
-	err      error
-}
-
-func (b *heldBody) Read(p []byte) (int, error) {
-	if b.passed && !b.released {
-		select {
-		case <-b.rest:
-			b.released = true
-		case <-b.ctx.Done():
-			return 0, b.ctx.Err()
-		}
-	}
-	if len(b.held) > 0 {
-		n := copy(p, b.held)
-		b.held = b.held[n:]
-		return n, nil
-	}
-	if b.err != nil {
-		return 0, b.err
-	}
-	n, err := b.ReadCloser.Read(p)
-	if !b.passed {
-		for index, c := range p[:n] {
-			if c == '\n' && b.newline {
-				b.passed = true
-				b.held, b.err = append(b.held, p[index+1:n]...), err
-				return index + 1, nil
-			}
-			b.newline = c == '\n'
-		}
-	}
-	return n, err
 }
 
 // liveGoingFrame is one frame of a stream as a reader on a real connection saw it: the event's
@@ -125,7 +54,7 @@ type liveGoingFrame struct {
 
 // liveGoingStream is one run's stream on a real HTTP server, read frame by frame as the server
 // flushes each, on a goroutine of its own, so a test reads what had reached a reader by a point it
-// chooses, such as while the model is held (heldAfterFirstFrame). It is a real connection and not
+// chooses, such as while the model is held (goingtest.Reply.Hold). It is a real connection and not
 // httptest.NewRecorder because a recorder buffers the whole response: nothing of what reached a
 // reader before the run ended survives it. Each read's one bound is the test binary's deadline
 // (testwait.Receive), so a stream that never sends the frame a test reads for fails that read by
@@ -292,8 +221,8 @@ func goingFrameNames(frames []liveGoingFrame) []string {
 // ranked.
 //
 // The reader here is a real connection, because what it proves is a matter of order and not only
-// of bytes: the model is held after the first frame of its reply until this test has read the
-// answer's first words from the stream (heldAfterFirstFrame), so those words were readable while
+// of bytes: the model is held after the frames that write the answer's first words until this
+// test has read those words from the stream (goingtest.Reply.Hold), so they were readable while
 // the model still had the rest to write. A recorder would buffer the whole response and say
 // nothing about what reached a reader before the run ended.
 func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing.T) {
@@ -306,15 +235,21 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 	const href = "/issues/" + issueKey
 	const linkText = "The pelican migration"
 	link := "[" + linkText + "](" + href + ")"
-	// held holds the model after the first frame of its reply until the test has read that frame's
-	// words from the stream (release), so no clock decides whether they came before the end.
+	// held holds the model after the frames that write the answer's first words until the test
+	// has read those words from the stream (release), so no clock decides whether they came
+	// before the end.
 	held := make(chan struct{})
 	release := sync.OnceFunc(func() { close(held) })
-	answerer, model := newGoingModelAnswerer(t, held, goingtest.Reply{
-		Text: "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
-		// Four runes a frame over that reply is twenty-seven frames, each a stored text frame of
-		// the run's own; the model is held after the first of them.
-		Chunk: 4,
+	answerer, model := newGoingModelAnswerer(t, goingtest.Reply{
+		Final: &goingtest.Final{
+			Answer: "The pelicans arrive in spring, and the note Dispatch holds says so: " + link + ".",
+		},
+		// Six runes a frame over the Final object that answer is written in: the first five frames
+		// write `{"answer":"The pelicans arrive`, the object's opening and the answer's first words,
+		// and the model is held there until the test has read those words from the stream.
+		Chunk:     6,
+		HoldAfter: 5,
+		Hold:      held,
 	})
 	rig := newGoingRoutesRig(t, answerer)
 	seededKey, issueTitle := seedGoingProject(t, rig.handler, project)
@@ -398,7 +333,7 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 		t.Fatalf("the model was asked %q, want the question and the hit's href", asked)
 	}
 	stored, err := goingItemText(context.Background(),
-		rig.database.Pool, []going.Hit{{Kind: "issue", ID: issueKey}}, contracts.GoingHitRuneMax)
+		rig.database.Pool, []going.Hit{{Kind: "issue", ID: issueKey}}, contracts.GoingHitRuneMax, "")
 	if err != nil {
 		t.Fatalf("read the issue's stored text: %v", err)
 	}

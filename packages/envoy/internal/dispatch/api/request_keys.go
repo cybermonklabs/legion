@@ -87,7 +87,10 @@ import (
 //     first request ended: the single-session send, the broadcast, an issue message and a comment,
 //     whose mentions deliver it. Their first answer shows deliveries the repeat must report as they
 //     stand now. A delivery a dead process owed is made once whether anyone asks again or not: the
-//     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
+//     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner. A command-bar
+//     run's Undo keeps one too, the run it walks, bound before it sends anything: its walk commits
+//     as it goes, and is idempotent by its landings, so its replay walks the run again and finishes
+//     what a press whose process ended left (replayGoingUndo).
 //   - A write made of steps that each commit in a transaction of their own, the status change
 //     (status_change.go), keeps its progress as its recovery point instead: each step adds what it
 //     made in its own transaction - the ids of its events and of the asks it withdrew to the head
@@ -199,9 +202,9 @@ type keyedRoute struct {
 }
 
 // keyedReplays is every route whose write commits a recovery point, by method and pattern: the
-// writes that also deliver to sessions, whose deliveries a repeat finishes, and the status change,
-// whose steps a repeat finishes. Each key names a registered route
-// (TestEveryKeyedRouteTableNamesARoute).
+// writes that also deliver to sessions, whose deliveries a repeat finishes, the status change,
+// whose steps a repeat finishes, and a command-bar run's Undo, whose walk a repeat finishes. Each
+// key names a registered route (TestEveryKeyedRouteTableNamesARoute).
 func (s *server) keyedReplays() map[string]keyedRoute {
 	return map[string]keyedRoute{
 		http.MethodPost + " /api/v1/agents/{session_id}/messages": {replay: replayRecovered(s, s.replayAgentMessage)},
@@ -210,6 +213,7 @@ func (s *server) keyedReplays() map[string]keyedRoute {
 		http.MethodPost + " /api/v1/issues/{key}/comments":        {replay: replayRecovered(s, s.replayComment)},
 		http.MethodPost + " /api/v1/artifacts/{id}/comments":      {replay: replayRecovered(s, s.replayComment)},
 		statusChangeRoute: {replay: replayRecovered(s, s.replayStatusChange), resumes: true, refuse: s.refuseStatusChangeKey},
+		http.MethodPost + " /api/v1/going/runs/{id}/undo": {replay: replayRecovered(s, s.replayGoingUndo)},
 	}
 }
 
@@ -1601,20 +1605,20 @@ func outlivingTheClient(r *http.Request) context.Context {
 
 // recoveryPoint is every value a keyed write commits as its key's recovery point: the message a
 // send to one session or an issue message made, the broadcast, the comment whose mentions deliver
-// it, and the progress of a status change. A route binds one (bindRequestKeyRecovery) and its
-// keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
-// point's shape. A status change's point is a head on the key's row - the ids of the events and
-// the asks its steps made, then the mark and the answer's issue - and one row per step in
-// request_key_steps holding the step's entry and what a step of an option changed, which every
-// reader reads back under changed and moved (recoveryPointRead); status_change_recovery.go
-// names each member once (pointChanged and the others). Each step writes its part in its own
-// transaction, right after its write phase's batch (queueStatusChangeStep, which writeIssue
-// queues through docs.Ledger.AfterWrites), since the step's issue as its write answered it is
-// known only once that batch has run, and the call marks the point finished in the transaction
-// that ends it, with the comment on the named issue where it owes one (statusChangeRun.finish,
-// markStatusChangeFinished).
+// it, the progress of a status change, and the run an Undo walks. A route binds one
+// (bindRequestKeyRecovery) and its keyedReplay reads the same type back (replayRecovered), so the
+// two cannot disagree about the point's shape. A status change's point is a head on the key's row
+// - the ids of the events and the asks its steps made, then the mark and the answer's issue - and
+// one row per step in request_key_steps holding the step's entry and what a step of an option
+// changed, which every reader reads back under changed and moved (recoveryPointRead);
+// status_change_recovery.go names each member once (pointChanged and the others). Each step writes
+// its part in its own transaction, right after its write phase's batch (queueStatusChangeStep,
+// which writeIssue queues through docs.Ledger.AfterWrites), since the step's issue as its write
+// answered it is known only once that batch has run, and the call marks the point finished in the
+// transaction that ends it, with the comment on the named issue where it owes one
+// (statusChangeRun.finish, markStatusChangeFinished).
 type recoveryPoint interface {
-	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
+	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery | goingUndoRecovery
 }
 
 // recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
@@ -1659,8 +1663,13 @@ func requestKeyRecoveryArgs[T recoveryPoint](ctx context.Context, point T) (args
 // A request without a key binds nothing. A request whose key a repeat has taken over is refused
 // (errRequestKeyTakenOver), and its transaction must roll back: the repeat makes the write instead.
 // A transaction that writes in two phases queues the same statement in its write phase instead
-// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase.
+// (queueRequestKeyRecovery), since this one would take a transaction id in the read phase. Either
+// way the point is handed to the landing of a request a command-bar run sent in-process
+// (goingRecordRecovery), which records it in the same transaction.
 func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, point T) error {
+	if err := goingRecordRecovery(ctx, point); err != nil {
+		return err
+	}
 	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
 	if err != nil || !keyed {
 		return err
@@ -1681,6 +1690,9 @@ func bindRequestKeyRecovery[T recoveryPoint](ctx context.Context, tx pgx.Tx, poi
 // write phase rather than before it, so the statements queued after it have run by then and the
 // transaction the caller abandons rolls them back with this one.
 func queueRequestKeyRecovery[T recoveryPoint](ctx context.Context, b *store.WriteBatch, point T) error {
+	if err := goingRecordRecovery(ctx, point); err != nil {
+		return err
+	}
 	args, keyed, err := requestKeyRecoveryArgs(ctx, point)
 	if err != nil || !keyed {
 		return err

@@ -30,31 +30,48 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    await expect(actions).toBeVisible();
-    // An empty query still lists the actions, above the message the hits would answer.
-    await expect(page.getByText("Type at least 2 characters")).toBeVisible();
+    // The empty box lists the recent items this reader has (the issue they are on) and then the
+    // page's actions, as main lists them (design v3, state 1), and it asks the reader to type
+    // nothing.
+    await expect(dialog.getByRole("group", { name: "Recent" })).toBeVisible();
+    await expect(actions.getByRole("option", { name: "Close issue" })).toBeVisible();
+    await expect(dialog.getByText("Type at least 2 characters")).toHaveCount(0);
 
+    // The words typed narrow the actions to those whose name holds them; one whose name they
+    // start is listed under Actions, above the hits.
+    await input.fill("close");
     const close = actions.getByRole("option", { name: "Close issue" });
     await expect(close).toBeVisible();
     // A palette-only action has no key, so it offers no hint; a keyed one shows its key.
     await expect(close.locator("kbd")).toHaveCount(0);
+    await input.fill("create");
     await expect(actions.getByRole("option", { name: "Create issue" }).locator("kbd")).toHaveText([
       "c",
     ]);
-    await expect(actions.getByRole("option", { name: "Set priority P2" })).toBeVisible();
-    await expect(actions.getByRole("option", { name: "Reopen issue" })).toHaveCount(0);
     // An issue page names its project in its key, so `g d` has a row here.
+    await input.fill("go to");
     await expect(actions.getByRole("option", { name: "Go to Documents" })).toHaveCount(1);
-    // `$mod+k` fires inside an input, as the bar's own close, so it is no row, and `/` would
-    // only reopen the bar the reader is in. A binding that opens anything else is a row: it
-    // runs once this bar has closed (the rows below).
-    for (const absent of ["Search and actions", "Search"]) {
-      await expect(actions.getByRole("option", { exact: true, name: absent })).toHaveCount(0);
+    // An open issue offers no Reopen. `$mod+k` fires inside an input, as the bar's own close, so
+    // it is no row, and `/` would only reopen the bar the reader is in. A binding that opens
+    // anything else is a row: it runs once this bar has closed (the rows below). Each name is
+    // typed, and the search the bar sends for it says the list was drawn for those words: the
+    // bar filters its actions in the render that takes the words, and sends the search after
+    // it. What that search finds does not matter here: the issue's title shares a word with one
+    // of the names, so the issue can be a hit.
+    for (const absent of ["Reopen issue", "Search and actions", "Search"]) {
+      const searched = page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return searchPath(url) && url.searchParams.get("q") === absent;
+      });
+      await input.fill(absent);
+      await searched;
+      await expect(dialog.getByRole("option", { exact: true, name: absent })).toHaveCount(0);
     }
 
-    // Arrows move over every row of the list, from its first: the recent items this reader has
-    // (the issue they are on) come before the actions. Which action row is where belongs to
-    // `actions()`'s sort, so this names none.
+    // Arrows move over every row of the list, from its first: the Set priority rows the words
+    // lead to. Which row is where belongs to `actions()`'s sort, so this names none.
+    await input.fill("set priority");
+    await expect(actions.getByRole("option", { name: "Set priority P2" })).toBeVisible();
     const rows = dialog.getByRole("option");
     const firstId = await rows.first().getAttribute("id");
     expect(firstId).not.toBeNull();
@@ -64,16 +81,18 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await input.press("ArrowUp");
     await expect(input).toHaveAttribute("aria-activedescendant", firstId as string);
 
-    // Arrow down to Close issue, wherever the sort put it, and Enter runs the highlighted row.
-    const closeId = await close.getAttribute("id");
-    await expect(rows.first()).toBeVisible();
+    // Arrow down to Close issue among the rows `close` leads to, wherever the sort put it, and
+    // Enter runs the highlighted row.
+    await input.fill("close");
     await expect(close).toBeVisible();
-    // Both rows the bound is taken between are drawn, and the render that drew them drew every
-    // row: the bar reads its recent items and its actions once, on the render that opens it
-    // (`SearchPalette.tsx:420-429`), and an empty box adds no project and no hit (`:497-524`).
+    const closeId = await close.getAttribute("id");
+    // The render that drew Close issue drew every row the words lead to: the bar filters the
+    // actions it read on the render that opened it by the words in the box, all in one render,
+    // and the hits arrive below those rows.
     const ids = await rows.evaluateAll((options) => options.map((option) => option.id));
     const closeIndex = ids.indexOf(closeId ?? "");
     expect(closeIndex).toBeGreaterThanOrEqual(0);
+    await expect(input).toHaveAttribute("aria-activedescendant", ids[0] ?? "");
     for (let step = 0; step < closeIndex; step += 1) {
       await input.press("ArrowDown");
     }
@@ -88,9 +107,14 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
+    for (const absent of ["close", "set priority"]) {
+      await input.fill(absent);
+      await expect(dialog.getByText(`No results for "${absent}"`)).toBeVisible();
+      await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
+      await expect(actions.getByRole("option", { name: "Set priority P2" })).toHaveCount(0);
+    }
+    await input.fill("reopen");
     await expect(actions.getByRole("option", { name: "Reopen issue" })).toBeVisible();
-    await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
-    await expect(actions.getByRole("option", { name: "Set priority P2" })).toHaveCount(0);
 
     // Named, not positional: which row is highlighted first is `actions()`'s decision, and this
     // step is about Reopen running, not about where Reopen sits.
@@ -167,11 +191,14 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     const dialog = page.getByRole("dialog", { name: "Search" });
     const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
+    const recent = dialog.getByRole("group", { name: "Recent" });
 
     await page.keyboard.press("/");
     await expect(dialog).toBeVisible();
-    // The bar `⌘K` opens: `/` is another key to it, not a list of its own, so this page's
-    // actions are here too.
+    // The bar `⌘K` opens: `/` is another key to it, not a list of its own, so its chip names the
+    // issue the reader is on, and its empty box lists their recent items and this page's actions.
+    await expect(dialog.getByTestId("going-box-chip")).toHaveText(issue.key);
+    await expect(recent).toBeVisible();
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     await input.fill("astrolabe");
     // No action's label and no project's name holds `astrolabe`, so the issue's own hit is the
@@ -184,6 +211,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
     // filter the next page's actions, and its recent items, down to nothing.
     await page.keyboard.press("/");
     await expect(input).toHaveValue("");
+    await expect(recent).toBeVisible();
     await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -335,12 +363,22 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
 
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
-    const actions = page.getByRole("dialog", { name: "Search" }).getByRole("group", {
-      name: "Actions",
-    });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
+    const actions = dialog.getByRole("group", { name: "Actions" });
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1).
+    // Each withdrawn row's name is typed, and the search's answer to it says the list was drawn
+    // for those words.
+    await input.fill("go to inbox");
     await expect(actions.getByRole("option", { name: "Go to Inbox" })).toBeVisible();
-    await expect(actions.getByRole("option", { name: "Close issue" })).toHaveCount(0);
-    await expect(actions.getByRole("option", { name: "Set priority P2" })).toHaveCount(0);
+    for (const [words, row] of [
+      ["close", "Close issue"],
+      ["set priority", "Set priority P2"],
+    ] as const) {
+      await input.fill(words);
+      await expect(dialog.getByText(`No results for "${words}"`)).toBeVisible();
+      await expect(actions.getByRole("option", { name: row })).toHaveCount(0);
+    }
     release.resolve();
   } finally {
     await context.close();
@@ -374,6 +412,8 @@ test("a Set priority row the server refuses is reported by the header, in the di
 
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
+    // The words typed narrow the actions to the row this step presses (design v3, state 1).
+    await page.getByRole("combobox", { name: "Search" }).fill("set priority p2");
     await dialog
       .getByRole("group", { name: "Actions" })
       .getByRole("option", { name: "Set priority P2" })
@@ -419,20 +459,23 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
 
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
+    const input = page.getByRole("combobox", { name: "Search" });
     const actions = dialog.getByRole("group", { name: "Actions" });
-    for (const offered of [
-      "Message the focused agent",
-      "Pick an issue for the message",
-      "Pin or unpin the focused agent",
-    ]) {
+    // The words typed narrow the actions to those whose name holds them (design v3, state 1):
+    // every row named for an agent holds `agent`, so one list shows which of them the focused
+    // row offers.
+    await input.fill("agent");
+    for (const offered of ["Message the focused agent", "Pin or unpin the focused agent"]) {
       await expect(actions.getByRole("option", { name: offered })).toHaveCount(1);
     }
     for (const absent of ["Next agent", "Previous agent", "Select or deselect the focused agent"]) {
       await expect.soft(actions.getByRole("option", { name: absent })).toHaveCount(0);
     }
 
-    const input = page.getByRole("combobox", { name: "Search" });
     await input.fill("pick an issue");
+    await expect(
+      actions.getByRole("option", { name: "Pick an issue for the message" })
+    ).toHaveCount(1);
     await expect(actions.getByRole("option")).toHaveCount(1);
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
@@ -649,6 +692,8 @@ test("a row whose control has gone since the palette opened does nothing", async
     await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
+    // The words typed narrow the actions to the row this step presses (design v3, state 1).
+    await page.getByRole("combobox", { name: "Search" }).fill("reopen");
     const reopen = dialog
       .getByRole("group", { name: "Actions" })
       .getByRole("option", { name: "Reopen issue" });

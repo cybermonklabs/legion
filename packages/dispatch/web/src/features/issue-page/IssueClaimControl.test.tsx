@@ -30,6 +30,15 @@ import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
+/** What the release route answers (`DELETE /api/v1/issues/{key}/claim`): the issue, with whether
+ *  the release changed its claim and the claim it released. */
+type ReleaseAnswer = Awaited<ReturnType<typeof api.releaseIssueClaim>>;
+
+/** The release route's answer for `base` once the claim `previous` is released. */
+function releasedAnswer(previous: IssueClaim = claim): ReleaseAnswer {
+  return { ...base, claim: null, claim_changed: true, previous_claim: previous };
+}
+
 /** The claim's row of Details, over the page's own writes, as `IssueMargin.tsx` draws it: on the
  *  cached issue, as the details slot reads it, so a release that lands is what the row draws
  *  next. */
@@ -111,7 +120,7 @@ test("a claimed issue names its holder and releases the claim from Details", asy
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
-  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
+  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue(releasedAnswer());
   const view = claimRow({ ...base, claim });
   try {
     // The chip says who holds the issue and since when in words, not in a tooltip: the issue
@@ -280,7 +289,7 @@ test("a release the reader stopped says in Details that it may have been made, n
     await stopTheLateWrite(view.client);
     expect(screen.getByRole("alert").textContent).toBe(stopped);
 
-    const retried = Promise.withResolvers<Issue>();
+    const retried = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => retried.promise);
     const made = release.mock.calls.length;
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
@@ -291,7 +300,7 @@ test("a release the reader stopped says in Details that it may have been made, n
       "the line turned to a failure while the release its Retry sent is out"
     ).toBe(stopped);
 
-    await act(async () => retried.resolve({ ...base, claim: null }));
+    await act(async () => retried.resolve(releasedAnswer()));
     expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
   } finally {
     realClock();
@@ -313,7 +322,7 @@ test("Release keeps the focus while its release is out, refuses a press, and a s
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     runningAgent({ session_id: "session-one", title: "Implementer" }),
   ]);
-  const released = Promise.withResolvers<Issue>();
+  const released = Promise.withResolvers<ReleaseAnswer>();
   const release = spyOn(api, "releaseIssueClaim").mockImplementation(() => released.promise);
   const view = claimRow({ ...base, claim });
   const stopBlurring = emulateChromiumFocusFixup();
@@ -338,7 +347,7 @@ test("Release keeps the focus while its release is out, refuses a press, and a s
       "a press of Release while its release is out sent another"
     ).toHaveBeenCalledTimes(1);
 
-    await act(async () => released.resolve({ ...base, claim: null }));
+    await act(async () => released.resolve(releasedAnswer()));
     expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
   } finally {
     stopBlurring();
@@ -374,7 +383,7 @@ test("the failed release's Retry keeps the focus while the release is out and fa
     const retry = retryOfRelease();
     if (retry === null) throw new Error("the failed release offers no Retry");
 
-    const retried = Promise.withResolvers<Issue>();
+    const retried = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => retried.promise);
     act(() => retry.focus());
     await view.user.keyboard("{Enter}");
@@ -414,11 +423,11 @@ test("the failed release's Retry keeps the focus while the release is out and fa
       "true"
     );
 
-    const landed = Promise.withResolvers<Issue>();
+    const landed = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => landed.promise);
     await view.user.keyboard("{Enter}");
     await waitFor(() => expect(release).toHaveBeenCalledTimes(3));
-    await act(async () => landed.resolve({ ...base, claim: null }));
+    await act(async () => landed.resolve(releasedAnswer()));
     const none = await screen.findByText(CONTROL_LABELS.none);
     expect(
       document.activeElement,
@@ -537,7 +546,7 @@ test("a failed release is forgotten once its claim is gone, so a new claim reads
       "the new claim offers a Retry that would release it"
     ).toBeNull();
 
-    const out = Promise.withResolvers<Issue>();
+    const out = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => out.promise);
     await view.user.click(releaseNew);
     await waitFor(() => expect(releaseNew).toHaveTextContent(ANSWER_LINES.saving_release));
@@ -545,7 +554,7 @@ test("a failed release is forgotten once its claim is gone, so a new claim reads
       screen.queryByRole("alert"),
       "a Release of the new claim drew the old failure while it is out"
     ).toBeNull();
-    await act(async () => out.resolve({ ...base, claim: null }));
+    await act(async () => out.resolve(releasedAnswer()));
     expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
   } finally {
     restore();
@@ -564,7 +573,7 @@ test("a failed release whose Retry is out draws no failure beside a new claim", 
       await screen.findByRole("button", { name: "Release the claim on CORE-1" })
     );
     await screen.findByRole("alert");
-    const retried = Promise.withResolvers<Issue>();
+    const retried = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => retried.promise);
     await view.user.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
@@ -625,7 +634,7 @@ test("a claim made elsewhere while the focus is on the row's None leaves the foc
   const stopBlurring = emulateChromiumFocusFixup();
   try {
     release.mockReset();
-    release.mockResolvedValueOnce({ ...base, claim: null });
+    release.mockResolvedValueOnce(releasedAnswer());
     const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     act(() => control.focus());
     await view.user.keyboard("{Enter}");
@@ -709,14 +718,14 @@ test("a release whose claim went without the focus answers no later release made
   const { release, restore, view } = twoSessionClaimRow();
   const stopBlurring = emulateChromiumFocusFixup();
   try {
-    const out = Promise.withResolvers<Issue>();
+    const out = Promise.withResolvers<ReleaseAnswer>();
     release.mockReset();
     release.mockImplementationOnce(() => out.promise);
     const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
     await view.user.click(control);
     await waitFor(() => expect(control).toHaveTextContent(ANSWER_LINES.saving_release));
     act(() => control.blur());
-    await act(async () => out.resolve({ ...base, claim: null }));
+    await act(async () => out.resolve(releasedAnswer()));
     await screen.findByText(CONTROL_LABELS.none);
 
     view.drawClaim(claim);
@@ -751,7 +760,7 @@ test("the failed release's Retry, the claim taken again elsewhere while its rele
     );
     await screen.findByRole("alert");
     const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
-    const out = Promise.withResolvers<Issue>();
+    const out = Promise.withResolvers<ReleaseAnswer>();
     release.mockImplementationOnce(() => out.promise);
     act(() => retry.focus());
     await view.user.keyboard("{Enter}");
@@ -770,7 +779,7 @@ test("the failed release's Retry, the claim taken again elsewhere while its rele
     expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
 
     act(() => releaseNew.focus());
-    await act(async () => out.resolve({ ...base, claim: null }));
+    await act(async () => out.resolve(releasedAnswer()));
     const none = await screen.findByText(CONTROL_LABELS.none);
     await settleFocus();
     expect(
@@ -793,7 +802,7 @@ test("a release whose claim was taken again elsewhere before it landed moves no 
   const { release, restore, view } = twoSessionClaimRow();
   const stopBlurring = emulateChromiumFocusFixup();
   try {
-    const out = Promise.withResolvers<Issue>();
+    const out = Promise.withResolvers<ReleaseAnswer>();
     release.mockReset();
     release.mockImplementationOnce(() => out.promise);
     const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
@@ -807,7 +816,7 @@ test("a release whose claim was taken again elsewhere before it landed moves no 
       control
     );
 
-    await act(async () => out.resolve({ ...base, claim: null }));
+    await act(async () => out.resolve(releasedAnswer()));
     const none = await screen.findByText(CONTROL_LABELS.none);
     await settleFocus();
     expect(

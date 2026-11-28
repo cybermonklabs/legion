@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A time link whose words are an issue's key, such as `[DEMO-17](dispatch-time:…)`, draws as that
+  issue's chip, a link to it with the whole title and the time on hover, in the command bar's
+  answer, plan summaries, a document change's sentences and step headers. A long edit's preview
+  in a plan reads as plain words with its change marked, and the search list under the box takes
+  the room the window leaves, with the filter pills as tall as the box at every width.

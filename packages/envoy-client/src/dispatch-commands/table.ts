@@ -1,4 +1,4 @@
-import type { dispatchToolSpecs } from "@legion/contracts";
+import { type DispatchToolRoute, dispatchToolSpecs } from "@legion/contracts";
 import { apiCommand } from "./api";
 import {
   askCommand,
@@ -56,13 +56,21 @@ import {
 } from "./projects";
 import { readCommand } from "./read";
 import { reviewCommand } from "./reviews";
+import { routeCommand } from "./route-tools";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
 import { specFormCommand } from "./spec-form";
 import { stepsCommand } from "./steps";
 
-/** Every command the contract names, so a command added there without a handler here fails to
- *  type-check (`__tests__/dispatch-command-table.test.ts` holds the proof). */
+/** Every command the contract names. */
 export type DispatchToolName = (typeof dispatchToolSpecs)[number]["name"];
+
+/** Every command whose spec binds no route, each served by a command written by hand: a command
+ *  added there without a handler here fails to type-check (`__tests__/dispatch-command-table.test.ts`
+ *  holds the proof). A spec that binds its routes is served by `routeCommand` instead. */
+export type HandWrittenToolName = Exclude<
+  (typeof dispatchToolSpecs)[number],
+  { readonly routes: readonly DispatchToolRoute[] }
+>["name"];
 
 /**
  * What a command's `--dry-run` asks Dispatch after the call's own argument check passed: the
@@ -153,8 +161,8 @@ function readingOnSession(
   return { origin: "none", reads: true, run };
 }
 
-/** What `dispatch <command>` does, one handler per command the contract names. */
-export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
+/** What `dispatch <command>` does, one handler per command whose spec binds no route. */
+export const dispatchCommands: Record<HandWrittenToolName, DispatchCommand> = {
   dispatch_issue: acting(issueCommand),
   dispatch_issue_update: acting(issueUpdateCommand),
   dispatch_claim: acting(claimCommand),
@@ -209,3 +217,12 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_api: onSession(apiCommand),
   dispatch_inbox: readingOnSession(inboxCommand),
 };
+
+/** The command of `name`: its hand-written handler, or, for a spec that binds its routes, the one
+ *  generic command that calls its route (`routeCommand`); undefined for no command of that name. */
+export function dispatchCommandOf(name: string): DispatchCommand | undefined {
+  const spec = dispatchToolSpecs.find((candidate) => candidate.name === name);
+  if (spec === undefined) return undefined;
+  if ("routes" in spec) return acting(routeCommand(spec.routes));
+  return dispatchCommands[spec.name];
+}

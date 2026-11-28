@@ -151,6 +151,13 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // page carries that lateral. The other is the text the headline is cut from, which the package
 // selects beside the headline for the snippet's reading (pmdoc.SearchSnippet); it is copied here
 // as the package writes it, a lateral the headline reads too, since its value is a row's own.
+//
+// The last two output columns are not main's either: where the headline's window cut the text it
+// was read out of (cut_start, cut_end), which the package's page measures beside the headline.
+// They are no part of the document arm this oracle is about, and what they answer is what the
+// headline and the text answer, which both sides compute alike; so the laterals that measure them
+// are copied here letter for letter, the excerpt and the headline among them, rather than the
+// comparison taught to read past two columns. search_oracle_test.go's page tails copy them too.
 func mainSearchPageAndTailSQL(legsSource string) string {
 	return fmt.Sprintf(`page as (
   select l.*, f.score
@@ -162,7 +169,11 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, null::text, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+       hl.headline, excerpt.text,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start > 1
+            else (excerpt.start = 1 and edge.before !~ '[[:alnum:]]') is not true end as cut_start,
+       case when length(located.words) > 0 and located.at > 0 then excerpt.start + 4000 <= length(txt.text)
+            else (excerpt.start + 4000 > length(txt.text) and edge.after !~ '[[:alnum:]]') is not true end as cut_end
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -178,12 +189,27 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = r.id::uuid)
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
+    offset 0
   ) txt on true
   left join lateral (
-    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-             else left(txt.text, 4000) end) as text
-  ) src on true
+    select cut.start, search_text(substr(txt.text, cut.start, 4000)) as text
+      from (select greatest(1, coalesce(nullif(case when q.term <> '' then strpos(lower(txt.text), lower(q.term)) end, 0), 1) - 1500) as start
+            offset 0) cut
+    offset 0
+  ) excerpt on true
+  left join lateral (select ts_headline('english', excerpt.text, q.tsq, $5) as headline offset 0) hl on true
+  left join lateral (
+    select shown.words, strpos(excerpt.text, shown.words) as at
+      from (select replace(replace(hl.headline, E'\uE000', ''), E'\uE001', '') as words) shown
+    offset 0
+  ) located on true
+  left join lateral (
+    select left(printed.text, printed.at - 1) as before, substr(printed.text, printed.at + length(located.words)) as after
+      from (select whole.text, strpos(whole.text, located.words) as at
+              from (select ts_headline('english', excerpt.text, $$' '$$::tsquery, 'MaxWords=1000000, MinWords=999999, MaxFragments=1') as text
+                    offset 0) whole) printed
+     where length(located.words) > 0 and located.at = 0 and printed.at > 0
+  ) edge on true
  order by r.score desc, r.updated_at desc, r.id
 `, legsSource)
 }

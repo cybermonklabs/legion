@@ -3,18 +3,31 @@
  *  (`e2e/accessibility.e2e.ts`) reads the same corpus and the same readiness locators, so a
  *  finding of one layer is a finding about the page the other shot.
  *
- *  TWO PROJECTS, ONE FILE. The desktop rows run in the `visual` project at 1280x800; the pages a
- *  phone width rearranges run again, in the `visual-phone` project's iPhone 13 viewport, and
+ *  THREE PROJECTS, TWO FILES. The desktop rows run in the `visual` project at 1280x800; the pages
+ *  a phone width rearranges run again, in the `visual-phone` project's iPhone 13 viewport, and
  *  their titles carry ` @phone` - the tag the suite already selects phone rows by. That project
  *  greps the tag and `visual` inverts it (e2e/playwright.config.ts), so each row runs under
- *  exactly one project and each project writes into its own `__screenshots__` directory.
+ *  exactly one project and each project writes into its own `__screenshots__` directory. The
+ *  lane's third project, `visual-bar`, runs the command bar's rows of
+ *  `e2e/going-bar.visual.e2e.ts` at 1440x900: one row per state of the bar's design, each
+ *  driving the bar through a run of the fake models the lane's stack serves. Those rows click,
+ *  type and press keys, which the rule below forbids the rows of this file, and that file's own
+ *  header says what holds each of its shots still instead. None of them opens a page of this
+ *  file's shot set, and what they write - runs, plans, a filed issue, changes undone again - is
+ *  on project OPS and in the names of logins of their own, which no row here draws. Those writes
+ *  are the states the bar's rows compare, so this file's guard is not on their pages; they run
+ *  after every row here instead, since `visual-bar` is the last of the three projects and the
+ *  run has one worker (e2e/playwright.config.ts).
  *
  *  WHERE IT RUNS. Inside the pinned Playwright image, started by `e2e/visual-run.sh`, and
  *  nowhere else: a baseline a person takes and a baseline CI compares must be the same
- *  rendering, and a host's browser build, fonts and GPU stack are not the image's. Both projects
- *  are declared in every run all the same (e2e/playwright.config.ts says why), so a plain
- *  `bun run e2e`, which passes no `--project`, reaches these rows - and every one of them skips
- *  itself, because `DISPATCH_E2E_VISUAL_SEED` is unset outside that container.
+ *  rendering, and a host's browser build, fonts and GPU stack are not the image's. The three
+ *  projects are declared in every run all the same (e2e/playwright.config.ts says why), so a
+ *  plain `bun run e2e`, which passes no `--project`, reaches these rows - and every one of them
+ *  skips itself, because `DISPATCH_E2E_VISUAL_SEED` is unset outside that container. The stack
+ *  that script starts serves the fake models (`DISPATCH_E2E_MODELS=fake`), for the bar's rows;
+ *  only the bar asks a model whether it is there, and no row of this file opens the bar, so the
+ *  pages draw as they do on a stack with none.
  *
  *  WHAT IT MAY IMPORT. Nothing that reaches `./psql`: not `./seed`, not `./review-seed`, not
  *  `./delivery-seed`. The image carries no `psql` binary. `e2e/visual-seed.ts` runs on the host
@@ -71,7 +84,6 @@
  *    never reaches, so the rail's Inbox entry is masked (the mask list below says what was
  *    measured).
  */
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type Browser, expect, test } from "@playwright/test";
 
@@ -80,12 +92,10 @@ import {
   listedRequests,
   phoneShotRoutes,
   type ReviewedRoute,
-  type ReviewSeed,
   railInboxLink,
-  type SeededReadMarks,
+  readVisualSeed,
   shotRoutes,
   topBarInboxBadge,
-  type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
@@ -127,36 +137,6 @@ test.beforeAll(async () => {
   if (seedPath === undefined) return;
   await setLiveSessions(reviewSessions);
 });
-
-/** The host's seed, with the moment it was written. A file without `seededAt` fails the row
- *  rather than leaving the clock unpinned: an unpinned page draws whatever relative label the
- *  run's own pace earned it, which is the minute-boundary drift this layer removed, and it would
- *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
- *  always writes the field, so a file that lacks it did not come from it. */
-function readVisualSeed(path: string): VisualSeed {
-  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
-  // needs, which the checks below hold.
-  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
-    readonly readMarks?: SeededReadMarks;
-    readonly seededAt?: string;
-  };
-  const { readMarks, seededAt } = seed;
-  if (seededAt === undefined) {
-    throw new Error(
-      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
-        "cannot pin its page clock and every relative label it shot would move with the run's " +
-        "pace. `e2e/visual-seed.ts` writes that field on every seed."
-    );
-  }
-  if (readMarks === undefined) {
-    throw new Error(
-      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
-        "guard would let its page write no read mark again and fail it on the seed's own. " +
-        "`e2e/visual-seed.ts` writes that field on every seed."
-    );
-  }
-  return { ...seed, readMarks, seededAt };
-}
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
  *  only difference between them, and it decides the viewport and the directory the baseline is

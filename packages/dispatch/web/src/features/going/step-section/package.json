@@ -1,0 +1,8 @@
+{
+  "name": "happy-desktop-ui",
+  "version": "0.0.0+533c9a1",
+  "private": true,
+  "description": "The tool section of slopus/happy-desktop's happy-desktop-ui at commit 533c9a1 (AgentToolSection.tsx, conversationToolSections.ts and elapsedTimeFormat.ts), ported into StepSection.tsx beside this file, which draws the command bar's steps. The manifest is what scripts/third-party-notices.ts reads to list that code, under LICENSE, in the build's THIRD_PARTY_NOTICES.txt.",
+  "license": "MIT",
+  "repository": "https://github.com/slopus/happy-desktop"
+}

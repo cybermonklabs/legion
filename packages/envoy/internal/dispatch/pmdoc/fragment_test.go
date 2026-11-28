@@ -88,6 +88,26 @@ func TestAFragmentCutInsideACodeSpanDropsTheOpenBacktick(t *testing.T) {
 	balanced(t, "Before the cut `dispatch-deploy.y", "Before the cut dispatch-deploy.y")
 }
 
+// A search snippet is balanced only where its window cut the text it was read out of, as the
+// search statement measured the cut, however many runs between whitespace it holds: ts_headline
+// counts the text-search parser's tokens, so the plan.md window of the visual review's shot
+// 13-filing-line holds ten runs and is cut at both ends, where a whole text can hold any number.
+func TestASearchSnippetIsBalancedOnlyWhenTheHeadlineWindowCutIt(t *testing.T) {
+	t.Parallel()
+	// A window of three runs whose cut took the opener of its bold.
+	for _, cut := range []SnippetCut{{Start: true}, {End: true}, {Start: true, End: true}} {
+		if got, want := SearchSnippetMarkdown("anchor** after the", cut), "anchor after the"; got != want {
+			t.Errorf("SearchSnippetMarkdown(window, %+v) = %q, want %q", cut, got, want)
+		}
+	}
+	// A whole text keeps the delimiter its author typed, short or as wide as any window.
+	for _, whole := range []string{"bold and ** anchor here", strings.Repeat("word ", 21) + "anchor** after the"} {
+		if got := SearchSnippetMarkdown(whole, SnippetCut{}); got != whole {
+			t.Errorf("a whole text was balanced: %q, want %q", got, whole)
+		}
+	}
+}
+
 // The sentinels ts_headline writes around what a search matched (search.go's markStart and
 // markEnd), and CORE-1 as it marks a search for CORE-1: word by word (webMarkedCore1).
 const (
@@ -142,11 +162,13 @@ func snippetTextHolding(markdown, word string) (snippetText, bool) {
 // A search hit's snippet is the headline set back into the source ts_headline read and widened
 // to the source's own constructs. Each headline below is exactly what ts_headline answered for
 // its source with search.go's headlineOptions, measured on PostgreSQL 18.6; the
-// check beside each is what the snippet must read as.
+// check beside each is what the snippet must read as, and cut the ends past which a word of the
+// source stands outside the snippet, beside what the search statement measured.
 func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, source, headline, want string
+		measured, cut                SnippetCut
 		check                        func(t *testing.T, snippet string)
 	}{
 		{
@@ -158,6 +180,17 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 			check:    inCodeSpan("CORE-1"),
 		},
 		{
+			// The source is itself 4,000 characters cut out of a longer text: the snippet is the
+			// whole source, and cut where the statement measured the source cut.
+			name:     "a short source cut out of a longer text",
+			source:   "Run `CORE-1` locally please",
+			headline: snippetCore1 + "` locally please",
+			want:     "Run `" + snippetCore1 + "` locally please",
+			measured: SnippetCut{Start: true, End: true},
+			cut:      SnippetCut{Start: true, End: true},
+			check:    inCodeSpan("CORE-1"),
+		},
+		{
 			// The window starts inside the span; the balancer alone would drop its closing tick.
 			name: "a code span the window starts inside",
 			source: "Before you ship the change to the staging cluster for the platform team please run " +
@@ -165,6 +198,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 			headline: "count one two three four five six seven eight nine ten " + snippetCore1 + " locally` on a clean tree",
 			want: "`make check --verbose --race --count one two three four five six seven eight nine ten " +
 				snippetCore1 + " locally` on a clean tree",
+			cut:   SnippetCut{Start: true},
 			check: inCodeSpan("CORE-1"),
 		},
 		{
@@ -183,6 +217,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 				" alignment rig](dispatch://CORE-1) now and then report back to the platform team before",
 			want: "[the old and very much broken spare part of the ship " + snippetStart + "gyroscope" + snippetStop +
 				" alignment rig](dispatch://CORE-1) now and then report back to the platform team before",
+			cut:   SnippetCut{Start: true, End: true},
 			check: inLink("the old and very much broken spare part of the ship gyroscope alignment rig"),
 		},
 		{
@@ -200,6 +235,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 				"deploy checklist the release notes the migration plan and the rollback steps before the window",
 			want: "dispatch://person/alice " + snippetStart + "first" + snippetStop + " and then the platform team about the " +
 				"deploy checklist the release notes the migration plan and the rollback steps before the window",
+			cut:   SnippetCut{Start: true, End: true},
 			check: readsText("dispatch://person/alice"),
 		},
 		{
@@ -221,6 +257,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 				snippetStop + " calibrate now\n    step four juliet kilo lima\n    step five mike november oscar",
 			want: "    step two delta echo foxtrot\n    step three golf hotel india\n    run " + snippetStart + "gyroscope" +
 				snippetStop + " calibrate now\n    step four juliet kilo lima\n    step five mike november oscar",
+			cut:   SnippetCut{Start: true, End: true},
 			check: inCodeBlock("gyroscope"),
 		},
 		{
@@ -233,6 +270,7 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 				snippetStop + " calibrate now\nstep four juliet kilo lima\nstep five mike november oscar",
 			want: "```sh\nstep two delta echo foxtrot\nstep three golf hotel india\nrun " + snippetStart + "gyroscope" +
 				snippetStop + " calibrate now\nstep four juliet kilo lima\nstep five mike november oscar",
+			cut:   SnippetCut{Start: true, End: true},
 			check: inCodeBlock("gyroscope"),
 		},
 		{
@@ -246,39 +284,50 @@ func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 				snippetStop + " build today** and then more words after it for the rest",
 			want: "eight nine ten eleven twelve thirteen fourteen fifteen sixteen the new " + snippetStart + "anchor" +
 				snippetStop + " build today and then more words after it for the rest",
+			cut:   SnippetCut{Start: true, End: true},
 			check: readsNoBold,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := SearchSnippet(test.headline, test.source, snippetStart, snippetStop)
+			got, cut := SearchSnippet(test.headline, test.source, snippetStart, snippetStop, test.measured)
 			if got != test.want {
 				t.Fatalf("SearchSnippet(%q, %q) = %q, want %q", test.headline, test.source, got, test.want)
+			}
+			if cut != test.cut {
+				t.Errorf("SearchSnippet(%q, %q, %+v) is cut %+v, want %+v", test.headline, test.source, test.measured, cut, test.cut)
 			}
 			test.check(t, got)
 		})
 	}
 }
 
-// A headline SearchSnippet cannot find in its source is read alone, as the snippet was read
-// before the source was: whole when it is shorter than the window, balanced when it is the window
-// wide. ts_headline returns a short body whole (measured: `Use ** for bold and anchor here` ->
-// `bold and <<anchor>> here`, 4 words), so the author's `**` is theirs; a window of 24 words
-// around the match with the mark's opener left outside it loses the closer.
+// A headline SearchSnippet cannot find in its source is read alone, cut where the search
+// statement measured its window cut the text: as it is where the window held every word of it,
+// and balanced where the window cut it, whatever the headline's width. ts_headline returns a
+// short body whole (measured: `Use ** for bold and anchor here` -> `bold and <<anchor>> here`, 4
+// words), so the author's `**` is theirs; a window of 24 words around the match with the mark's
+// opener left outside it loses the closer, and the same 24 words measured whole keep it.
 func TestASearchSnippetNotInItsSourceIsReadAlone(t *testing.T) {
 	t.Parallel()
 	const elsewhere = "a source the headline was not cut from"
 	short := "bold and ** " + snippetStart + "anchor" + snippetStop + " here"
-	if got := SearchSnippet(short, elsewhere, snippetStart, snippetStop); got != short {
-		t.Errorf("a four-word headline was balanced: %q", got)
+	if got, cut := SearchSnippet(short, elsewhere, snippetStart, snippetStop, SnippetCut{}); got != short || cut != (SnippetCut{}) {
+		t.Errorf("a four-word headline measured whole became %q, cut %+v", got, cut)
 	}
 	window := strings.Repeat("word ", 21) + "anchor** after the"
 	if words := len(strings.Split(window, " ")); words != 24 {
 		t.Fatalf("the window holds %d words, want 24", words)
 	}
-	if got, want := SearchSnippet(window, elsewhere, snippetStart, snippetStop), strings.Replace(window, "**", "", 1); got != want {
-		t.Errorf("SearchSnippet(window) = %q, want %q", got, want)
+	for _, measured := range []SnippetCut{{Start: true}, {End: true}, {Start: true, End: true}} {
+		got, cut := SearchSnippet(window, elsewhere, snippetStart, snippetStop, measured)
+		if want := strings.Replace(window, "**", "", 1); got != want || cut != measured {
+			t.Errorf("SearchSnippet(window, %+v) = %q, cut %+v; want %q, cut %+v", measured, got, cut, want, measured)
+		}
 	}
-	if got := SearchSnippet("", "", snippetStart, snippetStop); got != "" {
+	if got, _ := SearchSnippet(window, elsewhere, snippetStart, snippetStop, SnippetCut{}); got != window {
+		t.Errorf("a window measured whole was balanced: %q, want %q", got, window)
+	}
+	if got, _ := SearchSnippet("", "", snippetStart, snippetStop, SnippetCut{}); got != "" {
 		t.Errorf("no headline became the snippet %q", got)
 	}
 }

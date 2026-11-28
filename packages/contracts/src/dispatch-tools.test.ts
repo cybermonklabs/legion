@@ -14,12 +14,16 @@ import {
   PROJECT_NAME_MAX,
 } from "./dispatch-api";
 import { MAX_BLOCK_ID_BYTES } from "./dispatch-block-ref";
+import { dispatchRouteToolSpecs } from "./dispatch-route-tools";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_BLOCK_UNITS,
+  DISPATCH_EVENT_BODY_MAX,
   DISPATCH_HANDOFF_BODY_MAX,
   DISPATCH_ITEM_BLOCKS,
+  type DispatchToolRoute,
   type DispatchToolSpec,
+  dispatchToolLabelProblems,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUS_OPTIONS,
@@ -27,6 +31,7 @@ import {
   ISSUE_UPDATE_PATCH_FIELDS,
   PROJECT_KEY_RULE,
   pathKeepsBytesOf,
+  personToolSpecs,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -302,6 +307,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_steps",
       "dispatch_plans",
       "dispatch_inbox",
+      ...dispatchRouteToolSpecs.map((spec) => spec.name),
     ]);
 
     for (const [name, args] of Object.entries(validCalls) as Array<
@@ -309,6 +315,78 @@ describe("dispatchToolSpecs", () => {
     >) {
       expect(schemaFor(name).safeParse(args).success, name).toBe(true);
     }
+  });
+
+  test("every spec that binds its routes binds them to its own arguments, and its example fills one", () => {
+    const bound = dispatchToolSpecs.filter((spec) => "routes" in spec);
+    expect(bound.length).toBe(dispatchRouteToolSpecs.length);
+    for (const spec of dispatchToolSpecs) {
+      if (!("routes" in spec)) continue;
+      const shape = dispatchToolSchema(spec, schemaApi) as z.ZodObject;
+      const takes = new Set(Object.keys(shape.shape));
+      expect(shape.safeParse(spec.example).success, spec.name).toBe(true);
+      const routes: readonly DispatchToolRoute[] = spec.routes;
+      expect(routes.length, spec.name).toBeGreaterThan(0);
+      for (const route of routes) {
+        const placeholders = [...route.path.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
+        const params = route.params ?? {};
+        expect(Object.keys(params).sort(), `${spec.name} ${route.path}`).toEqual(
+          placeholders.sort()
+        );
+        const sent = [...Object.values(params), ...(route.query ?? []), ...(route.body ?? [])];
+        for (const argument of sent) {
+          expect(takes.has(argument), `${spec.name} ${route.path} sends ${argument}`).toBe(true);
+        }
+        expect(new Set(sent).size, `${spec.name} ${route.path} sends an argument twice`).toBe(
+          sent.length
+        );
+        expect(
+          route.method === "GET" && route.body !== undefined,
+          `${spec.name} ${route.path}`
+        ).toBe(false);
+      }
+      const example = spec.example as Record<string, unknown>;
+      const fills = routes.some((route) =>
+        Object.values(route.params ?? {}).every((argument) => example[argument] !== undefined)
+      );
+      expect(fills, `${spec.name}'s example fills none of its routes`).toBe(true);
+    }
+  });
+
+  test("no person tool, which the command bar alone calls, is a command of the command line", () => {
+    const commands = new Set<string>(dispatchToolSpecs.map((spec) => spec.name));
+    expect(personToolSpecs.length).toBeGreaterThan(0);
+    for (const spec of personToolSpecs) expect(commands.has(spec.name), spec.name).toBe(false);
+  });
+
+  // dispatch-route-tools.ts cannot read a value of this module at run time, so it spells these
+  // two caps again; each is held here to the cap it stands for.
+  test("a bound tool's cap spelled again in its own module is the cap the server holds", () => {
+    const related = dispatchToolSchema(specFor("dispatch_find_related"), schemaApi);
+    const long = (length: number) => "x".repeat(length);
+    expect(related.safeParse({ project: "DSP", title: long(SEARCH_QUERY_MAX) }).success).toBe(true);
+    expect(related.safeParse({ project: "DSP", title: long(SEARCH_QUERY_MAX + 1) }).success).toBe(
+      false
+    );
+    // The title and the text are checked joined by a line break, as the route joins them.
+    const half = SEARCH_QUERY_MAX / 2;
+    expect(
+      related.safeParse({ project: "DSP", title: long(half), text: long(half - 1) }).success
+    ).toBe(true);
+    expect(related.safeParse({ project: "DSP", title: long(half), text: long(half) }).success).toBe(
+      false
+    );
+    const review = dispatchToolSchema(specFor("dispatch_review_document"), schemaApi);
+    const requested = {
+      document: "0190c7d2-1111-7222-8333-444444444444",
+      state: "changes_requested",
+    };
+    expect(review.safeParse({ ...requested, reason: long(DISPATCH_EVENT_BODY_MAX) }).success).toBe(
+      true
+    );
+    expect(
+      review.safeParse({ ...requested, reason: long(DISPATCH_EVENT_BODY_MAX + 1) }).success
+    ).toBe(false);
   });
 
   // An empty key is the value where this rule and `dispatch_search`'s differ: a search takes `""`
@@ -1977,6 +2055,79 @@ describe("dispatchToolSpecs", () => {
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
   });
+});
+
+// Every tool carries the words the command bar shows for a call of it (DispatchToolLabel): the
+// type requires one, and the check refuses a label the bar could not fill.
+describe("dispatchToolLabelProblems", () => {
+  test("every tool's label names only its own arguments, with words for each one a call may leave out", () => {
+    for (const spec of [...dispatchToolSpecs, ...personToolSpecs]) {
+      expect(dispatchToolLabelProblems(spec), spec.name).toEqual([]);
+    }
+  });
+
+  const read = specFor("dispatch_read");
+  const issues = specFor("dispatch_issues");
+  const projects = specFor("dispatch_projects");
+  const cases: readonly (readonly [string, DispatchToolSpec, readonly string[]])[] = [
+    [
+      "a tool with no label",
+      { ...projects, label: undefined } as unknown as DispatchToolSpec,
+      ["dispatch_projects has no label: give it a kind, a verb, a present and a past form"],
+    ],
+    [
+      "a {name} that is no argument of the tool",
+      { ...projects, label: { ...projects.label, past: "Listed the projects of {project}" } },
+      [
+        `dispatch_projects's past label "Listed the projects of {project}" names {project}, which is no argument of the tool`,
+      ],
+    ],
+    [
+      "an argument a call may leave out, named with no words for its absence",
+      { ...read, label: { ...read.label, present: "Reading {issue}" } },
+      [
+        `dispatch_read's present label "Reading {issue}" names {issue}, an argument a call may leave out, with no words for its absence: write {issue|words}`,
+      ],
+    ],
+    [
+      "empty words for an absence",
+      { ...read, label: { ...read.label, past: "Read {ref|}" } },
+      [`dispatch_read's past label "Read {ref|}" names {ref|} with no words for its absence`],
+    ],
+    [
+      "an argument named in another's absence words with no words of its own",
+      { ...read, label: { ...read.label, past: "Read {issue|{project}}" } },
+      [
+        `dispatch_read's past label "Read {issue|{project}}" names {project}, an argument a call may leave out, with no words for its absence: write {project|words}`,
+      ],
+    ],
+    [
+      "a kind that is none of the seven",
+      { ...issues, label: { ...issues.label, kind: "list" } } as unknown as DispatchToolSpec,
+      [
+        `dispatch_issues's label kind "list" is none of read, search, look, chart, plan, review, write`,
+      ],
+    ],
+    [
+      "a present form that does not start with the -ing form of its verb",
+      { ...issues, label: { ...issues.label, present: "Reading the issues of {project}" } },
+      [
+        `dispatch_issues's present label "Reading the issues of {project}" does not start with the -ing form of its verb "list"`,
+      ],
+    ],
+    [
+      "a brace that writes no {name}",
+      { ...issues, label: { ...issues.label, past: "Listed the issues of {project" } },
+      [
+        `dispatch_issues's past label "Listed the issues of {project" holds a {, } or | that writes no {name}`,
+      ],
+    ],
+  ];
+  for (const [name, spec, problems] of cases) {
+    test(`refuses ${name}`, () => {
+      expect(dispatchToolLabelProblems(spec)).toEqual([...problems]);
+    });
+  }
 });
 
 /** The Go the server's catalogue (GET /api/v1/going/catalogue) and every Go host read the tools

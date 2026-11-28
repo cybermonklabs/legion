@@ -145,6 +145,7 @@ function renderShellAt(
       route_holder: null,
       route_status_reason: null,
       key: issue.key,
+      project: issue.project,
       open_asks: 0,
       progress: { tasks: null, children: null },
       last_seq: 0,

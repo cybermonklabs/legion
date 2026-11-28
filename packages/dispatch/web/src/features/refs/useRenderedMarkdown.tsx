@@ -103,6 +103,12 @@ export interface RenderedMarkdown {
  *  leaves every anchor where the link pass put it. */
 export type DecorateMarkdown = (element: HTMLElement) => void;
 
+/** Takes anchors a surface will draw itself, and returns those still drawn by RefLink. */
+export type TransformReferenceAnchors = (
+  element: HTMLElement,
+  anchors: readonly ReferenceAnchor[]
+) => readonly ReferenceAnchor[];
+
 /**
  * What one piece of a sliced paint yields: `"page"` where the work it has just done reached the
  * page - a batch of the body put into the element - so the task ends there whatever is left of
@@ -246,6 +252,8 @@ export interface RenderedMarkdownOptions {
   pictures?: "block" | "inline";
   /** The surface's last pass over its rendered element (`DecorateMarkdown`); none by default. */
   decorate?: DecorateMarkdown;
+  /** The surface's own reference drawing, after the host has decided whether links are live. */
+  transformReferences?: TransformReferenceAnchors;
   /** Called after each render lands; none by default. */
   onRendered?: () => void;
   /** The parse policy (`SoftBreaks`): `space`, the default, or `line`. */
@@ -305,22 +313,24 @@ function inertLinks(
   });
 }
 
-/** Runs the link pass, the host's own pass over what it linked, `decorate` and the picture pass
- *  over a freshly painted element, in that order, and answers what the portals mount into. */
+/** Runs linking, the host's link policy, the surface's anchor transform and decoration, then
+ * finds picture placeholders as the paint left them. */
 function portalAnchors(
   element: HTMLElement,
   decorate: DecorateMarkdown | undefined,
+  transformReferences: TransformReferenceAnchors | undefined,
   references: ReferenceLinking,
   host: ReferenceHost
 ): PortalAnchors {
   linkifyDispatchRefs(element, references);
   const found = collectReferenceAnchors(element);
   const live = hostLinksReferences(host) ? found : inertLinks(element, found);
+  const drawn = transformReferences?.(element, live) ?? live;
   decorate?.(element);
   const placeholders = collectPictureAnchors(element);
   return {
     pictures: placeholders.length === 0 ? NO_PICTURES : placeholders,
-    references: live.length === 0 ? NO_ANCHORS : live,
+    references: drawn.length === 0 ? NO_ANCHORS : drawn,
   };
 }
 
@@ -536,6 +546,7 @@ export function useRenderedMarkdown(
     paintInSlices,
     references,
     softBreaks = "space",
+    transformReferences,
   }: RenderedMarkdownOptions
 ): RenderedMarkdown {
   const onRenderedRef = useRef(onRendered);
@@ -617,6 +628,7 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
+            transformReferences,
             references,
             host
           );
@@ -658,6 +670,7 @@ export function useRenderedMarkdown(
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
+            transformReferences,
             references,
             host
           );
@@ -756,7 +769,19 @@ export function useRenderedMarkdown(
       { keepAPostedParse: true }
     );
     return cancelRender;
-  }, [Card, decorate, host, markdown, paint, paintInSlices, references, root, softBreaks, tree]);
+  }, [
+    Card,
+    decorate,
+    host,
+    markdown,
+    paint,
+    paintInSlices,
+    references,
+    root,
+    softBreaks,
+    transformReferences,
+    tree,
+  ]);
 
   return {
     isFallback,

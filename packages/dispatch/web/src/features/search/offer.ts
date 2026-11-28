@@ -7,9 +7,12 @@ import { SendStoppedError } from "../writes/keyed-write";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
 
 /** The one row an offer lists in the bar: the id the arrows and `aria-activedescendant` read,
- *  what it says, and what pressing it does. The row carries its own `select`, so an offer with
- *  nothing to press lists no row at all rather than a row the bar presses nothing with. */
+ *  what it says, what Enter does on it in the word the bar's foot says it in, and what pressing
+ *  it does. The row carries its own `select`, so an offer with nothing to press lists no row at
+ *  all rather than a row the bar presses nothing with. */
 export interface OfferRow {
+  /** What Enter does on the row, as the foot's key hint says it: "Continue", "Make", "Open". */
+  readonly enter: string;
   readonly id: string;
   readonly kind: "offer";
   readonly label: string;
@@ -42,7 +45,8 @@ export function useWordsState<T extends { readonly words: string }>(
 }
 
 /** The quiet line the bar says under its list: what an offer is writing, what it wrote, what it
- *  could not write, and how many more matches the search found than the list holds. */
+ *  could not write, what the bar cannot do, and how many more matches the search found than the
+ *  list holds. */
 export const barNoteClassName = `shrink-0 px-3 py-2 text-xs ${textMutedOnSurface}`;
 
 /** One request, under a key of its own, tried until Dispatch decides it and named in the shell's
@@ -67,28 +71,30 @@ export function press<T>(
   });
 }
 
-/** Where a write of an offer stands once it threw - the create or the send, or a write onto the
- *  issue the create made (`RefusedWrite`): stopped by the person before Dispatch confirmed it,
- *  when it may have landed and there is no refusal to report, or refused, with Dispatch's reason
+/** Where a write of an offer stands once it threw - the create, or a write onto the issue the
+ *  create made (`RefusedWrite`): stopped by the person before Dispatch confirmed it, when it may
+ *  have landed and there is no refusal to report, or refused, with Dispatch's reason
  *  (`whenSilent` where it gave none). */
 export type UnconfirmedWrite =
   | { readonly kind: "refused"; readonly refusal: string }
   | { readonly kind: "stopped" };
+
+/** Dispatch's own refusal where it gave one, and `whenSilent` for whatever else ended the write:
+ *  a reader told only "could not" has nothing to act on. */
+export function refusalText(error: unknown, whenSilent: string): string {
+  return error instanceof Error && error.message !== "" ? error.message : whenSilent;
+}
 
 /** The state a write of an offer is left in by `error`, the write's (`UnconfirmedWrite`). */
 export function unconfirmedWrite(error: unknown, whenSilent: string): UnconfirmedWrite {
   if (error instanceof SendStoppedError) {
     return { kind: "stopped" };
   }
-  // Dispatch's own refusal where it gave one, and `whenSilent` for whatever else ended the write:
-  // a reader told only "could not" has nothing to act on.
-  const refusal = error instanceof Error && error.message !== "" ? error.message : whenSilent;
-  return { kind: "refused", refusal };
+  return { kind: "refused", refusal: refusalText(error, whenSilent) };
 }
 
-/** Where an offer's press of `words` stands once its create or its send threw
- *  (`UnconfirmedWrite`), named by the words it was of, as every state of an offer is
- *  (`useWordsState`). */
+/** Where an offer's press of `words` stands once its create threw (`UnconfirmedWrite`), named by
+ *  the words it was of, as every state of an offer is (`useWordsState`). */
 export type UnconfirmedPress = UnconfirmedWrite & { readonly words: string };
 
 /** The state an offer's press of `words` is left in by `error`, its write's (`UnconfirmedPress`). */

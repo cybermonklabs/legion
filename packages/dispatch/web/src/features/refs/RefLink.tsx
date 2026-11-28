@@ -98,7 +98,10 @@ export interface ReferenceLinking {
  * version the server does not serve) is dropped, leaving the title alone, so a stale or
  * hand-written reference never shows a broken-image glyph. When the element it renders into is
  * a link, its href follows `useReferenceHref`, which a pinned block of a spec resolves only
- * once its issue's summary is read. */
+ * once its issue's summary is read. Where its drawn words end in "…" - a title cut to fit, as
+ * a long question's is - and the text right after it starts with a full stop, the sentence draws
+ * one stop, the "…": the "." is taken out of that text while the words end so, and put back once
+ * they no longer do. */
 export function RefLink({
   anchor,
   marked = NO_STRETCHES,
@@ -135,16 +138,32 @@ export function RefLink({
     }
     return unlinkMissingReference(anchor);
   }, [anchor, missing]);
+  // Until the target answers, for an issue the reader cannot read, for a target that does not
+  // exist and for a link whose words its author wrote, the words the author wrote stand.
+  const drawnText =
+    reads === "words" || missing
+      ? text
+      : reads === "mention"
+        ? mentionDrawn({ known, title: label.text }, shortForm(route))
+        : (label.text ?? text);
+  const endsInEllipsis = (drawnText ?? text).endsWith("…");
+  useLayoutEffect(() => {
+    const after = anchor?.nextSibling;
+    // One full stop, not the "..." of an ellipsis the author typed after the link.
+    if (!endsInEllipsis || !(after instanceof Text) || !/^\.(?!\.)/u.test(after.data)) {
+      return;
+    }
+    after.deleteData(0, 1);
+    return () => after.insertData(0, ".");
+  }, [anchor, endsInEllipsis]);
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
-  // Until the target answers, for an issue the reader cannot read, for a target that does not
-  // exist and for a link whose words its author wrote, the words the author wrote stand.
   const named =
     reads === "words" || missing
       ? undefined
       : reads === "mention"
-        ? mentionDrawn({ known, title: label.text }, shortForm(route))
+        ? drawnText
         : label.text === undefined
           ? undefined
           : drawnName(route, label.text, label.deleted);

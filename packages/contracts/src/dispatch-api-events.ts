@@ -51,6 +51,7 @@ import type {
   SubscriptionRemovedEventPayload,
 } from "./dispatch-api-sessions";
 import type {
+  GoingPlanUpdatedEventPayload,
   UserAgentStateUpdatedEventPayload,
   UserStateUpdatedEventPayload,
   UserThreadStateUpdatedEventPayload,
@@ -156,6 +157,12 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "priority.updated";
       readonly payload: PriorityUpdatedEventPayload;
+    })
+  /** What a person's command-bar plans wait on changed: it names no owner, so `issue_key` is null
+   *  and `project` empty, and it never notifies. */
+  | (DispatchEventBase & {
+      readonly type: "going_plan.updated";
+      readonly payload: GoingPlanUpdatedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "project.access_changed";
@@ -421,6 +428,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.resolved": true,
   "decision.kept": true,
   "deploy.recorded": true,
+  "going_plan.updated": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,

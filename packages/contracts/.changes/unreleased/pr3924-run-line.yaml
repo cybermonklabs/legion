@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `GoingRunInput` takes an optional `line` (`ask`, `do` or `file`), and `GoingRun` carries `line`,
+  null for a run not started from the line on top, in `schemas/dispatch-openapi.json` and
+  `src/dispatch-api.generated.ts`.

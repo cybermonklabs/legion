@@ -9,7 +9,9 @@
 // (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
 // (twobuild_messages_test.go), what the page admission does while the previous build's process
-// is live and once it has left the registry (twobuild_transition_test.go), what the previous
+// is live and once it has left the registry (twobuild_transition_test.go), the migrations
+// (twobuild_migrations_test.go), the owner lock (twobuild_owner_lock_test.go), the command
+// bar's runs beside the release before them (twobuild_going_runs_test.go), what the previous
 // build does with a read-only personal token this tree mints (twobuild_read_token_test.go), and
 // the routes a personal token holding p0 keeps on each build (twobuild_p0_token_test.go). This
 // file is the harness every twobuild_*_test.go starts its builds with.
@@ -19,13 +21,16 @@
 // that lacks a part fails the suite, naming the parts it lacks. One row of the transition file
 // runs another earlier build instead, the first-rollout build named by
 // DISPATCH_FIRST_ROLLOUT_BUILD, on the same terms, and fails when that build is of another commit
-// than firstRolloutRelease. The current side is this tree: its server from cmdtest.Build, its CLI
-// run as `bun packages/envoy-client/bin/dispatch.ts`, its corpus read from the working tree.
+// than firstRolloutRelease; the row of twobuild_going_runs_test.go runs the release
+// goingReleaseCommit, named by DISPATCH_GOING_RELEASE_BUILD, on the same terms too. The current
+// side is this tree: its server from cmdtest.Build, its CLI run as
+// `bun packages/envoy-client/bin/dispatch.ts`, its corpus read from the working tree.
 //
 // Its own build tag and its own CI job, dispatch-two-builds in .github/workflows/ci.yaml, for the
 // reason the multiprocess suite has its own: a row waits for durable hand-overs and settings
-// polls, tens of seconds each. That job builds the previous release and the first-rollout release
-// with build-dispatch-build.sh, caches each build by its commit, and runs this suite against them.
+// polls, tens of seconds each. That job builds the previous release, the first-rollout release
+// and the going-runs release with build-dispatch-build.sh, caches each build by its commit, and
+// runs this suite against them.
 
 package main
 

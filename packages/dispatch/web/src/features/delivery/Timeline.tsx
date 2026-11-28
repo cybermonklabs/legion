@@ -7,6 +7,7 @@ import type {
   DeliveryRun,
   DeliverySessionGroup,
 } from "../../api/types";
+import { CHART_AXIS_COLORS } from "../../theme/chart-colors";
 import { borderDefault, brushBand, surfaceBg, textMutedOnCanvas } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { type ColorFacet, colorKeyFor, PLACEHOLDER_COLOR } from "./lib/colorScale";
@@ -21,8 +22,9 @@ import {
 } from "./lib/lanes";
 import { type WaitingMerge, waitingSeries } from "./lib/waiting";
 
-// echarts is loaded only here, dynamically, so it ships with the /delivery route's own chunk and
-// never the app shell — no other module in this feature imports it.
+// echarts is loaded here dynamically, so it ships in a chunk of its own and never in the app
+// shell's; the command bar's chart block (features/search/blocks/ChartBlock.tsx) loads it through
+// the same dynamic import, and no other module of this feature imports it.
 
 const GLOBAL_DEPLOY_X = 0.15;
 const GLOBAL_FAILURE_X = 0.85;
@@ -30,11 +32,11 @@ const GLOBAL_WAITING_X0 = 0.15;
 const GLOBAL_WAITING_X1 = 0.85;
 const INITIAL_VISIBLE_MS = 5 * 86_400_000; // ~5 days on first paint
 
-// The chart draws on a canvas, so its colours are values, not Tailwind classes: the prototype's
-// own dark palette, and its light counterpart for a light colour scheme.
+// The chart draws on a canvas, so its colours are values, not Tailwind classes: the axis colours
+// every chart shares, and an outline for each scheme.
 const CHART_COLORS = {
-  dark: { axis: "#334155", label: "#94a3b8", split: "#1e293b", outline: "#0f172a" },
-  light: { axis: "#cbd5e1", label: "#64748b", split: "#e2e8f0", outline: "#ffffff" },
+  dark: { ...CHART_AXIS_COLORS.dark, outline: "#0f172a" },
+  light: { ...CHART_AXIS_COLORS.light, outline: "#ffffff" },
 };
 const DEPLOY_COLOR = "#22c55e";
 const FAILURE_COLOR = "#ef4444";

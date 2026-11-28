@@ -21,7 +21,10 @@ describe("which runs hold a stubbed row", () => {
     expect(selectionOf(["--project", "stub-phone"]).holdsStubRow).toBe(true);
     expect(selectionOf(["--project=chromium", "--project=stub"]).holdsStubRow).toBe(true);
     // The case that killed the full lane: the containerised visual job, where no bun exists.
-    expect(selectionOf(["--project=visual", "--project=visual-phone"]).holdsStubRow).toBe(false);
+    expect(
+      selectionOf(["--project=visual", "--project=visual-phone", "--project=visual-bar"])
+        .holdsStubRow
+    ).toBe(false);
     expect(selectionOf(["--no-deps", "--project=webkit-alone"]).holdsStubRow).toBe(false);
   });
 

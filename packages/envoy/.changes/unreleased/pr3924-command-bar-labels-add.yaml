@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A command-bar plan that adds a label keeps the issue's other labels. Its row is a
+  `dispatch_issue_update` with `labels_add`, which the server sends to the route as it is, reads
+  as the field `labels` with the labels the issue holds, and undoes by writing those labels back;
+  the agent is told to add a label with `labels_add` and never to drop a value the person's words
+  do not name. Before, the agent could only replace the labels, and a row that "added" one removed
+  the others. The person's edit of such a row's labels is the whole set they chose, written as
+  `labels` in place of `labels_add`. The eval holds one task more, change-36, which adds a label
+  to an issue that holds two and passes only when both are kept.

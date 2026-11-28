@@ -6,6 +6,17 @@ import {
   type CommentThreadPage,
   DISPATCH_LOGIN_HEADER,
   everyBuildReadsSearch,
+  GOING_EVENT_BLOCK,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_DECISION,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_ROSTER,
+  GOING_EVENT_TEXT,
+  type GoingEvent,
   ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -22,6 +33,8 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
+
+import { readEventStream } from "./event-stream";
 
 import { setDispatchOrigins } from "./origins";
 import {
@@ -227,6 +240,53 @@ export type ReferenceSourceKind = NonNullable<
  *  policy, as a dropped connection is. A body that keeps moving, either way, goes on however long
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
+
+/** The frames of Dispatch's answer stream (`GoingEvent`) by name: a frame of any other name is a
+ *  frame a later Dispatch added, which this page does not draw and reads past. */
+const GOING_FRAMES: ReadonlySet<string> = new Set([
+  GOING_EVENT_BLOCK,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_DECISION,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_ROSTER,
+  GOING_EVENT_TEXT,
+]);
+
+/** How many times in a row the short answer's stream is opened again after a connection that
+ *  ended before the frame ending its run and brought nothing new, before the page gives it up.
+ *  Each reopening resumes after the last frame in hand (`Last-Event-ID`); a stream of a run past
+ *  its window is ended by the reader that opens it, so one reopening normally brings the ending. */
+const GOING_STREAM_REOPENS = 3;
+/** The wait before a stream of the bar is opened again: the short answer's each time, and an agent
+ *  run's after a drop that brought something new or the first of a row that brought nothing. */
+const GOING_STREAM_REOPEN_MS = 500;
+/** The longest wait before an agent run's stream is opened again: each further drop in a row that
+ *  brings nothing new doubles the wait from `GOING_STREAM_REOPEN_MS`, up to this. */
+const GOING_RUN_REOPEN_MAX_MS = 5_000;
+/** How long an agent run's stream waits through drops in a row that bring nothing new before the
+ *  page gives it up. A run goes on in the server through a restart (R11), so its stream waits out
+ *  one: two minutes, as long as the live socket reconnects before the page says it is stuck. */
+const GOING_RUN_STREAM_PATIENCE_MS = 120_000;
+
+/** The frame a run's stream writes before the server closes it for being idle, which names no
+ *  sequence: the run waits, and its stream is opened again after the last frame in hand. */
+const GOING_RUN_KEEPALIVE = "keepalive";
+/** The frame that ends a turn of a run: `{state, reason, offers}`. */
+const GOING_RUN_END = "end";
+
+/** Whether an `end` frame's data ends the run itself (done, stopped or failed), after which its
+ *  stream holds nothing more, rather than a turn that waits for the person's plan. */
+function goingRunEndedFrame(data: unknown): boolean {
+  if (typeof data !== "object" || data === null || !("state" in data)) {
+    return false;
+  }
+  const { state } = data;
+  return state === "done" || state === "stopped" || state === "failed";
+}
 
 /** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
  *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
@@ -744,6 +804,45 @@ export function agentStateRequest(
   );
 }
 
+/** `POST /api/v1/going/runs/{id}/plan/approve`: the person approves the run's waiting plan, each
+ *  row as the plan shows it unless the body unticks or edits it, and the run makes its changes. */
+export function goingPlanApproveRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/approve", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/approve", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/plan/reject`: the person rejects the run's waiting plan, and the
+ *  run ends with nothing of it made. */
+export function goingPlanRejectRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/reject", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/reject", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/plan/revise`: the person says in words what to change of the run's
+ *  waiting plan, and the run proposes another in its place. */
+export function goingPlanReviseRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/plan/revise", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/plan/revise", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/undo`: the person undoes what one run of theirs changed, newest
+ *  first, while its conversation is in History. */
+export function goingRunUndoRequest(id: string) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/undo", { id });
+}
+
+/** `PUT /api/v1/me/going/settings`: the person's own command-bar setting, its `mode`: `ask`, where
+ *  every change of a plan waits for the person, or `auto_review`. */
+export function goingSettingsRequest(input: Body<"/api/v1/me/going/settings", "put">) {
+  return writeRequest("put", "/api/v1/me/going/settings", {}, input);
+}
+
 /** The same-origin route of one stored version's bytes, addressed by the owner and the artifact's
  *  slug as a picture's `dispatch://` reference names it, so an `<img>` loads it with the reader's
  *  own cookie. A version never changes, so the server lets the browser keep it. */
@@ -914,7 +1013,8 @@ function watchBody(response: Response, arrived: () => void): Response {
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
    *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
-   *  a no-route retry waits (`answered`). */
+   *  a no-route retry waits (`answered`), and how a run's dropped stream waits to be opened again
+   *  (`streamGoingRunEvents`). */
   constructor(
     private readonly fetchImpl: FetchImplementation,
     private readonly upload?: UploadImplementation,
@@ -1339,6 +1439,231 @@ export class DispatchApiClient {
       { title },
       { signal: options.signal }
     );
+  }
+
+  /**
+   * `POST /api/v1/going/requests`: asks Dispatch's answer to the words the bar's pause settled
+   * on, with the item the bar's chip names where they were typed, and answers the run, whose id
+   * addresses its stream. It goes by the one keyed path every write of the page takes, under a
+   * key of its own and the asker's login, but as no write of the page's store: a question is the
+   * bar's to ask again on its next pause, so nothing keeps or retries it.
+   */
+  createGoingRequest(input: Body<"/api/v1/going/requests", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/going/requests", {}, input, bounds);
+  }
+
+  /** `POST /api/v1/going/requests/{id}/cancel`: stops a run the person typed past or closed the
+   *  bar on, so its model call ends rather than writing an answer nobody reads. */
+  cancelGoingRequest(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/going/requests/{id}/cancel", { id }, undefined, bounds);
+  }
+
+  /** `GET /api/v1/going/capability`: what the bar can do on this Dispatch, each part apart - the
+   *  answering model, the deciding model, and the session and label a new issue is filed under. */
+  goingCapability() {
+    return this.read("/api/v1/going/capability", {});
+  }
+
+  /** `GET /api/v1/me/going-runs`: History, the caller's own conversations of the last 7 days,
+   *  the newest first, each with its runs, the newest first. */
+  myGoingRuns(query: Query<"/api/v1/me/going-runs", "get"> = {}) {
+    return this.read("/api/v1/me/going-runs", {}, query);
+  }
+
+  /** `GET /api/v1/me/going-plans`: the caller's own runs whose plan waits for them, the newest
+   *  first, which the Inbox lists. */
+  myGoingPlans(query: Query<"/api/v1/me/going-plans", "get"> = {}) {
+    return this.read("/api/v1/me/going-plans", {}, query);
+  }
+
+  /**
+   * `POST /api/v1/going/runs`: starts a run of the agent on the person's words, with the page's
+   * context, the level and the run it follows up (the conversation's newest run, once that run has
+   * ended). It goes by the one keyed path every write of the page takes, under a key of its own
+   * and the person's login, but as no write of the page's store: the run answers at once, its
+   * stream says the rest, and a reload starts nothing again.
+   */
+  createGoingRun(input: Body<"/api/v1/going/runs", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/going/runs", {}, input, bounds);
+  }
+
+  /** `GET /api/v1/going/runs/{id}`: one of the caller's own runs, as its record holds it now. */
+  goingRun(id: string) {
+    return this.read("/api/v1/going/runs/{id}", { id });
+  }
+
+  /** `POST /api/v1/going/runs/{id}/stop`: stops one of the caller's runs at once; what it did
+   *  stays. */
+  stopGoingRun(id: string, bounds: WriteBounds) {
+    return this.post("/api/v1/going/runs/{id}/stop", { id }, undefined, bounds);
+  }
+
+  /**
+   * `GET /api/v1/going/runs/{id}/events`: one run's frames as server-sent events, each handed to
+   * `onFrame` by its name and its decoded data, from the run's first frame until the `end` frame
+   * of a run that has ended (done, stopped or failed). A run that waits for its person keeps its
+   * stream open; the server closes an idle one after a `keepalive` frame, and this opens it again
+   * after the last frame `onFrame` took (`Last-Event-ID`), so nothing is lost or repeated.
+   *
+   * A connection that fails, that a gateway answers with a 5xx while Dispatch is down, or that ends
+   * before the run's end with no `keepalive`, is a drop: `onDropped(true)` says so before the
+   * stream waits to open it again, and `onDropped(false)` once a connection opened after a drop is
+   * answered. The wait is `GOING_STREAM_REOPEN_MS`, doubled for each further drop in a row that
+   * brings nothing new up to `GOING_RUN_REOPEN_MAX_MS`, so the stream waits out a restart of the
+   * server; one that has waited `GOING_RUN_STREAM_PATIENCE_MS` through such drops is given up. A
+   * refusal of the route itself (an `ApiError` below 500: the run is gone, or too many readers) is
+   * the answer, and is not asked again. `signal` ends it sooner.
+   */
+  async streamGoingRunEvents(
+    id: string,
+    onFrame: (name: string, data: unknown) => void,
+    signal: AbortSignal,
+    onDropped?: (dropped: boolean) => void
+  ): Promise<void> {
+    const path = routeUrl("/api/v1/going/runs/{id}/events", { id });
+    let after = 0;
+    // The drops in a row that brought nothing new, and how long the stream waited through them.
+    let fruitless = 0;
+    let waited = 0;
+    let dropped = false;
+    for (;;) {
+      const before = after;
+      let ended = false;
+      let idle = false;
+      let failed: unknown;
+      try {
+        const response = await this.response(
+          path,
+          { headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) }, signal },
+          null
+        );
+        if (dropped) {
+          dropped = false;
+          onDropped?.(false);
+        }
+        if (response.body !== null) {
+          ended = await readEventStream(response.body, (event) => {
+            if (event.name === GOING_RUN_KEEPALIVE) {
+              idle = true;
+              return false;
+            }
+            const data: unknown = JSON.parse(event.data);
+            onFrame(event.name, data);
+            // In hand only once handed on: a frame whose parse or handing threw is read again.
+            const sequence = Number(event.id);
+            if (Number.isInteger(sequence)) {
+              after = sequence;
+            }
+            return event.name === GOING_RUN_END && goingRunEndedFrame(data);
+          });
+        }
+      } catch (error) {
+        if (signal.aborted || (error instanceof ApiError && error.status < 500)) {
+          throw error;
+        }
+        failed = error;
+      }
+      if (ended) {
+        return;
+      }
+      // A stream the server closed for being idle is a run that waits, and is read again as often
+      // as it closes; one that failed, or closed with nothing new, counts towards giving it up.
+      if (idle || after !== before) {
+        fruitless = 0;
+        waited = 0;
+      } else {
+        fruitless += 1;
+      }
+      if (waited >= GOING_RUN_STREAM_PATIENCE_MS) {
+        throw new NetworkError(
+          path,
+          failed ?? new Error("the run's stream kept ending before its run did")
+        );
+      }
+      if (!idle && !dropped) {
+        dropped = true;
+        onDropped?.(true);
+      }
+      const wait = Math.min(
+        GOING_STREAM_REOPEN_MS * 2 ** Math.max(0, fruitless - 1),
+        GOING_RUN_REOPEN_MAX_MS
+      );
+      waited += fruitless > 0 ? wait : 0;
+      await this.wait(wait, signal);
+    }
+  }
+
+  /** `GET /api/v1/going/runs/{id}/plan`: the latest plan of one of the caller's runs of the bar,
+   *  each row with what its item holds now; 404 `GOING_PLAN_NOT_FOUND` for a run that proposed
+   *  none. */
+  goingPlan(id: string) {
+    return this.read("/api/v1/going/runs/{id}/plan", { id });
+  }
+
+  /** `GET /api/v1/me/going/settings`: the person's own command-bar setting, its `mode`: `ask`,
+   *  where every change of a plan waits for them, the mode of a person who never set it, or
+   *  `auto_review`. */
+  myGoingSettings() {
+    return this.read("/api/v1/me/going/settings", {});
+  }
+
+  /**
+   * `GET /api/v1/going/requests/{id}/stream`: one run's answer, each frame handed to `onFrame` as
+   * it arrives, from the stream's first frame (`Last-Event-ID: 0`, which is also how a run
+   * answered earlier is drawn again) until the frame that ends the run (`end` or `error`). A
+   * connection that ends before that last frame is opened again after the last frame `onFrame`
+   * took, so a dropped connection loses nothing and repeats nothing, and a frame whose handing
+   * threw is read again; one that keeps ending with nothing new is given up
+   * (`GOING_STREAM_REOPENS`). The stream may stay silent while the model thinks, so it is held to
+   * no silence deadline: the run's own window bounds it, and `signal` ends it sooner.
+   */
+  async streamGoingAnswer(
+    id: string,
+    onFrame: (frame: GoingEvent) => void,
+    signal: AbortSignal
+  ): Promise<void> {
+    const path = routeUrl("/api/v1/going/requests/{id}/stream", { id });
+    let after = 0;
+    let fruitless = 0;
+    for (;;) {
+      const response = await this.response(
+        path,
+        { headers: { Accept: "text/event-stream", "Last-Event-ID": String(after) }, signal },
+        null
+      );
+      const before = after;
+      let ended = false;
+      if (response.body !== null) {
+        try {
+          ended = await readEventStream(response.body, (event) => {
+            const framed = GOING_FRAMES.has(event.name);
+            if (framed) {
+              onFrame({ data: JSON.parse(event.data), event: event.name } as GoingEvent);
+            }
+            // In hand only once handed on: a frame whose parse or handing threw is not passed.
+            const sequence = Number(event.id);
+            if (Number.isInteger(sequence)) {
+              after = sequence;
+            }
+            return framed && (event.name === GOING_EVENT_END || event.name === GOING_EVENT_ERROR);
+          });
+        } catch (error) {
+          // The caller's abort is the caller's; a connection that dropped is opened again below.
+          if (signal.aborted) {
+            throw error;
+          }
+        }
+      }
+      if (ended) {
+        return;
+      }
+      signal.throwIfAborted();
+      fruitless = after === before ? fruitless + 1 : 0;
+      if (fruitless >= GOING_STREAM_REOPENS) {
+        throw new NetworkError(path, new Error("the answer stream kept ending before its run did"));
+      }
+      await sleep(GOING_STREAM_REOPEN_MS, signal);
+    }
   }
 
   createIssue(input: Body<"/api/v1/issues", "post">, bounds: WriteBounds) {

@@ -1,6 +1,9 @@
-// Package agentloop runs a model and the tools it calls: the model loop of the secrets broker
-// (internal/cipher), and the only import of Grafana's AI SDK for Go in this repository. It is
-// the engine and nothing more. It keeps no conversation store, carries no tools of its own and
+// Package agentloop runs a model and the tools it calls, and is the only import of Grafana's AI
+// SDK for Go in this repository. Dispatch's server (cmd/dispatch) runs the command bar's answer
+// and decision calls through it, cmd/going-bakeoff the decision-model bake-off, and the secrets
+// broker its judge (internal/cipher/judge). The Legion daemon's module compiles it in one test
+// alone (packages/daemon/internal/sharedloop), which is why it sits outside internal/. It is the
+// engine and nothing more. It keeps no conversation store, carries no tools of its own and
 // routes nothing: a caller hands it an endpoint, a model, the messages, the tools the model may
 // call and the bounds of the run, and reads back the reply, every step and what the run cost.
 //
@@ -12,9 +15,11 @@
 //
 // ToolCall.Index is one-based. Request.FirstToolIndex is the number of tool calls an earlier run
 // of the same work already made, so the first call of this run is FirstToolIndex + 1. The calls
-// of a step are numbered in the order the model asked for them, and run one at a time, under one
-// mutex. A caller can therefore key an idempotent write on the index and re-run the work without
-// that write happening twice.
+// of a step are numbered in the order the model asked for them, and run one at a time in that
+// same order, each once the calls numbered before it in the step have ended. A call whose run
+// was stopped or passed its time bound waits only for the call that runs, so the run waits for
+// no call that will not come. A caller can therefore key an idempotent write on the index and
+// re-run the work without that write happening twice.
 //
 // # The auth header is fixed per Kind
 //
@@ -28,13 +33,26 @@
 // a run or in a decision, so the token reaches the endpoint the caller named and no other
 // server: the client's redirect check fails the call, above the transport and its retry, with
 // an error naming the redirecting status and the host the Location points at, so the run ends
-// in FaultProviderError. The Detail of that fault carries more than the host: Go's own
-// *url.Error wraps the check's error and names the Location in full, query included, as the
-// endpoint sent it. A caller that logs a Detail logs whatever the endpoint it named put there.
-// What it never logs is the endpoint's own base URL where that is no clean http(s) URL, one with a
-// user name and a password among them: a failed call's Detail then names its URL as
-// redact.NotPrinted and its failure by class alone, since net/http's error names the host, which a
-// password holding an unencoded "@" leaves its tail in (shownFailure).
+// in FaultProviderError, whose Detail names that host and no more of the Location.
+//
+// # A failed call's Detail
+//
+// Go's client wraps every failure of a call in a *url.Error, whose text quotes the request URL
+// with only a password masked, so an endpoint that holds a token before "@" would print it there;
+// and a dial's or a resolver's error names the host, which is a password's tail where the
+// password holds an unencoded "@". The Detail of a call that failed so never holds that quote: a
+// failure in this package's own words (a token the transport could not read, a redirect refused)
+// is those words, and net/http's own failure is its text where the endpoint is a clean http(s)
+// URL and net/http names the URL the call was made to (a refused dial's address, a TLS failure's
+// certificate fault), and its class alone otherwise (internal/redact's CauseAt). A status the
+// provider refused the call with is described as the provider's SDK describes it, but for the
+// request URL Anthropic's SDK quotes whole there: where the endpoint is no clean URL, that URL
+// prints as redact.NotPrinted. Every other failure - a call that never reached the transport,
+// such as one to a base URL that does not parse, or a response that broke after its 2xx - prints
+// whole beside a clean endpoint, and beside any other as redact.Error prints it: a URL it quotes
+// as redact.NotPrinted and the failure by class alone (shownFailure). So neither a Detail nor an
+// error a decision returns names the endpoint's own base URL where that is no clean http(s) URL,
+// one with a user name and a password among them.
 //
 // # The retry
 //
@@ -42,7 +60,12 @@
 // error or an outage status (a 408, a 429, a 5xx), decided from the response status before any of
 // the body is read, and
 // only while Bounds.Time is left. A stream that breaks after its first byte is FaultProviderError
-// and is never retried, so a caller's OnText never sees the same text twice.
+// and is never retried, so a caller's OnText never sees the same text twice. A FaultProviderError
+// whose last call was answered with an error status carries that status in Result.Status, read
+// by the transport off the response, so a caller can tell a request the provider refuses outright
+// (a 400) from one it failed to serve. Each 429 is logged at WARN as the transport reads it, once
+// for each attempt, with the deployment the request names, the attempt, the wait before the retry
+// and whether the call is made again, so every caller's 429 is logged in this one place.
 //
 // # The provider's own chunks
 //
@@ -52,7 +75,10 @@
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
 // the token, the endpoint's query parameters, the Final schema's place and order (see "The
-// structured reply") and the retry, and nothing else.
+// structured reply"), the retry, the last refused status, whether the first 64 KiB of that
+// refusal's body name the provider's content filter (FaultContentFilter), and the few hundred
+// bytes of that body that say the filter's verdict - each error's code and message and the
+// labels it flagged (ContentFilterRefusal), which Result.Detail names - and nothing else.
 //
 // # Cache marks
 //
@@ -144,6 +170,13 @@
 // sorted, as that run's requests show, so a tool whose input has more than one property is
 // offered them sorted, and the model writes a call's arguments in that order. A call's input is
 // read by key, so no call fails for it.
+//
+// The SDK parses the whole reply so far on each delta for the snapshot OnPartial is given, which
+// over one reply is work in the square of its length. So a snapshot is parsed at each delta of a
+// reply up to 16 KiB long, more than a reply of 4,096 output tokens, and past that only once the
+// reply has grown by half since the last, which keeps the parses within three times its length;
+// and none is parsed of a reply whose first byte that is not white space can start no JSON value,
+// which no schema's object is (partial.go). The reply's value is read whole as the call ends.
 //
 // # The Final schema is held to the strict subset
 //
@@ -263,4 +296,17 @@
 //
 // Bounds.Calls bounds model calls. A per-tool budget — how much work one tool will do before it
 // refuses — is that tool's own Run logic, which this package does not count.
+//
+// Request.StreamLimit bounds the bytes of one model call's response, read through a body the
+// transport cuts there, and Request.ReplyLimit the bytes of the reply one call builds: its prose,
+// its reasoning and its tool calls' arguments, counted as they stream. A call past either ends
+// the run with FaultTooLarge.
+//
+// # Panics
+//
+// The SDK runs the tools and calls OnStep and the endpoint's Token on goroutines of its own,
+// where a panic would end the whole process. Every callback is called under a recover: a tool
+// that panics answers the model a refusal naming the panic and the run goes on; OnText,
+// OnPartial and OnStep end the run with an error naming it, as an error they returned would; and
+// a Token that panics fails the attempt. Each panic is logged with its stack.
 package agentloop

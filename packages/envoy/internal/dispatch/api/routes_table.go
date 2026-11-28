@@ -58,6 +58,12 @@ const (
 	//     `POST /api/v1/messages/{id}/reply` take the session from the caller's own credential
 	//     or `actor` and refuse an attempt that is not that session's, `403 ACCEPT_FORBIDDEN`
 	//     and `403 REPLY_FORBIDDEN`.
+	//   - `POST /api/v1/going/requests/{id}/cancel` is the credential's that asked the answer
+	//     run, which the route holds it to (cancelGoingRequest), as the run's stream is. A
+	//     command-bar run, its stop, its plan and its undo are its author's alone
+	//     (createGoingRun, stopMyGoingRun, planRoute, undoGoingRun): what they write is the
+	//     author's own record, and each write the run performs in-process is held to its own
+	//     row's class, as the same write sent by hand is.
 	//   - The `me` token rows name no session at all: they are the calling person's, read and
 	//     written by a credential holding the `person` scope and keyed on that person.
 	scopeSession writeScope = "session"
@@ -221,14 +227,14 @@ type routeDecl struct {
 	// INFRA-1017, and two scopes decide them now: `person`, "this credential acts as its
 	// person", which every one of them needs, and `approve`, the right to settle what a person
 	// settles, which the routes that decide a credential, a sign-in, a review, a decision's
-	// Keep or a token need as well. A person's browser holds both and `p0` besides, which no
-	// route needs: a write that makes work P0 needs it, and the write itself checks it, since a
-	// route's declaration names a route and not what a request writes. Such a write names a
-	// priority of 0 on an issue whose own priority is not 0 (refuseP0WithoutScope), moves an issue
-	// under another parent or clears its own priority so that it, or an issue under it that takes
-	// its priority from it, goes to P0 (refuseResolvedP0WithoutScope), or files a new issue with
-	// no priority under a parent that reads P0 from a session that is not that parent's architect
-	// (refuseNewChildP0WithoutScope). Their personal tokens hold the set each token's row
+	// Keep, a command-bar plan or a token need as well. A person's browser holds both and `p0`
+	// besides, which no route needs: a write that makes work P0 needs it, and the write itself
+	// checks it, since a route's declaration names a route and not what a request writes. Such a
+	// write names a priority of 0 on an issue whose own priority is not 0 (refuseP0WithoutScope),
+	// moves an issue under another parent or clears its own priority so that it, or an issue under
+	// it that takes its priority from it, goes to P0 (refuseResolvedP0WithoutScope), or files a new
+	// issue with no priority under a parent that reads P0 from a session that is not that parent's
+	// architect (refuseNewChildP0WithoutScope). Their personal tokens hold the set each token's row
 	// names. A broker-issued token that acts for its person holds `person` alone
 	// (brokerTokenActor), except an approve-only token, which holds `person` and `approve` and
 	// calls only the routes that state ApproveOnly, and a Dispatch sign-in's token, which holds the
@@ -290,15 +296,39 @@ type routeDecl struct {
 	// it.
 	//
 	// The routes that state it are the routes whose OAuthScopes name approve, the routes that
-	// settle what a person settles, less two: the mint and the change of a personal token, since a
-	// token they made or widened would be an approve credential written to the box the session
-	// runs on, which is what the proxy exists to keep off it. The revoke of a personal token
-	// states it. Beside them is the answer of an ask, which checks approve in its handler for an
+	// settle what a person settles, less three. Two are the mint and the change of a personal
+	// token, since a token they made or widened would be an approve credential written to the box
+	// the session runs on, which is what the proxy exists to keep off it; the revoke of a personal
+	// token states it. The third is the approval of a command-bar run's plan (POST
+	// /api/v1/going/runs/{id}/plan/approve): an approval of a plan runs every write of the plan as
+	// its person, and an approve-only token approves a document, an ask or a credential, never a
+	// run of writes. That route keeps approve, which keeps a person-scoped token from approving a
+	// plan. Beside them is the answer of an ask, which checks approve in its handler for an
 	// approval request and refuses an approve-only token the answer of every other ask, 403
 	// APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). Like Read, it is no
 	// scope: the route index and the OpenAPI document do not carry it, and only the
 	// limited-token gate reads it.
 	ApproveOnly bool
+
+	// DaemonWrites is a route only the Legion daemon writes: the check that tells the daemon
+	// apart from every other caller of the route and what the route writes (daemonWrite), nil
+	// for every other route. register mounts each route that states it behind refuseNonDaemon,
+	// which answers every caller that is not the daemon 403 with the route's code - STEP_WRITER
+	// for a record route, ROLE_HOLDER_FORBIDDEN for the role-holder publication - before its
+	// handler does anything with the write, so the declaration is what refuses, as ResultsScope
+	// is for a results token. The daemon is told apart by the session its write names, the one
+	// fact every credential it may present carries, so a bearer that proves no session of its own
+	// and names the daemon's session in its body is taken for it (daemonWrite), except on the
+	// role-holder publication with Deps.LegionStatusScope on, which passes only a credential that
+	// holds legion-status.
+	//
+	// The routes that state it are the step record writes, the plan write and the role-holder
+	// publication. The design-gate and gated-step publications state none: their declarations
+	// name the deployment's daemon as their one writer, and the server refuses no other caller of
+	// them. The command bar's inventory holds both to that (goingExcludedDaemonUngated). Like
+	// ResultsScope, it is no scope: the route index and the OpenAPI document do not carry it, and
+	// only refuseNonDaemon reads it.
+	DaemonWrites *daemonWrite
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
@@ -400,7 +430,7 @@ const routeIndexDocs = "skills/dispatch/SKILL.md"
 // and every generated client. The rows differ in one paragraph alone, `declares`, which says
 // which of the ten members that route declares and why there are two routes.
 func searchDescription(declares string) string {
-	return fmt.Sprintf("Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best %d). A comment's, a message's and an ask's hit carries author, the actor that wrote it. ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its %d rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. %s A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over %d characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. Each keyword and meaning statement of a search runs under a %s statement_timeout, the second search for the rarest words under its own; a statement that runs past it finds nothing and answers 503 SEARCH_TIMEOUT, with a message naming the bound, so a client tries again later or narrows the query rather than sending the same request again at once.",
+	return fmt.Sprintf("Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best %d). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A hit an issue owns - the issue itself, or its document, comment, ask or message - carries the issue's project in owner.project, as a project document's hit carries the document's. ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its %d rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. %s A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over %d characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. Each keyword and meaning statement of a search runs under a %s statement_timeout, the second search for the rarest words under its own; a statement that runs past it finds nothing and answers 503 SEARCH_TIMEOUT, with a message naming the bound, so a client tries again later or narrows the query rather than sending the same request again at once.",
 		contracts.SearchKindDepth, searchBroadenWords, declares, contracts.SearchQueryMax, searchStatementBound)
 }
 
@@ -419,14 +449,20 @@ const searchDeclaresTen = "This route declares all ten members and as_of, and an
 // where a sentence left behind on one row would stand as the other route's contract.
 const commentPartiesDescription = "A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it is 400 MENTION_INPUT. A target of a form no delivery route takes is also 400 MENTION_INPUT, whether the array or the body names it. For example, a session ID that contains a dot or a colon cannot be used as a delivery target."
 
-// goingCatalogueDescription is the description GET /api/v1/going/catalogue serves. Both counts
-// in it are read from what this build holds - the specs contracts carries, and the tools the
-// catalogue names a row of - rather than written as words: a number written as prose has no
-// test and no merge conflict to protect it, and this one was falsified twice, once by this
-// change's own four specs and once by a merge that added a tool (INFRA-1523).
+// goingCatalogueDescription is the description GET /api/v1/going/catalogue serves. Every count
+// in it is read from what this build holds - the tools goingWriteTools marks Proposed, every tool
+// it names, and the specs contracts carries - rather than written as words: a number written as
+// prose has no test and no merge conflict to protect it, and this one was falsified twice, once
+// by a change's own four specs and once by a merge that added a tool (INFRA-1523).
 func goingCatalogueDescription() string {
-	return fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph: %d of the %d tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
-		len(goingToolRoutes), len(contracts.DispatchTools))
+	proposed := 0
+	for _, tool := range goingWriteTools {
+		if tool.Proposed {
+			proposed++
+		}
+	}
+	return fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph: %d of the %d dispatch tools that write, of the %d tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or not_undone, routes the rows of this table the undo writes through), and the graph relations its verbs write. dispatch_review and dispatch_project_update are not among them, on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the decision that chooses from this catalogue must never name either; a command-bar run proposes each only as a row of its plan, which waits for the person in every mode. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+		proposed, len(goingWriteTools), len(contracts.DispatchTools))
 }
 
 // replyQuoteDescription is what each of the six rows that write a reply to a block says of the

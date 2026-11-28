@@ -240,6 +240,27 @@ test("a lead with no body shows the lead alone", async () => {
   }
 });
 
+// A trail is the app's own mark after the text, as a lead is its words before it: the "…" a
+// search hit's row ends a snippet with where the server cut it out of a longer text (review R4).
+// It is plain text at the end of the line, inside the clamp, and a preview given none ends as its
+// text does.
+test("a trail stands after the text as the app's own mark, and a preview given none has none", async () => {
+  const { preview, rerender, view } = renderPreview({
+    lines: 1,
+    markdown: "Draw **each** page and read",
+    trail: "…",
+  });
+  try {
+    await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("each"));
+    expect(preview().textContent).toBe("Draw each page and read…");
+
+    rerender({ lines: 1, markdown: "Draw **each** page and read" });
+    await waitFor(() => expect(preview().textContent).toBe("Draw each page and read"));
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a Dispatch picture shows as its thumbnail beside its caption, a link only where its host links", async () => {
   // The dashboard is served from an origin, where a picture's same-origin bytes route resolves;
   // at happy-dom's `about:blank` every picture would fail at once (`MarkdownBody.test.tsx`).
@@ -272,6 +293,51 @@ test("a Dispatch picture shows as its thumbnail beside its caption, a link only 
   } finally {
     view.unmount();
     testWindow.happyDOM.setURL(pageBefore);
+  }
+});
+
+// A host whose own Enter and click are a row's one action - a search hit - draws each link of its
+// preview as the words around it (`linkLook="text"`): no anchor, which would compete with the row,
+// and no link look, which would offer a second action. Each is still the preview's inert link
+// span (`data-markdown-link`), a reference's keeping its hover card (`data-dispatch-ref`) and
+// reading as its title, and is marked `data-link-look="text"`, which the link look (styles.css)
+// skips. The default keeps the link look on the same words, so its spans carry no such mark.
+test("a link in text mode is plain text: no anchor and no link look, a reference still by its title", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  const markdown = "Read [the plan](https://example.com/plan) and dispatch://CORE-1 today.";
+  const { preview, rerender, view } = renderPreview({
+    host: "control",
+    lines: 1,
+    linkLook: "text",
+    markdown,
+  });
+  const links = () =>
+    Array.from(preview().querySelectorAll("[data-markdown-link]"), (link) => ({
+      look: link.getAttribute("data-link-look"),
+      reference: link.getAttribute("data-dispatch-ref"),
+      text: link.textContent,
+    }));
+  try {
+    await waitFor(() => expect(preview()).toHaveTextContent("Design decision"));
+    expect(words(preview())).toBe("Read the plan and CORE-1 Design decision today.");
+    expect(preview().querySelector("a")).toBeNull();
+    expect(links()).toEqual([
+      { look: "text", reference: null, text: "the plan" },
+      { look: "text", reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+    ]);
+
+    rerender({ host: "control", lines: 1, markdown });
+    await waitFor(() =>
+      expect(links()).toEqual([
+        { look: null, reference: null, text: "the plan" },
+        { look: null, reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
+      ])
+    );
+    expect(preview().querySelector("a")).toBeNull();
+    expect(preview().querySelector("[data-link-look]")).toBeNull();
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
   }
 });
 

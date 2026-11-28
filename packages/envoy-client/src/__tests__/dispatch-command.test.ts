@@ -85,8 +85,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 46 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(46);
+  test("names map both ways for all 145 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(145);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -373,6 +373,11 @@ describe("the dispatch command surface", () => {
       .map((spec) => spec.name)
       .filter((tool) => commandFlags(tool).includes("--issue"))
       .map(commandName);
+    // A spec that binds its routes takes a bare key as every command with --issue does.
+    const bound = dispatchToolSpecs
+      .filter((spec) => "routes" in spec && commandFlags(spec.name).includes("--issue"))
+      .map((spec) => commandName(spec.name));
+    expect(bound.length).toBeGreaterThan(0);
     expect(commands.sort()).toEqual(
       [
         "artifact",
@@ -394,6 +399,7 @@ describe("the dispatch command surface", () => {
         "spec-form",
         "steps",
         "suggest",
+        ...bound,
       ].sort()
     );
     for (const command of commands) {

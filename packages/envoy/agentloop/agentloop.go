@@ -209,7 +209,8 @@ type Tool struct {
 	Schema json.RawMessage
 	// Run does the tool's work and answers with what the model is told. A refusal answers
 	// isError true, with the reason as the output; a refusal goes back to the model as a
-	// tool result rather than ending the run.
+	// tool result rather than ending the run. A Run that panics is recovered and answered the
+	// same way, with an error naming the panic, and the run goes on.
 	Run func(ctx context.Context, call ToolCall) (output string, isError bool)
 }
 
@@ -241,6 +242,12 @@ type Request struct {
 	Tools []Tool
 	// Bounds are the limits of the run.
 	Bounds Bounds
+	// StreamLimit is the most bytes of one model call's response the run reads, and
+	// ReplyLimit the most bytes of the reply one call builds: its prose, its reasoning and its
+	// tool calls' arguments. A call past either is cut there, and the run ends with
+	// FaultTooLarge. Zero sets no limit.
+	StreamLimit int64
+	ReplyLimit  int
 	// FirstToolIndex is the number of tool calls an earlier run of the same work already
 	// made, so this run's first call is FirstToolIndex + 1. A fresh run leaves it zero.
 	FirstToolIndex int
@@ -304,13 +311,17 @@ type Request struct {
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
 	// built, and OnStep every step as it finishes; a reply the run asked for again, a cut
 	// reply and the call made again after it, and a reply out of form the run drops, stream to
-	// them like any other. An error from any of them ends the run at that point and Run
-	// returns it with the Result so far. A nil callback is not called.
+	// them like any other. OnPartial is given a snapshot at each delta of a reply up to 16 KiB
+	// long, and past that each time the reply has grown by half, and none of a reply that does
+	// not start as JSON (doc.go, "The structured reply"). An error from any of them ends the
+	// run at that point and Run returns it with the Result so far, and so does a panic in one,
+	// which the run recovers and returns as an error naming it. A nil callback is not called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
-	// Log takes the run's warnings, such as a call whose Final schema could not be put back in
-	// Final's order (doc.go, "The structured reply"). A nil Log logs to slog.Default().
+	// Log takes the warning for a call whose Final schema could not be put back in Final's order
+	// (doc.go, "The structured reply"), and no other: a 429 the model service answers is logged on
+	// slog.Default() whatever Log is. A nil Log logs to slog.Default().
 	Log *slog.Logger
 }
 
@@ -318,7 +329,13 @@ type Request struct {
 type Usage struct {
 	// Input, Output, CacheWrite, CacheRead and Reasoning are the token counts the provider
 	// reported: the prompt, the reply, the prompt tokens written to and read from the
-	// provider's cache, and the reasoning tokens.
+	// provider's cache, and the reasoning tokens. Output is every token the provider generated
+	// and bills for the reply, its reasoning among them, and Reasoning the part of Output that
+	// was reasoning, however the provider counts them. On Chat Completions, OpenAI's usage counts
+	// the reasoning among completion_tokens (its total_tokens is prompt_tokens +
+	// completion_tokens), and Output is completion_tokens; a provider whose total_tokens is
+	// prompt_tokens + completion_tokens + reasoning_tokens counts it apart, and Output is
+	// completion_tokens + reasoning_tokens. A usage with no total_tokens is read as OpenAI's.
 	Input, Output, CacheWrite, CacheRead, Reasoning int
 	// CostUSD is those counts priced with Model.Price.
 	CostUSD float64
@@ -374,6 +391,13 @@ type Result struct {
 	// Detail says what happened, for a log rather than for a wire.
 	Fault  Fault
 	Detail string
+	// Status is the HTTP status the provider refused the last call with, on a
+	// FaultProviderError or a FaultContentFilter whose call drew an answer that was not a 2xx,
+	// after the retry where one was made. It is zero on every other outcome, and on a provider
+	// error that came with no such status: a transport error, a token that could not be read,
+	// or a stream that broke after a 2xx. A caller tells a request the provider will not serve
+	// (a 400) from one it could not serve now by it.
+	Status int
 }
 
 // Fault is why a run ended short of an answer. A caller that publishes a reason of its own maps
@@ -392,9 +416,16 @@ const (
 	FaultLength Fault = "length"
 	// FaultRefusal is the model refusing to answer.
 	FaultRefusal Fault = "refusal"
+	// FaultContentFilter is the provider's content filter refusing the call for what it holds:
+	// an error status whose body names the content filter, for a prompt the filter blocked, or
+	// a reply the provider stopped for content.
+	FaultContentFilter Fault = "content_filter"
 	// FaultMalformed is a last reply that is not exactly one object of Request.Final.
 	FaultMalformed Fault = "malformed"
 	// FaultProviderError is the provider failing: an error status that the one retry did
 	// not clear, or a stream that broke after its first byte.
 	FaultProviderError Fault = "provider_error"
+	// FaultTooLarge is a model call whose response passed Request.StreamLimit, or whose reply
+	// passed Request.ReplyLimit, and was cut there.
+	FaultTooLarge Fault = "too_large"
 )

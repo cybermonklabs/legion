@@ -1261,9 +1261,11 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ori
 // TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one: every name on the
 // census is a row of that table, or is in that table's gap map with why it has none.
 //
-// Nine of the census's names take no owner lock, in five exceptions, and cost this one nothing;
-// the lock table's gap map names the same nine. cmd/dispatch-seed's three item loaders fill a
-// database before any server is started on it; api's writeBroadcast writes direct messages,
+// Twelve of the census's names take no owner lock, in six exceptions, and cost this one nothing;
+// the lock table's gap map names the same twelve. cmd/dispatch-seed's three item loaders fill a
+// database before any server is started on it; going/eval's three seed writers write only items
+// on issues and documents their own transaction inserts into a database holding no project, so
+// no other writer sees those owners until it commits; api's writeBroadcast writes direct messages,
 // whose conversation is no owner (store.OwnerOf); docs' restoreWordings runs once at boot under
 // the copy locks alone (RestoreDecidedWordings) and refuses its restoration when the rows moved
 // under it; RebuildAll raises the owed markers of every comment, message and ask so the index

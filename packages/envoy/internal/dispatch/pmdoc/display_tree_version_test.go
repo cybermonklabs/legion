@@ -119,7 +119,7 @@ func TestDisplayTreeBuildsCountsTheReadsAndNotTheSnippets(t *testing.T) {
 	if built := DisplayTreeBuilds() - before; built != 1 {
 		t.Errorf("a second read of one text left the count at %d builds, want 1", built)
 	}
-	DisplaySnippetJSON("A snippet of the same kind of line", "\uE000", "\uE001")
+	DisplaySnippetJSON("A snippet of the same kind of line", "\uE000", "\uE001", SnippetCut{})
 	if built := DisplayTreeBuilds() - before; built != 1 {
 		t.Errorf("a snippet left the count at %d builds, want the 1 the text cost", built)
 	}

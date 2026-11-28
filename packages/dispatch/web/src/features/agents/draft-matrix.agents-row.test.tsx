@@ -134,6 +134,7 @@ const coreIssue: IssueSummary = {
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   key: "CORE-1",
+  project: "CORE",
   labels: [],
   last_seq: 0,
   open_asks: 0,

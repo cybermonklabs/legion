@@ -11,6 +11,7 @@ import { IssuePagePreference } from "../issue-page/IssuePagePreference";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
+import { CommandBarSection } from "./CommandBarSection";
 import { settingsSectionGap } from "./classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectsSection } from "./ProjectsSection";
@@ -100,6 +101,7 @@ export function SettingsPage(): ReactNode {
       <div className={settingsSectionGap}>
         <ProjectsSection />
         <AgentTokensSection />
+        <CommandBarSection />
         {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
           <>
             <GrantsSection />

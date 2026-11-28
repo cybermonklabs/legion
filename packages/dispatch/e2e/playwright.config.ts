@@ -280,15 +280,20 @@ const multiprocessProjects = [
 const readersPlaceRows =
   /a long message arriving above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long turn/;
 
-// The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
-// and `visual-phone` projects at the end of this list and in no project above them: a project
-// whose configuration key equals one of theirs - the same engine, viewport, origin and
-// server-process count - would run the same row twice, which
-// e2e/__tests__/row-configurations.test.ts refuses. `iphone` is that project for `visual-phone`,
-// which spreads the same device, and the three other projects that name a `testIgnore` name
-// this one too for the reason given above `webkit`: without a `testMatch` a project sees every
-// spec in this directory, so the ignore is what keeps this file to its own two projects.
+// The two specs of the containerised visual review, which run in the `visual`, `visual-phone`
+// and `visual-bar` projects at the end of this list and in no project above them: `visual.e2e.ts`,
+// the pages, and `going-bar.visual.e2e.ts`, the command bar's states. A project whose
+// configuration key equals one of theirs - the same engine, viewport, origin and server-process
+// count - would run the same row twice, which e2e/__tests__/row-configurations.test.ts refuses.
+// `iphone` is that project for `visual-phone`, which spreads the same device, and the three
+// other projects that name a `testIgnore` name `visualSpecs` too for the reason given above
+// `webkit`: without a `testMatch` a project sees every spec in this directory, so the ignore is
+// what keeps both files to their own three projects. `visualSpecs` matches both files, and each
+// of the three projects matches its own file alone, by the whole file name, since
+// `going-bar.visual.e2e.ts` ends in `visual.e2e.ts` too.
 const visualSpecs = /visual\.e2e\.ts$/;
+const pageVisualSpec = /\/visual\.e2e\.ts$/;
+const barVisualSpec = /\/going-bar\.visual\.e2e\.ts$/;
 
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
@@ -561,21 +566,28 @@ const aloneProjects = [
 /**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
  * comparing that page against a committed baseline in light and in dark, and the pages a phone
- * width rearranges once more in that viewport (e2e/visual.e2e.ts).
+ * width rearranges once more in that viewport (e2e/visual.e2e.ts); and one row per state of the
+ * command bar, which drives the bar through a run of the fake models and compares each state it
+ * reaches against its baseline (e2e/going-bar.visual.e2e.ts).
  *
- * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
- * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
- * it and `visual` inverts it, so every row runs under exactly one project and reads the
- * baseline directory of that project alone. Each also names ` @phone-only` on its own side of
- * that split, so a phone row written here with that tag alone lands in `visual-phone` rather
- * than in both projects at once; no row of this spec carries it today.
+ * `visual` and `visual-phone` run the pages' spec and split its rows by the ` @phone` tag its
+ * phone rows carry, the tag the suite already selects phone rows by (`phoneTagged` above):
+ * `visual-phone` greps it and `visual` inverts it, so every row runs under exactly one project
+ * and reads the baseline directory of that project alone. Each also names ` @phone-only` on its
+ * own side of that split, so a phone row written here with that tag alone lands in
+ * `visual-phone` rather than in both projects at once; no row of this spec carries it today.
+ * `visual-bar` runs the bar's spec alone, at the 1440 x 900 its design is judged at, with the
+ * motion a person can ask the page to leave out left out (`reducedMotion`), in light, in one
+ * locale and one time zone, since a row of it draws a time of day ("as of 4:40 PM") that the
+ * page writes in both. Its rows type, press keys and click, unlike the pages' rows: that spec's
+ * header says why each of its rows can still be compared to a baseline.
  *
- * A baseline a person takes and a baseline CI compares must be the same rendering, so both
+ * A baseline a person takes and a baseline CI compares must be the same rendering, so the three
  * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
- * the host, starts that container and runs exactly these two projects in it. A run outside the
+ * the host, starts that container and runs exactly these three projects in it. A run outside the
  * container reaches the rows, and every one of them skips itself, because the host's browser
  * builds, fonts and GPU stack are not the image's and its shots would be a different rendering
- * of the same page (the skip and its message are in the spec).
+ * of the same page (the skip and its message are in each spec).
  *
  * They are declared unconditionally, never behind the variable that turns the rows on.
  * `e2e/__tests__/row-configurations.test.ts` lists this config in a subprocess whose environment
@@ -597,11 +609,12 @@ const aloneProjects = [
 const visualProjects = [
   {
     name: "visual",
-    testMatch: visualSpecs,
+    testMatch: pageVisualSpec,
     grepInvert: phoneRowTagged,
     // A baseline is an input a person reads in a review, not an output of a row, so these files
-    // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
-    // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`.
+    // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` (a bar row's
+    // at `<state>-<shot>.png`) and are committed - the one place in this suite a spec's file is
+    // not under `testInfo.outputPath()`.
     // The template carries no `{platform}` segment, which the
     // default template adds: every shot is taken in the one pinned Linux image, so the segment
     // would say the same thing on every file and in the name of each the route and the scheme
@@ -613,10 +626,30 @@ const visualProjects = [
   },
   {
     name: "visual-phone",
-    testMatch: visualSpecs,
+    testMatch: pageVisualSpec,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+  // Last of the three, and it must stay last: its rows write the states they compare - a run, a
+  // plan applied and undone, a filed issue - into the one seed every visual row shares, with no
+  // guard on their pages, so every page row must draw before the first of them. The visual run's
+  // one worker takes the projects in this order; e2e/__tests__/visual-run-order.test.ts fails
+  // when this project is not the last it takes, or when the run has more than one worker.
+  {
+    name: "visual-bar",
+    testMatch: barVisualSpec,
+    snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
+    use: {
+      ...devices["Desktop Chrome"],
+      colorScheme: "light" as const,
+      locale: "en-US",
+      reducedMotion: "reduce" as const,
+      timezoneId: "UTC",
+      viewport: { height: 900, width: 1440 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -708,13 +741,15 @@ export default defineConfig({
   // costs a whole stack - a Postgres, a Go server and three to six fake listeners
   // (e2e/harness-pool.ts) - so a 16-core workstation would otherwise start eight of them before
   // its first row. CI names its own `--workers`, which `globalSetup` reads as `config.workers`
-  // and starts that many stacks for.
+  // and starts that many stacks for. The visual run gives none, and its order rests on this one
+  // worker: the command bar's rows write, and run after the page rows only because one worker
+  // takes the visual projects one after another (`visualProjects` above).
   workers: 1,
   // One retry on CI, none locally. A row that fails once and passes on the retry is reported
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the three `-alone` projects, the two `visual` ones, the two stubbed ones
+  // none of its own: the three `-alone` projects, the three `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`
@@ -809,7 +844,8 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          // Both are declared in every run, as their comment says.
+          // All three are declared in every run, as their comment says, and the bar's project
+          // last of them, for the reason its entry gives.
           ...visualProjects,
           ...(stub.declared ? stubProjects : []),
         ],

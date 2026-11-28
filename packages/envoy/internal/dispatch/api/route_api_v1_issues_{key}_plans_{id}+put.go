@@ -14,6 +14,9 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).putIssuePlan,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Reason: "a plan id: the uuid the Legion daemon derives for the plan of one run of an issue"},
+
+	// Only a Legion daemon's session writes a run's plan, 403 STEP_WRITER for every other writer.
+	DaemonWrites: &daemonWrite{Check: daemonRecordWriter, Record: "a plan"},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.PlanRecord{}, Request: planRecordInput{},
 	},

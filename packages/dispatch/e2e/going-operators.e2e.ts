@@ -1,5 +1,4 @@
 import { createComment, createIssue, createProject, patchIssue } from "./api";
-import { usesFakeEmbedder } from "./harness-embedder";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -26,6 +25,14 @@ async function openSearch(page: Page): Promise<void> {
   await page.locator("body").focus();
   await page.keyboard.press("/");
   await expect(page.getByRole("dialog", { name: "Search" })).toBeVisible();
+}
+
+/** Opens the filters and the search syntax help, which sit behind the Filters button at the
+ *  box's right and show nowhere else (design v3, state 1). */
+async function openFilters(page: Page): Promise<void> {
+  const button = page.getByRole("dialog", { name: "Search" }).getByTestId("search-filters-button");
+  await button.click();
+  await expect(button).toHaveAttribute("aria-expanded", "true");
 }
 
 /** The day three days back: the value the date control takes, and the words the chip reads it
@@ -72,8 +79,9 @@ test("the operator forms are offered as the words are typed, and each narrows th
     // What the bar shows is checked with `expect.soft` and the rows with a plain `expect`, so
     // a run where the query reads an operator the bar never shows reports both halves.
 
-    // All three are offered from the first keystroke, so a person who knows none of them is
-    // told what the box can do while they are using it.
+    // All three are offered under Filters from the first keystroke, so a person who knows none
+    // of them is told what the box can do while they are using it.
+    await openFilters(page);
     await search.fill("brass");
     await expect
       .soft(forms.getByRole("listitem"), "the three forms are offered")
@@ -100,18 +108,6 @@ test("the operator forms are offered as the words are typed, and each narrows th
     await expect(options).toHaveCount(1);
     await expect.soft(inUse("exclude")).toHaveCount(1);
     await expect(options.first()).toContainText("sextant case");
-
-    // Under the switch nearly every spec runs with, the server embeds nowhere, so every search
-    // here is the keyword half alone and the bar says so above the hits it still shows
-    // (`e2e/harness-embedder.ts`). A run that gives the server an embedder is not degraded and
-    // draws no such line, and that is this row's own claim: the banner follows the deployment,
-    // not the operators, which the rows above it have already judged.
-    const degraded = dialog.getByTestId("search-degraded");
-    if (usesFakeEmbedder) {
-      await expect.soft(degraded).toHaveCount(0);
-    } else {
-      await expect.soft(degraded).toContainText("Searching words only");
-    }
   } finally {
     await context.close();
   }
@@ -149,8 +145,10 @@ test("each chip narrows the same list and reads back in the words the person cho
     const options = dialog.getByRole("option");
     const chips = dialog.getByTestId("search-filters");
 
-    // The row the four chips are added from, before any of them is used: a bar without it
-    // fails here rather than at a click on a control that does not exist.
+    // The row the four chips are added from, behind the Filters button, before any of them is
+    // used: a bar without it fails here rather than at a click on a control that does not exist.
+    await expect(chips).toHaveCount(0);
+    await openFilters(page);
     await expect(chips).toBeVisible();
     await search.fill("astrolabe");
     await expect(options).toHaveCount(5);

@@ -1,0 +1,269 @@
+{
+  "description": "Each value the Dispatch web writes in words, with the words it writes: a priority (kind priority), 0 to 3 or null, as the command bar's blocks write one (columnText in packages/dispatch/web/src/features/search/blocks/block-cells.ts), an issue's status (kind status), as the board and the issue page write one (statusLabels in packages/dispatch/web/src/features/project/board-model.ts), and a time (kind time), an RFC 3339 string, relative to now as every Timestamp writes it (relativeTimeLabel in packages/dispatch/web/src/features/refs/Timestamp.tsx), across each of its thresholds: within a minute either side, then the longest unit of a year, a month (30 days), a week, a day, an hour and a minute that fits, rounded as Math.round rounds, a half toward the later time. Written by hand from the web's rules, not from either side's code. The command bar's agent gives its model the words of a priority and a time beside each such value of a tool result (packages/envoy/going/agent/shown.go), so the agent's answer and the page say each value alike: Timestamp.test.tsx holds the web to those rows and shown_test.go holds the agent to them. The command bar's eval reads a status's count in an answer's prose by its value or by its words (packages/envoy/going/eval/answer.go): board-model.test.ts holds the web to the status rows and going/eval's grade_test.go holds the eval to them.",
+  "rows": [
+    { "kind": "priority", "now": "2026-11-18T12:00:00Z", "value": 0, "shown": "P0" },
+    { "kind": "priority", "now": "2026-11-18T12:00:00Z", "value": 1, "shown": "P1" },
+    { "kind": "priority", "now": "2026-11-18T12:00:00Z", "value": 2, "shown": "P2" },
+    { "kind": "priority", "now": "2026-11-18T12:00:00Z", "value": 3, "shown": "P3" },
+    { "kind": "priority", "now": "2026-11-18T12:00:00Z", "value": null, "shown": "No priority" },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "triage", "shown": "Triage" },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "icebox", "shown": "Icebox" },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "backlog", "shown": "Backlog" },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "todo", "shown": "Todo" },
+    {
+      "kind": "status",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "in_progress",
+      "shown": "In progress"
+    },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "testing", "shown": "Testing" },
+    {
+      "kind": "status",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "needs_review",
+      "shown": "Needs review"
+    },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "retro", "shown": "Retro" },
+    { "kind": "status", "now": "2026-11-18T12:00:00Z", "value": "done", "shown": "Done" },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T12:00:00Z",
+      "shown": "just now"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:59:00.001Z",
+      "shown": "just now"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T12:00:59.999Z",
+      "shown": "just now"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:59:00Z",
+      "shown": "1 minute ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:58:31Z",
+      "shown": "1 minute ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:58:30Z",
+      "shown": "1 minute ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:58:29Z",
+      "shown": "2 minutes ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:55:00Z",
+      "shown": "5 minutes ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:55:00.123456Z",
+      "shown": "5 minutes ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:00:31Z",
+      "shown": "59 minutes ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:00:15Z",
+      "shown": "60 minutes ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T11:00:00Z",
+      "shown": "1 hour ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T13:00:00+02:00",
+      "shown": "1 hour ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T09:40:00Z",
+      "shown": "2 hours ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-17T12:15:00Z",
+      "shown": "24 hours ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-17T12:00:00Z",
+      "shown": "yesterday"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-17T00:00:00Z",
+      "shown": "yesterday"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-16T13:00:00Z",
+      "shown": "2 days ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-16T12:00:00Z",
+      "shown": "2 days ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-11T13:00:00Z",
+      "shown": "7 days ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-11T12:00:00Z",
+      "shown": "last week"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-05T12:00:00Z",
+      "shown": "2 weeks ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-23T12:00:00Z",
+      "value": "2026-11-10T12:00:00Z",
+      "shown": "2 weeks ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-23T12:00:00Z",
+      "value": "2026-11-10T17:00:00Z",
+      "shown": "2 weeks ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-10-20T12:00:00Z",
+      "shown": "4 weeks ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-10-19T12:00:00Z",
+      "shown": "last month"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-10-04T12:00:00Z",
+      "shown": "last month"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-10-03T12:00:00Z",
+      "shown": "2 months ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2025-11-19T12:00:00Z",
+      "shown": "12 months ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2025-11-18T12:00:00Z",
+      "shown": "last year"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2023-11-19T12:00:00Z",
+      "shown": "3 years ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "0001-01-01T00:00:00Z",
+      "shown": "2,027 years ago"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T12:01:00Z",
+      "shown": "in 1 minute"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T12:01:30Z",
+      "shown": "in 2 minutes"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-18T13:00:00Z",
+      "shown": "in 1 hour"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-19T12:00:00Z",
+      "shown": "tomorrow"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-21T12:00:00Z",
+      "shown": "in 3 days"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-11-25T12:00:00Z",
+      "shown": "next week"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2026-12-18T12:00:00Z",
+      "shown": "next month"
+    },
+    {
+      "kind": "time",
+      "now": "2026-11-18T12:00:00Z",
+      "value": "2027-11-18T12:00:00Z",
+      "shown": "next year"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+kind: Changed
+body: |-
+  A model call the provider's content filter refused says what the provider said: the detail of
+  agentloop's content-filter fault names the error's code and message and the labels the filter
+  flagged, such as `content_filter: Response content blocked by label 'Jailbreak'.`, kept to a few
+  hundred bytes and never the prompt, so the agent's log lines and a run's reason tell Azure's
+  jailbreak shield from a harm category. A command-bar run refused with every result it could
+  withhold withheld no longer ends failed: it stops with `MODEL_CONTENT_FILTER`, its reason says
+  the model's provider refused to read part of what the run found and to Continue or ask in other
+  words, and it offers Continue where it had found results; a run refused for its words alone
+  offers nothing and says to ask in other words. The eval's chat proxy keeps the request body of
+  each refused call as `refused/<n>.json` in its work dir, named on its line of `chat-calls.log`,
+  and `going-eval replay` sends such a body to the deployment with one part taken out at a time,
+  or its words narrowed by bisection, and counts what the filter refuses.
+  The note that tells a run's last model call it is offered no tool now ends that call's system
+  message instead of standing in the person's turn, word for word: there, Azure's jailbreak
+  shield refused every last call of the eval's chart-08 and change-14 it was replayed in.

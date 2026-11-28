@@ -143,6 +143,41 @@ cd packages/dispatch
 DISPATCH_E2E_EMBEDDER=fake bun run e2e -- --project=chromium --project=iphone search-tiers
 ```
 
+`DISPATCH_E2E_MODELS=fake` is the models lane: the harness makes a certificate for 127.0.0.1 and
+a bearer token per fake in a directory of each stack's own (`DISPATCH_E2E_MODELS_DIR`), starts
+`e2e/fake-chat-model.ts` and `e2e/fake-decision-model.ts` over https with it, and points the
+server at them as a deployment configures its writing model (`DISPATCH_ANSWERER=endpoint`) and
+its decision model (the model `packages/envoy/going/decision_models.json` marks chosen), with
+`SSL_CERT_FILE` naming that certificate (`e2e/harness-models.ts`, `e2e/run-server.sh`); the server
+hands the same settings to its agent process, whose runs call the same fake. A row scripts what
+each fake answers and reads back what the server asked of it through `e2e/fake-models-helpers.ts`,
+which skips the row outside the lane and reads the chosen decision model from the record rather
+than naming it. The fake writing model answers an agent run turn by turn, from a script keyed by the
+person's words (`scriptChat({ runs })`, with `findTools`, `callTool`, `proposePlan`, `say`,
+`endlessStream` and `refusedWith`), and records each call with the run's page and the tool results
+it gave the model (`runCalls`); the fake decision model can hold its answer until the row
+releases it (`hold`, `releaseDecisions`). `bun run e2e:models` runs the lane's specs on chromium
+(`going-agent-*`, `going-answer*` and `going-blocks`), and `bun run e2e:models:firefox` runs
+`going-agent-place`'s `@firefox` rows on Firefox, locally or on a build farm. The `embedder` job
+of `.github/workflows/dispatch-browser.yaml` runs both after its `bun run e2e:embedder` step, each
+in a step of its own with the same project and filters, but through `bunx playwright test`, since
+that step has already built the contracts and the dashboard the two scripts build first.
+
+`DISPATCH_E2E_MODELS=real` serves the command bar with a deployment's models, as a preview of a
+commit does: the server calls the chat model and the decision model the caller's own settings
+name (`DISPATCH_ANSWERER` and its place's settings, `DISPATCH_DECISION_MODEL` with its endpoint
+and token file), runs with `GOMEMLIMIT=3GiB`, and starts nothing, naming each setting, when one is
+missing. The harness writes the eval's seed (`packages/envoy/going/eval/seed.json`, through `go run
+./cmd/going-eval seed`) into the stack's database before the server starts, and hands the seed's
+agent sessions to the fake Envoy (`e2e/harness-eval-seed.ts`). `bun run dispatch:local` empties
+the database and seeds its own workspace after the harness starts, so a preview starts the
+harness itself (`startHarness`) and seeds nothing more.
+
+`DISPATCH_E2E_BASE_BUILD=1` tells the scenario reset (`e2e/seed.ts`) that the server is an older
+commit's (`DISPATCH_E2E_SERVER_BIN`, `DISPATCH_E2E_SERVER_WEB_DIST`), so the tables this checkout
+adds may be missing from the database it migrated: the reset leaves out, and prints once, each
+listed table the database does not hold. Without it a missing table fails the reset.
+
 Run the local harness with its isolated database available:
 
 ```bash
@@ -1224,7 +1259,7 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+The suite has sixteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
 stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
@@ -1308,9 +1343,12 @@ reason, and two layers read it: the axe scan of `e2e/accessibility.e2e.ts` and t
 of `e2e/visual.e2e.ts`, whose baselines are committed as
 `e2e/__screenshots__/<project>/<route>-<scheme>.png`. An axe finding is fixed in `web/src`;
 `e2e/accessibility-exclusions.ts` takes an entry only where the fix would change what another row
-claims. A baseline comes only from the pinned container, through
-`e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
-machine with no container.
+claims. The same lane's `visual-bar` project compares each state of the command bar's design,
+reached through runs of the fake models, against its baseline at
+`e2e/__screenshots__/visual-bar/<state>-<shot>.png` (`e2e/going-bar.visual.e2e.ts`, whose
+header says how its rows hold still). A baseline comes only from the pinned container, through
+`e2e/visual-run.sh --update-snapshots`, which starts its stack with the fake models; the
+script's header says how to take one from CI on a machine with no container.
 
 A third layer holds every page to the layout rule of `web/src/AGENTS.md` ("Layout"), and
 `bun run e2e:layout` runs all of it. It reads the routes of `e2e/layout-routes.ts` - every

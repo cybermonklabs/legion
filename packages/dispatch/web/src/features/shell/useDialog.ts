@@ -19,6 +19,10 @@ export const NARROW_OR_SHORT_VIEWPORT_QUERY = `${PHONE_VIEWPORT_QUERY}, (max-hei
  *  default; at a 20 px one the `md:` classes switch at 960 px while a pixel query still would at
  *  768. */
 export const MD_VIEWPORT_QUERY = "(min-width: 48rem)";
+/** Tailwind's `sm` itself: true exactly when the `sm:` classes apply. In `rem`, for
+ *  `MD_VIEWPORT_QUERY`'s reason: Tailwind declares `sm` as `40rem`, so only a `rem` query
+ *  switches with those classes at any default font size. */
+export const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 /** Tailwind's `xl`: from 1280 px the Inbox shows its reading pane beside the list. In `rem`, and
  *  for `MD_VIEWPORT_QUERY`'s reason: it is paired with `xl:` classes, which Tailwind declares at
  *  `80rem`, so only a `rem` query switches with them at any default font size. */

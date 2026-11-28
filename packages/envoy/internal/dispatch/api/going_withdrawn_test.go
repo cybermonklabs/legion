@@ -195,10 +195,11 @@ func TestGoingStreamOfARunGivenOnlyStandingPostsIsUnchanged(t *testing.T) {
 	}
 }
 
-// heldAnswerer is a model that is still writing when the delete commits: it makes the search and
-// the body read a real answer makes, emits first, then waits for release before it emits rest,
-// and says what storing rest answered on stored.
-type heldAnswerer struct {
+// writingAnswerer is a model that is still writing when the delete commits: it makes the search
+// and the body read a real answer makes, emits first, then waits for release before it emits
+// rest, and says what storing rest answered on stored. (heldAnswerer, going_quick_test.go, is
+// one that answers nothing until its test releases it.)
+type writingAnswerer struct {
 	searches string
 	first    going.Event
 	rest     []going.Event
@@ -206,7 +207,7 @@ type heldAnswerer struct {
 	stored   chan error
 }
 
-func (h *heldAnswerer) Run(ctx context.Context, request going.Request, emit func(going.Event) error) error {
+func (h *writingAnswerer) Run(ctx context.Context, request going.Request, emit func(going.Event) error) error {
 	hits, err := request.Search(ctx, h.searches)
 	if err != nil {
 		return emit(going.Fault(contracts.GoingErrorAnswerFailed))
@@ -232,6 +233,9 @@ func (h *heldAnswerer) Run(ctx context.Context, request going.Request, emit func
 	return nil
 }
 
+// Blocks says the model's blocks are not yet known, as an answerer that never asked for one does.
+func (h *writingAnswerer) Blocks() (blocks, known bool) { return false, false }
+
 // Row 5: a run still answering when the delete commits slips no frame past it. A reader has the
 // stream open and was written the answer's first frame before the delete, which is a delivery
 // already sent; the model then writes the comment's words. Whether the run stored them before
@@ -241,7 +245,7 @@ func (h *heldAnswerer) Run(ctx context.Context, request going.Request, emit func
 func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 	t.Parallel()
 	const phrase = "zarquonheldcomment"
-	answerer := &heldAnswerer{
+	answerer := &writingAnswerer{
 		searches: phrase,
 		first:    going.Text("Before the delete, "),
 		release:  make(chan struct{}),

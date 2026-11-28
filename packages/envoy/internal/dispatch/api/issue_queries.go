@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -52,6 +53,10 @@ var (
 	listIssuesQueryAtCut      = issueSummaryQuery(false, false, true, true)
 	listIssuesPageQueryAtCut  = issueSummaryQuery(false, true, true, true)
 )
+
+// goingCoveredIssuePageQuery filters child issues by the run author's scope before paging.
+var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true, false,
+	" and "+access.ScopeCoversSQL("i.project_key", "$20"))
 
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
 // and to the terms the `advances` and `priority` filters compute once per request
@@ -93,6 +98,10 @@ var (
 // (prioritiesLiveAtCutTerm) in place of priority_nodes, which keeps only the present state, and
 // reads no component member (issueComponentsTermsAtCut).
 func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
+	return issueSummaryQueryFiltered(pinned, paged, readAdvances, atCut, "")
+}
+
+func issueSummaryQueryFiltered(pinned, paged, readAdvances, atCut bool, extraFilter string) string {
 	parameter := 18
 	pinnedJoin := ""
 	if pinned {
@@ -103,7 +112,7 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
-		` + issueListFilters + `
+		` + issueListFilters + extraFilter + `
 	), filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from (select array_agg(address) as addresses from matched) m
@@ -119,7 +128,7 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		filteredTerms = `filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from issues i` + pinnedJoin + `
-		` + issueListFilters + `
+		` + issueListFilters + extraFilter + `
 	)`
 	}
 	query := `with recursive ` + filterTerms + `, ` + issuePriorityFilterTerms + `, ` + filteredTerms
@@ -471,7 +480,7 @@ var issuePriorityFilterTerms = `priority_candidates as (
 // The two cells of the move (issueMovedColumns) stand right behind them, and the priority the
 // issue resolves to and its source (refs.IssuePriorityColumns) behind those.
 func issueSummaryColumns(advances string) string {
-	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
+	return `i.key, i.project_key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
 	       ` + advances + `,
 	       ` + issueMovedColumns + `,
@@ -894,7 +903,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	total := 0
 	if inSQL {
 		arguments = append(arguments, page.limit, page.offset)
-		issues, total, err = s.scanIssuePage(r.Context(), listQuery, arguments)
+		issues, total, err = scanIssuePage(r.Context(), s.deps.Store.Pool, listQuery, arguments)
 	} else {
 		issues, err = s.scanIssueSummaries(r.Context(), listQuery, arguments)
 	}
@@ -975,7 +984,7 @@ type issueSummaryRow struct {
 // targets are the row's scan targets, after leading, which a paged read fills with the columns
 // it carries ahead of the issue's own.
 func (r *issueSummaryRow) targets(leading ...any) []any {
-	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
+	targets := append(leading, &r.issue.Key, &r.issue.Project, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
 	targets = append(targets, r.advances.targets()...)
 	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy, &r.issue.ResolvedPriority, &r.issue.PriorityFrom)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
@@ -1030,13 +1039,13 @@ func (s *server) scanIssueSummaries(ctx context.Context, listQuery string, argum
 	return issues, rows.Err()
 }
 
-// scanIssuePage runs a paged list query and returns the page's rows and the count of every issue
-// the filters match, which the same statement made of the same snapshot. The row the statement
-// answers for an empty page carries that count alone: it is dropped before it is resolved, so a
-// parent chain of an issue off the page refuses nothing. No row at all is an empty filtered set,
-// whose count is 0.
-func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, listQuery, arguments...)
+// scanIssuePage runs a paged list query through q and returns the page's rows and the count of
+// every issue the filters match, which the same statement made of the same snapshot. The row the
+// statement answers for an empty page carries that count alone: it is dropped before it is
+// resolved, so a parent chain of an issue off the page refuses nothing. No row at all is an empty
+// filtered set, whose count is 0.
+func scanIssuePage(ctx context.Context, q queryer, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
+	rows, err := q.Query(ctx, listQuery, arguments...)
 	if err != nil {
 		return nil, 0, err
 	}

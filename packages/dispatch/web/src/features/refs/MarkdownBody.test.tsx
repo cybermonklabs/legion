@@ -26,6 +26,7 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
+import { askQuery } from "./reference-target";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -2185,4 +2186,310 @@ describe("A long body parsed in the worker", () => {
       later.unmount();
     }
   });
+});
+
+// The command bar draws an answer with `chips` (design v2, state 4): each link to an issue is
+// the issue's chip (`ItemChip`), its key, a status dot and its title; every other reference
+// keeps its words.
+test("a body drawn with chips draws each link to an issue as its chip, and any other reference as its words", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Mapped in [DEMO-7](dispatch://DEMO-7), as [its spec](dispatch://DEMO-7/spec) says."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    expect(chip.closest("a")).toHaveAttribute("href", "/issues/DEMO-7");
+    expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+    const links = view.getAllByRole("link");
+    expect(links).toHaveLength(2);
+    expect(within(links[1] as HTMLElement).queryByTestId("item-chip")).toBeNull();
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// An issue is its chip once in a body drawn with chips (design v3, state 4): the answer of a real
+// model named DEMO-7 twice and drew its chip, title and all, at both places. A later link to it
+// keeps the words it was written with, as a plain link to the issue.
+test("a body drawn with chips draws an issue's chip at its first link, and a later link to it as its words", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Mapped in [DEMO-7](dispatch://DEMO-7); the notes of [DEMO-7](dispatch://DEMO-7) say why."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+    const links = view.getAllByRole("link");
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/issues/DEMO-7",
+      "/issues/DEMO-7",
+    ]);
+    expect(links[1]?.textContent).toBe("DEMO-7");
+    expect(view.container.textContent).toBe(
+      "Mapped in DEMO-7DoneMap the lunar craters; the notes of DEMO-7 say why."
+    );
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A chip is a box that never breaks (`ItemChip`), and a line may end after a box, so the full stop
+// after a chip went on alone to the next line in the side panel. The link and the punctuation
+// written right after it share one span that does not break, with nothing between them. The
+// punctuation stands one pixel nearer the chip than its glyph does (`-ml-px`): a full stop's own
+// side bearing read as a gap after the chip's rule (review R4).
+test("a body drawn with chips keeps the punctuation after a chip against it, on its line", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="It needs a map, [DEMO-7](/issues/DEMO-7). Then [DEMO-7](/issues/DEMO-7) again."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    const line = chip.closest("[data-chip-line]");
+    if (line === null) throw new Error("the chip and its full stop share no line");
+    expect(line.className).toBe("whitespace-nowrap");
+    expect(line.textContent).toBe("DEMO-7DoneMap the lunar craters.");
+    expect(line.firstElementChild).toBe(chip.closest("a"));
+    const mark = line.querySelector("[data-chip-mark]");
+    expect(mark?.textContent).toBe(".");
+    expect(mark?.className).toBe("-ml-px");
+    expect(mark?.previousElementSibling).toBe(chip.closest("a"));
+    // The words after the full stop stay outside it, and so does the later plain link.
+    expect(view.container.textContent).toBe(
+      "It needs a map, DEMO-7DoneMap the lunar craters. Then DEMO-7 again."
+    );
+    expect(view.container.querySelectorAll("[data-chip-line]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A time the command bar's agent writes is a link to its instant under `dispatch-time:`: the
+// body draws a `<time>` of that instant showing the link's words, with the instant whole on
+// hover as every time the page draws in words has it, and no link; an address that names no
+// instant draws the words alone.
+test("a time link draws as a time showing its words with the full date on hover, and a bad one as its words", async () => {
+  await warmMarkdownRenderer();
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Bob wrote [5 days ago](dispatch-time:2026-11-18T11:35:00Z), then [later](dispatch-time:last-week)."
+      referenceText=""
+      softBreaks="line"
+    />
+  );
+  try {
+    await waitFor(() => expect(view.container.querySelector("time")).not.toBeNull());
+    const time = view.container.querySelector("time");
+    expect(time?.textContent).toBe("5 days ago");
+    expect(time?.getAttribute("datetime")).toBe("2026-11-18T11:35:00Z");
+    expect(time?.getAttribute("title")).toBe(new Date("2026-11-18T11:35:00Z").toLocaleString());
+    expect(view.container.querySelectorAll("time")).toHaveLength(1);
+    expect(view.container.querySelector("a")).toBeNull();
+    expect(view.container.textContent).toBe("Bob wrote 5 days ago, then later.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A time link's words are the model's, whatever its instant would read as from here: a time it
+// called "last spring" draws as "last spring", never as words the page makes of its address.
+test("a time link draws the words the model wrote, not words made from its instant", async () => {
+  await warmMarkdownRenderer();
+  const instant = "2026-04-20T09:00:00Z";
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown={`The export broke [last spring](dispatch-time:${instant}).`}
+      referenceText=""
+      softBreaks="line"
+    />
+  );
+  try {
+    await waitFor(() => expect(view.container.querySelector("time")).not.toBeNull());
+    const time = view.container.querySelector("time");
+    expect(time?.textContent).toBe("last spring");
+    expect(time?.getAttribute("datetime")).toBe(instant);
+    expect(time?.getAttribute("title")).toBe(new Date(instant).toLocaleString());
+    expect(view.container.textContent).toBe("The export broke last spring.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A time link whose words are an issue's key names that issue: a real model wrote when DEMO-17
+// last moved as `[DEMO-17](dispatch-time:…)`, and the bar drew a time, so the reader lost the
+// issue. The bar draws the issue's chip there, as it draws every issue it names, with the time on
+// the chip's hover after its whole title and the full stop after it on its line - in an answer
+// whose text links no bare key (the conversation's) and in one that links the key an item frame
+// names (the short answer's).
+test("a time link whose words are an issue's key draws that issue's chip, with the time on hover", async () => {
+  await warmMarkdownRenderer();
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-17",
+    project: "DEMO",
+    status: "backlog",
+    title: "PDF export: fonts missing on mobile",
+  });
+  const instant = "2026-10-10T09:00:00Z";
+  const chipWords = "DEMO-17BacklogPDF export: fonts missing on mobile";
+  try {
+    for (const referenceText of ["", "DEMO-17"]) {
+      const view = render(
+        <MarkdownBody
+          chips
+          markdown={`Nothing has moved on [DEMO-17](dispatch-time:${instant}).`}
+          referenceText={referenceText}
+          softBreaks="line"
+        />
+      );
+      try {
+        // The body is drawn again once the key's issue is known to exist, which draws its chip
+        // anew, so the chip is the one drawn when its words are whole.
+        const chip = await waitFor(() => {
+          const drawn = view.getByTestId("item-chip");
+          expect(drawn.textContent).toBe(chipWords);
+          return drawn;
+        });
+        expect(chip).toHaveAttribute(
+          "title",
+          `PDF export: fonts missing on mobile · ${new Date(instant).toLocaleString()}`
+        );
+        expect(chip.closest("a")).toHaveAttribute("href", "/issues/DEMO-17");
+        expect(chip.closest("time")).toHaveAttribute("datetime", instant);
+        expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+        expect(chip.closest("[data-chip-line]")?.textContent).toBe(`${chipWords}.`);
+        expect(view.container.textContent).toBe(`Nothing has moved on ${chipWords}.`);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A long question titles its link cut to fit, and the sentence the link ends draws one stop: the
+// link's "…", never "…." with the full stop the answer's own sentence adds after it. The cut is
+// the one every page's link titles take, at 60 characters: the bar changes no other page. Once
+// the question is reworded short, its title ends in no "…", and the stop is back.
+test("a link whose title is cut draws no second full stop after its …, and draws it again once the title is whole", async () => {
+  await warmMarkdownRenderer();
+  const question =
+    "Does a reply in the side panel start a new turn, or is it the same turn as the last one?";
+  const asked = Promise.withResolvers<AskRead>();
+  const getAsk = spyOn(api, "getAsk").mockReturnValue(asked.promise);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Asked in [dispatch://CORE-1/ask/ask-1](dispatch://CORE-1/ask/ask-1). Pick one."
+      referenceText=""
+      softBreaks="line"
+    />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    const link = await view.findByRole("link", { name: "dispatch://CORE-1/ask/ask-1" });
+    // Until the question is read, the address ends in no "…", and the stop stays.
+    expect(view.container.textContent).toBe("Asked in dispatch://CORE-1/ask/ask-1. Pick one.");
+    asked.resolve({
+      answers: [],
+      ask: {
+        anchor: null,
+        answer: null,
+        artifact_id: null,
+        asked_of: null,
+        asked_of_at: null,
+        asked_of_by: null,
+        author: { id: "alice", kind: "user" },
+        block_id: null,
+        created_at: "2026-09-09T00:00:00Z",
+        edited_at: null,
+        id: "ask-1",
+        issue_key: "CORE-1",
+        kind: "question",
+        multiple: false,
+        opened_event_id: 1,
+        options: [],
+        question,
+        question_tree: displayTree(question),
+        state: "open",
+        urgency: "med",
+      },
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    });
+    // Cut at 60 characters, as every link title is cut.
+    await waitFor(() =>
+      expect(link.textContent).toBe("Does a reply in the side panel start a new turn, or is it th…")
+    );
+    expect(view.container.textContent).toBe(
+      "Asked in Does a reply in the side panel start a new turn, or is it th… Pick one."
+    );
+
+    const reworded = "One turn or two";
+    act(() =>
+      client.setQueryData(askQuery("ask-1").queryKey, (read) =>
+        read === undefined
+          ? read
+          : {
+              ...read,
+              ask: { ...read.ask, question: reworded, question_tree: displayTree(reworded) },
+            }
+      )
+    );
+    await waitFor(() => expect(link.textContent).toBe(reworded));
+    expect(view.container.textContent).toBe(`Asked in ${reworded}. Pick one.`);
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
 });

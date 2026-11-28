@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  `dispatch_create_priority` refuses a title over 200 characters that names no id, since the id
+  the title would give is longer than an id may be.

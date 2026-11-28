@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/going/eval"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -30,9 +31,13 @@ import (
 
 // This file is the package's external test: its drives reach the API and the document service,
 // which no test of the package's own imports, through the routes and the calls cmd/dispatch
-// serves them by. It hands its drives to TestTheSizingCountsEveryTupleTheWritersAppend as the
-// test binary starts.
-func init() { graphcensus.ImportedDrives = importedDrives }
+// serves them by, and the eval's seed, which writes a seeded Dispatch through both. It hands its
+// drives to TestTheSizingCountsEveryTupleTheWritersAppend as the test binary starts.
+func init() {
+	graphcensus.ImportedDrives = func(t *testing.T) []graphcensus.StoreDrive {
+		return append(importedDrives(t), evalSeedDrives(t)...)
+	}
+}
 
 // writersServerURL is the public origin the writers' server serves under.
 const writersServerURL = "https://dispatch.sizing.invalid"
@@ -561,6 +566,59 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Counts: newBlockCounted,
+	}}
+}
+
+// evalSeedDrives are the drives of the eval's seed (going/eval's WriteSeed), which writes a
+// seeded Dispatch in one transaction: its documents' versions, each indexed as it is written
+// (writeDocumentVersion), and its comments, each with its node and its author's (writeComment).
+// WriteSeed seeds an empty database alone, so each drive runs it over an empty database of its
+// own, and what the one transaction appended is that drive's: a seed of one issue whose spec
+// holds text and no comment, and a seed of one issue whose spec is empty, whose version states
+// no block, and one comment of its person on it.
+func evalSeedDrives(t *testing.T) []graphcensus.StoreDrive {
+	t.Helper()
+	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	seed := func(spec string, comments ...eval.Comment) *eval.Seed {
+		return &eval.Seed{
+			Now:      at,
+			People:   []eval.Person{{Login: "alice", Name: "Alice"}},
+			Projects: []eval.Project{{Key: "EVAL", Name: "The eval's seed"}},
+			Issues:   []eval.Issue{{Key: "EVAL-1", Title: "What the eval's seed writes", Status: "todo", CreatedAt: at, Spec: spec}},
+			Comments: comments,
+		}
+	}
+	write := func(database *store.Store, seed *eval.Seed) func(*testing.T) {
+		return func(t *testing.T) {
+			t.Helper()
+			if wrote, err := eval.WriteSeed(context.Background(), database, seed); err != nil || !wrote {
+				t.Fatalf("write the eval's seed (wrote %v): %v", wrote, err)
+			}
+		}
+	}
+	documents, comments := storetest.Open(t), storetest.Open(t)
+	return []graphcensus.StoreDrive{{
+		Name: "going/eval/write.go#writeDocumentVersion", Database: documents,
+		Sites: []string{"going/eval/write.go#writeDocumentVersion", "refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Drive: write(documents, seed("# Spec\n\nWhat the eval's seed writes.\n")),
+		// The spec's one version, indexed as its first: the blocks it states afresh.
+		Counts: newBlockCounted,
+	}, {
+		Name: "going/eval/write.go#writeComment", Database: comments,
+		Sites: []string{"going/eval/write.go#writeComment", "graphstore/write.go#Write"},
+		Drive: write(comments, seed("", eval.Comment{
+			ID: "sizing", Owner: "EVAL-1", Author: "alice", Body: "A remark on the issue.", CreatedAt: at,
+		})),
+		// The comment, as the comment path states one, in its issue's project, and its author's
+		// node, which the seed's first comment of that author makes.
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
+			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
+			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
+			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
+		},
 	}}
 }
 

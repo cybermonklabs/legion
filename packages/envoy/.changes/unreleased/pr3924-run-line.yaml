@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A command-bar run records the line on top it was started from. `POST /api/v1/going/runs` takes
+  an optional `line`, `ask`, `do` or `file`, the line the person pressed Enter on, and refuses any
+  other value with `400`; the run's record (`GET /api/v1/going/runs/{id}`, and each run of
+  `GET /api/v1/me/going-runs`) carries `line`, null for a run not started from the line: a
+  follow-up typed in the box, the side panel's box, a Continue. Migration
+  `20261123040936_going_runs_line` adds the nullable column `going_runs.line`, which rewrites no
+  row. The bar sends the line it shows at the moment of the key, and a run of the line Do that
+  ends done with no plan reads "Nothing changed: no plan was proposed." in place of "Done", in
+  the bar, in History and after a reload.

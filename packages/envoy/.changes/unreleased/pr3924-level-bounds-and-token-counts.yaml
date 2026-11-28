@@ -1,0 +1,18 @@
+kind: Changed
+body: |-
+  A command-bar run's levels bound each model call's output at 1,000 tokens for Fast, 2,500 for
+  Standard and 5,000 for Deep, about twice what the real model wrote in one call of each in the
+  preview; a call that reaches the bound still stops the run `OUTPUT_TOKEN_BUDGET` and offers
+  Continue. The agent's pacer reserves for each call a quarter of the characters of its prompt and
+  of the tool definitions it sends, its level's output tokens and its level's reasoning tokens
+  (Fast 353, Standard 865, Deep 1,967), since the output bound does not bound the model's
+  reasoning; as a call ends, the pacer charges its share the tokens the call spent past what it
+  drew, and the next calls wait them out. The server's short answers pace their 25% share the same
+  way: each call's estimate counts the tool definitions it sends, and each call is charged what it
+  spent past its draw as it ends. Each `reply` frame adds `charged_tokens`, what the pacer charged
+  the call in the end. A provider that reports a reply's reasoning tokens apart from its
+  `completion_tokens` (its `total_tokens` is prompt + completion + reasoning) has them counted in
+  the call's output, its cost and the run's tokens; a usage that counts them among the completion
+  tokens, as OpenAI's does, reads as before, so `output_tokens` holds the reasoning either way. A
+  run stopped `TIME_BUDGET` whose pacer held its model calls for more than half its working time
+  says how long the model was busy, and the bar shows it.

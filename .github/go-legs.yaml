@@ -146,6 +146,7 @@ packages/daemon:
       - internal/repocache/fakegcs/cmd/fakegcs
       - internal/subreaper
       - internal/startwalk
+      - internal/sharedloop
     3:
       - internal/workspace                      # 176 s
       - internal/runtime/sandbox                # 156 s

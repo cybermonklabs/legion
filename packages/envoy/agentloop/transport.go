@@ -10,11 +10,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/httpoutage"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -25,12 +30,40 @@ import (
 // the attempt, on each request; adds the endpoint's own query parameters to it; takes the run's
 // Final schema out of a Messages API body that offers the model a tool and puts it in every other
 // body back in the order its caller wrote it (inFinalOrder); and makes the run's one retry, on an
-// outage status (a 408, a 429, a 5xx) or a transport error, within the run's time.
+// outage status (a 408, a 429, a 5xx) or a transport error, within the run's time. It logs each
+// 429 at WARN, once for the attempt it answered (rateLimited), which is the one place a caller's
+// 429 is logged: the agent's runs and the server's short answers each make their calls here. It
+// keeps the status of the last response it handed back, which is how a provider error is given
+// the HTTP status the provider answered with, whether that response's body names the provider's
+// content filter and what the body says of the refusal; and it cuts a response past streamLimit
+// bytes.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// endpoint is the configured base URL, and posted the URL of the last request the
+	// transport carried, as the SDK or Decide built it: a model call's failure is printed
+	// over both (failure).
+	endpoint string
+	posted   atomic.Pointer[string]
+	// deployment is the model name the requests name, which a 429 is logged with: the Azure
+	// deployment where the endpoint names one, else the model id (deploymentOf).
+	deployment string
+	// streamLimit is the most bytes of one response's body the transport hands on, 0 for no
+	// limit (Request.StreamLimit); a read past it fails with errStreamTooLarge and sets
+	// tooLarge.
+	streamLimit int64
+	tooLarge    atomic.Bool
+	// status is the last attempt's response status where it was not a 2xx, and zero where
+	// it was, or where the attempt drew no response at all.
+	status atomic.Int32
+	// filtered is set where the last attempt's response was not a 2xx and the first
+	// filterPeek bytes of its body name the provider's content filter (contentFilterMark), and
+	// filterWords holds what those bytes say of the refusal (ContentFilterRefusal), "" where
+	// they say nothing of the shape it reads.
+	filtered    atomic.Bool
+	filterWords atomic.Pointer[string]
 	// final is the run's Request.Final, and nil for a run with no Final and for a decision.
 	final json.RawMessage
 	// log takes the warning for a call whose schema inFinalOrder could not put back. It is
@@ -38,16 +71,71 @@ type modelTransport struct {
 	log *slog.Logger
 }
 
+// filterPeek is how many bytes of a refused response's body the transport reads for whether it
+// names the provider's content filter, before it hands the whole body on.
+const filterPeek = 64 << 10
+
+// contentFilterMark is how a provider's refused response names its content filter: Chat
+// Completions' finish reason or error code content_filter, as Azure's endpoints answer a prompt
+// their filter blocked (an error body, or a stream chunk sent with the error status), and Azure
+// OpenAI's inner code for the same refusal.
+var contentFilterMark = regexp.MustCompile(`"(?:finish_reason|code)"\s*:\s*"content_filter"|"ResponsibleAIPolicyViolation"`)
+
+// The bounds of what ContentFilterRefusal keeps of a refusal: each error's code and message at
+// most filterErrorLimit bytes, and all it keeps at most filterWordsLimit, so a log line and a
+// run's reason carry the provider's verdict and never a long body.
+const (
+	filterErrorLimit = 200
+	filterWordsLimit = 400
+)
+
+// errStreamTooLarge is a read of a response past the transport's streamLimit.
+var errStreamTooLarge = errors.New("the model's response passed its stream limit")
+
+// overLimit reports whether a response of this transport was cut at streamLimit.
+func (t *modelTransport) overLimit() bool {
+	return t.tooLarge.Load()
+}
+
+// failedStatus is the status the last attempt was refused with, or zero where the last attempt
+// was answered with a 2xx or drew no response.
+func (t *modelTransport) failedStatus() int {
+	return int(t.status.Load())
+}
+
+// contentFiltered reports whether the last attempt was refused with a response whose body names
+// the provider's content filter.
+func (t *modelTransport) contentFiltered() bool {
+	return t.filtered.Load()
+}
+
+// contentFilterWords is what the last attempt's refusal says of the provider's content filter
+// (ContentFilterRefusal), "" where it was no such refusal or says nothing of the shape read.
+func (t *modelTransport) contentFilterWords() string {
+	if words := t.filterWords.Load(); words != nil {
+		return *words
+	}
+	return ""
+}
+
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
-// the default transport, for the endpoint whose protocol, token and query parameters it carries,
-// the run's Final, which a decision has none of, and log, the run's Request.Log, which a decision
-// passes as nil since its transport never warns. A nil log is slog.Default(), resolved here once
-// for both callers.
+// the default transport, for the endpoint whose protocol, token, query parameters and base URL it
+// carries, the run's Final, which a decision has none of, and log, the run's Request.Log, which
+// takes inFinalOrder's warning and which a decision passes as nil: with no schema, inFinalOrder
+// never warns for it. rateLimited logs a 429 on the default logger, whatever log is. A nil log is
+// slog.Default(), resolved here once for both callers. Run and Decide set the deployment a 429 is
+// logged with (deploymentOf).
 func newModelTransport(endpoint Endpoint, final json.RawMessage, log *slog.Logger) *modelTransport {
 	return &modelTransport{
 		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query,
-		final: final, log: cmp.Or(log, slog.Default()),
+		endpoint: endpoint.BaseURL, final: final, log: cmp.Or(log, slog.Default()),
 	}
+}
+
+// deploymentOf is the model name model's requests name, which a 429 is logged with: the Azure
+// deployment where the endpoint names one, else the model id.
+func deploymentOf(model Model) string {
+	return cmp.Or(model.Endpoint.Deployment, model.ID)
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
@@ -61,10 +149,55 @@ func (t *modelTransport) client() *http.Client {
 	return &http.Client{Transport: t, CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 		// The host alone, since a Location can carry a query: this message names no
 		// more of it than the server a credential would have gone to. (Go's own
-		// client wraps the error in a *url.Error that names the Location in full.)
-		return fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
-			t.kind, req.Response.Status, req.URL.Host)
+		// client wraps the error in a *url.Error that names the Location in full,
+		// which failure leaves out.)
+		return &ownFailure{fmt.Errorf("the %s endpoint answered %s, a redirect to %s, which is never followed",
+			t.kind, req.Response.Status, req.URL.Host)}
 	}}
+}
+
+// ownFailure is a model call's failure in this package's own words: a token the transport could
+// not read for an attempt, and a redirect the client refused. client.Do wraps it in a *url.Error,
+// as it wraps every failure of a call, and the SDK may wrap that again; failure prints its words
+// alone, which name no part of the request's URL: a refused redirect names the host its Location
+// points at and no more of it, and a token's failure is the endpoint's Token's own error.
+type ownFailure struct{ err error }
+
+func (f *ownFailure) Error() string { return f.err.Error() }
+func (f *ownFailure) Unwrap() error { return f.err }
+
+// failure is err, a model call's failure as client.Do, or the SDK over it, returned it, as a
+// run's or a decision's Detail prints it. client.Do wraps every failure of a call in a
+// *url.Error, whose text quotes the request URL with only a password masked, so an endpoint
+// holding a token before "@" printed it there. A failure in this package's own words (ownFailure)
+// prints those words, without the quote. Any other failure under a *url.Error, net/http's,
+// prints through redact.CauseAt: its own text when the endpoint is a clean http(s) URL and the
+// URL net/http names is the one the transport carried (a refused dial's address, a TLS failure's
+// x509 cause), and its class alone otherwise, a redirect's target or an endpoint holding a
+// credential among them. A failure with no *url.Error under it, where the last attempt was
+// refused with a status (failedStatus), is that status as the provider's SDK words it.
+// Anthropic's SDK quotes the request URL whole in those words, password and all, so where the
+// endpoint is no clean URL (redact.Clean) every copy of the URL the transport carried prints as
+// redact.NotPrinted. Every other failure, of a call the transport never carried or of a response
+// that broke after its 2xx, and a status's words beside a clean endpoint, whose URL holds no
+// credential since the endpoint's query parameters go on the attempt's copy alone, print as
+// shownFailure prints them.
+func (t *modelTransport) failure(err error) error {
+	var posted string
+	if p := t.posted.Load(); p != nil {
+		posted = *p
+	}
+	var own *ownFailure
+	var quoted *url.Error
+	switch {
+	case errors.As(err, &own):
+		return own
+	case errors.As(err, &quoted):
+		return redact.CauseAt(err, t.endpoint, posted)
+	case posted != "" && t.failedStatus() != 0 && !redact.Clean(t.endpoint):
+		return errors.New(strings.ReplaceAll(err.Error(), posted, redact.NotPrinted))
+	}
+	return shownFailure(t.endpoint, err)
 }
 
 // shownFailure is err, the failure of a model call to the endpoint at base, as a Result's Detail
@@ -74,7 +207,8 @@ func (t *modelTransport) client() *http.Client {
 // http(s) URL (redact.Clean: one with a user name or a password among them) err prints as
 // redact.Error prints it: the call's operation, its URL as redact.NotPrinted, and the failure's
 // class, with no word of the URL. A clean base holds no credential, so beside one err prints
-// whole, and a redirect still names the host it pointed at (client).
+// whole. A failure of a call the transport carried prints through failure, which prints here
+// every failure it does not word itself.
 func shownFailure(base string, err error) error {
 	if redact.Clean(base) {
 		return err
@@ -86,6 +220,10 @@ func shownFailure(base string, err error) error {
 const defaultRetryWait = time.Second
 
 func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// The URL net/http's *url.Error names if this request fails: the request as the SDK or
+	// Decide built it, before an attempt's copy takes the endpoint's query parameters.
+	posted := req.URL.String()
+	t.posted.Store(&posted)
 	var body []byte
 	if req.Body != nil {
 		var err error
@@ -99,13 +237,18 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	body = t.inFinalOrder(body)
 	ctx := req.Context()
 	for attempt := 0; ; attempt++ {
+		// Each attempt starts with no status of its own, so a token that could not be read,
+		// or a request that drew no response, is never given an earlier attempt's.
+		t.status.Store(0)
+		t.filtered.Store(false)
+		t.filterWords.Store(nil)
 		var key string
 		// Azure signs its own calls: the provider's credential middleware sets the header,
 		// and this transport reads no token for it.
 		if t.kind != AzureAnthropic {
 			var err error
-			if key, err = t.token(ctx); err != nil {
-				return nil, fmt.Errorf("reading the %s token: %w", t.kind, err)
+			if key, err = t.readToken(ctx); err != nil {
+				return nil, &ownFailure{fmt.Errorf("reading the %s token: %w", t.kind, err)}
 			}
 		}
 		r := req.Clone(ctx)
@@ -132,7 +275,15 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			r.URL.RawQuery = q.Encode()
 		}
 		resp, err := t.base.RoundTrip(r)
-		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {
+		if err == nil && resp.StatusCode/100 != 2 {
+			t.status.Store(int32(resp.StatusCode))
+		}
+		wait, retry := retryable(resp, err)
+		retry = retry && attempt == 0 && waitable(ctx, wait)
+		if err == nil && resp.StatusCode == http.StatusTooManyRequests {
+			t.rateLimited(attempt, wait, retry)
+		}
+		if retry {
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
@@ -147,8 +298,186 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		if resp.StatusCode/100 != 2 {
+			t.peekFilter(resp)
+		}
+		if t.streamLimit > 0 {
+			resp.Body = &limitedBody{ReadCloser: resp.Body, left: t.streamLimit, over: &t.tooLarge}
+		}
 		return resp, nil
 	}
+}
+
+// peekFilter reads the first filterPeek bytes of resp's body, a refused response's, sets filtered
+// and filterWords where they name the provider's content filter, and puts them back in front of
+// the rest, so the SDK reads the body as the provider sent it.
+func (t *modelTransport) peekFilter(resp *http.Response) {
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, filterPeek))
+	if words, filtered := ContentFilterRefusal(head); filtered {
+		t.filtered.Store(true)
+		t.filterWords.Store(&words)
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+}
+
+// ContentFilterRefusal reports whether body, or the start of it, the body of a response a
+// provider refused a call with, names the provider's content filter (contentFilterMark), and
+// what it says of the refusal: each error's code and message, as Azure's endpoints give them (an
+// error object, or a stream chunk's content_filter_results.error), and the labels the filter
+// flagged (innererror.content_filter_result, content_filter_results, prompt_filter_results), such
+// as "content_filter: Response content blocked by label 'Jailbreak'." or "filtered: jailbreak",
+// within filterWordsLimit bytes. It keeps no other text of the body, which may echo what the
+// call held; the words are "" where the body says nothing of that shape. The body is one JSON
+// object, or a stream of server-sent events whose data lines each are; a line the read cut short
+// says nothing.
+func ContentFilterRefusal(body []byte) (string, bool) {
+	if !contentFilterMark.Match(body) {
+		return "", false
+	}
+	var words filterVerdict
+	if trimmed := bytes.TrimSpace(body); bytes.HasPrefix(trimmed, []byte("{")) {
+		words.read(trimmed)
+	} else {
+		for line := range bytes.Lines(body) {
+			if data, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:")); ok {
+				words.read(bytes.TrimSpace(data))
+			}
+		}
+	}
+	return words.String(), true
+}
+
+// filterVerdict is what a refused body says of the provider's content filter: its errors, each
+// as "code: message", and the labels the filter flagged, each once, in the order read.
+type filterVerdict struct {
+	errors, labels []string
+}
+
+// read adds what one JSON value says of the filter: every error object and every set of the
+// filter's results it holds, at any depth, its keys read in order.
+func (v *filterVerdict) read(data []byte) {
+	var value any
+	if json.Unmarshal(data, &value) == nil {
+		v.walk(value)
+	}
+}
+
+func (v *filterVerdict) walk(value any) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			v.walk(item)
+		}
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			child, _ := value[key].(map[string]any)
+			switch key {
+			case "error":
+				v.addError(child)
+			case "content_filter_result", "content_filter_results":
+				v.addLabels(child)
+			}
+			v.walk(value[key])
+		}
+	}
+}
+
+// addError adds an error object's code and message, the message cut at filterErrorLimit bytes.
+func (v *filterVerdict) addError(object map[string]any) {
+	code, _ := object["code"].(string)
+	message, _ := object["message"].(string)
+	text := strings.TrimSpace(code)
+	if message = strings.Join(strings.Fields(message), " "); message != "" {
+		if text != "" {
+			text += ": "
+		}
+		text += message
+	}
+	if text = strings.TrimSpace(cutBytes(text, filterErrorLimit)); text != "" && !slices.Contains(v.errors, text) {
+		v.errors = append(v.errors, text)
+	}
+}
+
+// addLabels adds each label of a set of the filter's results that it filtered: {"jailbreak":
+// {"filtered": true, "detected": true}} flags jailbreak. A label it only detected, or rated safe,
+// refused nothing.
+func (v *filterVerdict) addLabels(results map[string]any) {
+	for _, label := range slices.Sorted(maps.Keys(results)) {
+		if result, ok := results[label].(map[string]any); ok && result["filtered"] == true && !slices.Contains(v.labels, label) {
+			v.labels = append(v.labels, label)
+		}
+	}
+}
+
+func (v *filterVerdict) String() string {
+	parts := slices.Clone(v.errors)
+	if len(v.labels) > 0 {
+		parts = append(parts, "filtered: "+strings.Join(v.labels, ", "))
+	}
+	return cutBytes(strings.Join(parts, "; "), filterWordsLimit)
+}
+
+// cutBytes is text cut to at most limit bytes, at a rune's start.
+func cutBytes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
+}
+
+// rateLimited logs a 429 the model service answered attempt (0 for the first) with, at WARN:
+// the deployment the request named, the attempt, from 1, the wait before the retry (the
+// Retry-After the service gave, or defaultRetryWait where it gave none), and whether the call is
+// made again after it, which it is not on the retry itself or where the run has no time for the
+// wait.
+func (t *modelTransport) rateLimited(attempt int, wait time.Duration, retry bool) {
+	slog.Warn("agentloop: the model service answered 429, its rate limit",
+		"deployment", t.deployment, "attempt", attempt+1, "wait", wait, "retry", retry)
+}
+
+// readToken reads the endpoint's token for one attempt. A Token that panics is recovered and
+// answered as an error naming the panic, so the attempt fails and the process goes on: the SDK
+// makes its calls on goroutines of its own, where a panic would end the process.
+func (t *modelTransport) readToken(ctx context.Context) (key string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("agentloop: an endpoint's token callback panicked", "panic", recovered, "stack", string(debug.Stack()))
+			key, err = "", fmt.Errorf("the token callback panicked: %v", recovered)
+		}
+	}()
+	return t.token(ctx)
+}
+
+// limitedBody is a response body cut at left bytes: a read past them fails with
+// errStreamTooLarge and sets over. A body that ends exactly at the limit ends as it would.
+type limitedBody struct {
+	io.ReadCloser
+	left int64
+	over *atomic.Bool
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		var one [1]byte
+		if n, err := b.ReadCloser.Read(one[:]); n == 0 && err != nil {
+			return 0, err
+		}
+		b.over.Store(true)
+		return 0, errStreamTooLarge
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.left -= int64(n)
+	return n, err
 }
 
 // finalSchemaPath is where a request body of the protocol carries the run's Final schema, as the

@@ -11,6 +11,8 @@ import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  goingConversationsQuery,
+  goingWaitingPlansQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
@@ -1109,6 +1111,17 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
   }
+  if (event.type === "going_plan.updated") {
+    // A run of this viewer's began to wait on its plan, or a waiting one was answered or stopped,
+    // in this tab or another: the Inbox's waiting plans and History are read again. The event
+    // names the person alone, and no run.
+    return isViewer(payloadString(event, "login"), viewer)
+      ? [
+          { queryKey: goingWaitingPlansQuery().queryKey },
+          { queryKey: goingConversationsQuery().queryKey },
+        ]
+      : [];
+  }
   if (event.type === "priority.updated") {
     // A create, a rename, a move, a description or a delete of a priority, by anybody.
     return priorityWriteTargets(event);
@@ -1856,6 +1869,16 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   }
   if (POST_CORRECTIONS[event.type] !== undefined) {
     targets.push(SEARCH_ANSWERS);
+  }
+  if (event.type === "comment.deleted" || event.type === "message.deleted") {
+    // A delete withdraws each command-bar run that read the post, which the event does not name:
+    // History, every run's plan and the plans that wait are read again, and a withdrawn run's
+    // reads give none of what it wrote.
+    targets.push(
+      { queryKey: goingConversationsQuery().queryKey },
+      { queryKey: ["going-plan"] },
+      { queryKey: goingWaitingPlansQuery().queryKey }
+    );
   }
   return targets;
 }

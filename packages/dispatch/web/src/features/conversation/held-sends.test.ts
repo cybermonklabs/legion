@@ -14,7 +14,7 @@ import { type KeptTab, keptTab, keyMinted, UnloadTarget } from "../../__tests__/
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
-import type { Comment, Message } from "../../api/types";
+import type { Comment, CommentEdited, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -285,7 +285,7 @@ test("a reply to a thread is kept and resumed whole", async () => {
 test("a comment edit retried after a reload sends the body its first save sent", async () => {
   const tab = keptTab();
   const editComment = spyOn(api, "editComment").mockReturnValue(
-    Promise.withResolvers<Comment>().promise
+    Promise.withResolvers<CommentEdited>().promise
   );
   try {
     heldOf(tab).held.send(editKey, editSend);
@@ -316,7 +316,7 @@ test("a comment edit retried after a reload sends the body its first save sent",
 test("a comment edit keeps its ids through two reloads and through a reload that interrupts its Retry", async () => {
   const tab = keptTab();
   const editComment = spyOn(api, "editComment").mockReturnValue(
-    Promise.withResolvers<Comment>().promise
+    Promise.withResolvers<CommentEdited>().promise
   );
   try {
     heldOf(tab).held.send(editKey, editSend);
@@ -360,7 +360,7 @@ test("a comment edit keeps its ids through two reloads and through a reload that
 test("a send kept with its edit as a bare comment id still restores", async () => {
   const tab = keptTab();
   const editComment = spyOn(api, "editComment").mockReturnValue(
-    Promise.withResolvers<Comment>().promise
+    Promise.withResolvers<CommentEdited>().promise
   );
   try {
     heldOf(tab).held.send(editKey, editSend);

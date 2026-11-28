@@ -1,0 +1,20 @@
+-- 20261123040936_going_runs_line.up.sql — the line on top a command-bar run was started from.
+--
+-- The bar's line on top reads Ask, Do or File as a new issue for the person's words, and Enter on
+-- it starts a run (20261119201453, 20261120164500). The run records which line the person pressed:
+--
+--   line   'ask', 'do' or 'file', the line on the screen at the moment of the key; or null, a run
+--          not started from the line: a follow-up typed in the conversation's box, the side
+--          panel's box, a Continue. The check holds the column to those three values.
+--
+-- The bar reads it back from the run's record: a run started from Do that ends done with no plan
+-- says that nothing changed.
+--
+-- One nullable column with no default and a check that null passes: Postgres records the column
+-- in the catalog and rewrites no row, and the check reads each row of going_runs under the
+-- ALTER's ACCESS EXCLUSIVE lock. Every stored row reads null, a run not started from the line,
+-- which is what each was to this column. going_runs is new on the branch that adds this column
+-- (20261112173940), so no build of an earlier release reads or writes it while this one rolls
+-- (cmd/dispatch/README.md, "Database migrations"). The identifier is the UTC moment this was
+-- written, as `migrationid` requires of every migration past the numbered series.
+alter table going_runs add column line text check (line in ('ask', 'do', 'file'));

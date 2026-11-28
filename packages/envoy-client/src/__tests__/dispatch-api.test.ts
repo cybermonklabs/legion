@@ -13,8 +13,9 @@
 // a host, with none and under Claude Code. The other rows hold the paths it refuses before
 // anything is sent, the credential it presents and the session its trade names, with a host and
 // without one, and the AskGate rule: in a session whose gate is on it sends GET alone, and names
-// the command that makes the write; the gate sits in the command itself, under a host and with
-// none.
+// the command that makes the write, or says that no command the session may run makes it; the
+// gate sits in the command itself, under a host and with none. A command whose spec binds its
+// routes is held to the same rule, so the refusal never names one.
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -23,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { SUBJECT_TOKEN_TYPE_GITHUB } from "@legion/cipher-client/wire";
 import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { keyedLayer } from "../../test/keyed-layer";
 import { processStart } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { type ResultEntry, readResultsSince } from "../dispatch-session-state";
@@ -103,14 +105,16 @@ interface Sent {
  * version as `serveFileVersion` answers it (`fileVersion`), typed JSON cut short
  * (`/api/v1/cut`) or empty (`/api/v1/empty`), plain text to any method (`/api/v1/accepted`), the
  * bare token (`/api/v1/echo-token`) or the DPoP proof (`/api/v1/echo-proof`) it was sent, echoed
- * in a plain-text 200, and any other request with the method and path it was sent.
+ * in a plain-text 200, and any other request with the method and path it was sent. It answers
+ * behind Dispatch's keyed layer, so each 2xx to a keyed write, a bound command's, names its key
+ * back.
  */
 function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: Sent[] } {
   const sent: Sent[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
-    fetch: async (request) => {
+    fetch: keyedLayer(async (request: Request) => {
       const url = new URL(request.url);
       sent.push({
         method: request.method,
@@ -174,7 +178,7 @@ function stubDispatch(redirectTo = "http://127.0.0.1:9"): { url: string; sent: S
         default:
           return Response.json({ method: request.method, path: url.pathname });
       }
-    },
+    }),
   });
   servers.push(server);
   return { url: `http://127.0.0.1:${server.port}`, sent };
@@ -325,8 +329,26 @@ const COMMENT = JSON.stringify({ body: "Looks good." });
 const GATED_WHY =
   "this session's AskGate reviews Dispatch writes, so dispatch api sends only GET here";
 
-/** How the gate refuses a write: before the command it names. */
+/** How the gate refuses a write a hand-written command makes: before the command it names. */
 const GATED = `dispatch api was not called: ${GATED_WHY}; make this write with `;
+
+/** How the gate refuses a write no hand-written command makes, whole: no command the session may
+ *  run makes it, since the gate refuses that write to a command whose spec binds its route too. */
+const GATED_NO_COMMAND = `dispatch api was not called: ${GATED_WHY}; no dispatch command this session may run makes this write`;
+
+/** The ask a command whose spec binds its routes acts on here: `dispatch decline-ask` writes it,
+ *  `POST /api/v1/asks/{id}/decline`, and `dispatch read-ask` reads it. */
+const ASK = "01234567-0000-4000-8000-000000000009";
+
+/** `dispatch decline-ask`'s write of `ASK`, which no hand-written command makes. */
+const DECLINE = ["decline-ask", "--ask", ASK, "--note", "Not mine to decide."];
+
+/** Why the gate refuses `DECLINE`, as the refusal and its ledger line's AskGate mark say it. */
+const DECLINE_GATED_WHY =
+  "this session's AskGate reviews Dispatch writes, so dispatch decline-ask sends only GET here";
+
+/** How the gate refuses `DECLINE` in a session whose AskGate record is live. */
+const DECLINE_GATED = `dispatch decline-ask was not called: ${DECLINE_GATED_WHY}`;
 
 /** The refusal of a body with no method, the contract's rule (`dispatch_api`). */
 const BODY_WITHOUT_METHOD =
@@ -1116,13 +1138,13 @@ describe("the session's ledger", () => {
 describe("AskGate", () => {
   test.each([
     ["GET", "/api/v1/whoami", null],
-    ["POST", "/api/v1/issues/ACME-1/comments", "dispatch comment"],
-    ["PUT", "/api/v1/projects/ACME/settings", "dispatch --help"],
-    ["PATCH", "/api/v1/projects/ACME/settings", "dispatch --help"],
-    ["DELETE", "/api/v1/projects/ACME/settings", "dispatch --help"],
+    ["POST", "/api/v1/issues/ACME-1/comments", `${GATED}dispatch comment or dispatch suggest`],
+    ["PUT", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
+    ["PATCH", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
+    ["DELETE", "/api/v1/projects/ACME/settings", GATED_NO_COMMAND],
   ])(
     "in a session AskGate gates, GET is sent and each other method is refused with nothing sent: %s %s",
-    async (method, path, names) => {
+    async (method, path, refusal) => {
       const broker = stubBroker(300);
       const server = stubDispatch();
       const stateDir = tempDir();
@@ -1136,14 +1158,13 @@ describe("AskGate", () => {
         ],
         sessionEnvironment(broker.url, server.url, stateDir)
       );
-      if (names === null) {
+      if (refusal === null) {
         expect(ran.code, ran.stdout).toBe(0);
         expect(server.sent).toHaveLength(1);
         return;
       }
       expect(ran.code).toBe(1);
-      expect(ran.stdout).toStartWith(GATED);
-      expect(ran.stdout).toContain(names);
+      expect(ran.stdout.trimEnd()).toBe(refusal);
       expect(server.sent).toHaveLength(0);
       expect(broker.trades).toHaveLength(0);
     }
@@ -1272,6 +1293,108 @@ describe("AskGate", () => {
     expect(ran.code, ran.stdout).toBe(0);
     expect(server.sent.map((sent) => sent.method)).toEqual(["POST"]);
   });
+});
+
+// The commands whose specs bind their routes (`DispatchToolSpec.routes`, `routeCommand`) reach
+// routes that a gated session could reach before only through `dispatch api`, which AskGate does
+// not review either. So each one's write is refused there as `dispatch api`'s is, and the refusal
+// of `dispatch api` never names one.
+describe("AskGate and the commands whose specs bind their routes", () => {
+  test.each([
+    ["is live", false],
+    ["cannot be read", true],
+  ])(
+    "with an AskGate record that %s, a bound write is refused with AskGate's mark, and nothing is sent",
+    async (_, broken) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      const file = writeRecord(stateDir, SESSION);
+      if (broken) writeFileSync(file, "{not json");
+      const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
+      expect(ran.code).toBe(1);
+      expect(ran.stdout).toStartWith("dispatch decline-ask was not called: ");
+      expect(ran.stdout.trimEnd()).toEqual(broken ? expect.stringContaining(file) : DECLINE_GATED);
+      expect(server.sent).toHaveLength(0);
+      expect(broker.trades).toHaveLength(0);
+      expect(ledgerOf(stateDir, SESSION)).toEqual([
+        {
+          at: expect.any(String),
+          tool: "dispatch_decline_ask",
+          error: ran.stdout.trimEnd(),
+          askgate: {
+            mode: "block",
+            why: broken ? expect.stringContaining(file) : DECLINE_GATED_WHY,
+          },
+        },
+      ]);
+      expect(cliRefusals(ran.stdout)).toEqual([
+        { line: ran.stdout.trimEnd(), command: "decline-ask" },
+      ]);
+    }
+  );
+
+  test("with a live AskGate record, a bound read is sent", async () => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    writeRecord(stateDir, SESSION);
+    const ran = await dispatch(
+      ["read-ask", "--ask", ASK],
+      sessionEnvironment(broker.url, server.url, stateDir)
+    );
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(server.sent.map((sent) => `${sent.method} ${sent.url.pathname}`)).toEqual([
+      `GET /api/v1/asks/${ASK}`,
+    ]);
+  });
+
+  test.each([
+    ["no AskGate record", false],
+    ["an AskGate record whose owner is gone", true],
+  ])("with %s, the bound write is sent", async (_, gone) => {
+    const broker = stubBroker(300);
+    const server = stubDispatch();
+    const stateDir = tempDir();
+    if (gone) {
+      const child = Bun.spawn(["true"]);
+      await child.exited;
+      writeRecord(stateDir, SESSION, { pid: child.pid, start: "1" });
+    }
+    const ran = await dispatch(DECLINE, sessionEnvironment(broker.url, server.url, stateDir));
+    expect(ran.code, ran.stdout).toBe(0);
+    expect(server.sent.map((sent) => `${sent.method} ${sent.url.pathname}`)).toEqual([
+      `POST /api/v1/asks/${ASK}/decline`,
+    ]);
+    expect(JSON.parse(server.sent[0]?.body ?? "{}")).toMatchObject({ note: "Not mine to decide." });
+    expect(ledgerOf(stateDir, SESSION)).toEqual([
+      { at: expect.any(String), tool: "dispatch_decline_ask", details: expect.any(Object) },
+    ]);
+  });
+
+  test.each([
+    // A route only a command whose spec binds it sends: the refusal says that no command the
+    // session may run makes it.
+    ["POST", `/api/v1/asks/${ASK}/decline`, "dispatch decline-ask", GATED_NO_COMMAND],
+    // A route a hand-written command sends too: the refusal names that command alone.
+    ["POST", "/api/v1/markdown/round-trip", "dispatch check-markdown", `${GATED}dispatch artifact`],
+  ])(
+    "dispatch api's refusal of %s %s never names %s, which is refused there too",
+    async (method, path, bound, refusal) => {
+      const broker = stubBroker(300);
+      const server = stubDispatch();
+      const stateDir = tempDir();
+      writeRecord(stateDir, SESSION);
+      const ran = await dispatch(
+        ["api", "--method", method, "--path", path, "--body-file", bodyFile(COMMENT)],
+        sessionEnvironment(broker.url, server.url, stateDir)
+      );
+      expect(ran.code).toBe(1);
+      expect(ran.stdout.trimEnd()).toBe(refusal);
+      expect(ran.stdout).not.toContain(bound);
+      expect(server.sent).toHaveLength(0);
+    }
+  );
 });
 
 test("dispatch --help lists dispatch api, and dispatch api --help gives its flags", async () => {

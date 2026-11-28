@@ -47,7 +47,9 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 export const lazyPieces = {
   dashboard:
     "today's Dashboard tab, visible inside #issue-dashboard-panel (features/issue/IssuePage.tsx)",
-  echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
+  echarts:
+    "the delivery timeline's chart and the command bar's chart block, echarts " +
+    "(features/delivery/Timeline.tsx, features/search/blocks/ChartBlock.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
     "and the document's Yjs stack: yjs, @hocuspocus/provider, pending-edits and pending-sync " +

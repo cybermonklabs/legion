@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The command bar's eval grades a suggestion where it was made and a chart's numbers where they
+  are drawn. A suggestion stands in the block its anchor names, as the bar's Apply replaces its
+  mark there, else at the first place of its quote on word bounds; before, it stood at its quote's
+  first place, which could be inside a word, and of two suggestions at one place the comment whose
+  random id sorted first won. So `document-01`'s suggestion on the heading `## Back-link` no longer
+  stands inside the title `Back-links in issue specs`. A chart task's row is shown by a block only
+  where its label is in the block's label column (a chart's `x`, a table's other columns) and its
+  count in a column a count of the block's chain writes (or a chart's `y` where its chain writes
+  none); before, any number in the row counted, so the priority 2 beside a done alert read as two
+  done alerts. In the prose, a status's count is read beside its value or the page's words for it,
+  each whole, such as "In progress" for `in_progress`, and no other words: "To do" is not `todo`,
+  whose words are "Todo". `packages/contracts/fixtures/shown-values.json` now holds each status's
+  words, which the web's `board-model.test.ts` and the eval's test hold to the page and the grader.

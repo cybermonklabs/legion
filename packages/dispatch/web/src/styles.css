@@ -441,6 +441,16 @@ html:has([data-issue-page]) {
     min-height: 24px;
   }
 
+  /* The command bar's run chip floats over the top of the page (`RunChip.tsx`, `app.tsx`), from
+     the 24 px band above the page's first row, so it is 24 px tall, WCAG 2.2's target size
+     (2.5.8), rather than the floor above: with that floor it grew to 46 px and reached over the
+     page's title. These rules are in no cascade layer, so the chip's own height utility does not
+     hold at this width, and the height is said here. */
+  [data-run-chip] button {
+    min-width: 0;
+    min-height: 24px;
+  }
+
   /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
      size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
      target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
@@ -1231,8 +1241,10 @@ html:has([data-issue-page])
 
 /* A `MarkdownPreview` sits inside a control (a link, a search option, a card's toggle), so its
    links are inert spans (`data-markdown-link`) rather than nested `<a>`s; they keep Typography's
-   own `a` look so a reference still reads as one. */
-.dispatch-markdown [data-markdown-link] {
+   own `a` look so a reference still reads as one. A preview whose host's own click is its one
+   action (a search hit) marks its spans `data-link-look="text"` too, and they read as the words
+   around them. */
+.dispatch-markdown [data-markdown-link]:not([data-link-look="text"]) {
   color: var(--tw-prose-links);
   font-weight: 500;
   text-decoration: underline;

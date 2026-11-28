@@ -15,6 +15,7 @@ import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
 import { AuthGate } from "./app";
+import { setPlace } from "./features/going/going-store";
 // The Answers, document and project pages are lazy routes of the app, and the margin a lazy part
 // of its shell (`MarginColumn.tsx`, which mounts it on every route). A page module's first
 // compile is not what a wait is for, and a load a row starts and ends before lands in a later row
@@ -998,6 +999,87 @@ test("desktop shell persists collapsed sidebars and gives the main region the fu
     } else {
       Object.defineProperty(window, "innerWidth", innerWidthDescriptor);
     }
+  }
+});
+
+test("the margin folds while the conversation is at the side, and comes back as the reader left it when the panel closes", async () => {
+  const user = userEvent.setup();
+  const marginStorageKey = "dispatch.shell.margin:alice";
+  const originalMatchMedia = window.matchMedia;
+  window.matchMedia = (() =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: false,
+      media: "",
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+  window.localStorage.removeItem(marginStorageKey);
+  const reads = [
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+  ];
+  // The issue route reads the issue and its discussion. Nothing here is about the issue, so they
+  // are answered at the client with the failure the page has always seen.
+  const unread = new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"));
+  const issueReads = [
+    spyOn(api, "getIssue").mockRejectedValue(unread),
+    spyOn(api, "listComments").mockRejectedValue(unread),
+    spyOn(api, "listIssueAsks").mockRejectedValue(unread),
+  ];
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <AuthGate />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByRole("button", { name: "Hide margin" });
+
+    // At the side, the margin folds to its rail, so the page's column keeps a usable width beside
+    // the 420 px panel. The panel covers the rail, so the shell keeps no gutter for it, and the
+    // reader's own preference is not written.
+    act(() => setPlace("side"));
+    expect(await screen.findByRole("button", { name: "Show margin" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide margin" })).toBeNull();
+    expect(screen.getByTestId("main-content")).not.toHaveClass("xl:pr-20");
+    expect(window.localStorage.getItem(marginStorageKey)).toBeNull();
+
+    // The panel covers the rail, so the toggle key opens the margin beside the panel, and its own
+    // Hide control folds it again; neither is stored.
+    await user.keyboard("{Shift>}M{/Shift}");
+    await user.click(await screen.findByRole("button", { name: "Hide margin" }));
+    expect(screen.getByRole("button", { name: "Show margin" })).toBeTruthy();
+    expect(window.localStorage.getItem(marginStorageKey)).toBeNull();
+
+    // The panel closes: the margin is back as the reader left it, open.
+    act(() => setPlace("closed"));
+    expect(screen.getByRole("button", { name: "Hide margin" })).toBeTruthy();
+    expect(window.localStorage.getItem(marginStorageKey)).toBeNull();
+
+    // The margin opened beside the panel is let go with the panel: once the panel is at the side
+    // again, the margin folds to its rail, as it did the first time.
+    act(() => setPlace("side"));
+    await user.keyboard("{Shift>}M{/Shift}");
+    expect(await screen.findByRole("button", { name: "Hide margin" })).toBeTruthy();
+    act(() => setPlace("closed"));
+    act(() => setPlace("side"));
+    expect(await screen.findByRole("button", { name: "Show margin" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide margin" })).toBeNull();
+  } finally {
+    view.unmount();
+    for (const read of [...reads, ...issueReads]) read.mockRestore();
+    window.localStorage.removeItem(marginStorageKey);
+    window.matchMedia = originalMatchMedia;
   }
 });
 

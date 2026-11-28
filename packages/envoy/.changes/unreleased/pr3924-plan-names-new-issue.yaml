@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+  A change of a command-bar plan can name the issue an earlier create of the same plan makes, as
+  `"$N"` with `N` that create's index: a split of an issue is one plan, the new issues and the
+  moves of its sub-issues under them (`dispatch_issue_update` with `parent` `"$0"` and `needs`
+  `[0]`). The server puts the new issue's key in place of `"$N"` when the change runs, so the
+  write, the read of its item before it and its Undo name the issue itself, and the plan keeps
+  the `"$N"` the person approved. `"$N"` is read only in the arguments that take an issue key as a
+  value the change writes: `parent` and `blocked_by` of `dispatch_issue`, and `parent`,
+  `blocked_by`, `before` and `after` of `dispatch_issue_update`, as the value or an item of
+  `blocked_by`. Every other argument is text and is sent and shown as written, so a title `"$100"`
+  stays `"$100"`. The plan is refused `CALL_REFUSED` where change `N` is no create of an issue
+  before it, is not among the change's needs, or where `"$N"` names the item a change changes or
+  sits inside an object, and the model is told which change, which argument and why; an approval
+  whose edit does the same is refused `GOING_PLAN_VALUES`, in words that name the row and each new
+  issue as the page does and say which values the argument takes there. A change whose
+  create failed is skipped, and nothing of it is sent; so is a change whose create made no new
+  issue because Dispatch already held one for the external issue it names, and the skip names
+  that issue. The plan shows such a value as the new issue's title and "(new)", which the person
+  can replace with an issue's key.
+  A change of `dispatch_issue_update` that sets `include_children`, `unlink_children` or
+  `include_parent` is written out in the plan as one update change for each issue the option
+  changes, in the status change route's order and each needing the earlier changes of its parent
+  or child, so each row keeps its own approval, landing and Undo; the changes after it are
+  renumbered, each `"$N"` with them, and a plan the rows grow past 50 changes is refused.

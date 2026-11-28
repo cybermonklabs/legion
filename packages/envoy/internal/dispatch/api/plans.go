@@ -22,7 +22,8 @@ import (
 // set model. Both live in internal/dispatch/workflowstore, the one writer of the nodes and tuples
 // that hold the plans and the step records.
 //
-// The write is the daemon's alone, as a step record's is (403 STEP_WRITER), appends no issue
+// The write is the daemon's alone, as a step record's is (403 STEP_WRITER, which the route's gate
+// answers before the handler runs: routeDecl.DaemonWrites, refuseNonDaemon), appends no issue
 // event and reads the issue with no open check. The read writes nothing, reads the project, then
 // all its finished issues in one statement whatever their number, and is a read of the read
 // class (routeDecl.Read), which a read-only credential may call.
@@ -82,10 +83,11 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
+	key := r.PathValue("key")
 
 	tx, err := s.begin(r.Context())
 	if err != nil {

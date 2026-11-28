@@ -1,21 +1,40 @@
 import type { DispatchReadingSurface } from "@legion/contracts";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useCallback, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { DisplayTree } from "../../api/types";
+import { ItemChip } from "./ItemChip";
 import { type MarkdownEngine, markdownClassName, type SoftBreaks } from "./markdown-engine";
+import type { ReferenceAnchor } from "./RefLink";
 import { hostDrawsMarkup, hostLinksReferences, useReferenceHost } from "./reference-host";
 import { RecordIssue } from "./role-holders";
+import { buildDispatchReference, buildReferencePath } from "./routes";
 import { drawTaskCheckboxes } from "./task-checkboxes";
 import type { TextSource } from "./text-references";
+import { TIME_LINK_ATTRIBUTE, timeLinkIssue } from "./time-link";
 import { UnfurlRead } from "./Unfurl";
 import {
   ATTACH_BATCH,
   type PaintMarkdown,
   type SliceYield,
+  type TransformReferenceAnchors,
   useRenderedMarkdown,
 } from "./useRenderedMarkdown";
 import { useTextReferences } from "./useTextReferences";
+
+/** An issue's chip in a body drawn with chips: the anchor it is drawn into, the issue, and what
+ *  it shows on hover where that is not the issue's title - the time of the time link it is the
+ *  words of (`takeIssueLinks`). */
+interface IssueChip {
+  readonly anchor: HTMLElement;
+  readonly hover: string | undefined;
+  readonly issue: string;
+  readonly key: string;
+}
+
+/** The chips of a body that draws none: one shared value, so such a body keeps one state. */
+const NO_CHIPS: readonly IssueChip[] = [];
 
 /** The first textblock's own inline content (marks intact), plus the flattened plain text of
  * every textblock after it, joined with a single space - see `flattenInline`. */
@@ -245,10 +264,121 @@ function* paintBlockInSlices(
   }
 }
 
+/** Punctuation that ends the words before it: a full stop, a comma and their kin, a closing
+ *  bracket or quote. */
+const CLOSING_PUNCTUATION = /^[.,;:!?…)\]}"'”’]+/u;
+
+/**
+ * Keeps the punctuation the text writes right after a chip's link on the chip's line: the link and
+ * that punctuation go into one span that does not break. A chip is a box of its own
+ * (`ItemChip`), and a line may end after a box where it may not end after a word, so without this
+ * the full stop after a chip at the end of a line went on alone to the next one. The punctuation
+ * stands against the chip, one pixel nearer than its glyph does: a full stop's own side bearing
+ * reads as nothing after a letter, and as a gap after the chip's rule (review R4). Answers what
+ * stands for the chip in its line from now on: that span, or `anchor` itself where no
+ * punctuation follows it.
+ */
+function holdPunctuation(anchor: HTMLElement): HTMLElement {
+  const after = anchor.nextSibling;
+  const closing = after instanceof Text ? CLOSING_PUNCTUATION.exec(after.data)?.[0] : undefined;
+  if (!(after instanceof Text) || closing === undefined) {
+    return anchor;
+  }
+  // What follows the punctuation stays where it was; `after` keeps the punctuation alone.
+  after.splitText(closing.length);
+  const line = document.createElement("span");
+  line.className = "whitespace-nowrap";
+  line.setAttribute("data-chip-line", "");
+  anchor.before(line);
+  const mark = document.createElement("span");
+  mark.className = "-ml-px";
+  mark.setAttribute("data-chip-mark", "");
+  mark.append(after);
+  line.append(anchor, mark);
+  return line;
+}
+
+/** The first child of `parent` that is not white space: what a reader reads first in it. */
+function firstContent(parent: Node): ChildNode | undefined {
+  for (const child of parent.childNodes) {
+    if (!(child instanceof Text) || child.data.trim() !== "") {
+      return child;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Marks the line of a list that a chip begins: its `li` takes `data-chip-leads` where the first
+ * thing in the line that is not white space is `chip`, which is what stands for the chip there -
+ * its link, the time link it is the whole of, or the span that holds either with the punctuation
+ * written after it (`holdPunctuation`). A loose list's line holds its words in paragraphs, so
+ * there the chip begins the line's first paragraph. A line whose words come before its chip is
+ * not marked, whatever follows them. The command bar's answer draws a marked line with no list
+ * mark, since the chip marks the line as a bullet would (design v3, state 4).
+ */
+function markChipLine(chip: HTMLElement): void {
+  const holder = chip.parentElement;
+  const line = holder?.tagName === "P" ? holder.parentElement : holder;
+  if (line?.tagName !== "LI") {
+    return;
+  }
+  const first = firstContent(line);
+  if ((first?.nodeName === "P" ? firstContent(first) : first) === chip) {
+    line.setAttribute("data-chip-leads", "");
+  }
+}
+
+/**
+ * The time links of a body drawn with chips whose words are an issue's key (`timeLinkIssue`),
+ * each made a link to that issue for its chip: the command bar's agent wrote when DEMO-17 last
+ * moved as `[DEMO-17](dispatch-time:2026-10-10T09:00:00Z)`, and the words name the item, so the
+ * item is drawn (`takeIssueLinks`), not lost to a time. The words become an empty `<a>` to the
+ * issue inside the time, as the link pass leaves an anchor for its portal
+ * (`collectReferenceAnchors`). A time link whose key the link pass already made a link holds no
+ * words of its own by now, and is that link's.
+ */
+function timeLinkAnchors(element: HTMLElement): ReferenceAnchor[] {
+  const anchors: ReferenceAnchor[] = [];
+  for (const link of element.querySelectorAll<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`)) {
+    const words = link.textContent?.trim() ?? "";
+    const route = timeLinkIssue(words);
+    if (route === undefined) {
+      continue;
+    }
+    const reference = buildDispatchReference(route);
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", buildReferencePath(route));
+    anchor.setAttribute("data-dispatch-ref", reference);
+    link.replaceChildren(anchor);
+    anchors.push({
+      anchor,
+      key: `${reference}:time:${anchors.length}`,
+      marked: [],
+      reads: "name",
+      route,
+      text: words,
+    });
+  }
+  return anchors;
+}
+
+/** Orders two anchors as the body holds them. */
+function inBodyOrder(first: ReferenceAnchor, second: ReferenceAnchor): number {
+  return first.anchor.compareDocumentPosition(second.anchor) & Node.DOCUMENT_POSITION_FOLLOWING
+    ? -1
+    : 1;
+}
+
 /** What every body draws from: the text, the reading of it the server sent, and what the
  *  surface drawing it says about it. One shape for the public body and for the painted one it
  *  hands its props to (`PaintedBody`). */
 interface MarkdownBodyProps {
+  /** Draw the first link to each issue as its chip in a host that permits links, and mark each
+   *  line of a list that a chip begins (`markChipLine`). */
+  chips?: boolean;
+  /** Issues the server already identified in this text, such as a short answer's item frames. */
+  knownIssueKeys?: readonly string[];
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the
    *  element as its literal characters where neither the tree nor the markdown could be drawn -
    *  no engine, a tree the schema refuses, a parse the parser refuses (`useRenderedMarkdown`).
@@ -327,6 +457,19 @@ interface MarkdownBodyProps {
  * The text those references are read from is `markdown`, unless the caller names another in
  * `referenceText`.
  *
+ * With `chips`, as the command bar draws an answer (design v3, state 4), each link to an issue
+ * draws as the issue's chip (`ItemChip`): its key, a dot in its status's colour and its title. An
+ * issue is its chip once, at the first link to it: a later link to the same issue keeps the words
+ * it was written with, as a plain link, so the answer shows the issue's title once however often
+ * its words name it. Every other reference keeps its `RefLink`. The punctuation written right
+ * after a chip stays against it, on its line (`holdPunctuation`). A time link whose words are an
+ * issue's key is a link to the issue too (`timeLinkAnchors`), and a chip inside a time link shows
+ * the time on hover, in place of the issue's title. A line of a list whose first word is a chip -
+ * the first word of its first paragraph, in a loose list - carries `data-chip-leads` on its `li`
+ * (`markChipLine`), whatever is written after the chip, so the surface can draw the chip as the
+ * line's mark: the command bar's answer draws such a line with no bullet, and a line of words
+ * with its bullet.
+ *
  * A body that is nothing but references draws a card for each of them under itself
  * (`Unfurl`): one renderer draws the record and everything that hangs off it, so no surface
  * pairs a body with a card of its own. Whether a reference in the body is a live link, and
@@ -347,6 +490,8 @@ export function MarkdownBody(props: MarkdownBodyProps): ReactNode {
 /** The body as a host that draws markup draws it: painted, with its references linked where the
  *  host links them, and the cards under a body that is nothing but references. */
 function PaintedBody({
+  chips = false,
+  knownIssueKeys,
   markdown,
   onRendered,
   referenceText = markdown,
@@ -360,7 +505,43 @@ function PaintedBody({
   const blockRoot = useRef<HTMLDivElement>(null);
   const inlineRoot = useRef<HTMLSpanElement>(null);
   const inline = variant === "inline";
-  const references = useTextReferences(referenceText, source);
+  const drawChips = chips && hostLinksReferences(host);
+  const references = useTextReferences(referenceText, source, knownIssueKeys);
+  // A body drawn with `chips` takes the links to issues from the link pass's anchors, and from the
+  // time links whose words are an issue's key (`timeLinkAnchors`), and draws the first one of each
+  // issue as its chip itself, the time on its hover where it sits in a time link; a later link to
+  // an issue that already has its chip keeps the words it was written with, and every other anchor
+  // goes back to the pass, which draws its `RefLink`.
+  const [chipAnchors, setChipAnchors] = useState<readonly IssueChip[]>(NO_CHIPS);
+  const takeIssueLinks = useCallback<TransformReferenceAnchors>((element, anchors) => {
+    const timed = timeLinkAnchors(element);
+    const links = timed.length === 0 ? anchors : [...anchors, ...timed].sort(inBodyOrder);
+    const chipped = new Set<string>();
+    const chips: IssueChip[] = [];
+    const others: ReferenceAnchor[] = [];
+    for (const reference of links) {
+      if (reference.route.kind !== "issue") {
+        others.push(reference);
+      } else if (chipped.has(reference.route.key)) {
+        // The link pass emptied it for a portal; it gets none, so its words go back in.
+        reference.anchor.textContent = reference.text;
+      } else {
+        chipped.add(reference.route.key);
+        const time = reference.anchor.closest<HTMLElement>(`[${TIME_LINK_ATTRIBUTE}]`);
+        chips.push({
+          anchor: reference.anchor,
+          hover: time?.getAttribute("title") ?? undefined,
+          issue: reference.route.key,
+          key: reference.key,
+        });
+        // A time link that is the chip and nothing else keeps what follows it on its line whole,
+        // and a line of a list it begins is marked as the chip's.
+        markChipLine(holdPunctuation(time?.textContent === "" ? time : reference.anchor));
+      }
+    }
+    setChipAnchors(chips.length === 0 ? NO_CHIPS : chips);
+    return chips.length === 0 ? anchors : others;
+  }, []);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     inline ? inlineRoot : blockRoot,
     markdown,
@@ -372,8 +553,14 @@ function PaintedBody({
       paintInSlices: inline ? undefined : paintBlockInSlices,
       references,
       softBreaks,
+      transformReferences: drawChips ? takeIssueLinks : undefined,
     }
   );
+  const chipPortals = drawChips
+    ? chipAnchors.map(({ anchor, hover, issue, key }) =>
+        createPortal(<ItemChip hover={hover} issue={issue} />, anchor, key)
+      )
+    : null;
   // Each reference drawn in the body reads its role by the issue the record is on, and by no
   // issue for a text that is no record's (`RecordIssue`).
   const links = <RecordIssue.Provider value={source?.issue}>{portals}</RecordIssue.Provider>;
@@ -387,6 +574,7 @@ function PaintedBody({
         ref={inlineRoot}
       >
         {links}
+        {chipPortals}
       </span>
     );
   }
@@ -399,6 +587,7 @@ function PaintedBody({
         ref={blockRoot}
       >
         {links}
+        {chipPortals}
       </div>
       {/* A card is a link, so a body inside a link or a button draws none: there is nothing for
           the card to be. One line of a card has no room for one either, which is why the

@@ -32,6 +32,7 @@ import type {
   Ask,
   Comment,
   CommentDelivery,
+  CommentEdited,
   DispatchEvent,
   DisplayTree,
   Handoff,
@@ -1356,7 +1357,11 @@ test("a refused Resolve keeps the thread and its reply, and the one that lands c
   const resolveComment = spyOn(api, "resolveComment").mockImplementation(async (id) => {
     resolves.push(id);
     if (refuse) throw new ApiError(409, { error: "the server is down" });
-    return { ...root, resolved: true };
+    return {
+      ...root,
+      resolved: true,
+      previous: { resolved: false, resolved_by: null, resolved_at: null },
+    };
   });
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
 
@@ -1399,7 +1404,11 @@ function ownResolveOverAReply() {
     spyOn(api, "resolveComment").mockImplementation(async () => {
       await resolution.promise;
       stub.lists.comments = [{ ...root, resolved: true }];
-      return { ...root, resolved: true };
+      return {
+        ...root,
+        resolved: true,
+        previous: { resolved: false, resolved_by: null, resolved_at: null },
+      };
     }),
   ];
   const queryClient = newQueryClient();
@@ -2462,7 +2471,9 @@ test("Conversation hides reply editing while its owner saves a comment", async (
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
   const stub = stubLists({ comments: [root, reply] });
-  const save = Promise.withResolvers<Comment>();
+  // The edit's answer: the comment, with the body the edit replaced.
+  const saved: CommentEdited = { ...root, previous: { body: root.body } };
+  const save = Promise.withResolvers<CommentEdited>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
   const queryClient = newQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
@@ -2493,14 +2504,14 @@ test("Conversation hides reply editing while its owner saves a comment", async (
     );
 
     await act(async () => {
-      save.resolve(root);
+      save.resolve(saved);
       await save.promise;
     });
     await waitFor(() =>
       expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
     );
   } finally {
-    save.resolve(root);
+    save.resolve(saved);
     view.unmount();
     editComment.mockRestore();
     stub.restore();
@@ -2512,7 +2523,7 @@ test("Conversation restores edit controls and the draft when its owner save reje
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", { body: "Reply comment", reply_to: "root-comment" });
   const stub = stubLists({ comments: [root, reply] });
-  const save = Promise.withResolvers<Comment>();
+  const save = Promise.withResolvers<CommentEdited>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
   const queryClient = newQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });

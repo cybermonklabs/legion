@@ -3,23 +3,36 @@
  * holds, and the answer is streamed to the browser as server-sent events. Every name, code and
  * bound of that stream is declared here once, and generated into Go (`contracts.Going*`), so the
  * server that writes a frame and the page that reads it cannot drift apart.
+ *
+ * The frames' shapes (`GoingDecisionEvent`, `GoingBlockEvent`, `GoingRosterEvent` and their
+ * parts) are written by hand here and in Go (`going_decision.go`, `going/blocks.go`,
+ * `going_reads.go`), since a frame union is no OpenAPI response.
+ * `fixtures/going/` holds the two together: the server's own Go test writes each frame's data
+ * there from the server's types and fails where a fixture differs from them
+ * (`go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
+ * in `packages/envoy` rewrites them), and `going.test.ts` holds every fixture to the types below
+ * key for key, so a field one side gains or loses fails a test.
  */
 
 /** The frame carrying the next piece of the answer's text, in the order the model wrote it.
- *  The text is plain text: every ASCII punctuation byte in it is backslash-escaped, which
- *  closes markdown's own constructs, so nothing a renderer is given can become a link, an
- *  image, a tag or a code span - not by itself, and not by the end of one frame meeting the
- *  start of the next. An escape closes none of GFM's literal autolinks, which a renderer finds
- *  after it has decoded the escapes, so a word a renderer would link on its own - a `www.`
- *  host, a scheme's `://`, a `mailto:` or `xmpp:`, an address - is dropped from the answer
- *  instead, whole and however many pieces of the model's text it was written in. A `text` frame
- *  therefore never carries a link; the `item` frame is where the links of an answer live.
+ *  The text is plain text: every ASCII punctuation byte of the model's words in it is
+ *  backslash-escaped, which closes markdown's own constructs, so nothing a renderer is given can
+ *  become a link, an image, a tag or a code span - not by itself, and not by the end of one
+ *  frame meeting the start of the next. An escape closes none of GFM's literal autolinks, which
+ *  a renderer finds after it has decoded the escapes, so a word a renderer would link on its own
+ *  - a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address - is dropped from the
+ *  answer instead, whole and however many pieces of the model's text it was written in. The one
+ *  link a `text` frame carries is a time, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`,
+ *  whose target is `dispatch-time:` and an RFC 3339 time: it names no place to go, and the page
+ *  draws it as its words with the full date on hover. The server passes it on whole, its words
+ *  escaped, and no frame carries its `[` without its closing markup; the `item` frame is where
+ *  the links of an answer to items live.
  *  Generated into Go as `contracts.GoingEventText`. */
 export const GOING_EVENT_TEXT = "text";
 
 /** The frame naming one thing the answer cites, so the page can link it. Its `href` is the
- *  cited item's own href, and it is the one link the stream carries: the server emits the
- *  link's visible text as escaped plain text and this frame beside it.
+ *  cited item's own href, and it is the one link to an item the stream carries: the server
+ *  emits the link's visible text as escaped plain text and this frame beside it.
  *  Generated into Go as `contracts.GoingEventItem`. */
 export const GOING_EVENT_ITEM = "item";
 
@@ -48,6 +61,21 @@ export const GOING_EVENT_END = "end";
  *  Generated into Go as `contracts.GoingEventError`. */
 export const GOING_EVENT_ERROR = "error";
 
+/** The frame carrying what the decision model chose before the answer is written: the action of
+ *  the catalogue, the line on top that action gives, and what the words are about. It is the
+ *  stream's first frame when a decision model is configured and answered, and the stream carries
+ *  none otherwise, nor for words the fast tier answers with their hit. Generated into Go as
+ *  `contracts.GoingEventDecision`. */
+export const GOING_EVENT_DECISION = "decision";
+
+/** The frame carrying one typed block drawn beside the answer, filled from a read the server
+ *  serves, after the answer's text frames. Generated into Go as `contracts.GoingEventBlock`. */
+export const GOING_EVENT_BLOCK = "block";
+
+/** The frame saying how fresh the roster an answer read was, written when the run read it.
+ *  Generated into Go as `contracts.GoingEventRoster`. */
+export const GOING_EVENT_ROSTER = "roster";
+
 /** The error code of a run the model never answered inside `GOING_RUN_MS`.
  *  Generated into Go as `contracts.GoingErrorAnswerDidNotArrive`. */
 export const GOING_ERROR_ANSWER_DID_NOT_ARRIVE = "ANSWER_DID_NOT_ARRIVE";
@@ -67,6 +95,15 @@ export const GOING_ERROR_ANSWER_FAILED = "ANSWER_FAILED";
  *  gives this frame alone, at the place of the run's ending, and no `text` or `item` frame of
  *  the run. Generated into Go as `contracts.GoingErrorAnswerWithdrawn`. */
 export const GOING_ERROR_ANSWER_WITHDRAWN = "ANSWER_WITHDRAWN";
+
+/** The error code of a run withdrawn only by its own deletes: every comment or issue message it
+ *  was given that no longer stands was deleted by a `dispatch_delete_comment` or
+ *  `dispatch_delete_message` call of this same run. Its answer may quote that post, so every read
+ *  of the run's stream gives its plan frames and this end alone, and its plan reads as an ended
+ *  run's, with no summary and each deleted post's value marked deleted with no part of its body.
+ *  A run another writer's delete withdrew ends with `GOING_ERROR_ANSWER_WITHDRAWN`. Generated
+ *  into Go as `contracts.GoingErrorAnswerWithdrawnByRun`. */
+export const GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN = "ANSWER_WITHDRAWN_BY_RUN";
 
 /** The name of the one tool the model is given: another search of Dispatch.
  *  Generated into Go as `contracts.GoingSearchTool`. */
@@ -105,17 +142,18 @@ export const GOING_RUN_MS = 30_000;
  *  finished run is not kept for ever. Generated into Go as `contracts.GoingRequestTTL`. */
 export const GOING_REQUEST_TTL_MS = 3_600_000;
 
-/** The next piece of the answer's text, as plain text whose every ASCII punctuation byte is
- *  backslash-escaped, so a renderer makes no link, image, tag or code span of any of it, and
- *  with every word a renderer would link on its own dropped rather than sent. */
+/** The next piece of the answer's text, as plain text whose every ASCII punctuation byte of the
+ *  model's words is backslash-escaped, so a renderer makes no link, image, tag or code span of
+ *  any of it but a time link (`GOING_EVENT_TEXT`), and with every word a renderer would link on
+ *  its own dropped rather than sent. */
 export interface GoingTextEvent {
   readonly event: typeof GOING_EVENT_TEXT;
   readonly data: { readonly text: string };
 }
 
 /** One thing the answer cites: its kind and id name it, `href` links it and `title` names it to a
- *  reader. This is the one frame of the stream that carries a link. `title`, `kind` and `id` are
- *  plain text, which a reader is shown as text and never read as markdown. */
+ *  reader. This is the one frame of the stream that carries a link to an item. `title`, `kind`
+ *  and `id` are plain text, which a reader is shown as text and never read as markdown. */
 export interface GoingItemEvent {
   readonly event: typeof GOING_EVENT_ITEM;
   readonly data: {
@@ -157,6 +195,112 @@ export interface GoingErrorEvent {
   readonly data: { readonly code: string };
 }
 
+/** What the words are about, as the decision model chose: the item the bar's context chip names
+ *  (`page`), items the words name themselves (`named`), or nothing in particular (`none`). */
+export type GoingDecidedContext = "page" | "named" | "none";
+
+/** The line on top of the bar's list, as the decision model's action gives it: `ask` for no
+ *  action, `file` (File as a new issue) for the create of an issue, `do` for any other action. */
+export type GoingLine = "ask" | "do" | "file";
+
+/** What the decision model chose before the answer was written. `action` is the catalogue
+ *  action's name, or `none` for words that ask for nothing to change; `line` is the line on top
+ *  it gives. */
+export interface GoingDecisionEvent {
+  readonly event: typeof GOING_EVENT_DECISION;
+  readonly data: {
+    readonly action: string;
+    readonly line: GoingLine;
+    readonly context: GoingDecidedContext;
+  };
+}
+
+/** The seven kinds of block an answer may draw. */
+export type GoingBlockKind =
+  | "chart"
+  | "progress"
+  | "table"
+  | "issue_list"
+  | "agent_status"
+  | "metric"
+  | "timeline";
+
+/** The part of every block's spec that names the read filling it: `source` is the read tool
+ *  (`read_progress`, `read_architecture`, `read_project_activity`, `read_delivery` or
+ *  `read_roster`), `params` the arguments the server ran it with, and `table` the table of its
+ *  answer the block's rows come from. A spec names fields and never carries a number. */
+export interface GoingBlockSource {
+  readonly source: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly table: string;
+}
+
+/** A chart: one series of at least two points, `x` the field along the axis (a week, a status, a
+ *  component, a day) and `y` the numeric field plotted, drawn as bars or a line. */
+export interface GoingChartSpec extends GoingBlockSource {
+  readonly x: string;
+  readonly y: string;
+  readonly mark: "bar" | "line";
+}
+
+/** A table: the rows' `columns`, in order. */
+export interface GoingTableSpec extends GoingBlockSource {
+  readonly columns: readonly string[];
+}
+
+/** A metric: one number, the one row's `field`, named by `label`, and at most one comparison,
+ *  the row's `compare` field named by `compare_label`; both absent for none. No axes, no series. */
+export interface GoingMetricSpec extends GoingBlockSource {
+  readonly field: string;
+  readonly label: string;
+  readonly compare?: string;
+  readonly compare_label?: string;
+}
+
+/** Progress: one bar per row, named by its `label` field, `done` of `total`. */
+export interface GoingProgressSpec extends GoingBlockSource {
+  readonly label: string;
+  readonly done: string;
+  readonly total: string;
+}
+
+/** Fields shared by every block frame: its title, and its rows, the records the server's own
+ *  read of the spec's source answered, cut to the fields the block draws. Every number a block
+ *  shows is a value of these rows. */
+interface GoingBlockFrame<K extends GoingBlockKind, S> {
+  readonly kind: K;
+  readonly title: string;
+  readonly spec: S;
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** One block drawn beside the answer, after the answer's text frames and outside its word cut.
+ *  `issue_list` rows carry `key`, `title` and `status`; `agent_status` rows `session_id`,
+ *  `title`, `state`, `open_asks` and `last_activity`; `timeline` rows `at` (RFC3339), `lane`
+ *  and `label`; every other kind's rows carry the fields its spec names. */
+export type GoingBlockData =
+  | GoingBlockFrame<"chart", GoingChartSpec>
+  | GoingBlockFrame<"table", GoingTableSpec>
+  | GoingBlockFrame<"metric", GoingMetricSpec>
+  | GoingBlockFrame<"progress", GoingProgressSpec>
+  | GoingBlockFrame<"issue_list", GoingBlockSource>
+  | GoingBlockFrame<"agent_status", GoingBlockSource>
+  | GoingBlockFrame<"timeline", GoingBlockSource>;
+
+/** The frame carrying one typed block, filled from a read the server serves. */
+export interface GoingBlockEvent {
+  readonly event: typeof GOING_EVENT_BLOCK;
+  readonly data: GoingBlockData;
+}
+
+/** How fresh the roster the answer read was: `age_ms` since Dispatch's copy of the listener's
+ *  session list was read, from the live roster (`live`) or from the stored rows alone because the
+ *  live roster was unavailable (`stored`). */
+export interface GoingRosterEvent {
+  readonly event: typeof GOING_EVENT_ROSTER;
+  readonly data: { readonly age_ms: number; readonly source: "live" | "stored" };
+}
+
 /** Every frame a reader of the stream sees; `end` and `error` are the two that end it. */
 export type GoingEvent =
   | GoingTextEvent
@@ -164,5 +308,8 @@ export type GoingEvent =
   | GoingCutEvent
   | GoingChangedEvent
   | GoingNoneEvent
+  | GoingDecisionEvent
+  | GoingBlockEvent
+  | GoingRosterEvent
   | GoingEndEvent
   | GoingErrorEvent;

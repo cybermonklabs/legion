@@ -40,6 +40,7 @@ import type {
   DispatchEvent,
   DispatchLimits,
   DispatchServiceErrorShape,
+  DispatchToolRoute,
   DocumentAdvised,
   EditArtifactInput,
   EditArtifactResponse,
@@ -126,7 +127,7 @@ import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/cont
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import type { ZodType } from "zod";
 import { type ApproveRoute, credentialDeadline, type RequestCredential } from "./bearer";
-import { rowStores, WRITE_ROWS } from "./dispatch-write-rows";
+import { BOUND_POSTS_STORING_NOTHING, rowStores, WRITE_ROWS } from "./dispatch-write-rows";
 import { LoggableError, reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
 import { pathNamesNothingPattern } from "./go-space";
@@ -2147,6 +2148,33 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
+  /** One route of the table a tool spec binds (`DispatchToolSpec.routes`), called as it stands:
+   *  `route` its binding's method and pattern, `path` its segments with each placeholder filled,
+   *  `query` its query parameters and `body` its JSON body, none for a GET. A GET, a PUT or a
+   *  DELETE is sent as every read and unkeyed write is (`#json`). A POST or a PATCH is a keyed
+   *  write (`#write`), asked again under its key, whose answer is read into a row that names no
+   *  member (`WRITE_ROWS.callRoute`), since its caller prints the answer as it came; a bound POST
+   *  that stores nothing (`BOUND_POSTS_STORING_NOTHING`) is read into the row of a route that
+   *  stores nothing and asked once more under a new key where Dispatch kept no copy of its answer
+   *  (`#writingNothing`). Answers the route's JSON body. */
+  async callRoute(
+    route: Pick<DispatchToolRoute, "method" | "path">,
+    path: readonly string[],
+    options: { readonly body?: unknown; readonly query?: object } = {}
+  ): Promise<unknown> {
+    const { method } = route;
+    if (method === "POST" && BOUND_POSTS_STORING_NOTHING[route.path] === true) {
+      const row = WRITE_ROWS.callRouteStoringNothing;
+      return this.#writingNothing(path, row, options.body, options.query);
+    }
+    if (method === "POST" || method === "PATCH") {
+      return this.#write(method, path, WRITE_ROWS.callRoute, options.body, {
+        query: options.query,
+      });
+    }
+    return this.#json(method, path, options.body, options.query);
+  }
+
   /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
    *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
    *  scheme, a host and a dot segment, so it resolves under this client's server as every other
@@ -3486,9 +3514,10 @@ export class DispatchClient {
   }
 
   /**
-   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `fileRoundTrip`, `related`,
-   * `dryRunResult`), `row` its row of the write table, which stores nothing (`rowStores`). It is
-   * sent as a write is, under a key of its own, so an attempt with no definitive answer is asked
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `fileRoundTrip`,
+   * `related`, `dryRunResult`, and such a route a spec binds, `callRoute`), `row` its row of the
+   * write table, which stores nothing (`rowStores`), with `query` its query where it has one. It
+   * is sent as a write is, under a key of its own, so an attempt with no definitive answer is asked
    * again under that key (`#writeAnswer`). Such a repeat can come back as a replayed 2xx reading
    * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its
    * answer. `#writePayload` reads that replay of a route that stores nothing as a
@@ -3498,10 +3527,15 @@ export class DispatchClient {
    * rather than asked again, so the call is asked under at most two keys. Every other error, a
    * `DispatchAnswerMissingError` among them, is thrown as it came.
    */
-  async #writingNothing<T>(path: readonly string[], row: WriteRow, body: unknown): Promise<T> {
+  async #writingNothing<T>(
+    path: readonly string[],
+    row: WriteRow,
+    body: unknown,
+    query?: object
+  ): Promise<T> {
     for (let keys = 1; ; keys++) {
       try {
-        return await this.#write<T>("POST", path, row, body);
+        return await this.#write<T>("POST", path, row, body, { query });
       } catch (error) {
         if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
       }

@@ -1,36 +1,44 @@
-import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import { useLocation } from "react-router-dom";
 
-import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
+import type { GoingContextInput } from "../../api/types";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { useIssuePageChoice } from "../issue-page/choice";
-import { routeProjectOf, unknownToShell } from "../refs/routes";
-import { KeyHints } from "../shell/ShortcutHelp";
 import {
   type BarScopeLevel,
   type BarTargets,
   barTargets,
+  blockAtCursor,
   documentRouteOf,
   issueOfPage,
+  projectOfPage,
   readSelectedIssues,
-  scopeAtCursor,
   scopeOfPage,
   scopeOfProject,
 } from "./bar-scope";
 
-/** The chip the bar acts through: the line it draws above the box, the two keys that move it,
- *  and what each offer acts on at the level those keys have left it at. */
+/** The chip the bar acts through: its words in the box, the two keys that move it, and what each
+ *  offer acts on at the level those keys have left it at. */
 export interface BarScope {
+  /** What the bar acts on, in the chip's words (design v3, state 1): the page's own - the
+   *  issue's key, the document's name, the selected issues, or the project - and "the whole
+   *  project" or "a block" once `Backspace` widened it or `Tab` narrowed it; undefined on a page
+   *  that puts nothing under the bar. The box carries it on its left. */
+  readonly chip: string | undefined;
+  /** The chip's words in full, with the keys that move it, for the chip's tooltip; undefined
+   *  where there is no chip. */
+  readonly chipTitle: string | undefined;
   /** `Tab` and `Backspace`, the two keys that move the chip, for the box to offer them before
    *  its own. It answers whether the key moved the chip, which the box reads as the key being
    *  spent: the browser's own move is then the one thing left to cancel. */
   readonly handleKey: (event: KeyboardEvent<HTMLInputElement>) => boolean;
-  /** The line above the box saying what the bar will act on, with the two keys that move it,
-   *  and null on a page that puts nothing under the bar. */
-  readonly header: ReactNode;
   /** What each offer acts on at the level the chip is at now, so a row acts on what the chip
    *  above it names rather than on the page the bar was opened over. */
   readonly targets: BarTargets;
+  /** The chip as the bar's answer is told it (`POST /api/v1/going/requests`' `context`): the
+   *  page the bar opened over, and the project, issue and document block the chip names at the
+   *  level it is at now, each `""` where it names none. */
+  readonly context: GoingContextInput;
 }
 
 /**
@@ -57,10 +65,10 @@ export function useBarScope(
   // narrows nothing: a search from a project page searches everything, as a search from
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
-  const [pageProject] = useState(() =>
-    unknownToShell(location.pathname, newPage) ? undefined : routeProjectOf(location.pathname)
-  );
-  const [blockScope] = useState(scopeAtCursor);
+  const [pageProject] = useState(() => projectOfPage(location.pathname, newPage));
+  const [cursor] = useState(blockAtCursor);
+  const blockScope = cursor?.scope;
+  const [pagePath] = useState(() => location.pathname);
   const [projectScope] = useState(() => scopeOfProject(location.pathname, newPage));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
@@ -89,7 +97,28 @@ export function useBarScope(
   // other field.
   const canNarrow = blockScope !== undefined && scopeLevel !== "block";
   const canWiden = projectScope !== undefined && scopeLevel !== "project" && scope !== projectScope;
+  const targets = barTargets(scopeLevel, {
+    block: blockScope,
+    issue: pageIssue,
+    project: pageProject,
+  });
+  // The chip's words: the page's own, or the short words of the level a key moved it to, the full
+  // words of which the tooltip keeps beside the keys that move it.
+  const chip =
+    scopeLevel === "block" ? "a block" : scopeLevel === "project" ? "the whole project" : scope;
+  const keys = [
+    canNarrow ? "Tab: the block you are writing in" : undefined,
+    canWiden ? "Backspace in the empty box: the whole project" : undefined,
+  ].filter((hint) => hint !== undefined);
   return {
+    chip: scope === undefined ? undefined : chip,
+    chipTitle: scope === undefined ? undefined : [`Acting on ${scope}`, ...keys].join(" · "),
+    context: {
+      block: targets.block === undefined ? "" : (cursor?.id ?? ""),
+      issue: targets.issue ?? "",
+      path: pagePath,
+      project: targets.project ?? "",
+    },
     handleKey: (event) => {
       if (event.key === "Tab" && !event.shiftKey && canNarrow) {
         setScopeLevel("block");
@@ -101,38 +130,6 @@ export function useBarScope(
       }
       return false;
     },
-    // What the bar will act on, above the box, with the two keys that move it. The filter chips
-    // below the box are another thing and read as one: they say which items the words search,
-    // each with a Remove control of its own, while this says what the bar acts on and is moved
-    // by Tab and Backspace alone.
-    header:
-      scope === undefined ? null : (
-        <div
-          className={`flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-2 text-xs ${borderDefault} ${textSecondaryOnSurface}`}
-          data-testid="search-scope"
-          role="status"
-        >
-          <span className="min-w-0">
-            Acting on <span className="font-medium">{scope}</span>
-          </span>
-          {canNarrow ? (
-            <span className={`inline-flex items-center gap-1 ${textMutedOnSurface}`}>
-              <KeyHints keys={["Tab"]} />
-              for the block you are writing in
-            </span>
-          ) : null}
-          {canWiden ? (
-            <span className={`inline-flex items-center gap-1 ${textMutedOnSurface}`}>
-              <KeyHints keys={["Backspace"]} />
-              for the whole project
-            </span>
-          ) : null}
-        </div>
-      ),
-    targets: barTargets(scopeLevel, {
-      block: blockScope,
-      issue: pageIssue,
-      project: pageProject,
-    }),
+    targets,
   };
 }

@@ -14,8 +14,9 @@ import {
 } from "../theme/classes";
 import { useTooltips } from "./tooltips";
 
-/** The one pin glyph: an outline that fills with `currentColor` once pinned. */
-function PinIcon({ pinned }: { pinned: boolean }): ReactNode {
+/** The one pin glyph: an outline that fills with `currentColor` once pinned. The command bar's
+ *  header draws it, unpinned, as "Keep at the side". */
+export function PinIcon({ pinned }: { pinned: boolean }): ReactNode {
   return (
     <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 16 16">
       <path

@@ -11,26 +11,45 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition below, which user-event has no form for
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { correction, correctionFeed } from "../../__tests__/correction-feed";
+import { snippetTree } from "../../__tests__/display-trees";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
+import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import { refreshQueries } from "../../api/query-refresh";
-import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
+import type {
+  ArtifactUploadResponse,
+  DisplayTree,
+  GoingConversation,
+  GoingPlanAnswer,
+  GoingRun,
+  IssueReferenceSummary,
+  Message,
+  SearchResponse,
+  SearchResult,
+} from "../../api/types";
+import { goingState, setLevel, setPlace, useGoingValue } from "../going/going-store";
+import { SidePanel } from "../going/SidePanel";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
+import { CONFIGURED_CAPABILITY } from "./going-bar-fixture";
+import { NEW_ISSUE_OPTION_ID } from "./NewIssueOffer";
+import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { optionId } from "./search-model";
@@ -52,13 +71,14 @@ const results: SearchResult[] = [
     rank: 3,
     snippet: "The <mark>astrolabe</mark> measures altitude.",
   },
+  // An issue hit's text is its title, as the server reads it: the headline of the title alone.
   {
     href: "/issues/LEGION-3",
     id: "LEGION-3",
-    owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Instrument research" },
+    owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Astrolabe research" },
     kind: "issue",
     rank: 2,
-    snippet: "Research <mark>astrolabe</mark> history.",
+    snippet: "<mark>Astrolabe</mark> research",
   },
   {
     href: "/issues/LEGION-2/comments/comment-2",
@@ -167,6 +187,8 @@ interface RenderPaletteOptions {
   control?: ReactNode;
   entries?: string[];
   index?: number;
+  /** The person the shell read as signed in before the bar opened, as it has on a page. */
+  login?: string;
   onClose?: () => void;
   /** The client and cache the palette reads through: one that never retries unless a row gives
    *  its own (`appQueryClient`), and that a row can fill before the palette renders. */
@@ -177,9 +199,13 @@ function renderPalette({
   control,
   entries = ["/"],
   index,
+  login,
   onClose = () => {},
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
+  if (login !== undefined) {
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login });
+  }
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
@@ -234,7 +260,239 @@ test("renders grouped results with marked snippets and dims a done issue", async
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
     expect(doneGroup).toHaveAttribute("data-status", "done");
+    // A hit's snippet stands under its kind, its match marked (review N2).
+    const owned = within(screen.getByRole("group", { name: "LEGION-2: Navigation instruments" }));
+    const snippet = within(owned.getAllByRole("option")[0] as HTMLElement).getByTestId(
+      "search-hit-snippet"
+    );
+    expect(snippet).toHaveTextContent("The astrolabe measures altitude.");
+    expect(within(snippet).getByText("astrolabe", { selector: "mark" })).toBeTruthy();
     expect(screen.queryByText(/^Showing the best/)).not.toBeInTheDocument();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A document hit whose headline window began in one Proof directive and ends inside the next
+// one's attributes (review N2, 13-filing-line): the server's reader reads neither cut piece as a
+// directive, so its tree holds them as paragraph text, a soft break between them a space. The
+// snippet line draws that tree with no fence and no attribute syntax: `table. A page is ready
+// once its plan loads`, its highlight kept, and its link as the words around it (review A2): no
+// anchor, no link look (`data-link-look="text"`, which styles.css's link look skips) and no tab
+// stop inside the row, whose own Enter and click are its one action, so a click on the link's
+// words opens the hit.
+test("a document hit's snippet shows no directive fence or attributes a cut window left, its highlight kept and its link as text", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([
+      {
+        artifact: { name: "plan.md", slug: "plan" },
+        href: "/issues/LEGION-2/artifact/plan?q=plan",
+        id: "document-plan",
+        kind: "document",
+        owner: { key: "LEGION-2", kind: "issue", status: "in_progress", title: "Local testing" },
+        rank: 1,
+        snippet:
+          'table.\n:::\n:::plan_task{#t1 serves="A page is ready once its <mark>plan</mark> loads',
+        snippet_tree: {
+          content: [
+            {
+              content: [
+                { text: 'table. ::: :::plan_task{#t1 serves="', type: "text" },
+                {
+                  marks: [{ attrs: { href: "https://example.com/pages" }, type: "link" }],
+                  text: "A page",
+                  type: "text",
+                },
+                { text: " is ready once its ", type: "text" },
+                { marks: [{ type: "searchHighlight" }], text: "plan", type: "text" },
+                { text: " loads", type: "text" },
+              ],
+              type: "paragraph",
+            },
+          ],
+          type: "doc",
+        },
+      },
+    ])
+  );
+  const view = renderPalette();
+  try {
+    const input = await searchFor(user, "plan");
+    const option = within(screen.getByRole("group", { name: "LEGION-2: Local testing" })).getByRole(
+      "option"
+    );
+    const snippet = within(option).getByTestId("search-hit-snippet");
+    const body = snippet.querySelector<HTMLElement>("[data-markdown-preview]");
+    if (body === null) throw new Error("the search snippet is not a MarkdownPreview");
+    await waitFor(() =>
+      expect(body.textContent?.replace(/\s+/gu, " ").trim()).toBe(
+        "table. A page is ready once its plan loads"
+      )
+    );
+    expect(body.textContent).not.toMatch(/:::|plan_task|serves=|[{}"]/u);
+    expect(within(body).getByText("plan", { selector: "mark" })).toBeTruthy();
+    expect(option.querySelector("a")).toBeNull();
+    const link = within(body).getByText("A page");
+    expect(link.tagName).toBe("SPAN");
+    expect(link).toHaveAttribute("data-markdown-link", "");
+    expect(link).toHaveAttribute("data-link-look", "text");
+    expect(link).not.toHaveAttribute("tabindex");
+    // Tab walks the dialog's own controls round to the box and never stops in the row.
+    expect(document.activeElement).toBe(input);
+    const stops: (Element | null)[] = [];
+    do {
+      await user.tab();
+      stops.push(document.activeElement);
+    } while (document.activeElement !== input && stops.length < 50);
+    expect(document.activeElement).toBe(input);
+    expect(
+      stops.flatMap((stop) => (stop !== null && option.contains(stop) ? [stop.outerHTML] : []))
+    ).toEqual([]);
+    await user.click(link);
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/artifact/plan?q=plan"
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The server says where its headline window cut the text a hit's snippet was read out of, on the
+// snippet tree's doc (review R4, 13-filing-line): a line whose window began after a word of the
+// text begins with "…", and one whose window stopped before a word of it ends with "…". The plan
+// the visual review's bar found is that tree as the server sends it: its window is cut at both
+// ends though it holds ten runs between whitespace, since ts_headline counts the parser's tokens,
+// and its line begins with "…" where it read "table." with nothing to say the line began inside
+// the text. A window whose start the server cut and that began on a sentence's tail starts at the
+// next sentence's first word, after "…". A tree that says its window held the whole text draws
+// neither and keeps every word, though it starts on a small letter, ends a sentence a few words
+// in and holds two dozen words.
+test("a snippet begins and ends with … where the server says its window cut the text, and a whole one draws neither though it starts on a small letter", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const plan: DisplayTree = {
+    attrs: { cutEnd: true, cutStart: true },
+    content: [
+      { content: [{ text: "table. :::", type: "text" }], type: "paragraph" },
+      {
+        content: [
+          {
+            text: ':::plan_task{#t1 serves="dispatch://CORE-1/artifact/requirements-md#b-r2" ',
+            type: "text",
+          },
+          { marks: [{ type: "searchHighlight" }], text: "needs", type: "text" },
+          {
+            text: '="dispatch://CORE-1/artifact/plan-md#b-t0"} Draw each page and read',
+            type: "text",
+          },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  };
+  const whole =
+    "each page is read against the design. It is drawn once the next one is ready so that no page of the set is left unread";
+  const tail = "table. A page is read once it is drawn";
+  const end = "Draw each page and read it against the design before the next one";
+  const hit = (id: string, snippet: string, tree: DisplayTree): SearchResult => ({
+    artifact: { name: "plan.md", slug: "plan" },
+    href: `/issues/LEGION-2/artifact/plan?q=page&hit=${id}`,
+    id,
+    kind: "document",
+    owner: { key: "LEGION-2", kind: "issue", status: "in_progress", title: "Local testing" },
+    rank: 1,
+    snippet,
+    snippet_tree: tree,
+  });
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([
+      hit(
+        "document-plan",
+        "table.\n:::\n\n:::plan_task{#t1 serves=&#34;dispatch://CORE-1/artifact/requirements-md#b-r2&#34; <mark>needs</mark>=&#34;dispatch://CORE-1/artifact/plan-md#b-t0&#34;}\nDraw each page and read",
+        plan
+      ),
+      hit("document-whole", whole, snippetTree(whole)),
+      hit("document-tail", tail, { ...snippetTree(tail), attrs: { cutStart: true } }),
+      hit("document-end", end, { ...snippetTree(end), attrs: { cutEnd: true } }),
+    ])
+  );
+  // The plan's directive attributes name two blocks, which its line draws as references, each
+  // reading its block's words. No row here is about those words, so the reads are held open and
+  // the line draws each reference as the address it is.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderPalette();
+  try {
+    await searchFor(user, "page");
+    const [planHit, wholeHit, tailHit, endHit] = within(
+      screen.getByRole("group", { name: "LEGION-2: Local testing" })
+    ).getAllByRole("option");
+    if (
+      planHit === undefined ||
+      wholeHit === undefined ||
+      tailHit === undefined ||
+      endHit === undefined
+    ) {
+      throw new Error("the bar lists no four document hits");
+    }
+    const drawn = (option: HTMLElement): string =>
+      within(option)
+        .getByTestId("search-hit-snippet")
+        .querySelector("[data-markdown-preview]")
+        ?.textContent?.replace(/\s+/gu, " ")
+        .trim() ?? "";
+    await waitFor(() => expect(drawn(planHit)).toStartWith("…table. "));
+    expect(drawn(planHit)).toEndWith(" Draw each page and read…");
+    await waitFor(() => expect(drawn(wholeHit)).toBe(whole));
+    await waitFor(() => expect(drawn(tailHit)).toBe("…A page is read once it is drawn"));
+    await waitFor(() => expect(drawn(endHit)).toBe(`${end}…`));
+  } finally {
+    search.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a best match whose snippet starts past the title's first words shows the whole title, once, with the word that matched marked", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  // The server's headline of "API: rate limit headers" for `headers` starts at "rate".
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([
+      {
+        href: "/issues/LEGION-30",
+        id: "LEGION-30",
+        kind: "issue",
+        owner: {
+          key: "LEGION-30",
+          kind: "issue",
+          status: "in_progress",
+          title: "API: rate limit headers",
+        },
+        rank: 1,
+        snippet: "rate limit <mark>headers</mark>",
+      },
+    ])
+  );
+  const view = renderPalette();
+
+  try {
+    // The key names the issue, so its hit is the best match, above the line on top, in the one
+    // row look that names its item (R2): a hit under its owner's row leaves the title to that row.
+    await searchFor(user, "LEGION-30");
+    const option = within(screen.getByRole("group", { name: "Best match" })).getByRole("option");
+    expect(option).toHaveTextContent("LEGION-30");
+    expect(option).toHaveTextContent("API: rate limit headers");
+    expect(option.textContent?.match(/rate limit headers/gu)).toHaveLength(1);
+    const marked = option.querySelectorAll("mark[data-search-highlight]");
+    expect(Array.from(marked, (mark) => mark.textContent)).toEqual(["headers"]);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -293,9 +551,9 @@ test("an edited post's hit carries the edited mark, and a post nobody edited doe
 });
 
 // A deleted post is no hit once its delete commits, which takes its windows with its body; the
-// mark is the backstop for a hit of one all the same, whose snippet is empty. The hit draws the deleted line where the snippet would be, naming who deleted it and
-// when, and no edited mark beside its kind; a post nobody deleted draws its snippet and no
-// deleted line.
+// mark is the backstop for a hit of one all the same, whose snippet is empty. The hit draws the
+// deleted line where the snippet would be, naming who deleted it and when, and no edited mark
+// beside its kind; a post nobody deleted draws its snippet and no deleted line.
 test("a deleted post's hit draws the deleted line where its snippet would be", async () => {
   // The standing hit's snippet is Markdown (`MarkdownPreview`), empty until the lazy engine loads,
   // and a wait on this row's held clock can spend its budget in fake time before the engine has
@@ -578,16 +836,18 @@ test("a hit in a long-named document previews that document", async () => {
       },
     ])
   );
-  // The bar reads the viewer, to list what that person opened lately, and the project list, to
-  // offer a project row for every project the words name. This row's page has an origin of its
-  // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
-  // to those two routes do not resolve against it: both are answered here at the api client, as
-  // the shell answers them, signed out and with no project. Neither adds a row, so the two
-  // document hits below are the whole list.
+  // The bar reads the viewer, to list what that person opened lately, the project list, to offer
+  // a project row for every project the words name, and what this Dispatch can do, to know
+  // whether it answers. This row's page has an origin of its own - the hrefs are read against
+  // it - and it is not the suite's, so the shell's own answers to those three routes do not
+  // resolve against it: each is answered here at the api client, as the shell answers it, signed
+  // out, with no project and with nothing configured. None adds a row, so the two document hits
+  // below are the whole list.
   const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
     new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  const goingCapability = spyOn(api, "goingCapability").mockResolvedValue(UNCONFIGURED_CAPABILITY);
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");
@@ -602,6 +862,7 @@ test("a hit in a long-named document previews that document", async () => {
     search.mockRestore();
     whoAmI.mockRestore();
     listProjects.mockRestore();
+    goingCapability.mockRestore();
     view.unmount();
     view.queryClient.clear();
     testWindow.happyDOM.setURL(pageBefore);
@@ -692,6 +953,32 @@ test("arrow keys move aria-activedescendant and Enter navigates to the active hr
     await user.keyboard("{ArrowUp}");
     await user.keyboard("{Enter}");
 
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      "/issues/LEGION-2/spec?q=astrolabe"
+    );
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An Enter that confirms an input method's conversion is the input method's: Chromium and Firefox
+// mark it `isComposing`, and Safari sends it after the composition's end, unmarked, with keyCode
+// 229. It opens no hit; a plain Enter after it opens the highlighted one.
+test("an Enter that confirms an input method's conversion opens no hit, and a plain Enter opens the highlighted one", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+  try {
+    const input = await searchFor(user, "astrolabe");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(input, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(screen.getByTestId("current-route").textContent).toBe("/");
+    expect(screen.getByRole("combobox", { name: "Search" })).toBe(input);
+
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
     );
@@ -814,6 +1101,75 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
     expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a first answer with no hits and a second that carries one leave that hit highlighted, and Enter opens it", async () => {
+  const user = userOnFakeClock();
+  const [only] = [issueHit("LEGION-3")];
+  const search = spyOn(api, "search").mockImplementation(bothTiers([], [only]));
+  const view = renderPalette();
+
+  try {
+    // The keystroke's search answers this query with no hit, so the list holds nothing to
+    // highlight. The clock moves the debounce's length alone, short of the pause.
+    const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await user.click(input);
+    await user.paste("astrolabe");
+    await tick(150);
+    expect(search.mock.calls).toHaveLength(1);
+    expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
+    expect(screen.getByText(/No results for/)).toBeInTheDocument();
+    expect(optionIds()).not.toContain(optionId(only));
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+
+    // The pause's search answers the same query with its one hit. No row was highlighted, so
+    // no row the reader held has left: the hit is the query's first and takes the highlight.
+    // The clock crosses the 500 ms pause here deliberately: this row is about what firing it
+    // does.
+    await tick(500);
+    await waitFor(() => expect(optionIds()).toContain(optionId(only)), { timeout: 3000 });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(only));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A filter chip is another search under another key, so the answer a chip's change brings is
+// that search's first hits, never the words' hits re-ranked, though the words are the same: an
+// answer the bar already holds for it, painted at once, still sends the highlight to its head.
+test("a chip taken off, whose search the bar already holds an answer for, highlights that answer's first hit", async () => {
+  const user = userOnFakeClock();
+  const [first, second, other] = [issueHit("LEGION-3"), issueHit("LEGION-4"), issueHit("LEGION-5")];
+  const search = spyOn(api, "search").mockImplementation((_query, request) =>
+    Promise.resolve(searchAnswer(request?.status === "in_progress" ? [other] : [first, second]))
+  );
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "astrolabe");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+
+    // The chip's search answers its one hit, which takes the highlight.
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await waitFor(() => expect(optionIds()).toEqual([optionId(other)]));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(other));
+
+    // Taken off, the chip leaves the words' own search, whose answer the bar holds: it paints at
+    // once, and its first hit takes the highlight, so Enter opens it.
+    await user.click(screen.getByRole("button", { name: "Remove Status In progress" }));
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first), optionId(second)]));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1215,6 +1571,111 @@ test("a query that starts an action's label lists it above the hits, and Enter r
   }
 });
 
+// On a Dispatch with no deciding model the line on top is always Ask and never File (R2), so the
+// bar offers words its search matched nothing with as a new issue, in the New issue group at the
+// foot of the list, under the hits and the More actions, as main draws it (design v3, state 13);
+// pressing it files the issue as main's offer does. With a deciding model configured, the line's
+// File is the way to file, and the bar offers no group, whether or not that model answers.
+const NEW_ISSUE_WORDS = "sextant rota";
+const ROTA_ROW = "search-option-action-global-rota";
+
+test("with no deciding model, words that match nothing offer a New issue group under the More actions, and choosing it files the issue as main's offer does", async () => {
+  const user = userOnFakeClock();
+  const unregister = appKeymap.register("global", [
+    { id: "rota", keys: [], label: "Print the sextant rota", run: () => {} },
+  ]);
+  const made = { ...issueFixture, key: "CORE-7", number: 7, title: NEW_ISSUE_WORDS };
+  const spies = {
+    capability: spyOn(api, "goingCapability").mockResolvedValue(UNCONFIGURED_CAPABILITY),
+    createIssue: spyOn(api, "createIssue").mockResolvedValue(made),
+    createMessage: spyOn(api, "createMessage").mockResolvedValue({} as Message),
+    patchIssue: spyOn(api, "patchIssue").mockResolvedValue({ ...made, previous: {} }),
+    search: spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+    settings: spyOn(api, "getNewIssueSettings").mockResolvedValue({
+      label: "from-the-bar",
+      session: "sess-1",
+    }),
+    uploadArtifact: spyOn(api, "uploadArtifact").mockResolvedValue({} as ArtifactUploadResponse),
+  };
+  const view = renderPalette({ entries: ["/projects/CORE/issues"] });
+
+  try {
+    const input = await searchFor(user, NEW_ISSUE_WORDS);
+    await screen.findByText(`No results for "${NEW_ISSUE_WORDS}"`);
+    const group = await screen.findByRole("group", { name: "New issue" });
+    expect(within(group).getByRole("option")).toHaveTextContent(
+      `Make a new issue from “${NEW_ISSUE_WORDS}”`
+    );
+    // The group is the list's last, under the More action the words hold further in; the
+    // highlight never moves to a write by itself, and nothing is written before the press.
+    expect(optionIds()).toEqual([ROTA_ROW, NEW_ISSUE_OPTION_ID]);
+    expect(input.getAttribute("aria-activedescendant")).toBeNull();
+    expect(spies.createIssue).not.toHaveBeenCalled();
+
+    await user.keyboard("{ArrowDown}{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", NEW_ISSUE_OPTION_ID);
+    expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Make · Esc Close");
+    await user.keyboard("{Enter}");
+
+    // Main's filing, less its first message: the create, labelled; the words as the issue's
+    // first criterion; its route to the session the deployment names; then the issue opens.
+    await waitFor(() => expect(spies.patchIssue).toHaveBeenCalled());
+    expect(spies.createIssue.mock.calls[0]?.[0]).toEqual({
+      labels: ["from-the-bar"],
+      project: "CORE",
+      title: NEW_ISSUE_WORDS,
+    });
+    expect(spies.uploadArtifact.mock.calls[0]?.slice(0, 2)).toEqual([
+      { issue: "CORE-7" },
+      { content: firstCriterion(NEW_ISSUE_WORDS), name: "verification.md" },
+    ]);
+    expect(spies.patchIssue.mock.calls[0]?.slice(0, 2)).toEqual([
+      "CORE-7",
+      { route: "session:sess-1" },
+    ]);
+    // Spec R9: the bar sends the routed session no first message.
+    expect(spies.createMessage).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
+    );
+  } finally {
+    for (const spy of Object.values(spies)) spy.mockRestore();
+    unregister();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("with a deciding model configured, words that match nothing offer no New issue group", async () => {
+  const user = userOnFakeClock();
+  const spies = [
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+  ];
+  const settings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
+    label: "from-the-bar",
+    session: "sess-1",
+  });
+  const view = renderPalette({ entries: ["/projects/CORE/issues"] });
+
+  try {
+    await searchFor(user, NEW_ISSUE_WORDS);
+    await screen.findByText(`No results for "${NEW_ISSUE_WORDS}"`);
+    // The capability is read: the line on top is drawn, which only a Dispatch that answers draws.
+    expect(document.getElementById("search-option-line")).not.toBeNull();
+    expect(screen.queryByRole("group", { name: "New issue" })).toBeNull();
+    expect(optionIds()).not.toContain(NEW_ISSUE_OPTION_ID);
+    expect(settings).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of [...spies, settings]) spy.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("Escape calls onClose", async () => {
   const user = userOnFakeClock();
   let closed = 0;
@@ -1370,6 +1831,43 @@ test("shows a retryable failure when the search request fails", async () => {
     await tick(150);
     expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The filters (Project, Status, Author, Updated since) and the search syntax help are behind one
+// Filters button at the box's right (design v3, state 1): they do not show otherwise, "/" in the
+// empty box opens them, and "/" in a box with words is a character.
+test("the filters and the syntax help are behind Filters, and / in the empty box opens them", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+  try {
+    // The bar's first reads (the person, the conversations, the projects) land before the keys:
+    // an answer that lands between two of them redraws the bar outside the keys' act.
+    await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
+    const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    const button = screen.getByRole("button", { name: "Filters" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByTestId("search-operators")).toBeNull();
+
+    await user.click(box);
+    await user.keyboard("/");
+    expect(box).toHaveValue("");
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("search-filters")).toBeInTheDocument();
+    expect(screen.getByTestId("search-operators")).toBeInTheDocument();
+
+    await user.click(button);
+    expect(screen.queryByTestId("search-filters")).toBeNull();
+    await user.click(box);
+    await user.keyboard("a/b");
+    expect(box).toHaveValue("a/b");
+    expect(screen.queryByTestId("search-filters")).toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1768,7 +2266,7 @@ test("a search answered 503 SEARCH_TIMEOUT at the pause is sent again on a click
 
 // The three forms are offered whatever the query holds; which of them this query was read as
 // using is the answer's own reading of it, so the bar and the search never disagree.
-test("the operator forms are offered, and the answer says which the query uses", async () => {
+test("the operator forms are offered under Filters, and the answer says which the query uses", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
@@ -1778,6 +2276,7 @@ test("the operator forms are offered, and the answer says which the query uses",
 
   try {
     await searchFor(user, '"brass astrolabe" -steel');
+    await user.click(screen.getByRole("button", { name: "Filters" }));
     const forms = screen.getByRole("list", { name: "What the words can do" });
     const inUse = (name: string) =>
       forms.querySelector(`[data-operator="${name}"]`)?.getAttribute("data-in-use");
@@ -1788,7 +2287,6 @@ test("the operator forms are offered, and the answer says which the query uses",
     await waitFor(() => expect(inUse("phrase")).toBe("true"));
     expect(inUse("exclude")).toBe("true");
     expect(inUse("or")).toBe("false");
-    expect(screen.queryByTestId("search-degraded")).toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1796,7 +2294,9 @@ test("the operator forms are offered, and the answer says which the query uses",
   }
 });
 
-test("says meaning search is not running, and still shows the hits", async () => {
+// The bar says nothing about how the deployment is set up (design v3, rule 8): a search that ran
+// on words alone lists its hits and says nothing of it.
+test("a search that ran on words alone shows its hits and says nothing of meaning search", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
@@ -1806,12 +2306,9 @@ test("says meaning search is not running, and still shows the hits", async () =>
 
   try {
     await searchFor(user, "astrolabe");
-    const line = await screen.findByTestId("search-degraded");
-
-    expect(line.textContent).toBe(
-      "Searching words only: meaning search is not running, so a hit that uses other words may be missing."
-    );
     expect(screen.getAllByRole("option")).toHaveLength(3);
+    expect(screen.queryByTestId("search-degraded")).toBeNull();
+    expect(screen.queryByText(/meaning search/)).toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1828,6 +2325,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
+    await user.click(screen.getByRole("button", { name: "Filters" }));
     await user.click(screen.getByRole("button", { name: "Status" }));
     await user.click(screen.getByRole("button", { name: "In progress" }));
     await waitFor(() =>
@@ -1841,10 +2339,13 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     const chip = screen.getByRole("button", { name: "Remove Status In progress" });
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
+    // The button says how many filters narrow the search, so none narrows it unseen.
+    expect(screen.getByRole("button", { name: "Filters · 1" })).toBeInTheDocument();
 
     await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -1858,10 +2359,8 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 test("the page's project is the search's context, not a chip narrowing it", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
-  // The bar opened over an issue reads that issue, to offer the words as a message to an agent
-  // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
-  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
-  // the whole of what this row reads.
+  // The bar opened over an issue page may read that issue. LEGION-2 is the page's issue and the
+  // document hit's own, and the chips below the box are the whole of what this row reads.
   const getIssue = spyOn(api, "getIssue").mockResolvedValue({
     ...issueFixture,
     artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
@@ -1881,11 +2380,824 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
       { keywords_only: true, number_project: "LEGION" },
       aborts
     );
+    await user.click(screen.getByRole("button", { name: "Filters" }));
     expect(screen.queryByRole("button", { name: /^Remove Project/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();
     getIssue.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The bar before Enter (design v3, state 1): with the box empty it lists Continue on a
+// conversation of the last hour, then Recent, at most 5 items, then the page's actions, as main
+// lists them; the chip sits in the box on its left, and Backspace in the empty box widens it; a
+// key or an exact title ranks above the line on top, so Enter opens it (R2); and the foot holds
+// the keys of the highlighted row alone.
+
+/** A conversation History lists, its one run asked `minutesAgo`. */
+function conversation(id: string, words: string, minutesAgo: number): GoingConversation {
+  const at = new Date(Date.now() - minutesAgo * 60_000).toISOString();
+  return {
+    id,
+    newest_at: at,
+    runs: [{ ...runRecord(`${id}-run`, words), conversation: id, created_at: at, state: "done" }],
+  };
+}
+
+/** The person's recent items, as the browser keeps them for alice. */
+function keepRecents(count: number): { label: string; path: string }[] {
+  const items = Array.from({ length: count }, (_, index) => ({
+    label: `CORE-${index + 1} Item ${index + 1}`,
+    path: `/issues/CORE-${index + 1}`,
+  }));
+  window.localStorage.setItem("dispatch.search.recents:alice", JSON.stringify(items));
+  return items;
+}
+
+test("the empty box lists Continue on the last hour's conversation, then at most 5 Recent items, then the page's actions, and Enter continues", async () => {
+  const user = userOnFakeClock();
+  const unregister = registerClose([]);
+  const items = keepRecents(7);
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [conversation("c-2", WORDS, 10)],
+    total: 1,
+  });
+  // The conversation's run is read from its stream once it is open; it answers nothing here.
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    () => new Promise<void>(() => {})
+  );
+  const view = renderPalette({ login: "alice" });
+
+  try {
+    const box = screen.getByRole("combobox", { name: "Search" });
+    await waitFor(() => expect(optionIds()[0]).toBe("search-option-continue"));
+    // Continue names the conversation by its title: its question with a capital.
+    expect(
+      screen.getByRole("option", { name: "Continue: Who looks after the comet" })
+    ).toBeTruthy();
+    const recent = within(screen.getByRole("group", { name: "Recent" })).getAllByRole("option");
+    // Each recent issue reads as a best match does, as Raycast gives every list of items one row
+    // look (review a12): its kind's icon, its key, its title - the issue's own once its summary
+    // is read - and its status at the row's end.
+    await waitFor(() =>
+      expect(recent.map((row) => row.textContent)).toEqual(
+        items.slice(0, 5).map((item) => {
+          const key = item.label.split(" ")[0] ?? "";
+          return `Issue${key}Instrument ${key}Todo`;
+        })
+      )
+    );
+    for (const row of recent) {
+      expect(row.querySelector("svg")).not.toBeNull();
+      expect(within(row).getByTestId("search-hit-status")).toHaveTextContent("Todo");
+    }
+    expect(
+      screen.getByRole("option", { name: "Continue: Who looks after the comet" })
+    ).toBeTruthy();
+    expect(document.getElementById("search-option-continue")?.querySelector("svg")).not.toBeNull();
+    // The page's actions follow Continue and Recent, as main lists them (design v3, state 1).
+    expect(
+      within(screen.getByRole("group", { name: "Actions" }))
+        .getAllByRole("option")
+        .map((option) => option.id)
+    ).toEqual([CLOSE_ROW]);
+    expect(optionIds()).toEqual([
+      "search-option-continue",
+      ...items.slice(0, 5).map((item) => `search-option-recent-${item.path}`),
+      CLOSE_ROW,
+    ]);
+    expect(box).toHaveAttribute("aria-activedescendant", "search-option-continue");
+    expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Continue · Esc Close");
+    // Nothing asks the person to type: the empty box says nothing under its rows.
+    expect(screen.queryByText("Type at least 2 characters")).toBeNull();
+    // The search has no header: its box is on top, History and the move are in its foot, and Esc
+    // in the foot's hints is its one Close (design v3, state 1).
+    expect(screen.queryByTestId("going-header")).toBeNull();
+    const foot = screen.getByTestId("search-foot");
+    expect(within(foot).getByRole("button", { name: "History" })).toBeInTheDocument();
+    expect(within(foot).getByRole("button", { name: "Keep at the side" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    expect(dialog.firstElementChild?.contains(box)).toBe(true);
+
+    await user.click(box);
+    await user.keyboard("{Enter}");
+    expect(goingState().conversation).toEqual(["c-2-run"]);
+    expect(screen.getByRole("dialog", { name: "Search" })).toHaveAttribute(
+      "data-state",
+      "conversation"
+    );
+  } finally {
+    history.mockRestore();
+    stream.mockRestore();
+    unregister();
+    window.localStorage.removeItem("dispatch.search.recents:alice");
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a conversation older than an hour gets no Continue, and Recent heads the list", async () => {
+  keepRecents(2);
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [conversation("c-1", WORDS, 61)],
+    total: 1,
+  });
+  const view = renderPalette({ login: "alice" });
+
+  try {
+    await waitFor(() => expect(history).toHaveBeenCalled());
+    await tick(0);
+    expect(optionIds()).toEqual([
+      "search-option-recent-/issues/CORE-1",
+      "search-option-recent-/issues/CORE-2",
+    ]);
+    expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Open · Esc Close");
+  } finally {
+    history.mockRestore();
+    window.localStorage.removeItem("dispatch.search.recents:alice");
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("the chip sits in the box on its left, and Backspace in the empty box widens it to the whole project", async () => {
+  const user = userOnFakeClock();
+  const view = renderPalette({ entries: ["/issues/LEGION-2"] });
+
+  try {
+    const box = screen.getByRole("combobox", { name: "Search" });
+    const chip = screen.getByTestId("going-box-chip");
+    expect(chip).toHaveTextContent("LEGION-2");
+    expect(chip).toHaveAttribute(
+      "title",
+      "Acting on LEGION-2 · Backspace in the empty box: the whole project"
+    );
+    // The chip and the Filters button are inside the box's frame, on either side of the words,
+    // and no line above the box says what the bar acts on.
+    expect(box.parentElement?.firstElementChild).toBe(chip);
+    expect(box.parentElement?.lastElementChild).toBe(
+      screen.getByRole("button", { name: "Filters" })
+    );
+    expect(screen.queryByTestId("search-scope")).toBeNull();
+
+    await user.click(box);
+    await user.keyboard("{Backspace}");
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("the whole project");
+    expect(screen.getByTestId("going-box-chip")).toHaveAttribute(
+      "title",
+      "Acting on the project LEGION"
+    );
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an issue's key or its exact title ranks above the line on top, so Enter opens it", async () => {
+  const user = userOnFakeClock();
+  const hit = issueHit("LEGION-3");
+  const other = issueHit("LEGION-4");
+  const spies = [
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([hit, other])),
+  ];
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "legion-3");
+    await waitFor(() =>
+      expect(optionIds()).toEqual([optionId(hit), "search-option-line", optionId(other)])
+    );
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    expect(screen.getByTestId("search-keyboard-hints")).toHaveTextContent("↵ Open · Esc Close");
+    // The words name their hit, so no model is asked of them: the line reads Ask for good.
+    expect(document.getElementById("search-option-line")).toHaveAttribute("data-line", "ask");
+    expect(screen.queryByTestId("search-line-deciding")).toBeNull();
+
+    // An exact title: the line on top shows before the hits, and the hit takes the head as it
+    // arrives, since the person has not moved the highlight.
+    await searchFor(user, "Instrument LEGION-3");
+    await waitFor(() => expect(optionIds()[0]).toBe(optionId(hit)));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The arrows keep the highlight where the reader put it for the words they arrowed on, and no
+// longer: new words are a new list, so a best match that arrives after the line on top takes the
+// head again, and Enter opens it.
+test("after the arrows, new words let a best match take the head again as it arrives", async () => {
+  const user = userOnFakeClock();
+  const hit = issueHit("LEGION-3");
+  const other = issueHit("LEGION-4");
+  const spies = [
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([hit, other])),
+  ];
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "instrument");
+    await waitFor(() => expect(optionIds()).toContain(optionId(other)));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionIds()[1] ?? "");
+
+    await searchFor(user, "Instrument LEGION-3");
+    await waitFor(() => expect(optionIds()[0]).toBe(optionId(hit)));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// The bar after Enter (design v2, state 2; spec R1, R3, R10): the search parts leave it and it is
+// the conversation, the question at its top with "Thinking…" and its seconds from the moment of
+// Enter, and the box under it reading what Enter does now, with the chip, the level and Stop;
+// Esc in the empty box stops the run; New brings the search back. Words sent while the run works
+// wait under it (state 3's last bullet): × drops them, and the run's end sends them as the next
+// turn, or as the revision of the plan it ended waiting on.
+//
+// Enter on the line Ask hands the run to the panel at the side (the last rows of this file), so
+// the palette's own harness here, which keeps the dialog open where the shell would close it, reads
+// the conversation the bar holds while it is over the page: the one a run started there begins,
+// as Do's does, and the one Ctrl-K brings back from the panel.
+
+const WORDS = "who looks after the comet";
+
+function runRecord(id: string, words: string): GoingRun {
+  return {
+    context: null,
+    continues: null,
+    conversation: "c-1",
+    created_at: new Date().toISOString(),
+    finished_at: null,
+    id,
+    issues: [],
+    level: "standard",
+    line: null,
+    mode: "ask",
+    standing_count: 0,
+    state: "queued",
+    stop_reason: null,
+    undoable: false,
+    undoable_count: 0,
+    undone_at: null,
+    undone_count: 0,
+    used: { calls: 0, tokens: 0, working_ms: 0 },
+    words,
+  };
+}
+
+function waitingPlan(rows: GoingPlanAnswer["rows"] = []): GoingPlanAnswer {
+  return {
+    mode: "ask",
+    plan: 1,
+    rows,
+    run: "r-1",
+    state: "waiting",
+    summary: "Watch the comet.",
+    version: "v1",
+  };
+}
+
+/** The api of a Dispatch whose bar answers: every start answered with the next of `starts`
+ *  (`r-1`, `r-2`, … by default), each run's stream held open for the row to send frames down,
+ *  Stop answered, and the search and the pause's short answer quiet. */
+function answerTheBar(...starts: (GoingRun | Promise<GoingRun>)[]) {
+  let made = 0;
+  const start = spyOn(api, "createGoingRun").mockImplementation((input) => {
+    made += 1;
+    return Promise.resolve(starts[made - 1] ?? runRecord(`r-${made}`, input.words));
+  });
+  const frames = new Map<string, (name: string, data: unknown) => void>();
+  const stop = spyOn(api, "stopGoingRun").mockImplementation(async (id) => ({
+    ...runRecord(id, WORDS),
+    state: "stopped",
+  }));
+  const spies: readonly { readonly mockRestore: () => void }[] = [
+    start,
+    stop,
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([])),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+      frames.set(id, onFrame);
+      return Promise.withResolvers<void>().promise;
+    }),
+  ];
+  return {
+    restore: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+    /** Hands run `id`'s stream a frame. */
+    send: (id: string, name: string, data: unknown) => act(() => frames.get(id)?.(name, data)),
+    start,
+    stop,
+  };
+}
+
+/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run; the
+ *  box is answered as it was before Enter. */
+async function enterInTheBar(user: UserEvent, words: string): Promise<HTMLInputElement> {
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  await user.click(box);
+  await user.paste(words);
+  await waitFor(() => expect(document.getElementById("search-option-line")).not.toBeNull());
+  await user.keyboard("{Enter}");
+  return box;
+}
+
+/** The bar's box under the conversation. */
+function talkBox(): HTMLInputElement {
+  return screen.getByRole<HTMLInputElement>("textbox", { name: "Ask the command bar" });
+}
+
+/** Opens the bar over the page, as Ctrl-K does, and renders it there. */
+function openTheBar(options: RenderPaletteOptions = {}) {
+  setPlace("over");
+  return renderPalette({ entries: ["/projects/LEGION/issues"], ...options });
+}
+
+test("Enter turns the bar into the conversation at once: the search parts leave, the question heads it with Thinking and its seconds, and the box under it reads Ask a follow-up…", async () => {
+  const user = userOnFakeClock();
+  const { promise: created, resolve: create } = Promise.withResolvers<GoingRun>();
+  const bar = answerTheBar(created);
+  const view = openTheBar();
+  try {
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveAttribute(
+      "placeholder",
+      "Search or ask…"
+    );
+    const box = await enterInTheBar(user, WORDS);
+
+    const dialog = screen.getByRole("dialog", { name: "Search" });
+    expect(dialog).toHaveAttribute("data-state", "conversation");
+    expect(dialog.className).toContain("h-[80vh]");
+    expect(dialog.className).toContain("xl:max-w-[720px]");
+    // The dialog is the box a table opened whole covers (design v2, state 5, "Show all").
+    expect(dialog.className.split(" ")).toContain("relative");
+    // The list, the Filters button, the message under the list and the list's keys are gone.
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.queryByTestId("search-filters-button")).toBeNull();
+    expect(screen.queryByTestId("search-filters")).toBeNull();
+    expect(screen.queryByTestId("search-operators")).toBeNull();
+    expect(screen.queryByText("Type at least 2 characters")).toBeNull();
+    expect(screen.queryByTestId("search-keyboard-hints")).toBeNull();
+    // Before Dispatch has answered the start, the question heads the conversation, with
+    // Thinking from the moment of Enter, and titles it.
+    expect(screen.getByTestId("going-run-words")).toHaveTextContent(WORDS);
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 0 s");
+    expect(screen.getByTestId("going-title")).toHaveTextContent("Who looks after the comet");
+    // The box is the one it was, still focused, now under the conversation, with the chip on its
+    // left and the level beside it.
+    expect(talkBox()).toBe(box);
+    expect(box).toHaveFocus();
+    expect(box).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(box).toHaveValue("");
+    const conversation = screen.getByTestId("going-conversation-view");
+    expect(conversation.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+      0
+    );
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("the project LEGION");
+    expect(screen.getByTestId("going-level")).toBeInTheDocument();
+
+    await tick(1000);
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 1 s");
+
+    // Dispatch answers the start: the run's own turn goes on counting from Enter, and Stop sits
+    // at the box's right while it works.
+    await act(async () => create(runRecord("r-1", WORDS)));
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    expect(screen.queryByTestId("going-run-starting")).toBeNull();
+    expect(screen.getByTestId("going-thinking")).toHaveTextContent("Thinking… 1 s");
+    expect(screen.getByTestId("going-stop")).toBeInTheDocument();
+
+    // The run's first step ends the Thinking line.
+    bar.send("r-1", "call", { kind: "read", label: "Reading LEGION-3", step: 2, tool: "read" });
+    expect(screen.queryByTestId("going-thinking")).toBeNull();
+    expect(screen.getByTestId("going-step")).toHaveTextContent("Reading LEGION-3…");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("Esc in the empty box while the run works stops it, and the bar stays open", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  let closed = 0;
+  const view = openTheBar({ onClose: () => (closed += 1) });
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(bar.stop).toHaveBeenCalledTimes(1));
+    expect(bar.stop.mock.calls[0]?.[0]).toBe("r-1");
+    expect(closed).toBe(0);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("New brings the search back, in the same box", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    const box = await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    await user.click(screen.getByTestId("going-new"));
+
+    expect(screen.getByRole("dialog", { name: "Search" })).toHaveAttribute("data-state", "search");
+    expect(screen.queryByTestId("going-run")).toBeNull();
+    const search = screen.getByRole("combobox", { name: "Search" });
+    expect(search).toBe(box);
+    expect(search).toHaveAttribute("placeholder", "Search or ask…");
+    // The cursor is back in the box, so typing lands in it (review n2).
+    expect(search).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** Starts a run from the bar and sends words while it works: they wait under it. */
+async function queueWords(user: UserEvent, words: string): Promise<void> {
+  await enterInTheBar(user, WORDS);
+  await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+  await user.type(talkBox(), `${words}{Enter}`);
+}
+
+test("words sent while the run works wait under it, sending when it ends, and × drops them", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await queueWords(user, "and its moons");
+    // No second conversation starts beside the run: the words wait at the foot.
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("going-run")).toHaveLength(1);
+    expect(talkBox()).toHaveValue("");
+    const queued = screen.getByTestId("going-queued");
+    expect(within(queued).getByTestId("going-queued-words")).toHaveTextContent("and its moons");
+    expect(queued).toHaveTextContent("Sends when this run ends");
+
+    await user.click(within(queued).getByRole("button", { name: "Drop these words" }));
+    expect(screen.queryByTestId("going-queued")).toBeNull();
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    await tick(0);
+    expect(bar.start).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("words that wait go as the next turn of the conversation when the run ends with an answer", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await queueWords(user, "and its moons");
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+
+    await waitFor(() => expect(bar.start).toHaveBeenCalledTimes(2));
+    expect(bar.start.mock.calls[1]?.[0]).toMatchObject({
+      continues: "r-1",
+      words: "and its moons",
+    });
+    expect(goingState().queued).toBeUndefined();
+    await waitFor(() => expect(screen.getAllByTestId("going-run")).toHaveLength(2));
+    expect(screen.getAllByTestId("going-run-words").map((words) => words.textContent)).toEqual([
+      WORDS,
+      "and its moons",
+    ]);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// An Enter that confirms an input method's conversion in the box under the conversation is the
+// input method's, marked `isComposing` or, from Safari, sent unmarked with keyCode 229: it sends
+// nothing and leaves the words in the box. A plain Enter after it sends them as the next turn.
+test("an Enter that confirms an input method's conversion in the box under the conversation sends nothing, and a plain Enter sends the words", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", { labels: [], text: "Nobody yet.", tools: [] });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    const box = talkBox();
+    await user.type(box, "and its moons");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(box, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(box, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(box).toHaveValue("and its moons");
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(goingState().starting).toBeUndefined();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(bar.start).toHaveBeenCalledTimes(2));
+    expect(bar.start.mock.calls[1]?.[0]).toMatchObject({
+      continues: "r-1",
+      words: "and its moons",
+    });
+    expect(box).toHaveValue("");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("words that wait revise the plan the run ends waiting on", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue(waitingPlan());
+  const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/revise"
+  );
+  revise.mockImplementation(async () => ({ ...waitingPlan(), plan: 2 }));
+  const view = openTheBar();
+  try {
+    await queueWords(user, "keep the dome whole");
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+
+    await waitFor(() => expect(revise).toHaveBeenCalledTimes(1));
+    expect(revise.mock.calls[0]?.[0]).toBe("r-1");
+    expect(revise.mock.calls[0]?.[1]).toEqual({ plan: 1, words: "keep the dome whole" });
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(goingState().queued).toBeUndefined();
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("while a plan waits the box reads Say what to change…, the hint under it says Enter approves or sends the words, and ↑ in the empty box moves into the card", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue(
+    waitingPlan([
+      {
+        arguments: { issue: "LEGION-3", priority: 2 },
+        changed: false,
+        claim: null,
+        class: "field",
+        fields: ["priority"],
+        issue: "LEGION-3",
+        item: "LEGION-3",
+        needs: [],
+        now: { priority: null },
+        result: null,
+        row: 0,
+        state: "waiting",
+        tool: "dispatch_issue_update",
+        waits: [],
+      },
+    ])
+  );
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+    await waitFor(() => expect(screen.getByTestId("going-plan")).toBeInTheDocument());
+
+    const box = talkBox();
+    expect(box).toHaveAttribute("placeholder", "Say what to change…");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent("↵ Approve");
+    await user.type(box, "keep it");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ sends your words instead of approving"
+    );
+    await user.clear(box);
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("going-plan-row");
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A plan of a withdrawn run waits for nobody (`planWaits`), and its read can come before the
+// run's record says the run is withdrawn. While the record still says it waits, Enter in the box
+// neither approves the plan nor sends the words in the box: the box reads Dispatch withdrew this
+// plan, the hint under it says Enter does nothing, and Enter keeps the words in the box.
+test("while the run waits on a plan Dispatch withdrew, the box and the hint under it say so, and Enter keeps the words", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue({ ...waitingPlan(), withdrawn: true });
+  const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/revise"
+  );
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+    await waitFor(() => expect(screen.getByTestId("going-plan")).toBeInTheDocument());
+
+    const box = talkBox();
+    await waitFor(() => expect(box).toHaveAttribute("placeholder", "Dispatch withdrew this plan"));
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
+    );
+    await user.type(box, "keep it{Enter}");
+    expect(box).toHaveValue("keep it");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
+    );
+    expect(revise).not.toHaveBeenCalled();
+    expect(bar.start).toHaveBeenCalledTimes(1);
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an answer whose frame says it waits for the person makes the box read Answer…, and the answer end Waits for your answer", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, "hand LEGION-3 to Legion");
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", {
+      labels: [],
+      text: "Which changes hand it over: a label or a status",
+      tools: [],
+      waits_for_person: true,
+    });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    expect(talkBox()).toHaveAttribute("placeholder", "Answer…");
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent("Waits for your answer");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an answer that ends in a question mark but whose frame does not say it waits ends Done, and the box reads Ask a follow-up…", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, "how many moons does Mars have");
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "reply", {
+      labels: [],
+      text: "Two. Did you mean its natural moons?",
+      tools: [],
+    });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "done" });
+    expect(talkBox()).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent("Done");
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Enter on the line Ask (and the card's Open in panel, which AnswerPanel.test.tsx holds) is one
+// action that hands the run to the panel at the side: one run, of the bar's words, level and
+// context; the bar closes; and the focus is in the panel's box once the dialog has given it back.
+// The rows above keep the palette open as their own harness, since the shell, not the palette,
+// closes it; these two draw the bar and the panel as `app.tsx` does, the bar open only while the
+// conversation is over the page.
+
+/** The shell's two parts of the conversation: the bar, open while the conversation is over the
+ *  page, and the panel, drawn while it is at the side. */
+function ConversationShell(): ReactNode {
+  const over = useGoingValue((going) => going.place === "over");
+  return (
+    <>
+      <SearchPalette onClose={() => setPlace("closed")} open={over} />
+      <SidePanel />
+    </>
+  );
+}
+
+function renderShell(entries: string[]): { queryClient: QueryClient; unmount: () => void } {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter initialEntries={entries}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <ConversationShell />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { queryClient, unmount: view.unmount };
+}
+
+test("Enter on the line Ask starts one run with the bar's words, level and context, closes the bar, and puts the focus in the panel's box", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  act(() => {
+    setLevel("deep");
+    setPlace("over");
+  });
+  const view = renderShell(["/projects/LEGION/issues"]);
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull());
+
+    expect(bar.start).toHaveBeenCalledTimes(1);
+    expect(bar.start.mock.calls[0]?.[0]).toEqual({
+      context: { block: "", issue: "", path: "/projects/LEGION/issues", project: "LEGION" },
+      level: "deep",
+      line: "ask",
+      words: WORDS,
+    });
+    expect(goingState().place).toBe("side");
+    const panel = screen.getByTestId("going-side-panel");
+    await waitFor(() =>
+      expect(within(panel).getByRole("textbox", { name: "Ask the command bar" })).toHaveFocus()
+    );
+    // The one run is the panel's conversation, the question at its head.
+    await waitFor(() =>
+      expect(within(panel).getByTestId("going-run-words")).toHaveTextContent(WORDS)
+    );
+    expect(within(panel).getAllByTestId("going-run")).toHaveLength(1);
+  } finally {
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// A start Dispatch refuses shows its reason in the panel the bar handed over to, and no
+// conversation: the refused words are no run, so there is nothing to show twice.
+test("a start Dispatch refuses leaves the panel with its reason and no conversation", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  bar.start.mockRejectedValue(new Error("Dispatch refused the run."));
+  act(() => setPlace("over"));
+  const view = renderShell(["/projects/LEGION/issues"]);
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull());
+    await waitFor(() => expect(goingState().refusal).toBeDefined());
+    expect(goingState().place).toBe("side");
+    expect(goingState().conversation).toBeUndefined();
+    expect(goingState().starting).toBeUndefined();
+    expect(screen.queryByTestId("going-run")).toBeNull();
+    expect(within(screen.getByTestId("going-side-panel")).getByRole("alert")).toBeInTheDocument();
+    expect(bar.start).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
     view.unmount();
     view.queryClient.clear();
   }

@@ -15,6 +15,7 @@ function issue(key: string, status: IssueStatus): IssueSummary {
     route_holder: null,
     route_status_reason: null,
     key,
+    project: "CORE",
     labels: [],
     last_seq: 1,
     open_asks: 0,

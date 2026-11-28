@@ -109,6 +109,7 @@ export function useNewIssueOffer({
     filed === undefined
       ? undefined
       : {
+          enter: "Open",
           id: NEW_ISSUE_OPTION_ID,
           kind: "offer",
           label: `Open ${filed.issue.key}`,
@@ -123,6 +124,7 @@ export function useNewIssueOffer({
     row:
       here === undefined || here.kind === "refused" || here.kind === "stopped"
         ? {
+            enter: "Make",
             id: NEW_ISSUE_OPTION_ID,
             kind: "offer",
             label: `Make a new issue from “${words}”`,
@@ -190,7 +192,7 @@ function NewIssueSaid({ state }: { readonly state: OfferState | undefined }): Re
     <p className={barNoteClassName} data-testid="search-new-issue-said" role="status">
       {filed.session === ""
         ? `${filed.issue.key} is made. No conversation was started: this Dispatch names no session for a new issue.`
-        : `${filed.issue.key} is made, and its first message went to the session ${filed.session}.`}
+        : `${filed.issue.key} is made and routed to the session ${filed.session}.`}
     </p>
   );
 }

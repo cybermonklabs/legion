@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The routes only a Legion daemon writes - a step record (`PUT /api/v1/issues/{key}/steps/{id}`),
+  its rating and its experiment, a run's plan (`PUT /api/v1/issues/{key}/plans/{id}`) and an
+  issue's role holders (`PUT /api/v1/issues/{key}/role-holders`) - say so in their declarations
+  (`routeDecl.DaemonWrites`), and one gate the server mounts each behind refuses every caller
+  whose write names no daemon's session, before the handler does anything with the write. The
+  status, the code and the message are the ones the handlers answered: `403 STEP_WRITER` for the
+  records and `403 ROLE_HOLDER_FORBIDDEN` for the role holders. A body that is not JSON (`400
+  INVALID_JSON`), is too large (`413`) or is not sent as JSON (`415`) is still answered that first,
+  and an actor that does not resolve its own refusal; but a caller that is not the daemon and sends
+  JSON whose field other than `actor` holds a value of the wrong type is now answered the `403`
+  where it was answered `400 INVALID_JSON`. The design-gate and gated-step publications state no
+  gate and refuse no caller, as before.

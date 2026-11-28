@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A search hit's snippet on the dashboard begins and ends with "…" where the displayed snippet
+  leaves out text. Search measures each end against the source rather than counting words in
+  the snippet: a URL or a directive's attributes can consume many of the headline parser's
+  tokens. Only the display tree carries the two flags (`attrs.cutStart`, `attrs.cutEnd`).

@@ -1297,7 +1297,8 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     await held.promise;
     const resolved = { ...suggested, resolved: true };
     comments = [resolved];
-    return resolved;
+    // A resolve also answers the thread's resolution before its write (`previous`).
+    return { ...resolved, previous: { resolved: false, resolved_at: null, resolved_by: null } };
   });
   const acceptComment = spyOn(api, "acceptComment").mockImplementation(async () => {
     const accepted = {
@@ -1403,7 +1404,7 @@ test("a keyboard Resolve keeps the focus on its control while its write is out a
     await held.promise;
     const resolved = { ...open, resolved: true };
     comments = [resolved];
-    return resolved;
+    return { ...resolved, previous: { resolved: false, resolved_at: null, resolved_by: null } };
   });
   const client = readsHeld();
   client.setQueryData(["comments", KEY], comments);

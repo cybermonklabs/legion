@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { IssueSummary, UserState } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssueBoard } from "./IssueBoard";
@@ -29,6 +30,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     route_holder: null,
     route_status_reason: null,
     key: "CORE-1",
+    project: issueProject(overrides.key ?? "CORE-1"),
     labels: [],
     last_seq: 0,
     open_asks: 0,

@@ -297,8 +297,8 @@ func webDisplayJSON(t *testing.T, markdown string, mode DisplayMode) json.RawMes
 func webSnippetJSON(t *testing.T, markdown string) json.RawMessage {
 	t.Helper()
 	source := strings.NewReplacer(webSnippetStart, "", webSnippetStop, "").Replace(markdown)
-	snippet := SearchSnippet(markdown, source, webSnippetStart, webSnippetStop)
-	tree := DisplaySnippetJSON(snippet, webSnippetStart, webSnippetStop)
+	snippet, cut := SearchSnippet(markdown, source, webSnippetStart, webSnippetStop, SnippetCut{})
+	tree := DisplaySnippetJSON(snippet, webSnippetStart, webSnippetStop, cut)
 	if tree == nil {
 		t.Fatalf("the snippet of %q read into no tree", markdown)
 	}

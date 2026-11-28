@@ -131,7 +131,9 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 			if result.Href != test.href {
 				t.Fatalf("href = %q, want %q", result.Href, test.href)
 			}
-			want := model.SearchOwner{Kind: "issue", Key: corpus.issueKey, Title: "Navigation instruments", Status: "triage"}
+			// Every row's owner is the issue, the issue's own hit among them, and each names the
+			// issue's project, so hits can be grouped by project without reading their keys.
+			want := model.SearchOwner{Kind: "issue", Key: corpus.issueKey, Project: "SRCH", Title: "Navigation instruments", Status: "triage"}
 			if result.Owner != want {
 				t.Fatalf("result owner = %#v, want %#v", result.Owner, want)
 			}

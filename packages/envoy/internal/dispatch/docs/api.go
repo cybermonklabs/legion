@@ -86,11 +86,14 @@ type VersionResult struct {
 // the tree exactly as it found it. Token is that same whole-document identity after the batch,
 // taken from the tree this edit's own transaction wrote while it still held the room's writer
 // slot — never re-read after the commit, where a concurrent writer's change would fold into it —
-// so a caller passes it straight back as the next edit's document precondition. AddedAskBlocks
-// names each readable ask block the batch left in the document that it did not hold before, in
-// document order (addedAskBlocks). Settlement opens an ask for each, except a block written back
-// under the id of an ask the document already holds and settlement leaves closed: answered, or
-// resolved by a person. Written is what the batch wrote, read back off the tree it wrote
+// so a caller passes it straight back as the next edit's document precondition. PreviousToken is
+// the identity of the tree the batch started from, read in that same transaction: the document as
+// the edit found it, which a caller that undoes the edit tells from a read of its own made before
+// it. AddedAskBlocks names each readable ask block the batch left in the document that it did not
+// hold before, in document order (addedAskBlocks). Settlement opens an ask for each, except a
+// block written back under the id of an ask the document already holds and settlement leaves
+// closed: answered, or resolved by a person.
+// Written is what the batch wrote, read back off the tree it wrote
 // (editBatch.readBack), so a caller sees the markdown it left rather than only how many
 // operations landed.
 type EditOutcome struct {
@@ -98,6 +101,7 @@ type EditOutcome struct {
 	Changed        bool
 	Unchanged      []int
 	Token          string
+	PreviousToken  string
 	AddedAskBlocks []AddedAskBlock
 	Written        string
 }

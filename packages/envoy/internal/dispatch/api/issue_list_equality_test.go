@@ -15,9 +15,9 @@ import (
 
 // The laterals and resolution rules below freeze main's SQL rather than reading the package's
 // constants: building the oracle from those would make both sides agree however the rule changed.
-// The listing projection independently includes the creator, the creation time and the closing
-// time now required by the summary contract; the inherited joins, filters and ordering stay
-// unchanged.
+// The listing projection independently includes the project, the creator, the creation time and
+// the closing time now required by the summary contract; the inherited joins, filters and
+// ordering stay unchanged.
 // parentDepthCap is written as the 32 main spliced into them for the same reason.
 const mainIssueComponentsLateral = `
 	left join lateral (
@@ -88,7 +88,7 @@ const mainIssueStatusCase = `case i.status
 		end`
 
 const mainIssueSummaryHead = `
-	select i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
+	select i.key, i.project_key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
@@ -502,10 +502,10 @@ func issueListRows(t *testing.T, database *store.Store, statement string, argume
 }
 
 // advancesColumnsAt is where the three `advances` columns stand in a listing row
-// (issueSummaryColumns): behind the seven the issue's own table answers and the blockers, and
+// (issueSummaryColumns): behind the eight the issue's own table answers and the blockers, and
 // ahead of the two cells of the move, which stand ahead of the resolved priority and its source,
 // which stand ahead of the assignee.
-const advancesColumnsAt = 8
+const advancesColumnsAt = 9
 
 // issueRowWithoutAdvances is a listing row as main's statement answered it: main carried no
 // `advances`, no move and no resolved priority, so the seven columns this change added are not

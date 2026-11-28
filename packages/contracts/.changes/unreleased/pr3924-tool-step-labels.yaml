@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  Every dispatch tool spec carries a required `label` (`DispatchToolLabel`): the words the command
+  bar shows for one call of it. A label has a `kind` (`read`, `search`, `look`, `chart`, `plan`,
+  `review` or `write`, `DISPATCH_TOOL_LABEL_KINDS`), a base `verb`, a `present` form shown while
+  the call runs and a `past` form shown once it ended, such as "Reading {issue}" and "Read {issue}",
+  and, for a tool that answers a list, the noun its results are counted by (`count`). A form names
+  an argument as `{name}`, and an argument a call may leave out as `{name|the words shown in its
+  place}`, which may name one more argument the same way. `dispatchToolLabelProblems` says what is
+  wrong with a spec's label, and `bun run gen:go` writes each label into the Go package as
+  `DispatchTool.Label` (`ToolLabel`).

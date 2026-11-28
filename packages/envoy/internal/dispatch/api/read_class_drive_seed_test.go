@@ -45,6 +45,12 @@ const (
 	driveProject           = "DRV"
 	driveRelatedProject    = "RELB"
 	precheckRelatedProject = "RELA"
+	// driveWritesProject holds the issue, the comment and the issue message the command bar's
+	// runs read (seedWrites): a project of its own, since seedWrites runs on the bare rig as well
+	// as after the seed's own projects. driveRetitled is the title another writer gives its issue
+	// under the waiting plan's row, which the plan read of the drive stores as what the row shows.
+	driveWritesProject = "DRW"
+	driveRetitled      = "The title another writer gave it"
 	// driveRepo is the repository the drive project's issues name, on driveGitHub.
 	driveRepo = "acme/widgets"
 	// driveSessionsJSON is every session the listener stand-in lists: S alone, live, seen at a
@@ -455,10 +461,14 @@ func (w *driveWorld) seed(t *testing.T) {
 	}, alice).ID
 	w.as(t, alice, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"advances": []string{w.values["priority"]}}, http.StatusOK)
 
-	// P's own state: the issue pinned, the notes read, and S's conversation pinned.
+	// P's own state: the issue pinned, the notes read, S's conversation pinned, and P's command-bar
+	// setting Auto-review, so the settings row reads the setting P stored rather than the default
+	// of a person who never set one. A run takes the mode when it starts, and each run seedWrites
+	// starts names its own.
 	w.as(t, ada, http.MethodPut, "/api/v1/me/issues/"+issue.Key+"/state", map[string]any{"pinned": true}, http.StatusOK)
 	w.as(t, ada, http.MethodPut, "/api/v1/me/documents/"+notes.Artifact.ID+"/read", map[string]any{"version": 1}, http.StatusOK)
 	putAgentState(t, w.rig.handler, ada, driveSession, map[string]any{"pinned": true})
+	w.as(t, ada, http.MethodPut, "/api/v1/me/going/settings", map[string]any{"mode": goingModeAutoReview}, http.StatusOK)
 
 	// The results: a verification document with a before_merge, an after_merge and a
 	// default_branch check, each with a result. GitHub names, once they are recorded, the pull
@@ -523,8 +533,8 @@ func (w *driveWorld) seed(t *testing.T) {
 // seedWrites writes the state the GETs that write read (getWriteDrives): the delivery settings and
 // three deploy runs on main with no job the settings name as production's, each the unmatched run
 // of one delivery read, the newest the timeline's, the middle the measures', the oldest the
-// pipeline's; and a going run past its deadline with no ending stored, asked by the writer's
-// credential.
+// pipeline's; a going run past its deadline with no ending stored, asked by the writer's
+// credential; and P's command-bar runs (seedGoingRuns).
 func (w *driveWorld) seedWrites(t *testing.T) {
 	t.Helper()
 	settings := pipelineSettings()
@@ -569,6 +579,104 @@ func (w *driveWorld) seedWrites(t *testing.T) {
 		t.Fatalf("write a going run past its deadline: %v", err)
 	}
 	w.values["going"] = going
+	w.seedGoingRuns(t)
+}
+
+// seedGoingRuns writes P's command-bar runs, each started through the route a person starts one
+// on, as P, on an issue of driveWritesProject that alice filed: the plan run (planRun), whose plan
+// waits on one row that retitles the issue, and whose row's item alice has retitled since the row
+// stored what it shows; and two runs that each read one of alice's posts, a comment
+// (commentWithdrawnRun) and an issue message (messageWithdrawnRun), which alice has deleted since,
+// so each is withdrawn and has not ended. The plan read of the first, and the first read of each
+// other, is what the GETs that write store: the title alice gave in the row's shown, and the stop
+// of each withdrawn run. The read rows read them too: History lists all three, and the Inbox the
+// plan run's waiting plan.
+//
+// What the agent writes of a run over its socket, which this rig has none of, is written as
+// going_run_withdrawn_test.go's rig writes it: the plan and the state its turn's end leaves
+// (waitOnPlan) and the lease of a working run (working) as rows; the posts a call's answer carries
+// through the server's own record of them (recordGoingRunPosts), over the answer of the post's own
+// read route.
+func (w *driveWorld) seedGoingRuns(t *testing.T) {
+	t.Helper()
+	w.as(t, "alice", http.MethodPost, "/api/v1/projects", map[string]any{"key": driveWritesProject, "name": "The " + driveWritesProject + " project"}, http.StatusCreated)
+	const title = "The issue the command bar retitles"
+	issue := decodeBody[model.Issue](t, w.as(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": driveWritesProject, "title": title,
+	}, http.StatusCreated)).Key
+
+	// The plan run: its plan waits on one row, and P's read of the plan stores what the row shows,
+	// the title the issue has; then alice retitles the issue.
+	planRun := w.startGoingRun(t, "Retitle "+issue)
+	change, err := json.Marshal(map[string]any{"tool": "dispatch_issue_update", "arguments": map[string]any{"issue": issue, "title": "The title the plan gives it"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.exec(t, `insert into going_plans (run_id, plan, state, summary) values ($1::uuid, 1, 'waiting', 'Retitle the issue.')`, planRun)
+	w.exec(t, `insert into going_plan_rows (run_id, plan, row, change, state) values ($1::uuid, 1, 1, $2::jsonb, 'waiting')`, planRun, string(change))
+	w.exec(t, `update going_runs set state = 'waiting' where id = $1::uuid`, planRun)
+	w.as(t, drivePerson, http.MethodGet, "/api/v1/going/runs/"+planRun+"/plan", nil, http.StatusOK)
+	if shown := w.countOf(t, `select count(*) from going_plan_rows where run_id = $1::uuid and shown->'now'->>'title' = $2`, planRun, title); shown != 1 {
+		t.Fatalf("P's read of the plan left %d rows showing the title %q, want its one row", shown, title)
+	}
+	w.as(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": driveRetitled}, http.StatusOK)
+	w.values["planRun"] = planRun
+
+	// The withdrawn runs: each works under a lease, its read of one of alice's posts is recorded as
+	// the run's, and alice deletes the post.
+	comment := createThreadComment(t, w.rig.handler, issue, map[string]any{"body": "A remark the command bar reads before its author deletes it."}, "alice")
+	message := createIssueMessage(t, w.rig.handler, issue, map[string]any{"body": "A message the command bar reads before its author deletes it."}, "alice")
+	for _, withdrawn := range []struct {
+		name, path string
+		remove     func()
+	}{
+		{"commentWithdrawnRun", "/api/v1/comments/" + comment.ID, func() { deleteThreadComment(t, w.rig.handler, comment.ID, "alice") }},
+		{"messageWithdrawnRun", "/api/v1/messages/" + message.ID, func() { deleteIssueMessage(t, w.rig.handler, message.ID, "alice") }},
+	} {
+		run := w.startGoingRun(t, "What does "+withdrawn.path+" say?")
+		w.exec(t, `
+			update going_runs set state = 'working', lease_token = gen_random_uuid(), lease_owner = 'the agent of the drive',
+			  lease_ends_at = now() + interval '1 hour'
+			where id = $1::uuid
+		`, run)
+		read := w.as(t, drivePerson, http.MethodGet, withdrawn.path, nil, http.StatusOK)
+		if err := w.rig.served.recordGoingRunPosts(context.Background(), run, withdrawn.path, read.Body.Bytes()); err != nil {
+			t.Fatalf("record the post %s as run %s's: %v", withdrawn.path, run, err)
+		}
+		if recorded := w.countOf(t, `select count(*) from going_run_posts where run_id = $1::uuid`, run); recorded != 1 {
+			t.Fatalf("run %s's read of %s recorded %d posts, want the one it read", run, withdrawn.path, recorded)
+		}
+		withdrawn.remove()
+		if stands := w.countOf(t, `select count(*) from going_runs where id = $1::uuid and not `+goingRunWithdrawnOf("$1::uuid"), run); stands != 0 {
+			t.Fatalf("run %s stands after the delete of %s, want it withdrawn", run, withdrawn.path)
+		}
+		w.values[withdrawn.name] = run
+	}
+}
+
+// startGoingRun starts a run of P's in words, in Ask, through the route a person starts one on,
+// and answers its id. No agent claims it: the rig has none.
+func (w *driveWorld) startGoingRun(t *testing.T, words string) string {
+	t.Helper()
+	return idOf(t, "command-bar run", w.as(t, drivePerson, http.MethodPost, "/api/v1/going/runs", map[string]any{"words": words, "mode": goingModeAsk}, http.StatusCreated))
+}
+
+// exec runs one statement of the seed on the untraced store.
+func (w *driveWorld) exec(t *testing.T, statement string, arguments ...any) {
+	t.Helper()
+	if _, err := w.raw.Pool.Exec(context.Background(), statement, arguments...); err != nil {
+		t.Fatalf("%s: %v", statement, err)
+	}
+}
+
+// countOf is the count query answers on the untraced store.
+func (w *driveWorld) countOf(t *testing.T, query string, arguments ...any) int {
+	t.Helper()
+	var count int
+	if err := w.raw.Pool.QueryRow(context.Background(), query, arguments...).Scan(&count); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return count
 }
 
 // staleRoster makes the stored route roster an hour past its expiry, so the next read that needs

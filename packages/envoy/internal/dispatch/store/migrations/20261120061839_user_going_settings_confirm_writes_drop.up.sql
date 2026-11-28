@@ -1,0 +1,15 @@
+-- 20261120061839_user_going_settings_confirm_writes_drop.up.sql — a person's command-bar setting
+-- is its mode alone.
+--
+-- confirm_writes asked that every write the command bar makes wait for the person's confirmation,
+-- which the writes route of the bar read. Every write is now a row of a plan, and the person's
+-- mode (20261119201455) says which rows wait: in Ask every row, and in Auto-review the rows its
+-- review may not let through. Nothing reads or writes confirm_writes any more, so it goes.
+--
+-- A drop without cascade is a catalog change: Postgres marks the column dropped and rewrites no
+-- row, under user_going_settings' ACCESS EXCLUSIVE lock for that write alone. No release names the
+-- column: user_going_settings is new on the branch that drops it (20261112220930), so no build of
+-- an earlier release reads or writes it while this one rolls (cmd/dispatch/README.md, "Database
+-- migrations"). The identifier is the UTC moment this was written, as `migrationid` requires of
+-- every migration past the numbered series.
+alter table user_going_settings drop column confirm_writes;

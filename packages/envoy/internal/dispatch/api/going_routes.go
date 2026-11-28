@@ -13,10 +13,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/swaggest/jsonschema-go"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -57,29 +57,121 @@ const goingStreamPoll = 200 * time.Millisecond
 // which is the time this reader needs to end the run itself.
 const goingStreamGrace = 5 * time.Second
 
-// Answerer generates one answer from what Dispatch holds. It is declared here, with the one
-// method the server calls, rather than taken as *going.Answerer, so a test injects a fake
-// through Deps without an HTTP service behind it; nil is a deployment with no model configured
+// Answerer generates one answer from what Dispatch holds. It is declared here, with the methods
+// the server calls, rather than taken as *going.Answerer, so a test injects a fake through Deps
+// without an HTTP service behind it; nil is a deployment with no model configured
 // (cmd/dispatch: DISPATCH_ANSWERER unset), where a run is still recorded and its stream carries
 // the error frame contracts.GoingErrorNoModelConfigured.
 type Answerer interface {
 	// Run answers the request, handing emit each frame of the stream in order with exactly one
 	// terminal frame last; the error it answers is emit's own.
 	Run(ctx context.Context, request going.Request, emit func(going.Event) error) error
+	// Blocks reports whether this process's model answers with blocks, and whether that is
+	// known yet: the capability route's answer.blocks (going.Answerer.Blocks).
+	Blocks() (blocks, known bool)
 }
 
-// createGoingRequestInput is one question as a caller asks it: the words, and the project they
-// are asked of. An empty project asks of every project, as search reads its own filter.
+// createGoingRequestInput is one question as a caller asks it: the words, the project they are
+// asked of, and the item the bar's context chip names where they were typed. An empty project
+// asks of every project, as search reads its own filter.
 type createGoingRequestInput struct {
-	Words   string `json:"words" required:"true"`
-	Project string `json:"project"`
+	Words   string             `json:"words" required:"true"`
+	Project string             `json:"project"`
+	Context *goingContextInput `json:"context,omitempty"`
 }
 
-// goingCapability is what the capability route answers, and all it answers: whether a model is
-// configured. No endpoint, deployment name or credential has a field here, so none can appear
-// in the answer.
+// goingContextInput is the context chip as the POST carries it: the page's path, and the
+// project, issue and document block that page shows, each empty where it shows none. It is a type
+// of its own beside goingContext, which the run's record answers it as, because the emitter
+// refuses a Go type reflected as a request and a response both.
+type goingContextInput struct {
+	Path    string `json:"path"`
+	Project string `json:"project"`
+	Issue   string `json:"issue"`
+	Block   string `json:"block"`
+}
+
+// goingCancellation is what the cancel route answers: the run and when it was cancelled, the
+// first cancel's moment for a run cancelled before.
+type goingCancellation struct {
+	ID          string    `json:"id"`
+	CancelledAt time.Time `json:"cancelled_at"`
+}
+
+// goingContextPathMax and goingContextBlockMax bound the chip's two free-text fields, in UTF-16
+// units: a page's path and a block id are each far shorter, and a record holds neither whole past
+// these.
+const (
+	goingContextPathMax  = 2000
+	goingContextBlockMax = 200
+)
+
+// goingCapability is what the capability route answers, and all it answers: each of the four
+// things the command bar needs, apart, so the bar can tell a deployment that answers and cannot
+// decide from one that does neither (a route spec v61's Design keeps from #3924). The models are
+// named, since a name is what an operator and the production check compare with the record; no
+// endpoint and no credential has a field here, so none can appear in the answer.
 type goingCapability struct {
-	ModelConfigured bool `json:"model_configured"`
+	Answer   goingAnswerCapability   `json:"answer"`
+	Decision goingDecisionCapability `json:"decision"`
+	Session  goingSettingCapability  `json:"session"`
+	Label    goingSettingCapability  `json:"label"`
+}
+
+// goingAnswerCapability is the answering model: whether one is configured, the model it was
+// configured with ("" with none), and whether it answers with blocks.
+type goingAnswerCapability struct {
+	Configured bool        `json:"configured"`
+	Model      string      `json:"model"`
+	Blocks     goingBlocks `json:"blocks"`
+}
+
+// goingDecisionCapability is the decision model: whether a measured one is configured (a name
+// the record does not hold is none, R13), its name ("" with none), and whether a call to it could
+// be made now (Decider.Reachable; false with none).
+type goingDecisionCapability struct {
+	Configured bool   `json:"configured"`
+	Model      string `json:"model"`
+	Reachable  bool   `json:"reachable"`
+}
+
+// goingSettingCapability is whether one of the new-issue settings is set, as the bar reads it
+// now (configuredNewIssue); its value is GET /api/v1/settings/new-issue's.
+type goingSettingCapability struct {
+	Configured bool `json:"configured"`
+}
+
+// goingBlocks is answer.blocks: true once a structured reply was accepted, false once the model
+// service refused the structured request, and "unknown" while neither has happened, which is also
+// what a deployment with no answering model reads (going.Answerer.Blocks).
+type goingBlocks struct {
+	blocks, known bool
+}
+
+// MarshalJSON writes the three states as the document declares them (JSONSchema).
+func (b goingBlocks) MarshalJSON() ([]byte, error) {
+	switch {
+	case !b.known:
+		return []byte(`"unknown"`), nil
+	case b.blocks:
+		return []byte("true"), nil
+	}
+	return []byte("false"), nil
+}
+
+// JSONSchema is answer.blocks as the OpenAPI document declares it: a boolean or the string
+// "unknown", which no Go field type reflects into on its own.
+func (goingBlocks) JSONSchema() (jsonschema.Schema, error) {
+	known := jsonschema.Schema{}
+	known.AddType(jsonschema.Boolean)
+	unknown := jsonschema.Schema{}
+	unknown.AddType(jsonschema.String)
+	unknown.WithEnum("unknown")
+	schema := jsonschema.Schema{}
+	schema.WithDescription(`true once the model accepted a structured reply, false once its ` +
+		`service refused one, "unknown" while neither has happened or with no answering model`)
+	schema.WithAnyOf(known.ToSchemaOrBool(), unknown.ToSchemaOrBool())
+	return schema, nil
 }
 
 // createGoingRequest records one question and starts its answer: POST /api/v1/going/requests. It
@@ -90,9 +182,9 @@ type goingCapability struct {
 // A credential that names nobody is refused here, before anything is recorded
 // (codeGoingAskerNamesNobody): the stream would serve its run to no reader at all.
 //
-// A credential that names one project asks of any project, and of every project at once. Such a
-// credential is answered 404 PROJECT_NOT_FOUND, before anything is recorded, for a project that
-// does not exist and for a private project that it does not name (errProjectNotFound).
+// A credential that names one project may leave the requested project empty or name a project
+// that access.CredentialCovers covers. A missing or uncovered private project gets the same
+// 404 PROJECT_NOT_FOUND before anything is recorded.
 //
 // A deployment with no model configured records the question exactly the same way and stores the
 // run's error frame instead of answering it (startGoingRun), so a caller learns that from the
@@ -103,7 +195,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
 	// reader with it. Recorded, as every actor a row holds is (model.Actor.Recorded).
-	caller, _, err := s.optionalActor(r)
+	caller, cookie, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
@@ -127,7 +219,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	words := strings.TrimSpace(input.Words)
 	if words == "" {
-		writeError(w, "GOING_INPUT", http.StatusBadRequest, "words is required: the question to answer")
+		writeError(w, codeGoingInput, http.StatusBadRequest, "words is required: the question to answer")
 		return
 	}
 	// Counted as search counts its own query, after trimming, so a question this route accepts
@@ -144,21 +236,33 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
 	// (issue_create.go). It runs before the row is written. A credential that names one project
-	// asks of every project that access.CredentialCovers covers, and of all projects at once,
-	// which the empty project names. The one exception is a private project it does not name.
-	// Such a caller is answered 404 PROJECT_NOT_FOUND for that project, and for a project that
-	// does not exist, with one body for both, so it cannot tell the two apart. A credential that
-	// names no project is answered as before: its question of a project no row holds is recorded.
-	if covers, scoped := s.callerProject(r); scoped && project != "" {
-		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
-		if err != nil {
+	// may ask of a project access.CredentialCovers covers, or omit the project.
+	// An uncovered private project and a missing project get the same 404 PROJECT_NOT_FOUND.
+	// A credential that names no project can still ask of a project Dispatch does not hold.
+	// A run asked of a project reads that project alone. Otherwise it reads the project the model
+	// names or falls back to the page. A scoped run reads only projects access.CredentialCovers
+	// covers, and refuses an uncovered private project in the same words as a missing one
+	// (goingReadRun.project), by the same rule as this check (goingAllowProject). It is offered
+	// neither roster nor delivery (goingReadsFor).
+	covers, scoped := s.callerProject(r)
+	if scoped && project != "" {
+		if err := goingAllowProject(r.Context(), s.deps.Store.Pool, covers, project); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if !found || !access.CredentialCovers(access.Credential{Listed: []string{covers}}, project, private) {
-			s.writeHandlerError(w, errProjectNotFound())
-			return
-		}
+	}
+	chip, refused := goingContextFrom(input.Context)
+	if refused != nil {
+		s.writeHandlerError(w, refused)
+		return
+	}
+	// What the run may offer is the caller's to decide, and the caller is this request's: the
+	// run is detached from it, and the row keeps no credential (model.Actor.Recorded).
+	credential := goingCredentialOf(r, caller, cookie)
+	start := goingRunStart{
+		chip:    chip,
+		actions: s.going.runnableBy(credential),
+		reads:   s.goingReadsFor(credential, scoped),
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
@@ -189,8 +293,39 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request) })
+	// Taken here, in the order the POSTs land, so the newest question of a person is the one in
+	// flight whichever detached run starts first (going_quick.go).
+	turn := s.quick.take(goingQuickPerson(actor))
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, start, turn) })
 	WriteJSON(w, http.StatusCreated, request)
+}
+
+// goingContextFrom is the chip the POST carried, each field trimmed, and nil where it carried
+// none or named nothing; a project or an issue that is no key, or a path or block past its bound,
+// is refused with the field it is.
+func goingContextFrom(input *goingContextInput) (*goingContext, error) {
+	if input == nil {
+		return nil, nil
+	}
+	chip := goingContext{
+		Path:    strings.TrimSpace(input.Path),
+		Project: strings.TrimSpace(input.Project),
+		Issue:   strings.TrimSpace(input.Issue),
+		Block:   strings.TrimSpace(input.Block),
+	}
+	switch {
+	case chip == goingContext{}:
+		return nil, nil
+	case chip.Project != "" && !projectKeyPattern.MatchString(chip.Project):
+		return nil, errorf(http.StatusBadRequest, "INVALID_PROJECT", "%s", projectKeyProblem("context.project", chip.Project))
+	case chip.Issue != "" && !issueKeyPattern.MatchString(chip.Issue):
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.issue must be an issue key such as DEMO-12, or empty for none")
+	case itemblocks.Units16(chip.Path) > goingContextPathMax:
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.path is longer than %d characters", goingContextPathMax)
+	case itemblocks.Units16(chip.Block) > goingContextBlockMax:
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.block is longer than %d characters", goingContextBlockMax)
+	}
+	return &chip, nil
 }
 
 // startGoingRun answers one recorded run and stores its frames. The run itself is bounded by the
@@ -198,56 +333,196 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 // too; the writes are bounded by that window and goingStreamGrace, because the terminal frame of
 // a run reaching its deadline is stored at the moment the deadline passes and a context that
 // ended with the run could not store it.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
+//
+// The run is bounded as going_quick.go says: it is its person's one question in flight until a
+// newer one of theirs takes its turn, which ends it as its author's cancel does; it asks a model
+// only in one of the server's slots, which it waits for within its window; and its window is
+// goingQuickTime.
+//
+// Words the fast tier answers - an issue's key, or a hit's own title or name (goingNamedHit) -
+// are answered with that hit and ask no model at all: not the decider, not the answer (R2).
+//
+// A run with a decider decides first and stores the decision frame, which names the line on top
+// of the bar, before the answer is asked anything; the answer only reads and changes nothing.
+// A pause's answer is no run of the bar's agent: it writes no going_runs row, so History, the
+// claim and the sweep of runs never read it (going_runs.go).
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart, turn *goingQuickTurn) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
+	// The run's own cancel, which a cancel landing on this process calls (cancelGoingRequest):
+	// the decision and the answer stop at once rather than at their next frame. The record's
+	// writes are on storing, so a cancelled run still keeps what it reached.
+	running, cancel := context.WithCancel(storing)
+	s.goingCancels.Store(request.ID, cancel)
+	defer func() {
+		s.goingCancels.Delete(request.ID)
+		cancel()
+	}()
+	// A newer question of the run's person ends this run as a cancel does: its record marked
+	// cancelled, so it stores no further frame, and then its answer stopped, so a run that has
+	// stopped reads cancelled. The mark is made on a context of its own, since the run's own ends
+	// as it returns, with a connection mark of its own, since the run may hold one under its own.
+	defer s.quick.leave(turn)
+	superseded := context.AfterFunc(turn.ctx, func() {
+		defer cancel()
+		marking, done := context.WithTimeout(store.ForConcurrentWorker(context.WithoutCancel(storing)), goingStreamGrace)
+		defer done()
+		if _, err := s.cancelGoingRun(marking, request.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("dispatch going: mark a run a newer question of its person ended", "request", request.ID, "error", err)
+		}
+	})
+	defer superseded()
+
+	run := &goingRunning{s: s, request: request, start: start, storing: storing, running: running}
+	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
+	defer endAnswering()
+	if answered, err := run.fastTier(answering); answered {
+		goingRunStopped(request.ID, err)
+		return
+	}
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
 		return
 	}
-	answering, endAnswering := context.WithDeadline(storing, request.EndsAt)
-	defer endAnswering()
-	emit := func(event going.Event) error {
-		if event.Terminal() {
-			_, err := s.endGoingRun(storing, request.ID, event)
-			return err
+	release, slotted := s.quick.slot(answering)
+	if !slotted {
+		// Its window ended while it waited for a slot, or a cancel ended it: a run past its
+		// window ends as a reader at its deadline ends it.
+		if running.Err() == nil {
+			if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
+				slog.Warn("dispatch going: end a run that waited out its window for a slot", "request", request.ID, "error", err)
+			}
 		}
-		_, err := s.appendGoingEvent(storing, request.ID, event)
+		return
+	}
+	defer release()
+
+	if err := run.decide(answering); err != nil || running.Err() != nil {
+		// Cancelled while it decided, or its decision frame could not be stored: nothing is
+		// asked of the answer.
+		goingRunStopped(request.ID, err)
+		return
+	}
+	goingRunStopped(request.ID, run.answer(answering))
+}
+
+// goingRunning is one run as it answers: its request and start, and the context its frames are
+// stored on and the one a cancel ends.
+type goingRunning struct {
+	s       *server
+	request goingRequest
+	start   goingRunStart
+	storing context.Context
+	running context.Context
+}
+
+// emit stores one frame of the run, ending it with a terminal frame.
+func (g *goingRunning) emit(event going.Event) error {
+	if event.Terminal() {
+		_, err := g.s.endGoingRun(g.storing, g.request.ID, event)
 		return err
 	}
-	err := s.deps.Answerer.Run(answering, going.Request{
-		Words:  request.Words,
-		Search: s.goingSearch(request.Project, request.Author),
-		Bodies: s.goingBodies(request.ID),
-	}, emit)
+	_, err := g.s.appendGoingEvent(g.storing, g.request.ID, event)
+	return err
+}
+
+// fastTier answers words the fast tier answers (goingNamedHit) with no model call: the item frame
+// of the hit they name, where the search found one, and the end. It answers whether it answered
+// them, with an error where a frame could not be stored. A search that fails answers false, and
+// the run asks the models as it would of any other words.
+func (g *goingRunning) fastTier(ctx context.Context) (bool, error) {
+	hit, named, err := g.s.goingNamedHit(ctx, g.request.Words, g.request.Project, g.request.Author)
+	if err != nil {
+		slog.Warn("dispatch going: the fast tier's search failed, so the run asks the models", "request", g.request.ID, "error", err)
+		return false, nil
+	}
+	if !named {
+		return false, nil
+	}
+	items := 0
+	if hit != nil {
+		if err := g.emit(going.Item(*hit)); err != nil {
+			return true, err
+		}
+		items = 1
+	}
+	return true, g.emit(going.End(0, items))
+}
+
+// decide makes the run's decision and stores its frame, where it came to one: the answer runs the
+// same with a decision or without one. It answers an error where the frame could not be stored.
+func (g *goingRunning) decide(ctx context.Context) error {
+	decision, decided := g.s.goingDecide(ctx, g.request.Words, g.start)
+	if !decided || g.running.Err() != nil {
+		return nil
+	}
+	return g.emit(going.Event{Name: contracts.GoingEventDecision, Data: decision})
+}
+
+// answer asks the answer of the run, with every read tool its caller may call, each made as the
+// run's author: the block's fill makes its read through the same functions, and the roster read is
+// what the roster frame reports.
+func (g *goingRunning) answer(ctx context.Context) error {
+	reads := g.s.goingRunReads(g.request, g.start)
+	return g.s.deps.Answerer.Run(ctx, going.Request{
+		Words:  g.request.Words,
+		Search: g.s.goingSearch(g.request.Project, g.request.Author),
+		Bodies: g.s.goingBodies(g.request),
+		Reads:  reads.funcs,
+		OnOutcome: func(outcome going.Outcome) error {
+			return g.finish(ctx, reads, outcome)
+		},
+	}, g.emit)
+}
+
+// finish is the run's outcome, once the answer has written its last text frame: the block the
+// structured reply wrote and the roster frame.
+func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, outcome going.Outcome) error {
+	if g.running.Err() != nil {
+		// Cancelled under the answer on this process: the answer's ending is the cancel's, so the
+		// run stores no ending, as a cancel landing on another process leaves it.
+		return g.running.Err()
+	}
+	if outcome.StructuredOutput != "" {
+		// After every text frame and before the ending (R3): the block the structured reply
+		// wrote, filled from its read, and how fresh the roster the run read was. Neither
+		// counts against the answer's word cut.
+		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words); drawn {
+			if err := g.emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
+				return err
+			}
+		}
+		if roster, read := reads.rosterRead(); read {
+			if err := g.emit(going.Event{Name: contracts.GoingEventRoster, Data: roster}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// goingRunStopped says why a run's frames stopped short, where that is worth an operator's
+// reading: nil is a run that stored its ending, and pgx.ErrNoRows a frame the record stored none
+// of because a reader at the deadline or the sweep ended the run under the answer, or its author
+// cancelled it (going.go). Either way the run has the one ending every reader of it is written,
+// or none that whoever reads it past its ends_at writes, exactly as for a run whose pod died.
+func goingRunStopped(requestID string, err error) {
 	switch {
-	case err == nil:
-	case errors.Is(err, pgx.ErrNoRows):
-		// A frame the record stored none of: a reader at the deadline or the sweep ended this
-		// run under the answer (going.go). The run has its one ending, which is the one every
-		// reader of it is written, so there is nothing to store and nothing to report.
+	case err == nil, errors.Is(err, pgx.ErrNoRows), errors.Is(err, context.Canceled):
 	default:
-		// The run holds no terminal frame, so whoever reads it past its ends_at ends it with the
-		// deadline's error, exactly as it ends a run whose pod died.
-		slog.Warn("dispatch going: the answer's frames could not be stored", "request", request.ID, "error", err)
+		slog.Warn("dispatch going: the answer's frames could not be stored", "request", requestID, "error", err)
 	}
 }
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
-// of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of. It reads every kind the index holds, as the question is
-// of all of them. It searches as the run's author, the credential that asked the question and the
-// only one the stream serves, so the answer is drawn from what that credential may read and no
-// more.
+// of. It reads every kind the index holds, as the question is of all of them. It searches as the
+// run's author, the credential that asked the question and the only one the stream serves, so
+// the answer is drawn from what that credential may read and no more.
 func (s *server) goingSearch(project string, author model.Actor) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
-		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
-		// reading each hit for display would be work no reader of this answer ever sees, which is
-		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
-		found, err := s.runSearch(ctx, parameters)
+		found, err := s.runGoingSearch(ctx, q, project, author, false)
 		if err != nil {
 			return nil, err
 		}
@@ -257,6 +532,25 @@ func (s *server) goingSearch(project string, author model.Actor) func(context.Co
 		}
 		return hits, nil
 	}
+}
+
+// runGoingSearch shares the project boundary between the exact-name tier and the answerer's
+// searches. An explicit project receives the same refusal as a tool read. The search SQL
+// applies the scope to each candidate, including when no project was asked of. The route
+// supplies the project, the limit and the offset, so the model cannot widen the search past what
+// the caller asked of.
+func (s *server) runGoingSearch(ctx context.Context, words, project string, author model.Actor, keywordsOnly bool) (model.SearchResponse, error) {
+	scope := deref(author.Project)
+	if scope != "" && project != "" {
+		if err := goingAllowProject(ctx, s.deps.Store.Pool, scope, project); err != nil {
+			return model.SearchResponse{}, goingReadError(err)
+		}
+	}
+	// No display tree: the answerer and the exact-name tier read a hit's names and its href, never
+	// its markdown, so reading each hit for display would be work no reader of their answers ever
+	// sees, which is what these parameters leaving trees unset says.
+	return s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit,
+		keywordsOnly: keywordsOnly, who: author, goingScope: scope})
 }
 
 // goingHitTitle names one hit to the model and to the reader: an issue's own title for a hit the
@@ -274,13 +568,13 @@ func goingHitTitle(result model.SearchResult) string {
 // for run requestID: the comments and messages among them are recorded as the run's before the
 // texts are handed on (recordGoingPosts), so a delete of one withdraws the run's answer
 // (goingWithdrawal).
-func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit) (map[string]string, error) {
+func (s *server) goingBodies(request goingRequest) func(context.Context, []going.Hit) (map[string]string, error) {
 	return func(ctx context.Context, hits []going.Hit) (map[string]string, error) {
-		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax, deref(request.Author.Project))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.recordGoingPosts(ctx, requestID, hits, texts); err != nil {
+		if err := s.recordGoingPosts(ctx, request.ID, hits, texts); err != nil {
 			return nil, err
 		}
 		return texts, nil
@@ -298,35 +592,11 @@ func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit
 // gone: nothing else would ever store that run's ending until the sweep ran. A run given a post
 // that has since been deleted is written goingWithdrawal's frame and nothing else.
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
-	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
-	// is what this route compares the run's author with, and a credential resolves at a cost -
-	// a token row, the sign-in issuer's confirmation - worth paying once.
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	request, ok := s.readCallersGoingRequest(w, r)
+	if !ok {
 		return
 	}
-	id := r.PathValue("id")
-	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
-	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and this route answers an
-	// id nobody could hold exactly as it answers one nobody does.
-	if _, err := uuid.Parse(id); err != nil {
-		writeGoingRequestNotFound(w)
-		return
-	}
-	request, err := s.readGoingRequest(r.Context(), id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeGoingRequestNotFound(w)
-		return
-	}
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !goingRunIsTheCallers(request.Author, actor) {
-		writeGoingRequestNotFound(w)
-		return
-	}
+	id := request.ID
 	after := goingResumeFrom(r)
 
 	// Past this point the answer is a stream: its status and headers are written before the
@@ -437,6 +707,72 @@ func writeGoingFrame(w http.ResponseWriter, frame goingEvent) error {
 	return err
 }
 
+// readCallersGoingRequest is the run the path's {id} names when it is the caller's own, and
+// false once it has answered the request: 404 GOING_REQUEST_NOT_FOUND for a run the record does
+// not hold, an id that is not a uuid, and a run that is another caller's, which are one answer
+// (codeGoingRequestNotFound). The stream and the cancel read a run through it alike.
+func (s *server) readCallersGoingRequest(w http.ResponseWriter, r *http.Request) (goingRequest, bool) {
+	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
+	// is what a run's author is compared with, and a credential resolves at a cost - a token
+	// row, the sign-in issuer's confirmation - worth paying once.
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return goingRequest{}, false
+	}
+	id := r.PathValue("id")
+	// Decided before the read, not after: readGoingRequest casts $1::uuid, so an id that is not
+	// a uuid comes back as a Postgres error rather than pgx.ErrNoRows, and an id nobody could
+	// hold is answered exactly as one nobody does.
+	if _, err := uuid.Parse(id); err != nil {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	request, err := s.readGoingRequest(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return goingRequest{}, false
+	}
+	if !goingRunIsTheCallers(request.Author, actor) {
+		writeGoingRequestNotFound(w)
+		return goingRequest{}, false
+	}
+	return request, true
+}
+
+// cancelGoingRequest cancels one run: POST /api/v1/going/requests/{id}/cancel. The
+// bar sends it on the first keystroke after a run began and when it closes, so a stale answer
+// stops rather than arriving later. Only the run's author may cancel it, and every other caller
+// is answered as the stream answers a stranger. The record marks the run cancelled, so whichever
+// process is answering it stores no further frame and its answer ends at its next delta; a run
+// this process is answering is ended at once besides. Cancelling a run that has already ended,
+// or one cancelled before, changes nothing and answers the first cancel's moment.
+func (s *server) cancelGoingRequest(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.readCallersGoingRequest(w, r)
+	if !ok {
+		return
+	}
+	cancelled, err := s.cancelGoingRun(r.Context(), request.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The sweep deleted the run between the read and the cancel: there is nothing left to
+		// stop, and nothing of it to read.
+		writeGoingRequestNotFound(w)
+		return
+	}
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if cancel, running := s.goingCancels.Load(request.ID); running {
+		cancel.(context.CancelFunc)()
+	}
+	WriteJSON(w, http.StatusOK, goingCancellation{ID: request.ID, CancelledAt: cancelled})
+}
+
 // writeGoingRequestNotFound is the stream's one refusal; see codeGoingRequestNotFound for why
 // every run a caller may not read is answered with it.
 func writeGoingRequestNotFound(w http.ResponseWriter) {
@@ -444,28 +780,41 @@ func writeGoingRequestNotFound(w http.ResponseWriter) {
 }
 
 // goingRunIsTheCallers reports whether caller may read the run whose recorded author is author:
-// the test of a run's owner the stream applies. It is the whole credential, through
-// model.Actor.SameCredential and never SameAs alone, which would make any two personal tokens one
-// writer: a run is read by the credential that asked it. A run whose author names nobody is
-// nobody's, and that is a test of its own - graphstore.NamesCredential, asked here of the author
-// the row holds - because SameCredential calls two credentials that name nobody the one
-// credential: without it, such a row would be served to every holder of the deployment's shared
-// token, which resolves as {} exactly as that author does. The POST refuses such an asker before
-// anything is recorded, so no row the POST writes carries one. It asks the row no question of
-// the author rule (graphstore.ProvesAuthor): a row recorded before model.Actor's Proven existed,
-// by a broker session that names no owner and no workload, names that session, which the rule
-// now counts as nobody, and the session that asked it still presents the same credential.
+// the test of a run's owner the stream and the cancel apply (readCallersGoingRequest). It is the
+// whole credential, through model.Actor.SameCredential and never SameAs alone, which would make
+// any two personal tokens one writer: a run is read by the credential that asked it. A run whose
+// author names nobody is nobody's, and that is a test of its own - graphstore.NamesCredential,
+// asked here of the author the row holds - because SameCredential calls two credentials that name
+// nobody the one credential: without it, such a row would be served to every holder of the
+// deployment's shared token, which resolves as {} exactly as that author does. The POST refuses
+// such an asker before anything is recorded, so no row the POST writes carries one. It asks the
+// row no question of the author rule (graphstore.ProvesAuthor): a row recorded before
+// model.Actor's Proven existed, by a broker session that names no owner and no workload, names
+// that session, which the rule now counts as nobody, and the session that asked it still presents
+// the same credential.
 func goingRunIsTheCallers(author, caller model.Actor) bool {
 	return graphstore.NamesCredential(author) && author.SameCredential(caller)
 }
 
-// getGoingCapability answers whether this deployment has a model configured, and nothing else:
+// getGoingCapability answers what the command bar can do here, each part apart:
 // GET /api/v1/going/capability. Any caller Dispatch admits may read it, which is why the answer
-// names no endpoint, no deployment and no credential - a reader learns that a question can be
-// asked, never where it is answered.
+// names the models and nothing of where they are served - no endpoint and no credential. It calls
+// no model: answer.blocks is what this process's runs have learned so far, and
+// decision.reachable one read of the decision model's token file.
 func (s *server) getGoingCapability(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	WriteJSON(w, http.StatusOK, goingCapability{ModelConfigured: s.deps.Answerer != nil})
+	var capability goingCapability
+	if s.deps.Answerer != nil {
+		blocks, known := s.deps.Answerer.Blocks()
+		capability.Answer = goingAnswerCapability{Configured: true, Model: s.deps.AnswerModel, Blocks: goingBlocks{blocks: blocks, known: known}}
+	}
+	if decider := s.deps.Decider; decider != nil {
+		capability.Decision = goingDecisionCapability{Configured: true, Model: decider.Model(), Reachable: decider.Reachable(r.Context())}
+	}
+	newIssue := s.configuredNewIssue()
+	capability.Session.Configured = newIssue.Session != ""
+	capability.Label.Configured = newIssue.Label != ""
+	WriteJSON(w, http.StatusOK, capability)
 }

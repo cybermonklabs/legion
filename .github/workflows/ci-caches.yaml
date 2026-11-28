@@ -804,20 +804,21 @@ jobs:
           REF: ${{ github.ref }}
         run: .github/scripts/cache-superseded.sh hash go-envoy-infra
 
-  # The two earlier Dispatch builds dispatch-two-builds restores, filled in main's scope.
-  # why: .github/ci-notes/ci-caches.md#the-two-dispatch-builds
+  # The three earlier Dispatch builds dispatch-two-builds restores, filled in main's scope.
+  # why: .github/ci-notes/ci-caches.md#the-three-dispatch-builds
   dispatch-builds:
     # Main alone: a dispatched run on another branch would save the builds in that branch's scope,
     # which only that branch's runs read.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # One build of a release on a miss: 107 s at the median, 118 s at the 90th percentile, in
-    # dispatch-two-builds (2026-11-22); two misses at most per run.
+    # dispatch-two-builds (2026-11-22); three misses at most per run.
     timeout-minutes: 30
     outputs:
       # The key of each build's entry, which dispatch-builds-superseded keeps.
       previous: ${{ steps.dispatch-previous.outputs.cache-primary-key }}
       first-rollout: ${{ steps.dispatch-first-rollout.outputs.cache-primary-key }}
+      going-release: ${{ steps.dispatch-going-release.outputs.cache-primary-key }}
     steps:
       # The whole history and the tags: build-dispatch-build.sh resolves the release from them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -897,7 +898,40 @@ jobs:
             ${{ runner.temp }}/dispatch-first-rollout
           key: ${{ steps.dispatch-first-rollout.outputs.cache-primary-key }}
 
-  # The entries of the two Dispatch builds this repository keeps no more.
+      # The going-runs build's pin, read and filled as the first-rollout build's is.
+      - name: Read the going-runs build's commit from dispatch-two-builds' pin
+        id: going-release
+        run: |
+          commit=$(yq -r '.jobs["dispatch-two-builds"].env.GOING_RELEASE_COMMIT' .github/workflows/ci-job-dispatch-two-builds.yaml)
+          if ! [[ $commit =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::.github/workflows/ci-job-dispatch-two-builds.yaml's dispatch-two-builds job sets GOING_RELEASE_COMMIT to '$commit', not a full commit sha"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - id: dispatch-going-release
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-going-release
+          key: dispatch-going-release-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.going-release.outputs.commit }}
+          lookup-only: true
+
+      - name: Build the going-runs build
+        if: steps.dispatch-going-release.outputs.cache-hit != 'true'
+        env:
+          GOING_RELEASE_COMMIT: ${{ steps.going-release.outputs.commit }}
+          DISPATCH_GOING_RELEASE_BUILD: ${{ runner.temp }}/dispatch-going-release
+        run: packages/envoy/scripts/build-dispatch-build.sh --commit "$GOING_RELEASE_COMMIT" --out "$DISPATCH_GOING_RELEASE_BUILD"
+
+      - if: steps.dispatch-going-release.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/dispatch-going-release
+          key: ${{ steps.dispatch-going-release.outputs.cache-primary-key }}
+
+  # The entries of the three Dispatch builds this repository keeps no more.
   # why: .github/ci-notes/ci-caches.md#what-dispatch-builds-superseded-deletes
   dispatch-builds-superseded:
     needs: dispatch-builds
@@ -905,7 +939,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        build: [previous, first-rollout]
+        build: [previous, first-rollout, going-release]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     env:

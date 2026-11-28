@@ -2,7 +2,9 @@ package going
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -33,16 +35,37 @@ const heldWordMax = 1024
 // as bytes because every word of every answer is read for them.
 var linkifyMarks = [][]byte{[]byte("://"), []byte("www."), []byte("mailto:"), []byte("xmpp:")}
 
-// answerFilter clears one run's answer, delta by delta, and emits plain text alone. Two rules
-// make that text safe, and they are not the one rule:
+// timeScheme is the scheme of a time link's target: [5 days ago](dispatch-time:2026-11-18T11:35:00Z)
+// is a time the web draws as its words, with the whole time on hover (dispatch-time.tsx).
+const timeScheme = "dispatch-time:"
+
+// timeShape is an RFC 3339 time as the server writes one (time.RFC3339Nano): its bytes are
+// digits, - : . + T and Z alone, so the markup that carries it can be no other markdown.
+var timeShape = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`)
+
+// timeMark is the markup of a time link the word being built carries, at the byte of the word
+// it stands before: "[" where the link opens, and "](dispatch-time:<time>)" where it closes.
+type timeMark struct {
+	at     int
+	markup string
+}
+
+// timeOpener is the markup a time link opens with.
+const timeOpener = "["
+
+// answerFilter clears one run's answer, delta by delta, and emits plain text and time links
+// alone. Two rules make that text safe, and they are not the one rule:
 //
-//   - Every ASCII punctuation byte it emits is backslash-escaped, which closes markdown's own
-//     constructs: a link, an image, a raw HTML tag, a code span and a reference definition are
-//     syntax a renderer reads before it decodes an escape, and an escaped byte is none of that
-//     syntax - not by itself, and not by two pieces of the answer meeting where the filter
-//     dropped what stood between them. Link and image syntax is reduced to the text a reader
-//     sees of it, and the links of an answer live in its item frames alone, each carrying a
-//     cited hit's own href.
+//   - Every ASCII punctuation byte of the model's words it emits is backslash-escaped, which
+//     closes markdown's own constructs: a link, an image, a raw HTML tag, a code span and a
+//     reference definition are syntax a renderer reads before it decodes an escape, and an
+//     escaped byte is none of that syntax - not by itself, and not by two pieces of the answer
+//     meeting where the filter dropped what stood between them. Link and image syntax is
+//     reduced to the text a reader sees of it, and the links of an answer live in its item
+//     frames alone, each carrying a cited hit's own href. The one link a text frame carries is a
+//     time link whose target is the time scheme and an RFC 3339 time (timeTarget), which names
+//     no place to go: its words are escaped as every word is, and its markup is the server's,
+//     around a target of digits and the bytes of a time. It goes out whole or not at all.
 //   - The escape closes nothing of GFM's literal autolinks, which are the links a renderer makes
 //     out of text with no markdown in it. A renderer decodes \. and \: before the autolink
 //     extension reads the text, so www\.evil\.example reaches a reader as a link all the same.
@@ -93,9 +116,24 @@ type answerFilter struct {
 	words   int
 	named   map[string]bool
 	dropped int
+	// settled says Settle has said what the answer came to, so Close does not say it twice.
+	settled bool
 
 	// cut says the answer reached contracts.GoingAnswerWordMax, past which nothing is emitted.
 	cut bool
+
+	// marks is the markup of the time links the word being built carries. It is kept beside
+	// the word rather than in it, because word is the text a reader reads, which linkifiable is
+	// judged over, and the markup is none of that text.
+	marks []timeMark
+	// opened is where the [ of a time link stands in out while the word its closing markup is
+	// in has not gone out, and -1 otherwise. out is held from the reader until then, so a link
+	// whose closing word is dropped or cut reaches a reader as its words alone, by taking that
+	// one byte out of out again (unopen).
+	opened int
+	// linkText says the filter is scanning the text of a link, inside which it passes on no
+	// time link: CommonMark makes no link inside another.
+	linkText bool
 }
 
 // newAnswerFilter clears the model's text before a reader sees it: every ASCII punctuation byte
@@ -104,7 +142,7 @@ type answerFilter struct {
 // nothing else. citations is keyed by href, the targets the model was given, and is read as it
 // stands at each link, so a hit a later search found is citable too.
 func newAnswerFilter(citations map[string]Hit, emit func(Event) error) *answerFilter {
-	return &answerFilter{citations: citations, emit: emit, named: make(map[string]bool)}
+	return &answerFilter{citations: citations, emit: emit, named: make(map[string]bool), opened: -1}
 }
 
 // Write takes one content delta, of any size and on any boundary, and emits the text of it that
@@ -132,14 +170,28 @@ func (f *answerFilter) Write(delta string) error {
 	return f.flush()
 }
 
-// Close decides what the model's last span and last word left held, then says what the whole
-// answer came to: what the server changed, the absence of an answer, and the end.
+// Close settles the answer (Settle) and ends the stream with what it came to.
 func (f *answerFilter) Close() error {
+	if err := f.Settle(); err != nil {
+		return err
+	}
+	return f.emit(End(f.words, len(f.named)))
+}
+
+// Settle decides what the model's last span and last word left held, then says what the whole
+// answer came to short of its end: what the server changed, and the absence of an answer. It is
+// what lets a frame that follows the answer's text, such as the block, follow every frame of
+// it. Only its first call emits anything.
+func (f *answerFilter) Settle() error {
+	if f.settled {
+		return nil
+	}
+	f.settled = true
 	if !f.cut {
 		if err := f.scan(true); err != nil {
 			return err
 		}
-		// Close completes the last word, as whitespace would: nothing of the answer is held
+		// Settle completes the last word, as whitespace would: nothing of the answer is held
 		// back once the model has stopped writing.
 		if err := f.complete(); err != nil {
 			return err
@@ -161,7 +213,7 @@ func (f *answerFilter) Close() error {
 			return err
 		}
 	}
-	return f.emit(End(f.words, len(f.named)))
+	return nil
 }
 
 // scan decides every unit the held text now begins with and holds the rest for the next delta.
@@ -286,40 +338,101 @@ func (f *answerFilter) add(text []byte) {
 // and the word past contracts.GoingAnswerWordMax cuts the answer where it begins rather than
 // reaching a reader. It is what whitespace, Close and the word's own bound each end a word
 // with, and the one place the answer's words are counted: a word is what this emits, so there
-// is nothing else to count them from.
+// is nothing else to count them from. The markup of a time link goes with the word it stands
+// in, emitted or dropped with it, and a word of no text that carries some - the [ of a link
+// whose words open with a space - is emitted and counted as no word.
 func (f *answerFilter) complete() error {
-	if len(f.word) == 0 && !f.wordDropped {
+	if len(f.word) == 0 && !f.wordDropped && len(f.marks) == 0 {
 		return f.release()
 	}
 	var err error
 	switch {
 	case f.wordDropped || linkifiable(f.word):
 		f.dropped++
+		f.dropMarks()
+	case len(f.word) == 0:
+		f.clearedWord()
 	case f.words == contracts.GoingAnswerWordMax:
 		// The cut falls where this word begins, so no byte of it is escaped or emitted and
-		// the words before it have gone out already.
+		// the words before it have gone out already, but for the [ of a time link this word
+		// would have closed, which comes out again. That is the cut's doing, as a cited link
+		// the cut splits is, so it is no change to count.
 		f.cut = true
+		f.unopen()
 		if err = f.flush(); err == nil {
 			err = f.emit(Cut(f.words))
 		}
 	default:
 		f.words++
-		f.cleared(f.word)
+		f.clearedWord()
 	}
-	f.word, f.wordDropped = f.word[:0], false
+	f.word, f.wordDropped, f.marks = f.word[:0], false, f.marks[:0]
 	if err != nil {
 		return err
 	}
 	return f.release()
 }
 
+// dropMarks drops the time link markup of a word dropped whole, so each link it held a part of
+// reaches a reader as its words alone, counted once: one whose [ went out in an earlier word by
+// taking that [ out again (unopen), and one whose [ and closing markup both stand here as it is.
+// A link whose [ stands here and whose closing markup does not is counted by timeLink, which
+// finds its [ gone and writes no closing markup.
+func (f *answerFilter) dropMarks() {
+	opening := false
+	for _, mark := range f.marks {
+		switch {
+		case mark.markup == timeOpener:
+			opening = true
+		case opening:
+			opening = false
+			f.dropped++
+		case f.unopen():
+			f.dropped++
+		}
+	}
+}
+
+// unopen takes out of out the [ of the time link whose closing markup will not go out, so the
+// link reaches a reader as its words alone, and reports whether there was one. out has not been
+// sent since that [ went into it (flush), so the byte is still where opened says.
+func (f *answerFilter) unopen() bool {
+	if f.opened < 0 {
+		return false
+	}
+	f.out = append(f.out[:f.opened], f.out[f.opened+1:]...)
+	f.opened = -1
+	return true
+}
+
+// clearedWord clears the word being built into out (cleared), with the markup of each time link
+// it carries where the link put it, which is the one text the filter emits unescaped. A [ whose
+// closing markup this word does not hold is where opened says.
+func (f *answerFilter) clearedWord() {
+	if f.cut {
+		return
+	}
+	from := 0
+	for _, mark := range f.marks {
+		f.cleared(f.word[from:mark.at])
+		from = mark.at
+		f.opened = -1
+		if mark.markup == timeOpener {
+			f.opened = len(f.out)
+		}
+		f.out = append(f.out, mark.markup...)
+	}
+	f.cleared(f.word[from:])
+}
+
 // release emits the item frames the words just flushed cited. An item follows the text of its
 // own link, as the model wrote it, so it waits for the word carrying that text to be judged and
-// flushed. A word the filter dropped releases its items all the same: the hit was cited, the
-// frame carries that hit's own href, and that frame is the answer's only honest link - the one
-// thing a reader of a dropped word is still owed.
+// flushed, and for a time link that word stands in to close, until which out is held. A word the
+// filter dropped releases its items all the same: the hit was cited, the frame carries that
+// hit's own href, and that frame is the answer's only honest link - the one thing a reader of a
+// dropped word is still owed.
 func (f *answerFilter) release() error {
-	if len(f.items) == 0 || len(f.word) > 0 || f.wordDropped {
+	if len(f.items) == 0 || len(f.word) > 0 || f.wordDropped || f.opened >= 0 {
 		return nil
 	}
 	items := f.items
@@ -378,16 +491,17 @@ func (f *answerFilter) bracket(b []byte, i int, final bool) (int, error) {
 }
 
 // inline reduces a closed [text](target) or ![alt](target) to the text a reader sees of it, and
-// says once which hit the model linked. No byte of the target is ever emitted: the link to a hit
-// the model was given is the item frame, which carries that hit's own href, and a text frame
-// carries plain text. The target is matched against the citation set exactly as the model wrote
-// it, which is the safe side of a link the server would not pass on.
+// says once which hit the model linked. No byte of the target is ever emitted, but a time's
+// (timeLink): the link to a hit the model was given is the item frame, which carries that hit's
+// own href, and a text frame carries plain text. The target is matched against the citation set
+// exactly as the model wrote it, which is the safe side of a link the server would not pass on.
 //
 // A link to a hit the model was given is no change to count: the item frame carries it, so the
-// answer still links what it used. Every other link, and every image - whose target a page
-// fetches with no click, and which is therefore never a citation - is counted, because what the
-// model wrote as a link reaches the reader as text alone. Either way the text it was reduced to
-// joins the word around it, which is the word a renderer will read.
+// answer still links what it used. Neither is a time link passed on. Every other link, and every
+// image - whose target a page fetches with no click, and which is therefore never a citation -
+// is counted, because what the model wrote as a link reaches the reader as text alone. Either
+// way the text it was reduced to joins the word around it, which is the word a renderer will
+// read.
 func (f *answerFilter) inline(b []byte, i, open, textEnd int, final bool) (int, error) {
 	at := closerAt(b, textEnd+2, ')', 0)
 	if at < 0 {
@@ -396,7 +510,11 @@ func (f *answerFilter) inline(b []byte, i, open, textEnd int, final bool) (int, 
 	if at == len(b) {
 		return f.undecided(b, i, final)
 	}
-	hit, cited := f.citations[string(b[textEnd+2:at])]
+	target := b[textEnd+2 : at]
+	if b[i] == '[' && !f.linkText && timeTarget(target) {
+		return at + 1, f.timeLink(b[open+1:textEnd], target)
+	}
+	hit, cited := f.citations[string(target)]
 	if err := f.inner(b[open+1 : textEnd]); err != nil {
 		return at + 1, err
 	}
@@ -411,6 +529,44 @@ func (f *answerFilter) inline(b []byte, i, open, textEnd int, final bool) (int, 
 	// The item waits for the word that carries the link's own text, so a reader reads the
 	// answer in the order the model wrote it.
 	return at + 1, f.release()
+}
+
+// timeTarget reports whether target, a link's target exactly as the model wrote it, is a time:
+// the time scheme and an RFC 3339 time, such as dispatch-time:2026-11-18T11:35:00Z. Any other
+// target of that scheme - spaces around it, a time to the minute, a day no month has - is none,
+// and its link is reduced to its words as every other link is.
+func timeTarget(target []byte) bool {
+	value, ok := bytes.CutPrefix(target, []byte(timeScheme))
+	if !ok || !timeShape.Match(value) {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339Nano, string(value))
+	return err == nil
+}
+
+// timeLink passes on a time link, [text](target), as the model wrote it, which is no change to
+// count: the web draws it as its words with the time on hover, so it names no place a reader
+// goes and nothing a page fetches. Its words are the answer's own, judged, counted and escaped
+// as every word is, and its markup goes out with the words it stands in (marks): a [ where the
+// text opens and the closing markup where it ends, in the words the text before and after it
+// joins. A link a dropped word held a part of is cut to its words and counted, and one the cut
+// falls inside is cut to the words before the cut, so no [ or closing markup ever reaches a
+// reader without the other.
+func (f *answerFilter) timeLink(text, target []byte) error {
+	f.marks = append(f.marks, timeMark{at: len(f.word), markup: timeOpener})
+	if err := f.inner(text); err != nil {
+		return err
+	}
+	if f.cut {
+		return nil
+	}
+	if f.opened < 0 && (len(f.marks) == 0 || f.marks[len(f.marks)-1].markup != timeOpener) {
+		// The word its [ stood in was dropped, so its words went out as plain text.
+		f.dropped++
+		return nil
+	}
+	f.marks = append(f.marks, timeMark{at: len(f.word), markup: "](" + string(target) + ")"})
+	return nil
 }
 
 // reference reduces a closed [text][ref], ![alt][ref] or [text][] to the text a reader sees of
@@ -454,9 +610,13 @@ func (f *answerFilter) angle(b []byte, i int, final bool) (int, error) {
 
 // inner adds the text a link or image was reduced to, scanned as the answer's own text is: its
 // own words are judged and counted there too, and the word it ends in goes on being built by
-// whatever follows the link. It is given whole text, so nothing it scans is ever held.
+// whatever follows the link. It is given whole text, so nothing it scans is ever held, and no
+// time link inside it is passed on.
 func (f *answerFilter) inner(text []byte) error {
+	outer := f.linkText
+	f.linkText = true
 	_, err := f.decide(text, true)
+	f.linkText = outer
 	return err
 }
 
@@ -487,9 +647,11 @@ func (f *answerFilter) drop(next int) (int, error) {
 }
 
 // cleared escapes text into the buffer the next text event is sent from. It is the one way a
-// byte of the model's text reaches a reader, which is what makes the escape whole: there is no
-// second path for a piece of text to leave by unescaped. It is given one completed word or one
-// run of whitespace, never the half of either, and nothing at all once the answer is cut.
+// byte of the model's words reaches a reader, which is what makes the escape whole: there is no
+// second path for a piece of text to leave by unescaped, and a time link's markup, which
+// clearedWord writes around its words, holds a target timeTarget read as a time. It is given one
+// completed word, or its pieces around that markup, or one run of whitespace, never the half of
+// either, and nothing at all once the answer is cut.
 func (f *answerFilter) cleared(text []byte) {
 	if f.cut {
 		return
@@ -498,9 +660,11 @@ func (f *answerFilter) cleared(text []byte) {
 }
 
 // flush sends what is cleared as the next piece of the answer. It is one event a delta, not one
-// a word, because the frames a reader reads are the deltas the model wrote.
+// a word, because the frames a reader reads are the deltas the model wrote. It sends nothing
+// while a time link's [ waits in out for the word that closes it (opened), so a link the filter
+// cuts to its words after all never reached a reader whole or in part.
 func (f *answerFilter) flush() error {
-	if len(f.out) == 0 {
+	if len(f.out) == 0 || f.opened >= 0 {
 		return nil
 	}
 	text := string(f.out)

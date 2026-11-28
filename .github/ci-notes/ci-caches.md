@@ -483,7 +483,7 @@ would have to carry the same line or miss.
 
 ## Why a lookup's save takes the lookup's key
 
-go-envoy-infra, elan and the two Dispatch builds are looked up first (`lookup-only`, and no
+go-envoy-infra, elan and the three Dispatch builds are looked up first (`lookup-only`, and no
 `restore-keys`: the question is whether that exact key exists, and the answer downloads nothing),
 and only a miss runs the build and saves what it left. Each of their keys carries a hash of the
 files that choose what the entry holds, and a run that finds its key builds nothing. Each save takes
@@ -530,11 +530,11 @@ refused spec tree on main cannot stop the note check.
 
 ## The entries that are no Go family
 
-Three entries ci-caches.yaml fills are no Go family: the elan home the airlock-lean job restores,
-whose key is the content of the Lean toolchain the model names rather than a Go version, and the two
-earlier Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash of
-the script that builds it, which the dispatch-builds job fills. The changes job's two entries are
-ci-caches-changes.yaml's, which runs once per commit rather than one run at a time
+Four entries ci-caches.yaml fills are no Go family: the elan home the airlock-lean job restores,
+whose key is the content of the Lean toolchain the model names rather than a Go version, and the
+three earlier Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the
+hash of the script that builds it, which the dispatch-builds job fills. The changes job's two
+entries are ci-caches-changes.yaml's, which runs once per commit rather than one run at a time
 (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores). Two more went with the
 jobs that read them.
 
@@ -663,29 +663,31 @@ it reads the keys. One leg per architecture of the fill, each keeping the key th
 leg saved, under the output names the envoy-infra job gives it; a leg whose architecture filled
 nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need nothing of an x64 machine.
 
-## The two Dispatch builds
+## The three Dispatch builds
 
-The two earlier Dispatch builds ci.yaml's dispatch-two-builds job runs beside this tree
+The three earlier Dispatch builds ci.yaml's dispatch-two-builds job runs beside this tree
 (.github/workflows/ci-job-dispatch-two-builds.yaml): the previous build, the newest legion-envoy-v*
-release in main's history, and the first-rollout build, the release that job pins by its commit
-(FIRST_ROLLOUT_COMMIT). That job restores each, builds it on a miss, and saves neither:
-ci-caches.yaml's dispatch-builds job fills both in main's scope, which every pull request and merge
-group reads. That job saved them itself before, in the scope of its run's own ref, where a merge
-group's entry is read by no later run and a pull request's by that pull request alone: on 2026-11-23
-25 such entries held 12.2 GB of the repository's cache and main held none, and on 2026-11-22 308 of
-351 successful dispatch-two-builds jobs built the previous release again (107 s at the median, 11 s
-to restore it). Each key is the key that job restores, from the same steps: the previous build's
-commit from build-dispatch-build.sh, the first-rollout commit from that job's own env, its one pin
-in CI, read by the fill rather than copied. Each is looked up first, so a run after which neither
-the newest release nor the script changed builds nothing. The dispatch-builds job runs on each push
-to main and again once release-envoy-listener.yaml has tagged a release (the `only` input,
+release in main's history; the first-rollout build, the release that job pins by its commit
+(FIRST_ROLLOUT_COMMIT); and the going-runs build, the release that job pins by its commit
+(GOING_RELEASE_COMMIT), read and filled as the first-rollout build is. That job restores each,
+builds it on a miss, and saves none: ci-caches.yaml's dispatch-builds job fills each in main's
+scope, which every pull request and merge group reads. That job saved them itself before, in the
+scope of its run's own ref, where a merge group's entry is read by no later run and a pull request's
+by that pull request alone: on 2026-11-23 25 such entries held 12.2 GB of the repository's cache and
+main held none, and on 2026-11-22 308 of 351 successful dispatch-two-builds jobs built the previous
+release again (107 s at the median, 11 s to restore it). Each key is the key that job restores, from
+the same steps: the previous build's commit from build-dispatch-build.sh, the first-rollout and
+going-runs commits from that job's own env, each its one pin in CI, read by the fill rather than
+copied. Each is looked up first, so a run after which neither the newest release nor the script
+changed builds nothing. The dispatch-builds job runs on each push to main and again once
+release-envoy-listener.yaml has tagged a release (the `only` input,
 .github/ci-notes/ci-caches.md#when-the-workflow-runs-and-why-it-has-no-paths), so the release that
 pull requests and merge groups resolve after the tag is filled within minutes of it. The
 dispatch-builds job runs on ubuntu-24.04, the runner dispatch-two-builds runs on.
 
 ## What dispatch-builds-superseded deletes
 
-The dispatch-builds-superseded job deletes the entries of the two Dispatch builds this repository
+The dispatch-builds-superseded job deletes the entries of the three Dispatch builds this repository
 keeps no more, on main, once dispatch-builds has looked its keys up. For each build it keeps main's
 entry under the key dispatch-builds found or saved, and every main entry created after it, which a
 run that resolved a newer release beside this one saved (a release's dispatch-builds run can overlap

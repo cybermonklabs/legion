@@ -14,6 +14,10 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).putIssueStepExperiment,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Reason: "a step record id: the uuid the Legion daemon derives for one run of one step"},
+
+	// Only a Legion daemon's session writes a run's experiment, 403 STEP_WRITER for every other
+	// writer.
+	DaemonWrites: &daemonWrite{Check: daemonRecordWriter, Record: "a step record"},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepExperimentInput{},
 	},

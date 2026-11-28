@@ -56,6 +56,8 @@ interface WriteRowCase {
 const READS_NOTHING: Partial<Record<WriteRowCase["method"], true>> = {
   deliveryReply: true,
   nameArtifactVersion: true,
+  callRoute: true,
+  callRouteStoringNothing: true,
 };
 
 const CASES: readonly WriteRowCase[] = [
@@ -332,6 +334,34 @@ const CASES: readonly WriteRowCase[] = [
     route: "POST /api/v1/issues/{key}/artifacts",
     call: (client) => client.artifact("ACME-1", content),
   },
+  {
+    method: "callRoute",
+    route: "PATCH /api/v1/priorities/{id}",
+    call: (client) =>
+      client.callRoute(
+        { method: "PATCH", path: "/api/v1/priorities/{id}" },
+        ["api", "v1", "priorities", "ship-it"],
+        { body: { title: "Ship it", actor } }
+      ),
+  },
+  {
+    method: "callRouteStoringNothing",
+    route: "POST /api/v1/issues/{key}/results/dry-run",
+    call: (client) =>
+      client.callRoute(
+        { method: "POST", path: "/api/v1/issues/{key}/results/dry-run" },
+        ["api", "v1", "issues", "ACME-1", "results", "dry-run"],
+        {
+          body: {
+            check: "k1",
+            role: "implementer",
+            verdict: "pass",
+            commit: "1".repeat(40),
+            actor,
+          },
+        }
+      ),
+  },
 ];
 
 /** Which key a stand-in's 2xx names back: the request's own, as Dispatch's keyed layer does,
@@ -475,9 +505,10 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     expect(driven).toEqual(Object.keys(WRITE_ROWS).sort());
   });
 
-  test("the round trip, related-item check and dry-run result store nothing", () => {
+  test("the round trips, related-item check and dry-run results store nothing", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
     expect(stores.map(([method]) => method).sort()).toEqual([
+      "callRouteStoringNothing",
       "dryRunResult",
       "fileRoundTrip",
       "markdownRoundTrip",

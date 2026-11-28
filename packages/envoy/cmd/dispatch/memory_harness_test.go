@@ -58,8 +58,11 @@ import (
 // seconds over 2,675 s, the whole suite pinned to 4 CPUs of a dev box). The two tests that
 // measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
 // and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
-// them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
-// (dispatchSlots), the count the lane's Postgres is sized for, and a test that runs two at once
+// them before any parallel test starts; nor do the agent's load checks in agent_load_test.go
+// (TestTheServerHeapUnderEightDeepRuns and TestTheAgentLeavesTheServerItsCPU), which hold one
+// server's heap and CPU to bounds other servers' load would move. At most
+// testlimits.MaxProcessesAtOnce servers run at once (dispatchSlots), the count the lane's Postgres
+// is sized for, and a test that runs two at once
 // reserves both before its first start (dispatchSlots.reserve).
 
 const memoryTestToken = "memory-test-token"
@@ -824,47 +827,13 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 	}
 }
 
-// loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
-// whole document - closes once the room has sent it, and returns once the server has ended the
-// socket, the settlement attempt its departure makes included.
+// loadOverWebsocket opens the document's room as a browser does (openRoom), closes the connection
+// once the room has sent the document, and returns once the server has ended the socket, the
+// settlement attempt its departure makes included.
 func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	t.Helper()
 	written := p.output.Len()
-	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
-	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
-	if err != nil {
-		t.Fatalf("connect to the document's room: %v (%#v)", err, answer)
-	}
-	defer connection.Close()
-	frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
-		encoder.WriteVarString(artifactID)
-		encoder.WriteVarUint(0)
-	})
-	if err := connection.WriteMessage(gws.BinaryMessage, append(frame, ygsync.EncodeSyncStep1(crdt.New())...)); err != nil {
-		t.Fatalf("ask the room for the document: %v", err)
-	}
-	// The room's answer is read under the shared wait's give-up, which is every wait's one bound.
-	if deadline, bounded := testwait.GiveUpAt(t); bounded {
-		if err := connection.SetReadDeadline(deadline); err != nil {
-			t.Fatalf("set the read deadline: %v", err)
-		}
-	}
-	for {
-		_, message, err := connection.ReadMessage()
-		if err != nil {
-			t.Fatalf("read the room's answer: %v", err)
-		}
-		decoder := encoding.NewDecoder(message)
-		if _, err := decoder.ReadVarString(); err != nil {
-			continue
-		}
-		if kind, err := decoder.ReadVarUint(); err != nil || kind != 0 {
-			continue
-		}
-		if kind, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes()); err == nil && kind == ygsync.MsgSyncStep2 {
-			break
-		}
-	}
+	connection := p.openRoom(t, artifactID)
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close the connection: %v", err)
 	}
@@ -902,6 +871,98 @@ func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...st
 		}
 		return "what the server wrote since the request began: " + tailOf(logged), false
 	})
+}
+
+// openRoom opens the document's room as a browser does - it connects and asks for the whole
+// document - and returns the connection, with no read deadline left on it, once the room has
+// sent the document.
+func (p *memoryServer) openRoom(t *testing.T, artifactID string) *gws.Conn {
+	t.Helper()
+	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
+	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
+	if err != nil {
+		t.Fatalf("connect to the document's room: %v (%#v)", err, answer)
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = connection.Close()
+		}
+	}()
+	frame := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(artifactID)
+		encoder.WriteVarUint(0)
+	})
+	if err := connection.WriteMessage(gws.BinaryMessage, append(frame, ygsync.EncodeSyncStep1(crdt.New())...)); err != nil {
+		t.Fatalf("ask the room for the document: %v", err)
+	}
+	// The room's answer is read under the shared wait's give-up, which is every wait's one bound.
+	if deadline, bounded := testwait.GiveUpAt(t); bounded {
+		if err := connection.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set the read deadline: %v", err)
+		}
+	}
+	for {
+		_, message, err := connection.ReadMessage()
+		if err != nil {
+			t.Fatalf("read the room's answer: %v", err)
+		}
+		decoder := encoding.NewDecoder(message)
+		if _, err := decoder.ReadVarString(); err != nil {
+			continue
+		}
+		if kind, err := decoder.ReadVarUint(); err != nil || kind != 0 {
+			continue
+		}
+		if kind, _, err := ygsync.ReadSyncMessage(decoder.RemainingBytes()); err == nil && kind == ygsync.MsgSyncStep2 {
+			break
+		}
+	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatalf("clear the read deadline: %v", err)
+	}
+	opened = true
+	return connection
+}
+
+// profiler is the address of the server's profiler, for a server started with
+// DISPATCH_PPROF_PORT=0, which takes a port the kernel chooses and logs it (pprofListening). The
+// server logs it before it serves, but its output reaches this test through a pipe the test
+// copies on its own goroutine, so the line is waited for, until the server exits.
+func (p *memoryServer) profiler(t *testing.T) string {
+	t.Helper()
+	var listening []string
+	testwait.Eventually(t, "the server's line naming its profiler's address, or its exit", func() bool {
+		listening = pprofListening.FindStringSubmatch(p.output.String())
+		select {
+		case <-p.exited:
+			return true
+		default:
+			return listening != nil
+		}
+	})
+	if listening == nil {
+		t.Fatalf("the server logged no line naming its profiler's address:\n%s", p.outputTail())
+	}
+	return listening[1]
+}
+
+// roomFigures reads dispatch_rooms, the document rooms' figures, from /debug/vars on the server's
+// profiler, whose address is profiler (memoryServer.profiler).
+func roomFigures(t *testing.T, profiler string) docs.RoomFigures {
+	t.Helper()
+	response, err := http.Get("http://" + profiler + "/debug/vars")
+	if err != nil {
+		t.Fatalf("GET /debug/vars on the server's profiler: %v", err)
+	}
+	defer response.Body.Close()
+	var vars struct {
+		Rooms *docs.RoomFigures `json:"dispatch_rooms"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
+		t.Fatalf("GET /debug/vars on the server's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
+	}
+	return *vars.Rooms
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.

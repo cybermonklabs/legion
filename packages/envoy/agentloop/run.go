@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
+	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	anthropicopt "github.com/anthropics/anthropic-sdk-go/option"
 	aisdk "github.com/grafana/ai-sdk"
@@ -55,6 +58,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	messages := append(history, input...)
 
 	transport := newModelTransport(req.Model.Endpoint, req.Final, req.Log)
+	transport.deployment, transport.streamLimit = deploymentOf(req.Model), req.StreamLimit
 	model, options, err := languageModel(req, transport.client())
 	if err != nil {
 		return Result{}, err
@@ -110,14 +114,30 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		// each is given its call's own output items before the run decides whether to return.
 		r.native(&result)
 		switch failure := r.failure(); {
+		case transport.overLimit():
+			result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's response passed its limit of %d bytes", req.StreamLimit)
+		case r.replyOverLimit.Load():
+			result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's reply passed its limit of %d bytes", req.ReplyLimit)
 		case failure != nil:
 			return result, failure
 		case ctx.Err() != nil:
 			return result, fmt.Errorf("agentloop: %w", ctx.Err())
 		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 			result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
+		case transport.contentFiltered() && (stream.Err() != nil || len(result.Steps) == r.before):
+			// The provider's own words name the filter's verdict, such as the label it blocked
+			// the call for; the SDK's error says no more than the status, so it is the detail
+			// only where the body said nothing this package reads.
+			result.Fault, result.Status = FaultContentFilter, transport.failedStatus()
+			result.Detail = fmt.Sprintf("the provider's content filter refused the call with %d", result.Status)
+			if words := transport.contentFilterWords(); words != "" {
+				result.Detail += " (" + words + ")"
+			} else if err := stream.Err(); err != nil {
+				result.Detail += ": " + transport.failure(err).Error()
+			}
 		case stream.Err() != nil:
-			result.Fault, result.Detail = FaultProviderError, shownFailure(req.Model.Endpoint.BaseURL, stream.Err()).Error()
+			result.Fault, result.Detail = FaultProviderError, transport.failure(stream.Err()).Error()
+			result.Status = transport.failedStatus()
 		case len(result.Steps) == r.before:
 			result.Fault, result.Detail = FaultProviderError, "the model made no reply"
 		default:
@@ -315,11 +335,13 @@ func languageModel(req Request, client *http.Client) (provider.LanguageModel, pr
 }
 
 // finalOutput is Request.Final as the SDK's output: the schema is held to the strict
-// structured-output subset both providers enforce (strict.go), and the last reply is validated
-// against it and read back as the object itself. A schema outside that subset, or one the SDK
-// refuses, is a request the loop cannot run: no model call is made. The check runs here, before
-// the run's first call, because the SDK sends a schema on as it is written and a provider that
-// cannot compile a constraint drops it silently.
+// structured-output subset both providers enforce (strict.go), the last reply is validated
+// against it and read back as the object itself, and its snapshots as it streams are parsed
+// within finalPartials' bounds. A schema outside that subset, or one the SDK refuses, is a
+// request the loop cannot run: no model call is made. The check runs here, before the run's
+// first call, because the SDK sends a schema on as it is written and a provider that cannot
+// compile a constraint drops it silently. Each Run builds its own, since finalPartials keeps the
+// state of the reply it is reading.
 func finalOutput(final json.RawMessage) (aisdk.Output, error) {
 	if err := strictFinal(final); err != nil {
 		return nil, fmt.Errorf("agentloop: the request's final schema: %w", err)
@@ -332,7 +354,7 @@ func finalOutput(final json.RawMessage) (aisdk.Output, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentloop: the request's final schema: %w", err)
 	}
-	return out, nil
+	return &finalPartials{Output: out}, nil
 }
 
 // run is one Run's state across its model calls.
@@ -370,14 +392,20 @@ type run struct {
 	reason provider.FinishReason
 	failed error
 
-	// tool holds one tool call at a time, so a step's calls run one after another.
-	tool sync.Mutex
+	// order runs a step's tool calls one at a time, in the order the model asked for them.
+	order callOrder
 
 	// numbering guards the tool call indexes: indexes is the index each call's id took
 	// when the model asked for it, and next is the index the next call takes.
 	numbering sync.Mutex
 	indexes   map[string]int
 	next      int
+
+	// replied is the bytes of the reply the model call in flight has built, which only drain
+	// counts; replyOverLimit is set once a call's reply passed Request.ReplyLimit, which ends
+	// the run.
+	replied        int
+	replyOverLimit atomic.Bool
 }
 
 // readsRawChunks is whether a protocol's reply is read back out of the provider's own chunks,
@@ -401,7 +429,8 @@ type rawCall struct {
 // at all: the Final object's snapshots in a goroutine, the stream's own parts here. Each is read
 // to the end whether or not the caller takes it, and after a callback has failed. The parts a
 // protocol reads its reply back out of are kept as they go by, because the stream is the only
-// place they are said.
+// place they are said. Each call's prose, reasoning and tool arguments are counted as they go
+// by, and a call whose reply passes Request.ReplyLimit ends the run.
 func (r *run) drain(stream *aisdk.StreamTextResult) {
 	partials := make(chan struct{})
 	go func() {
@@ -410,27 +439,53 @@ func (r *run) drain(stream *aisdk.StreamTextResult) {
 			if r.req.OnPartial == nil || r.failure() != nil {
 				continue
 			}
-			if err := r.req.OnPartial(snapshot); err != nil {
-				r.fail(err)
-			}
+			r.callback("OnPartial", func() error { return r.req.OnPartial(snapshot) })
 		}
 	}()
 	for part := range stream.FullStream() {
 		switch part := part.(type) {
 		case aisdk.StreamStartStep:
 			r.calls = append(r.calls, rawCall{})
+			r.replied = 0
 		case aisdk.StreamRaw:
 			r.readRaw(part.RawValue)
+		case aisdk.StreamReasoningDelta:
+			r.reply(len(part.Text))
+		case aisdk.StreamToolInputDelta:
+			r.reply(len(part.Delta))
 		case aisdk.StreamTextDelta:
+			r.reply(len(part.Text))
 			if r.req.OnText == nil || r.failure() != nil {
 				continue
 			}
-			if err := r.req.OnText(part.Text); err != nil {
-				r.fail(err)
-			}
+			r.callback("OnText", func() error { return r.req.OnText(part.Text) })
 		}
 	}
 	<-partials
+}
+
+// reply counts bytes more of the reply of the model call in flight, and ends the run once they
+// pass Request.ReplyLimit.
+func (r *run) reply(bytes int) {
+	r.replied += bytes
+	if r.req.ReplyLimit > 0 && r.replied > r.req.ReplyLimit && !r.replyOverLimit.Swap(true) {
+		r.cancel()
+	}
+}
+
+// callback calls one of the caller's stream callbacks, which call wraps: an error it returns ends
+// the run, and so does a panic, recovered here, logged with its stack and returned as an error
+// naming it. The SDK calls OnStep on a goroutine of its own, where a panic would end the process.
+func (r *run) callback(name string, call func() error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("agentloop: a callback panicked", "callback", name, "panic", recovered, "stack", string(debug.Stack()))
+			r.fail(fmt.Errorf("agentloop: the %s callback panicked: %v", name, recovered))
+		}
+	}()
+	if err := call(); err != nil {
+		r.fail(err)
+	}
 }
 
 // readRaw reads one raw provider chunk of the model call the stream is in into that call's own
@@ -488,9 +543,10 @@ func (r *run) failure() error {
 	return r.failed
 }
 
-// prepareStep offers no tool on the last call of the whole run, the last Bounds.Calls allows or
-// the one after a dropped reply out of form, so that call must answer, and on the kinds Anthropic
-// serves, where the run places cache marks, moves the newest message's mark: the history keeps
+// prepareStep forgets the tool calls the step before announced and never ran (callOrder), offers
+// no tool on the last call of the whole run, the last Bounds.Calls allows or the one after a
+// dropped reply out of form, so that call must answer, and on the kinds Anthropic serves, where
+// the run places cache marks, moves the newest message's mark: the history keeps
 // the marks Run put in it, because the step takes a mark off no message of the history, the
 // newest message gets one, and the one an earlier step put on its newest message is taken off
 // (the SDK carries a step's message overrides into later steps; Anthropic allows four marks,
@@ -500,7 +556,9 @@ func (r *run) failure() error {
 // run's own messages, which carry the history's marks and no other, so its newest message, the
 // check's sentence, takes the fourth. A call after a dropped one, a cut call made again or the
 // call after a reply out of form, starts from the messages the dropped call was sent, so its
-// newest message is the dropped call's and takes the mark the dropped call put there.
+// newest message is the dropped call's and takes the mark the dropped call put there. The SDK
+// calls it in the stream's goroutine before each model call, once every tool of the step before
+// has returned; an ask's first call comes once the stream of the ask before has ended.
 //
 // The last call also carries Request.LastCall, after every other message and after the mark:
 // that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for a
@@ -508,6 +566,7 @@ func (r *run) failure() error {
 // it would have without the sentence. No later step takes the override on, and no Step holds it:
 // the SDK builds a step's response messages from the step's own output.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
+	r.order.forget()
 	result := &aisdk.PrepareStepResult{}
 	last := r.before+state.StepNumber == r.bound-1
 	if last {
@@ -549,7 +608,8 @@ func afterHistory(messages []provider.Message, history int) int {
 
 // stepFinished keeps one model call that finished and gives it to the caller's OnStep. The
 // call's own output items are read once the run is over, so the step the callback is given
-// carries no Native.
+// carries no Native. A call whose reply passed Request.ReplyLimit ends the run instead, and is
+// given to no OnStep: the SDK can finish a step before drain has counted its parts.
 func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	step := Step{
 		Blocks: blocksOf(state.Content, r.kind),
@@ -560,12 +620,30 @@ func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	r.steps = append(r.steps, step)
 	r.text, r.reason = state.Text, state.FinishReason
 	r.mu.Unlock()
+	if r.req.ReplyLimit > 0 && replyBytes(step.Blocks) > r.req.ReplyLimit {
+		r.replyOverLimit.Store(true)
+		r.cancel()
+		return
+	}
 	if r.req.OnStep == nil || r.failure() != nil {
 		return
 	}
-	if err := r.req.OnStep(step); err != nil {
-		r.fail(err)
+	r.callback("OnStep", func() error { return r.req.OnStep(step) })
+}
+
+// replyBytes is the bytes of the reply blocks hold: its prose, its reasoning and its tool calls'
+// arguments.
+func replyBytes(blocks []Block) int {
+	bytes := 0
+	for _, block := range blocks {
+		switch block.Kind {
+		case TextBlock, ThinkingBlock, ReasoningBlock:
+			bytes += len(block.Text)
+		case ToolCallBlock:
+			bytes += len(block.Input)
+		}
 	}
+	return bytes
 }
 
 // result is the run's steps, their usage summed and the last reply's text, as they stand.
@@ -618,7 +696,13 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 			reason.Raw, r.req.Bounds.OutputTokens)
 		return
 	case provider.FinishReasonContentFilter:
-		result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+		// The SDK reads Anthropic's refusal stop reason as content-filter too, and that is the
+		// model refusing; every other provider word for it is the provider's content filter.
+		if reason.Raw == "refusal" {
+			result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+			return
+		}
+		result.Fault, result.Detail = FaultContentFilter, fmt.Sprintf("the provider's content filter stopped the last reply: %s", reason.Raw)
 		return
 	case provider.FinishReasonError:
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", reason.Raw)
@@ -768,7 +852,10 @@ func reasoningBlock(part aisdk.ReasoningContent, kind Kind) Block {
 
 // priced is one model call's usage and its cost at price, USD per million tokens: input not
 // read from the cache, output with its reasoning counted in it, cache writes and cache reads.
-// A call the provider reported no count at all for is not metered.
+// The SDK reads a Chat Completions reply's output as its completion_tokens, which holds the
+// reasoning on OpenAI's own usage; where the provider counts the reasoning apart from them
+// (reasoningApart), the output adds it. A call the provider reported no count at all for is not
+// metered.
 func priced(usage provider.Usage, price Price) Usage {
 	value := func(n *int) int {
 		if n == nil {
@@ -781,18 +868,46 @@ func priced(usage provider.Usage, price Price) Usage {
 	if usage.InputTokens.NoCache == nil {
 		input = max(value(usage.InputTokens.Total)-read-write, 0)
 	}
+	reasoning := value(usage.OutputTokens.Reasoning)
 	output := value(usage.OutputTokens.Total)
+	if reasoning > 0 {
+		output += reasoningApart(usage.Raw)
+	}
 	counted := []*int{
 		usage.InputTokens.Total, usage.InputTokens.NoCache, usage.InputTokens.CacheRead, usage.InputTokens.CacheWrite,
 		usage.OutputTokens.Total, usage.OutputTokens.Text, usage.OutputTokens.Reasoning,
 	}
 	counts := Usage{
 		Input: input, Output: output, CacheWrite: write, CacheRead: read,
-		Reasoning: value(usage.OutputTokens.Reasoning),
+		Reasoning: reasoning,
 		Metered:   slices.ContainsFunc(counted, func(n *int) bool { return n != nil }),
 	}
 	counts.CostUSD = price.cost(counts)
 	return counts
+}
+
+// reasoningApart is the reasoning tokens a Chat Completions usage, raw as the provider sent it,
+// counts apart from its completion tokens, and 0 where it counts them among those. A usage whose
+// total_tokens is prompt_tokens + completion_tokens + completion_tokens_details.reasoning_tokens,
+// with reasoning above 0, counts them apart, as grok-4.7 does; one whose total is
+// prompt_tokens + completion_tokens counts them among the completion tokens, OpenAI's convention.
+// A usage with no total, or of another protocol's shape, is read as OpenAI's.
+func reasoningApart(raw json.RawMessage) int {
+	var usage struct {
+		Prompt     *int `json:"prompt_tokens"`
+		Completion *int `json:"completion_tokens"`
+		Total      *int `json:"total_tokens"`
+		Details    *struct {
+			Reasoning int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &usage) != nil || usage.Prompt == nil || usage.Completion == nil || usage.Total == nil || usage.Details == nil {
+		return 0
+	}
+	if reasoning := usage.Details.Reasoning; reasoning > 0 && *usage.Total == *usage.Prompt+*usage.Completion+reasoning {
+		return reasoning
+	}
+	return 0
 }
 
 // SumUsage is two usages added, their costs included; the sum is metered where either side is.

@@ -89,6 +89,7 @@ const summary: IssueSummary = {
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   key: issue.key,
+  project: issue.project,
   labels: [],
   last_seq: 1,
   open_asks: 0,

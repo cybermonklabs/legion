@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `GOING_ERROR_ANSWER_WITHDRAWN_BY_RUN` (`ANSWER_WITHDRAWN_BY_RUN`) is the code a command-bar run
+  is withdrawn with when its own deletes alone withdrew it. The words of `dispatch_edit_comment`,
+  `dispatch_edit_message`, `dispatch_delete_comment` and `dispatch_delete_message` say what Undo in
+  the command bar does: an edit's Undo writes the replaced body back unless the post changed since,
+  and then keeps the newer body and names who wrote it; a delete cannot be undone. The edit routes'
+  answers carry `previous: {body}`, the body the edit replaced, and a plan row carries `deleted`
+  for a post its author deleted.

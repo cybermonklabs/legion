@@ -148,6 +148,15 @@ Each item below names a variable, then its purpose.
   `DISPATCH_AZURE_CHAT_SCOPE` is configuration because one Azure AI Foundry resource serves two inference families:
   the models inference endpoint (`/models`, an `api-version`, scope `https://cognitiveservices.azure.com/.default`) and the Azure OpenAI endpoint (`/openai/v1`, no `api-version`, scope `https://ai.azure.com/.default`), and which of the two a deployment serves is named by that deployment.
 
+- `DISPATCH_DECISION_MODEL`, `DISPATCH_DECISION_MODEL_ENDPOINT`, `DISPATCH_DECISION_MODEL_TOKEN_FILE`
+
+  The System One model the command bar's one decision call is put to before it answers (which action the words ask for, whether they point at the page's item, chart or prose), the endpoint's base URL, which `/v1/systemone` is appended to and which must be an absolute https URL with a host and no query or fragment, and the file holding the bearer token every call presents.
+  Each defaults to empty; the endpoint and the token file are set together or not at all, and boot refuses one without the other, naming the one missing; the model is optional, since a deployment renders the endpoint and the file before it names a model.
+  The endpoint is refused as the chat endpoints are: one holding a user name, a password, an `@` after its host, a query or a fragment by the setting alone, and any other value that is no such URL printed only as the URL rule prints a URL.
+  The model must be one the committed measurement holds (`packages/envoy/going/decision_models.json`, which the bake-off `cmd/going-bakeoff` writes, and which marks the model its rule chose): a name it does not hold is no decision model, so the server starts, logs one line saying why and decides nothing, as it does with no model or no endpoint.
+  The boot line of a measured model says whether the record chose it.
+  The token file is read on every call and never at boot, so a rotation needs no restart; a file that is absent or empty at a call fails that call as the decision model that cannot be reached, with no request made, and the capability route reports it unreachable.
+
 - `DISPATCH_MAX_LIVE_ROOMS`, `DISPATCH_MAX_DOC_CONNECTIONS`
 
   Each process's own caps on the document rooms it holds in memory and the browser connections to them, so two processes of one deployment hold up to twice each;
@@ -417,7 +426,7 @@ A service whose verifier does not set that switch, the Envoy listener among them
 An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
 It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
 `brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with the scopes `person` and `approve`, never `p0`, and marks its credential approve-only (`model.Credential.ApproveOnly`).
-Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Dispatch serves it on the routes whose declaration states `ApproveOnly` (`routeDecl.ApproveOnly`, in each route's file under `internal/dispatch/api`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and less the approval of a command-bar run's plan (`POST /api/v1/going/runs/{id}/plan/approve`), which runs every write of the plan as its person, while an approve-only token approves a document, an ask or a credential, never a run of writes; and with the answer of an approval request.
 Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes and everything else it does.
 The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
 A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
@@ -480,7 +489,7 @@ a credential that names one project may not create another or change a setting t
 The checks before it read no project, so a credential that names one project gets one answer for a private project that it does not name and for a project that does not exist, whatever else the body holds: at that check, `404 NOT_FOUND`, and a create with no title gets it too.
 A project key that is empty or is not a project key keeps its `400`, and a credential that names no project is answered as before.
 `POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
-A credential that names one project may ask of any project, and of every project at once.
+A credential that names one project may ask of its own project, a public project, or no project.
 Such a credential gets `404 PROJECT_NOT_FOUND` for a private project that it does not name and for a project that does not exist, with one body for both.
 A credential that names no project is answered as before: its question of a project that does not exist is recorded.
 A `blocked_by` target and a parent may each be an issue of any project.
@@ -968,6 +977,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 - Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
   Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  A command-bar run is the one exception, since its calls come after the request that started or approved it: its grant names the person alone and lasts until the run's working budget ends, and an approval through IAP records it anew (Answering a question, below).
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
@@ -975,7 +985,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
-  An unsafe request that carries an assertion is held to the origin of the address its `Host` names as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  An unsafe request that carries an assertion is held to the origin of the address its `Host` names as one with a session cookie is (`api.EnforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
 
 - Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
@@ -1835,6 +1845,8 @@ The first rollout of the fleet's numbers needs a release before the fleet column
 That tag is lightweight and can move, so the commit is the pin: the test fails a first-rollout build of another commit (`firstRolloutRelease` in `twobuild_harness_test.go`), and the CI job fails when the tag names another commit (`FIRST_ROLLOUT_COMMIT`).
 The same CI job then runs the browser suite's `cross-build.multiprocess` beside each of the two builds, each build's page against the other build's server, and expects the document writable or read-only as the live registry's numbers admit it (`packages/dispatch/e2e/cross-build.multiprocess.e2e.ts`, `pageWritable`).
 In the run beside the first-rollout build, `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` holds the run to that build's commit and to a registry that reads version 0 while that build is live, so a build of another commit, or a build that registers its schema numbers, fails the run.
+The command bar's row (`twobuild_going_runs_test.go`) runs a fixed release beside this tree instead, the one tagged `legion-envoy-v32.15.0`, pinned by its commit `6c46f6bb7dd6a1ac9b6235fb3bce990ec82eae86` as the first-rollout build is (`goingReleaseCommit`, and `GOING_RELEASE_COMMIT` in the CI job), since its maintenance sweep ends and deletes its own command bar's going requests, a sweep the next release drops.
+Beside that release's sweep this tree's runs keep going: History lists the runs it saved, their frames stream as they were stored, a run at work ends with its model's answer, a waiting plan runs once it is approved, and a run saved at a run shape this tree does not read stays queued; a run whose saved steps name a tool this tree does not know fails, naming the tool.
 
 Generations and holds protect from the release after the first one that carries them.
 The build before them compares stream and consumer settings with no generation, binds its delivery durable by lookup with no hold, and refuses a request member it does not declare.
@@ -2018,7 +2030,7 @@ A process that finds it held tries again
 
   - The reading takes no lease and runs in every process with the App's private key, since the own counts are each process's; a pass costs each installation one core call, the workflows read, and one more where the installation's repository is listed again, at its first pass and after GitHub answered the remembered repository 404; an installation whose listing gives no repository is read from that listing alone, one call a pass.
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes each command-bar conversation whose newest run is seven days old, stops each run that works under no live lease past its working budget (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
@@ -4930,10 +4942,16 @@ A ranking or latency change is measured on a restored copy of the production cor
 
 ## Answering a question
 
-Where the server generates text is one setting, `DISPATCH_ANSWERER` (Required configuration, above), and `GET /api/v1/going/capability` answers `{"model_configured": <bool>}` and nothing else, so any caller Dispatch admits learns whether a deployment can answer without learning its endpoint, its deployment name or its credential.
+Where the server generates text is one setting, `DISPATCH_ANSWERER`, and the model the command bar decides with is `DISPATCH_DECISION_MODEL` and its endpoint and token file (Required configuration, above).
+`GET /api/v1/going/capability` reports what the bar can do here, each part apart, so a deployment that answers and cannot decide is told from one that does neither:
+`{"answer": {"configured", "model", "blocks"}, "decision": {"configured", "model", "reachable"}, "session": {"configured"}, "label": {"configured"}}`.
+`answer.model` is the model the answerer was configured with (`DISPATCH_AZURE_CHAT_DEPLOYMENT` or `DISPATCH_CHAT_MODEL`), `""` with none; `answer.blocks` is `true` once this process's model accepted a structured reply, `false` once its service refused a structured request with a 400 (after which no run asks for one until a restart), and `"unknown"` while neither has happened or with no answerer.
+`decision.configured` is a measured decision model, a name the record does not hold reading `false` with `model` `""`; `decision.reachable` is whether its token file reads now, one file read and no call to the model.
+`session` and `label` are the two new-issue settings (`GET /api/v1/settings/new-issue`).
+The route names the models and no endpoint and no credential, so any caller Dispatch admits may read it.
 
-`POST /api/v1/going/requests` takes a question and the project to ask it of, records the run and answers `201` with it;
-the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`text`, `item`, `cut`, `changed`, `none`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
+`POST /api/v1/going/requests` takes a question, the project to ask it of and the item the bar's context chip names (`{path, project, issue, block}`), records the run and answers `201` with it;
+the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`decision`, `text`, `item`, `cut`, `changed`, `none`, `block`, `roster`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
 The two are separate requests because the server wraps every `POST` in its idempotency layer and that layer holds a whole answer rather than streaming it (Keyed writes, below), and because a deployment of more than one pod spreads two requests across pods:
 the run's frames are rows of `going_events`, so any pod serves any reader, and a reader that drops resumes with `Last-Event-ID` after the last sequence it saw.
 A repeat of the `POST` under one `Idempotency-Key` answers the first run's id, and its stream replays the same stored frames.
@@ -4944,12 +4962,28 @@ no reader of such a run could ever be served it.
 What the model is given is what the caller may already read:
 the hits of the server's own search of that project, and each hit's own stored text, at most 2,000 runes a hit and 30,000 in one run, after which a hit is still named to the model with no body and stays something the answer may cite.
 The model may search twice more through one tool, the server supplying the project, the limit and the offset so it cannot widen the search, and a fourth search is refused back to the model.
+It may also call the read tools, each made as the caller through the function its route answers with: the roster (`GET /api/v1/agents`), the progress of an issue or a project, a project's architecture counts, a project's events per ISO week (`GET /api/v1/projects/{key}/activity`) and the delivery figures, at most eight reads in one run.
+The roster read gives each session the claims it holds on open issues (`claims`, each with its `issue` and `at`), and lists after the listener's sessions each session the listener lists no more that still holds a claim, with `state` `gone` and its claims, at most 50 sessions in all, the gone ones kept first; its totals count the gone sessions.
+It reads only the claims on issues the run's person may read, so a claim on any other issue names neither that issue nor a gone session that holds nothing else.
+The bar's agent reads the roster through `GET /api/v1/agents?limit=50` and is told `{total, sessions}`: the 50 sessions seen last with the same claims and gone sessions, and `total`, every session the listener lists and every gone one; the step's line reads `50 of 73 sessions` where the list holds fewer than the total, and the route's own answer to every caller is unchanged.
+It reads the other four through the routes the person reads them by: `read_progress` of an issue through `GET /api/v1/issues/{key}` and of a project through `GET /api/v1/issues?project=&limit=250`, `read_architecture` and `read_project_activity` through `GET /api/v1/projects/{key}/architecture` and `/activity`, and `read_delivery` through `GET /api/v1/delivery/measures`, `/timeline` or `/pipeline` as its `view` names, the pipeline's `at` being its `to`; a call that names no issue or project reads the run's page's, and one that still names none is refused.
+A project's `read_progress` answers a page of at most 250 of its issues and `total`, every issue of the project, so its answer stays inside the 1 MiB the server carries of a call's answer whatever the project holds: the model is told the total before the list (`[Total: 300 matching issues; the list below holds 250 of them.]`) and the step's line reads `250 of 300 issues`, while an issue's `read_progress` states no count.
+Its `github_read` reads only a pull request with its reviews, files and commits, a commit with its checks and statuses, a compare, and contents, and refuses any other path before it asks GitHub.
+A credential scoped to one project may ask of its own project, a public project, or no project.
+The POST answers `404 PROJECT_NOT_FOUND` for an uncovered private project or a missing project, with one body for both.
+A run asked of a project searches that project alone and refuses tool calls that name another project or one of its issues.
+With no project asked of, the run reads the project the model names, or the page's project if the model names none.
+For a scoped credential, the run reads and searches only the projects `access.CredentialCovers` permits, and refuses a read of an uncovered private project in the same words as a missing project.
+A scoped credential is offered neither roster nor delivery reads because those reads span all projects.
 The citation rule is the server's and not the model's:
-a text frame carries plain text alone, every ASCII punctuation byte of it escaped, which closes markdown's own constructs, and every word a renderer would link on its own
+a text frame carries plain text and time links alone, every ASCII punctuation byte of the model's words escaped, which closes markdown's own constructs, and every word a renderer would link on its own
 — a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address
 — dropped from the answer whole, since a renderer decodes an escape before it looks for such a link;
-so an answer's links are its `item` frames and nothing else
+so an answer's links to items are its `item` frames and nothing else
 — a link to something the model was given raises `item` once for that thing, every other link and every image is counted in `changed`, and either way no byte of the target reaches the reader, who is written the link's own visible text unless that text joins a word a renderer would link on its own, which is dropped whole as every such word is.
+The one link a text frame carries is a time, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, whose target is `dispatch-time:` and an RFC 3339 time, which the page draws as a `<time>` with its full date on hover and which names no place to go:
+it is passed on as the model wrote it and counted in nothing, its words escaped, judged and counted as every word is;
+a target of that scheme that is no RFC 3339 time is reduced to its words as every other link is, and a time link whose first or last word is dropped, or that the cut falls inside, goes out as its words alone.
 An answer is cut at 120 words with `cut`, one the model wrote no text for at all ends `none`, and either way `end` closes the stream.
 
 A run has 30 seconds, and that window belongs to the record:
@@ -4960,6 +4994,229 @@ At that moment the running answer, a reader and the sweep may each try to end on
 So a reader sees exactly one ending, never two and never none.
 
 The delete of a comment or an issue message whose text a run gave its model ends that run's stream for every reader after it, as the stream route's description in `GET /api/v1` says (`goingWithdrawal`, `internal/dispatch/api/going.go`).
+
+The short answer and its decision call stay in this server, each run bounded (`api/going_quick.go`).
+The answer is one request of one person, a loop of at most 4 model calls with its searches and reads between them.
+A run is its person's one question in flight, so a newer `POST` of the same credential ends the one before as its cancel does, its record marked cancelled;
+a server answers 32 runs at once, and the next waits for a free slot within its 30 seconds, its decision call too, ending `ANSWER_DID_NOT_ARRIVE` where the window ends first;
+the 30 seconds bound the whole loop, all its calls together, not each call; each call's stream is read up to 4 MiB, past which the run fails `ANSWER_FAILED`; and the answerer paces its calls to 25% of `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, the agent's runs taking the rest: each call is charged a quarter of the characters of its prompt, its tool definitions and the tool output so far before it is made, and the tokens it spent past that, its reasoning among them, as it ends, which the next calls wait out (`going/pacer.go`, the agent's pacer too).
+
+Words that are an issue's key, or the very key, title or name of a hit the keyword search finds for them, are the fast tier: the run stores that hit's `item` frame and `end`, and asks no model at all, neither the decision model nor the answer.
+With a measured decision model configured, a run of any other words first makes one decision call, bounded at one second.
+It asks three questions: which action of the catalogue (`GET /api/v1/going/catalogue`) the words ask for, among the actions the caller's credential may run, or `none`; whether the words are about the item the context chip names, items they name, or nothing; and chart or prose, which the run does not read.
+The stream's first frame is then `decision`: the action chosen, the line on top of the bar it gives (`ask` for `none`, `file` for `dispatch_issue`, the line File as a new issue, and `do` for any other action), and the context.
+The bar reads the line from that frame, and drops it where it comes 500 ms or more after the pause that asked it, so the line reads Ask.
+A decision call that fails gives no `decision` frame, and the run answers as with no decision model.
+The answer asks the model for a structured reply first: the answer and one block of a kind the words name.
+A service that refuses that request with a `400`, or a reply that does not fit it, is asked again for prose, with no block; after a `400`, this process asks for prose alone until it restarts.
+After the text frames come `block`, the one typed block the words asked for, which the server fills from its own read, and `roster`, `{age_ms, source}`, where the run read the roster.
+The answer only reads: a change is made only by a run's approved plan (below).
+`POST /api/v1/going/requests/{id}/cancel` stops a run its author typed past or closed: from then on the run stores no frame that does not end its stream, so the answer stops at its next delta on whichever pod is writing it.
+The command bar sends it at the keystroke that types past the run, and its panel keeps what it drew of that run, marked as the answer to the earlier words, until the answer to the new words has text of its own, finds none or fails; no frame of the cancelled run reaches the panel after the keystroke, and emptying the box or closing the bar clears it.
+
+A command-bar run changes nothing but through a plan its person approves (`api/going_plan.go`, `api/going_plan_run.go`).
+The run's model proposes one with `propose_plan`, which the agent sends the server as a plan call: the server checks each change against its tool spec, refuses a change that needs a change after it, reads as the person the item each change writes, its value now and the holder of its issue's claim, and keeps the plan (`going_plans`, `going_plan_rows`), whose rows wait while the run waits.
+A change names the issue an earlier create of its plan makes as `"$N"`, `N` that create's index, as an argument's value or an item of an argument's list, so a split of an issue is one plan: the new issues, and the moves of its sub-issues under them (`dispatch_issue_update` with `parent` `"$0"` and `needs` `[0]`).
+The plan is refused where change `N` is no create of an issue (`dispatch_issue`) before the change, is not among its needs, or where `"$N"` names the item the change changes or sits inside an object; when the change runs, the server puts in the key the create's landing recorded, so its write, the read of its item before it and its undo name the issue itself, while the plan keeps the `"$N"` the person approved, which the page shows as the new issue's title and "(new)".
+The plan is refused too where a create of an issue (`dispatch_issue`) has a `spec` that is absent, empty or white space alone, on the line File as a new issue, whatever the person's mode, and in a run in Ask: the model is told to write a short spec from the person's words and propose the plan again (`goingNoSpec`).
+In Auto-review such a create is kept, as the create with no text but a title that Auto-review may let through.
+A comment, a suggestion or a document edit whose place a `dispatch://` reference gives (`ref`) is kept as the row of the change that names that place, the reference read as the server reads one (`text.ParseRef`): an issue's reference as the issue, a reference to an issue's document, its spec included, as the issue and the document, and one to a project's document as the project and the document, a suggestion given an issue alone going on its spec.
+A change the bar can never send as written is refused there, whatever the words, since none of it needs a read: a comment, a question or a message carrying picture files (`images`), a comment, a suggestion or a document edit whose `ref` names no place it goes (no reference, a block, an ask, a comment, a message, a component, a file of a conversation or a version of a document) or another place than the change names besides it, an upload of a file (`path`) or with no text, an update with a closing `reason` that does not mark the issue `done`, and a sync of a repository not written as `owner/name`.
+A picture list, a reference or a file path written empty names none, so it refuses nothing: the change is sent as it would be without it, since the bar sends none of the three on.
+The refusal says what the bar cannot send and what the person at the bar can do there - ask again for the words alone, naming the issue or the document, with the text to upload in the question, and so on - naming no tool, no argument, no `dispatch` command and no flag.
+`GET /api/v1/going/runs/{id}/plan` answers the run's latest plan to its person alone, each waiting row read again as them: the tool, the arguments, the rows it needs, the item, the fields and their value now, the claim, why it waits in every mode, and `changed` for a row whose item changed after the person saw it.
+A row that writes an issue's `priority` holds in its value now, beside `priority`, the `resolved_priority` and `priority_from` the same read of the issue answered: the priority the issue works at and the issue that comes from, which the plan card draws as every surface draws a priority ("P1 · from DEMO-1"), and which the plan call's answer gives the run too.
+Neither is a field the row writes: its Undo writes back the own `priority` alone, an earlier row of the plan that writes the issue's priority or parent leaves a later row of its priority the ones its answer says, and a change of them alone, the issue above it moving its priority, shows on the row once the plan is read again but makes no row wait again (`goingRowShown.same`).
+A row of an edit or a delete of a comment or an issue message (`dispatch_edit_comment`, `dispatch_delete_comment`, `dispatch_edit_message`, `dispatch_delete_message`) is a row of the post: its item is the post, its issue the post's, its one field `body`, and its value now `{author, body}`.
+A comment or issue message reference with a short id is resolved within its named issue or project document before the command bar reads the plan row or sends the write.
+The bar refuses a prefix that matches no post or more than one post.
+Reopening a comment by a bare prefix resolves it among the comments the caller can read.
+Once the post's author deletes it, the row's value now is the delete's mark, `{author, deleted_at, deleted_by}`, with no part of its body, and the row reads `deleted: true`, whatever its state, in every read of the plan (`maskDeletedPosts`).
+The plan call's answer gives the run no value now of such a row: the run is given a post's words only by its own reads, each of which records the post as the run's (below).
+A row of a deploy's record (`dispatch_deploy`) names no item: its label names the repository and the program, its fields are `commit` and `url`, and its value now is the program's current deploy, `{commit, url}`, as `GET /api/v1/deploys` reads it, null for a program with none.
+A row of a change of a project's proven-sessions setting (`dispatch_project_update`) names the project as its item, its field is `proven_sessions`, and its value now is `{proven_sessions}`, the setting as `GET /api/v1/projects` lists it; the call asks `on`, which sends the `PUT`, or `off`, which sends the `DELETE`.
+`POST .../plan/approve` takes each row's tick and edited values; an untick unticks each row that needs it, and a ticked row whose item no longer reads as the plan showed waits again with the new value.
+An approval that leaves out every waiting row is refused `400 GOING_PLAN_INPUT`, with nothing written: an approval approves at least one row, and a reject ends a plan with nothing done.
+A ticked row whose post its author deleted after the plan read it is refused `409 POST_DELETED`, with nothing written: the person unticks it to approve the rest.
+The approval moves the run's grant to the approving credential, a person's own sign-in or personal token holding the `approve` scope, and makes the run ready; the agent runs the approved rows in order, each as a call that names its row, and the server refuses every other write of the run (`WRITE_NOT_APPROVED`).
+Before a row's first write its item is read again: a row whose item changed since its approval waits again (`ROW_WAITS`), and so does a row Auto-review let through whose issue another writer routed to a session since, and a row whose needed row failed or was skipped is skipped (`ROW_SKIPPED`); each row keeps the call key that ran it, so a second try of that key answers what landed and sends nothing twice.
+A row's create of an issue that the near-copy gate refuses `409 POSSIBLE_DUPLICATE`, naming only issues that other creates of the same plan made, is sent again once with `force`, as one more request of the row's call: the person approved both creates, so the gate's question was already answered, and a second try of the call key answers the forced create's landing and sends nothing twice.
+A refusal that names any other issue stays the row's answer: the row fails with the gate's words and the issue it names, and each row that needs it is skipped (`ROW_SKIPPED`).
+`POST .../plan/revise` takes the person's words, which the run's next model call reads beside the plan's rows to propose another plan, and `POST .../plan/reject` ends the run done with nothing of the plan run.
+`GET` and `PUT /api/v1/me/going/settings` read and write `mode`, the person's own setting, which the server holds (`user_going_settings`) and which is `ask` until the person sets it: in Ask every row waits; in Auto-review one model call of the run reads the person's words and the rows and lets through the changes of fields, links and claims and the creates with no text but a title that the words ask for, and in both modes an approval or a review in the person's name, an answer to an ask, a kept decision, a check result, a deploy's record, a setting, a message or a broadcast, a change whose event the outbox would deliver to an agent session (`outbox.WouldDeliver`), judged for a change of an issue's route by the route it sets, since the outbox sends that change's own event to its new route, and a change of an issue a session claims wait for the person.
+An edit and a delete of a comment or an issue message change text, so each waits for the person in both modes.
+`POST /api/v1/going/runs/{id}/undo` undoes one run as the credential that sends it, its run's person alone: each call of the run that landed a request (`going_landings`, phase `do`, with the row of the run's plan it ran), newest first, in-process, by the undo its tool states (`api/going_undo.go`).
+`write_back` reads the item's value now and writes back the value the call found, field by field, only where the value now is the one the call left; a later value another writer left is kept and refused `409 GOING_UNDO_CHANGED`, naming what it holds and who changed that field after the call landed, and the rest is written back.
+An issue's fields are written back so: `PATCH /api/v1/issues/{key}` answers the issue as the update left it, with `previous` beside it: each field the update names as the issue held it when the update took its lock, as the issue's read answers it (`advances_revision` beside `advances`), and for a rank the place the issue held, `{rank, after, before}`, beside `rank_place`, the place the update left it in.
+An edit of a comment or an issue message is written back so: its `PATCH` route answers the body it replaced beside the post, `previous: {body}`, and the undo writes that body back through the same route while the post holds the body the edit left; a post its author deleted after the run is kept, named deleted and by whom, with no word of its body.
+Who changed it is read from what came after the call's own landing, never from the item's newest event: for an issue's field, the newest event after the `last_seq` the call's route answered it left whose `changed` names that field; for an ask's part, the newest `ask.edited` begun after the landing that changed that part; for a post's body, the newest `comment.edited` or `message.edited` begun after the landing; for a document, the writer of the version it is at now, where that version was written after the landing; for an issue the run created, the newest change of its `status` or `closed_at` after the create.
+Where no event after the landing names a writer, the undo says "another writer" and the field's `by` is absent, rather than naming who wrote a comment, a claim or another field since.
+For a kept deletion, issue move or document version, Undo can return `by` with no `now` value.
+`reverse` runs the call's reverse: a claim released, a release taken back, a follow unfollowed, a resolved thread reopened, an opened ask retracted, a suggestion of the run rejected while it is still open, and a project's proven-sessions setting turned back by the other route.
+`close_created` closes the issue the call created, with no message and no comment, only while its status is the one the create left it in; `not_undone` names the call "sent, not undone": a message, a broadcast, a review.
+A delete of a comment or an issue message is `not_undone` too, named "deleted, not undone": nothing restores a deleted post.
+A record of a deploy (`dispatch_deploy`) is `not_undone` too, named "recorded, not undone": no route removes a deploy's record.
+What a call found and left is read off what its route answered of its own transaction, recorded beside its landing (`previous`, `rank_place`, `previous_token`, `previous_claim`, `claim_changed`, `opened`, an issue's `last_seq`, and a project's `proven_sessions` with the `last_seq` of the event that recorded it), never off a read since, so a run whose process ended after a write landed is undone all the same; a call whose record says nothing of what it left, or holds a value that does not decode, is refused `409 GOING_UNDO_AFTER_UNREAD`, and a document edit whose approval holds no read of the document, a read of another version than the one the edit replaced, or a read that does not hold the document's content is refused `409 GOING_UNDO_BEFORE_UNREAD`, with nothing undone.
+A claim, a release and an approval request are undone by what their route answered they did: a claim of an issue the caller already held, a release of one nobody held and an approval request that renewed an ask already open are undone by nothing, and a release of another holder's claim is refused `409 GOING_UNDO_NOT_CALLERS_CLAIM` naming that holder, with nothing written, since the bar cannot claim for them.
+A change of a project's proven-sessions setting (`dispatch_project_update`) is undone by the other route, the `DELETE` for a change that turned it on and the `PUT` for one that turned it off, only while the project still holds the setting the change left and no `project.updated` event since has changed it, one that changed it back included: the route decides this under the project's lock (`goingCondition.ExpectProvenSessions`, `409 PROJECT_CHANGED`, nothing written).
+A setting another writer changed since is kept and refused `409 GOING_UNDO_CHANGED`, naming the setting it holds and who changed it, and the change stands.
+A write that found the setting as asked changed nothing: it appended no event and landed nothing, so the run holds nothing of it to undo.
+The `DELETE` needs the `person` scope: an Undo whose credential holds none is refused `403 OAUTH_SCOPE_REQUIRED`, which the line says as the route answered it, and the change stands for a later press.
+Every undo that puts a value back has the route it writes through decide, under the lock that write takes, that the item still holds what the run left: a claim is released only while the holder it left holds it, a release is taken back only while nobody holds the issue, an issue's fields and rank, an ask's text, a post's body and a document's content are written back only while each holds what the run left, a created issue is closed only while its status is the one the create left, a project's proven-sessions setting is turned back only while it holds the setting the run left and no event since has changed it, and a thread is reopened only while it holds the resolution the run left; a change another writer makes between the undo's read and its write is kept.
+A post's write back is refused `409 COMMENT_CHANGED` or `409 MESSAGE_CHANGED` where the post holds another body, and `409 POST_DELETED` where its author deleted it meanwhile; the undo keeps either.
+A document's write back names the token its read returned as the upload's `precondition`, the token `dispatch artifact --precondition-json` names, which the write checks under the document's locks, so a document another writer changed since that read is refused `409 PRECONDITION_FAILED`, and the undo keeps it.
+It names the document by its slug, which is unique within its owner and never changes, and the upload route also checks that the slug finds that same document by its id, so a document made since under that slug is refused `409 DOCUMENT_CHANGED` and left as it is.
+Each of these but the document's token is one of the bar's in-process conditions, which its in-process caller carries to the route on the request's context and never in a body, so no client can send one and no build can drop one: a request off the network naming `expect`, `expect_new`, `expect_holder`, `expect_unclaimed` or `expect_resolved_at` is answered as one that names nothing.
+A request of the undo is marked as a write back, and a route refuses a write back that carries no condition it decides `500 GOING_CONDITION_MISSING`, writing nothing; an edit with no mark, as a person's own, is made as before.
+An undo sends one request at the most, which lands in `going_landings` under the key of the call it undoes, phase `undo`, in its route's own transaction, with the line the undo answers: a second press, after a crash or beside the first, answers each call whose undo landed from that landing and sends nothing twice, and a request that committed and then answered 5xx is answered from its landing too.
+Whether an undo landed is read from that landing, never from the status its route answered: a request answered below 300 that committed nothing, as a follow of a session that follows the ask already answers 204, is answered ok with "the undo's route answered that it changed nothing - the item already stood as the undo asked - so there is nothing to undo", never as reversed.
+That answer is recorded as the call's undo landing in a statement of its own, marked `unchanged`, since the route's transaction recorded none, so a second press answers it from there and sends nothing again.
+So is an undo that keeps a change another writer made since the run, `409 GOING_UNDO_CHANGED` with nothing written, whether its read found the change and it sent nothing, or its route refused the request for it: a second press answers it as kept from that landing and sends nothing.
+A refused field says what became of it without naming the field, which the line holds beside it; the line's own outcome message names each field it speaks for.
+Undo is offered while History lists the run's conversation: until the conversation's newest run is seven days old, and a run past that answers `404 GOING_RUN_NOT_FOUND`.
+
+A run is a row of `going_runs` (`api/going_runs.go`, `api/going_run_stream.go`): its words and context chip, its level and mode, the line on top it was started from (`line`: `ask`, `do` or `file`, null for a follow-up typed in the box, the side panel's box or a Continue), its state, what it spent, its conversation (the id of the conversation's first run) and the run it follows up; what it changed is its landings.
+A run's read says whether Undo can still take back a change of it, `undoable`, decided as the undo itself decides it from each call's record, by one function (`goingUndoer.plan`): true while a call of it landed a change whose undo has not landed, whose tool's undo is not `not_undone`, whose last landed request is its own, not a close's reason sent before it, and whose record says what it found and left and that it changed something; false for a run that changed nothing, and for one whose only such calls are a claim its route answered `claim_changed` false, a create answered 200 for an issue Dispatch already held, an approval request that renewed an ask already open, or a call whose record cannot be read, of which Undo sends nothing.
+It also says when its Undo landed, `undone_at`, the newest undo landing of the run, null for a run never undone.
+It counts its changes by the same function, so a page says what Undo did and will do without inferring it from those two: `undoable_count`, the calls Undo can still take back now, a call whose undo's request failed among them; `undone_count`, the calls an Undo took back, one for each undo landing whose line is ok but those marked `unchanged`; and `standing_count`, the calls Undo tried and could not take back, so their change stands: a refusal from the record with nothing sent (`GOING_UNDO_AFTER_UNREAD`, `GOING_UNDO_BEFORE_UNREAD`, `GOING_UNDO_UNKNOWN`, `GOING_UNDO_UNSERVED`, `GOING_UNDO_NOT_CALLERS_CLAIM`, or a record it cannot use), and an undo landing whose line is not ok, a change kept as another writer changed it, whole or in some fields.
+A call that is sent, not undone by design (a message, a broadcast, a review, every write Dispatch does not undo), a delete of a comment or an issue message (deleted, not undone), a record of a deploy (recorded, not undone), a call that changed nothing, and one whose undo's request changed nothing, is in no count: the undo's lines already name the first three.
+All of these are read in the statement that reads the run, so History reads no more for each run it lists.
+Of the answer of an issue's update, create or claim, which carries the whole issue, and of an edit of a post, which carries the whole post, that statement reads only the members the decision reads (the item's key, `previous` and the fields it names, an edit's `body` among them, `rank_place`, `advances_revision`, a create's `title` and `status`, a claim's `claim_changed`, `claim` and `previous_claim`), so a page of History does not carry a whole issue or post for each call; every other answer is small and read whole.
+The short answer of a pause in typing writes no run: it is a going request with its events.
+`POST /api/v1/going/runs` starts a run as the request's own credential, a person's sign-in or personal agent token, and records its grant; a broker-issued token, the shared token and a service-account token are refused `403 RUN_NEEDS_PERSON_CREDENTIAL`, and a person with 20 runs queued `429 GOING_RUN_QUEUE_FULL`.
+A follow-up names the run it continues, which must be the caller's own, the newest of its conversation (`409 GOING_RUN_NOT_LATEST`) and ended (`409 GOING_RUN_NOT_ENDED`).
+`kind` `new_issue` starts the run of the bar's line File as a new issue (`api/going_new_issue.go`): a Fast run (`400 GOING_INPUT` for another level) whose one change is the create of an issue from the words, with the label and the route `GET /api/v1/settings/new-issue` answers, which the request that started the run approves, so it waits for nobody; its end frame names the issue (`issue`) and offers `undo`, and a run that filed nothing ends failed with `NEW_ISSUE_NOT_FILED` and why.
+`GET /api/v1/going/runs/{id}` reads a run and `POST .../stop` stops it, its person alone; every other caller is answered `404 GOING_RUN_NOT_FOUND`.
+`GET /api/v1/going/runs/{id}/events` streams the run's frames as server-sent events from the reader's `Last-Event-ID`, woken by `NOTIFY dispatch_going_run_events`, and ends once the run has ended and every frame is written; a stream with nothing to write for 5 minutes writes `keepalive` and ends.
+One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next `429 GOING_RUN_READERS_FULL`.
+`GET /api/v1/me/going-runs`, History, answers the caller's own conversations, each with its runs newest first, while the conversation's newest run is younger than seven days, with `?issue=` and `?q=`; the maintenance sweep deletes a conversation whole once its newest run is seven days old, and stops a run that works under no live lease longer than its working budget allows (`TIME_BUDGET`).
+`GET /api/v1/me/going-plans` answers the caller's runs whose plan waits for them, which the Inbox shows; each change of what it lists appends `going_plan.updated` `{login}`, which names no owner and wakes nobody.
+
+A run is withdrawn once a comment or an issue message whose words it was given is deleted, or its row is gone (R3 of `dispatch://INFRA-1523`, as the short answer is withdrawn by `going_request_posts`).
+Each answer a call of the run gets records, before the agent is given it, each post whose words it carries in `going_run_posts` (`api/going_run_posts.go`, migration `20261124130831_going_run_posts`): a post named anywhere in the answer or in the request's path, or a comment whose accepted suggestion named a version of a document the read names, whose words a string of the answer holds four in a row or holds alone; an id with none of a post's words records nothing.
+A follow-up's claim records as its own the posts of each earlier run whose turns it is handed, and hands on no turn of a withdrawn run.
+Every read reads the verdict as it reads the run, and the delete writes nothing of runs.
+The stream of a withdrawn run writes none of its frames and one `end` frame, `{state: stopped, reason: "ANSWER_WITHDRAWN: …", offers: []}`, under the id of the run's last end, and nothing to a reader at or past it.
+Its record and History read it `stopped` with that reason, its words kept; its plan gives no summary, no arguments and no value now (`withdrawn: true`); `GET /api/v1/me/going-plans` leaves it out; and an approval or a revision of its plan is refused `409 GOING_RUN_WITHDRAWN`.
+A withdrawn run that has not ended is stopped with that reason by its stream, its read, its plan's routes, its next call or its next claim, whichever comes first, so it stores nothing more.
+What it stored keeps its words, and its Undo still works.
+A run withdrawn by its own deletes alone is withdrawn with a reason of its own: each post recorded for it that no longer stands was deleted by a `dispatch_delete_comment` or `dispatch_delete_message` call of that same run, a landing of `DELETE` to the post's own path (`goingRunWithdrawerOf`).
+Its reason is `ANSWER_WITHDRAWN_BY_RUN: Dispatch withdrew this answer because this run deleted a comment or message it read.`, which its record and History read, and which a run that has not ended is stopped with, as above.
+Its stream writes its `plan` frames, which carry a plan's number and state and no word, then one `end` frame with that reason, and none of its other frames.
+Its plan reads as an ended run's, not withdrawn: its rows and what each write answered, each deleted post's value now its delete's mark with no body, and no summary, which the run's model wrote and which may quote the post.
+An approval or a revision of it is refused as of any ended run, `409 GOING_PLAN_NOT_WAITING`, and `GET /api/v1/me/going-plans` leaves it out.
+A run where any other writer deleted a post it read is withdrawn with `ANSWER_WITHDRAWN` as above, whatever its own deletes did.
+
+A run acts with its grant (`api/going_grant.go`, `going_run_grants`): whom the request that started the run, or that approved its plan, names and by what, with no secret.
+A sign-in is recorded by its sessions' generation and its cookie's expiry, a sign-in through IAP by its login alone, a personal agent token by its row, and the header identity of a test server or a local deployment by its login.
+Each call of the run is made as the person the grant resolves to at that call, checked against the store as it is then, as the person's own request would be: a sign-out, a sign-in past its expiry, a revoked token or one no longer its person's, and a person the deployment's membership no longer admits each refuse the call, and the run stops with that reason (`SESSION_ENDED`, `SIGN_IN_EXPIRED`, `TOKEN_REVOKED`, `MEMBERSHIP_ENDED`).
+IAP signs an assertion for each request and nobody keeps it, so an IAP grant lasts until the run's working budget ends, and an approval through IAP records it anew.
+A call under a token holds the scopes its row holds at that call, and a sign-in every person scope.
+Each change of a run records the person as its actor, with `act.agent` `command-bar` and `act.run` the run's id, so the item's history reads "<person>, through the command bar".
+
+A run's agent process (`envoy-dispatch agent`) makes every read and write of a run as a call to this server over a Unix socket (`going/agentwire`, `api/going_agent.go`): `agent.sock` in `$XDG_RUNTIME_DIR/dispatch-agent`, or in a directory of the process's own under the system's temporary directory where that is unset, each of mode 0700.
+Each call carries the 32-byte secret the server made when it started, compared in constant time; a call without it, or with another one, is refused `UNAUTHORIZED`.
+A run is a row of `going_runs`: a claim takes the oldest queued run, or a working one whose lease ran out, whose `shape` this build reads (it writes the highest it reads into `server_processes.going_run_shape`), under a fresh lease token for 30 s, with at most 3 runs working and 20 queued for one person.
+A renew extends the leases for 30 s and is answered after 10 s, or at once when the person stops a run of them; a claim waits up to 25 s; both are woken by `NOTIFY dispatch_going_runs`.
+The agent ends its waiting renew as a claim lands and renews again, naming the new lease too; the server logs at debug the answer that finds that renew's connection closed, and as a warning any other answer it cannot write.
+Every step, frames call, call and end carries the lease token, which the server checks in the transaction that writes it, so an owner whose lease ended writes nothing.
+The server runs at most 16 calls at once, each on a context of its own bounded at 60 s, keeps at most 1 MiB of an answer and marks the rest cut, and answers a route that panics `CALL_PANICKED` and serves on.
+A write runs only as an approved row of the run's plan (`WRITE_NOT_APPROVED` otherwise), and each request it sends in-process writes its `going_landings` row in the route's own transaction, keyed by the run, the step, the call and the request's number.
+A second try of a call answers each request that landed from its row and sends the rest.
+In this process a second try waits for a first try still running, at most 60 s, then answers from its rows or fails `CALL_UNKNOWN`.
+In another process it does not wait: it runs, its landing's insert waits on the first try's row at its commit, and once the first try commits its change rolls back and it answers from the first try's row.
+A message's or a comment's delivery recovery point goes into its landing's `recovery`, and the delivery sweep sends a landed message that has no delivery attempt.
+A GitHub read goes through the server's GitHub App, only for a repository Dispatch maps to a project the person can read; a web read goes only to an address in the person's words or in a tool result of the run, connects only to a public address, checked on each connection after the DNS answer and on each redirect, and stops at 1 MiB or 10 s, marked cut.
+At shutdown, after the HTTP drain, the server answers no claim a run, answers every waiting renew at once, closes the agent's standard input, so the agent exits within 1 s, waits for the calls in flight until 5 s before its stop grace ends, closes the socket, and kills an agent still running 2 s later.
+
+The server starts the agent itself (`cmd/dispatch/agent_supervisor.go`):
+its own binary as `envoy-dispatch agent`, with an environment of `DISPATCH_AGENT_SOCKET`, `DISPATCH_AGENT_SLOTS`, `GOMAXPROCS` (4 at the most), `GOMEMLIMIT`, the chat model's settings (`DISPATCH_ANSWERER` and the `DISPATCH_AZURE_CHAT_*` and Azure sign-in settings, or the `DISPATCH_CHAT_*` ones) and the server's own `SSL_CERT_FILE` where it sets one, and nothing else, the secret on its standard input, which stays open, and each of its threads under the `SCHED_IDLE` scheduling policy.
+Under it the kernel gives the agent a CPU only where no thread of the server's wants one and takes it back as soon as one wakes, where at nice 10 a woken server thread waited out the agent's slice (check c29 measured the server's threads waiting 224 ms in one second);
+the threads the agent's runtime makes later take the policy from the thread that makes them, and the server goes over the threads again until it finds every one under it, so none is made by a thread under another;
+where the kernel refuses `SCHED_IDLE` the threads run at nice 10 instead, and the server logs that once.
+The agent exits when its standard input closes, so it never outlives the server.
+After an exit the server starts it again 1 s later, then twice as long after each exit within a minute of its start, 30 s at the most, logging `the agent process exited; it starts again` with the wait.
+It reads the agent's `VmRSS` every 50 ms and kills it with SIGKILL above its ceiling, logging `agent killed for memory` with the memory at the kill, and kills an agent that has renewed nothing for 30 s (three renewals), which is how a SIGSTOP or a stuck runtime is found.
+Each exit frees at once the leases of the runs the agent held;
+a run it held alone counts one kill (`going_runs.kills`), and fails `AGENT_KILLED` at the third, and the runs it held beside others are claimed one at a time, each alone, until each saves a new step or ends.
+Two kills for memory within an hour that no run alone caused halve the agent's run slots, to 1 at the least, for an hour:
+a claim of an agent that holds its slots takes no run.
+The limits come from the container's memory limit L, read through automemlimit's reader (`memlimit.FromCgroup`:
+cgroup v2's `memory.max` or cgroup v1's `memory.limit_in_bytes`, `cmd/dispatch/memlimits.go`):
+the agent's ceiling is the smaller of 4 GiB and L/6, its `GOMEMLIMIT` 75% of that, and the server's own memory limit 90% of what L leaves after the ceiling, set at boot unless `GOMEMLIMIT` already sets one;
+with no limit the ceiling is 4 GiB and the server sets none.
+The socket's directory is `dispatch-agent` under `XDG_RUNTIME_DIR`, a row of the settings table that the server hands its API server, so the API package reads no environment.
+The agent works 8 runs at once.
+`DISPATCH_TEST_AGENT_CEILING`, under the test hooks, sets the ceiling in bytes for a test of the kill;
+`DISPATCH_TEST_AGENT_GOMEMLIMIT` the agent's `GOMEMLIMIT`, `DISPATCH_TEST_AGENT_SLOTS` its slots, `DISPATCH_TEST_AGENT_PROCS` its `GOMAXPROCS`, 1 to 4, in place of the CPUs the server gives it, `DISPATCH_TEST_AGENT_HOOKS=1` the agent's own test hooks (`going/agent/hooks.go`, among them `test_soft_limit`, a tool that works the agent at its soft limit until its run ends), a collection of the agent's heap at each `SIGUSR1`, which it logs as `agent: collection N found B bytes live and G goroutines` (`collectAgentOnSignal` in `cmd/dispatch/memory_hooks.go`), and its runtime figures as they stand at each `SIGUSR2`, with no collection, which it logs as `agent: runtime figures` and the values of `agentFigureNames` (`reportAgentFiguresOnSignal`), and `DISPATCH_TEST_AGENT_CALL_HOOK` rules, apart by `;`, on routes that panic in, or hold before their route answers or after it, every call the server runs for the agent.
+For the test of the memory group (Tests, below), `DISPATCH_TEST_AGENT_GROW_AFTER` makes the agent allocate as fast as it can, on as many goroutines as its `GOMAXPROCS`, from that long after each start until it is killed, and `DISPATCH_TEST_SERVER_HEAP` makes the server hold that many bytes on its heap from its boot (`cmd/dispatch/memory_hooks.go`).
+`DISPATCH_TEST_AGENT_NOW`, an RFC 3339 time, under the test hooks, is the time the agent's runs tell their model as the time now, in place of the clock's at each run's turn, and the time from which the agent writes each time it gives the model relative to now (`<field>_shown`, below);
+the server hands it on to its agent and reads it for nothing else, so its leases, timeouts and stored times stay on the clock.
+`cmd/going-eval` sets it to its seed's `now`, so the seed's times, written for that day, read as of that day.
+
+`/metrics` shows both processes: `envoy_dispatch_process_goroutines`, `envoy_dispatch_process_heap_live_bytes`, `envoy_dispatch_process_memory_total_bytes`, `envoy_dispatch_process_memory_limit_bytes` and `envoy_dispatch_process_start_time_seconds`, each with `process="server"` and `process="agent"` (the agent's runtime figures as its latest renew carried them, none before its first renew);
+`envoy_dispatch_cache_bytes` with `cache` `read`, `display_tree` and `list_answer`;
+`envoy_dispatch_going_runs` with `state` `working`, `queued` and `waiting`;
+and `envoy_dispatch_agent_slots`, `envoy_dispatch_agent_slots_in_use`, `envoy_dispatch_agent_stuck_goroutines` and `envoy_dispatch_agent_memory_kills`, the agent's kills for memory since the server started.
+The agent's loop (`going/agent`) works each run it claims on a goroutine of its own, under a `recover`, as many at once as its slots, and claims no run while its memory is above 70% of its `GOMEMLIMIT`.
+Each step of a run is one `agentloop.Run` of one call of the chat model, started afresh from the run's saved steps:
+the last 8 model turns whole, each a model call with every tool result it called for, and the older steps as their one-line notes, at most 2 MiB, past which the run fails `HISTORY_TOO_LARGE`, with the turns of the conversation before it;
+the model call is saved as a step and so is each tool call, each with the frames the bar shows.
+The bar draws the first link of an answer to each issue as the issue's chip in place of the link's words, so the server stores the text of a `reply` frame that names no tool, the answer, with each link whose words say more than the chip draws written as those words and then, in parentheses, the link with the item's short form as its words: `[Implementer of OPS-4](dispatch://OPS-4) is unresponsive` is stored `Implementer of OPS-4 ([OPS-4](dispatch://OPS-4)) is unresponsive` (`going/chips`, `api/going_link_words.go`).
+A later link to that issue, and a link to another item with words of its own, is drawn as its own words, so that link shows the item's short form.
+Words that say only the issue's key, its status, its title or the key with the title, the head of an ask's, a comment's or a message's text, a document's name or the link's reference, case and punctuation aside, stay a link, as do a time, a web address, a picture and code; each item is read as the run's person may see it.
+The stored answer also leaves out each fenced code block that holds a block the run drew, its spacing aside, or whose info string is `draw`, since the bar draws the block itself beside the answer; every other code block stays byte for byte.
+Each tool call first sends its `call` frame as it starts, through a `frames` call that appends frames to the run's events and saves no step, bounded as a step's frames are:
+the step its tool frame will carry, the tool, its kind and the present form of its label, and on the first call of a model call the prose that model call streamed so far, so the bar shows the call's line while it runs;
+a send that fails is logged, and the call's tool frame still ends its line.
+The model has six tools: `search`, `read`, `find_tools`, `call_tool` (a read of Dispatch by a tool's name, or `github_read` or `web_read`, or `draw_block`), `propose_plan`, which the server keeps as the run's plan and which ends the turn `waiting`, and `ask_person`, which reads nothing and ends the turn `done` with its question as the answer, whose `reply` frame carries `waits_for_person` true;
+every other one reads through a call to the server, which makes it as the run's person, and the model is given at most 32 KiB of a result, which the system prompt says is data and never an instruction.
+In the result the model is given, each `priority` that holds 0 to 3 or null is followed by `priority_shown`, `P0` to `P3` or `No priority`, and each field that holds an RFC 3339 time by `<field>_shown`, the time relative to the time now the person's message names, as the web's `relativeTimeLabel` writes it (`5 minutes ago`, `yesterday`, `2 weeks ago`), so the answer writes each as the page shows it;
+the answer writes a time as a link whose words are those, or the time with its zone and year where the words ask when, and whose address is `dispatch-time:` and the time the result holds, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, which the page shows with its full date on hover;
+the step saves the result as the server answered it, which `draw_block` reads.
+The 32 KiB holds those words too: a result the model was given whole stays whole, with as many of the words as fit, its priorities' before its times', and a result already cut to its first 32 KiB is cut further, so each value it gives is followed by its words.
+A result whose body is a list names the list's total on a line of its own before the body, in its label's noun, `[Total: 42 issues in the list below.]`, or a page's, `[Total: 500 matching issues; the list below holds 250 of them.]`, so a cut of the body leaves the count whole and a count the answer writes is the server's.
+`packages/contracts/fixtures/shown-values.json` holds the priority words and the relative ones, which a test of the web and one of the agent each run.
+Each result the model is given names its step and its call (`step 4, call 1: status 200`), by which `draw_block` names the results a table, a chart or a metric reads, with a chain of `filter`, `group`, `count`, `sum`, `mean`, `min`, `max` and `sort` over their rows (`going/transform.go`).
+The agent sends it as a block call, and the server reads those saved steps, runs the chain and answers the block it drew, which the step shows as its `block` frame, so every number in it is the server's;
+it refuses `BLOCK_REFUSED`, saying why, a spec that holds a number other than a step's step and call and a filter's value, which picks rows and is never drawn, a result cut at 1 MiB or saved only as the 32 KiB the model was given, and a list read whose named pages do not reach its last.
+A chart that names no `x` or `y` draws the column of its chain's group and the one column its count, sum, mean, min or max writes, a table that names no `columns` draws its chain's columns in their order, and a spec whose chain leaves one of them open is refused naming the columns its chain makes;
+a group by a field no row holds, such as `priority_shown`, is refused naming the field the rows hold, and a chart of one point is told to draw a metric or a chart over more values.
+In Auto-review the agent then makes one model call that names, with `review_plan`, the rows the person's words ask for, saved as a step of kind `review`;
+the server lets through those its mode policy lets through.
+A run the person's approval made ready runs its approved rows before its next model call, each as a call that names its row, saved as a tool step;
+the person's answer is a step of kind `person` the server saves, and the model reads it and each row's result as the person's next message.
+The levels bound a run: Fast 6 model calls, 90 s of working time and 1,000 output tokens a call at low effort;
+Standard 24, 5 min, 2,500, medium; Deep 80, 20 min, 5,000, high (`going/agent/levels.go`); time a run waits for its person counts against none.
+The output bound is a call's `max_tokens`, which bounds its completion tokens alone: the model's reasoning is not cut at it.
+At a bound the run ends `stopped` with `CALL_BUDGET`, `TIME_BUDGET` or `OUTPUT_TOKEN_BUDGET` and offers Continue:
+its end frame (`going_run_events`, name `end`) carries `offers: ["continue"]`.
+A `TIME_BUDGET` reason of a run whose pacer held its model calls for more than half its working time says so, `…, and the model was busy for 52s of it; …`, which the bar shows.
+A run's `budget_used` also says where its time went, and bounds nothing:
+`model_ms`, what its model calls took, each from its request to its last token;
+`pace_ms`, how much of that the agent's pacer held the calls before they were sent;
+`tool_ms`, what its tool calls took; and `queued_ms`, how long it waited in the queue, which its first claim writes and a later claim keeps.
+Each `reply` frame carries its model call's `model_ms`, `pace_ms` (none where the pacer held nothing;
+`model_ms - pace_ms` is the provider's own time), `first_token_ms` (none for a reply of tool calls alone), `input_tokens`, `output_tokens` (every token the provider generated for the reply, its reasoning among them, whether the provider counts the reasoning among `completion_tokens` or apart from them), `reasoning_tokens` (of the output tokens, those that were reasoning), `reserved_tokens` (the pacer's estimate of the call, a quarter of the characters of its prompt and of its tool definitions, and its level's output tokens and reasoning tokens, Fast 353, Standard 865, Deep 1,967, summed over its HTTP attempts, counted where no quota is set too) and `charged_tokens` (what the pacer charged the call in the end:
+what it drew for it, or the tokens the call spent where they are more), and each `tool` frame its call's `ms`.
+A reply in prose that would end a turn with no plan is first checked by one more call of the chat model, which holds back a reply that says a change was made or leaves out a change the words ask for (`going/agent/noplan.go`);
+a new-issue run's prose is held back with no check.
+A turn of a run started from the line Ask, or from no line, whose words the decision model Jev reads as Ask makes no check, since its words ask for no change:
+as the turn of the run's words starts, the agent makes a `line` call (`agentwire.KindLine`) beside its first model call, so it adds no wait, and the server puts the run's words and page to Jev as the bar's own decision does and answers the line Jev's choice gives (`api/going_agent_line.go`).
+A claim names the run's `line` and whether the server names a decision model (`decider`); with none, the agent asks Jev nothing.
+A turn of a run started from Do or File, a turn the person's answer to a plan started, and a turn whose line call failed, answered no line or had not answered when the reply came are checked; a line call that fails is logged once and never fails the run.
+A `reply` frame of prose that the check judged, held back or not, also carries `check_ms`, what that check's model call took, which the run's working time counts and its model time does not, and `check_tokens`, the tokens the check spent, its prompt's and its reply's;
+one whose check Jev's Ask skipped carries `check_skipped: "jev_read_ask"` and neither;
+and each that the guard decided on where it asked Jev carries `jev_line`, what Jev read the words as when it decided: `ask`, `do`, `file`, `none` for no line, or `late` for a line call still out.
+Every other `reply` frame carries none of them.
+A model call's response is read up to 8 MiB and its reply up to 512 KiB, past which the run fails `MODEL_REPLY_TOO_LARGE`;
+a 429 is tried again after the time it names, and each 429 is logged at WARN, `agentloop: the model service answered 429, its rate limit`, with the deployment, the attempt, the wait before the retry and whether the call is made again, by the agent and by the server's short answers alike;
+the agent paces its calls to 75% of `DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE`, and charges that share the tokens a call spent past its estimate as the call ends, which the next calls wait out.
+A grant that ended stops the run with its reason; a membership the sign-in issuer could not confirm is waited on and the call made again.
+A Stop answers the agent's waiting renew at once, and the agent cancels the run's context, a model stream in flight included.
+A watchdog gives up a step that runs past its model call's time and 10 s:
+the run's lease is renewed no more and its slot is free, and its goroutine counts stuck; at 3 the agent exits and the server starts it again.
+A server that names no chat model has an agent that ends each run it claims `failed` with `NO_MODEL`.
 
 ## Keyed writes
 
@@ -5052,6 +5309,7 @@ Neither send route takes a body `idempotency_key` any more.
 A status change (`POST /api/v1/issues/{key}/status-change`) keeps a recovery point beside its key as well (Routes, below).
 A repeat of one that finished answers its `200` from the point, with each entry's `issue`, and the answer's `issue`, as its step's write answered it.
 A repeat that claims the key of one that stopped before it marked the point finished runs only the writes that the point does not hold, and its `changed` lists the point's entries first.
+A command-bar run's Undo (`POST /api/v1/going/runs/{id}/undo`) keeps a recovery point too, the run it walks, bound before the walk sends anything: a walk commits as it goes and is idempotent by its landings, so a repeat under the key, however the first press ended, walks the run again as the key's person and answers its lines under `200`, finishing what a press whose process ended mid-walk left, where it would otherwise be told `409 KEY_COMMITTED`.
 
 A delivery a dead process left owed is made whether anyone asks again or not.
 Every write that delivers to sessions claims each attempt before its send and settles it after, on a context its client's cancellation does not reach.
@@ -5466,6 +5724,11 @@ the docs site's HTTP API reference is generated from it.
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
 Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it), holding one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`).
+A route that only the Legion daemon writes says so in its declaration (`routeDecl.DaemonWrites`): the step record writes (`PUT /api/v1/issues/{key}/steps/{id}`, its `/rating` and its `/experiment`), the plan write (`PUT /api/v1/issues/{key}/plans/{id}`) and the role-holder publication (`PUT /api/v1/issues/{key}/role-holders`, below).
+`Register` mounts each behind the daemon's gate, around its handler alone (`refuseNonDaemon`, `internal/dispatch/api/daemon_writes.go`): it reads the body's `actor` and the caller as the handler reads them, and answers every write that names no Legion daemon's session `403` with the route's code, `STEP_WRITER` or `ROLE_HOLDER_FORBIDDEN`, before the handler does anything with the write, with the status and the code the handler's own check answered before.
+The daemon is told apart by the session its write names, so a bearer that proves no session of its own and names the daemon's session in its body passes, as each route's description says, except on the role-holder publication with `DISPATCH_LEGION_STATUS_SCOPE` on, which passes only a credential that holds `legion-status`.
+The design-gate and gated-step publications (`PUT /api/v1/issues/{key}/design-gates`, `PUT /api/v1/projects/{key}/gated-steps`) state none: their declarations name the deployment's daemon as their one writer, and the server refuses no other caller of them.
+The command bar has a tool for none of the seven, and its inventory (`TestEveryPersonRouteHasATool`) takes a route left out as the daemon's only where its declaration states the gate, or where it is one of those two publications, left out as a route whose other callers the server does not refuse.
 A branch made before routes moved into files adopts that layout in its merge of main with the adopter, run from `packages/envoy` of a checkout that holds it, with the branch's worktree on a clean tree:
 
 ```sh
@@ -5834,11 +6097,13 @@ Each item below names a path with its method and identity, then its purpose.
   An Ask row's id, a row id of neither shape and an id that is not a uuid are each `400 INVALID_QUERY`.
   Answers `{dismissed}`, how many threads it changed; a request that changes nothing answers 0 and appends no event.
 
-- `/api/v1/agents` (GET; cookie, trusted header, or bearer)
+- `/api/v1/agents?limit=` (GET; cookie, trusted header, or bearer)
 
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
+  `limit`, a whole number of 1 or more (else `400 INVALID_QUERY`), lists that many of the newest seen sessions alone and reads the open asks and last activity of those alone; the command bar's roster read (`read_roster`) sends 50, so a run's read of a roster of any size loads no more rows than it answers.
+  Without it every session is listed.
 
 - `/api/v1/agents/known?id=&id=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -5895,6 +6160,8 @@ Each item below names a path with its method and identity, then its purpose.
   A write that finds the setting as it asks changes nothing and appends no event; a change appends `project.updated`, with the project row and its writer.
   The answer is the project as `GET /api/v1/projects` lists it.
   `dispatch project-update --project <KEY> --proven-sessions on|off` sends the `PUT` or the `DELETE`.
+  The command bar offers the setting as a row of a plan (`dispatch_project_update`), which waits for the person in every mode, and its Undo sends the other route.
+  Undo makes that write conditional by an in-process condition on the request's context, never a body member: the project must hold the setting the change left, and no `project.updated` event after that change may have changed it, else `409 PROJECT_CHANGED`, nothing written; a write back that carries no such condition is `500 GOING_CONDITION_MISSING`, nothing written.
   Only the project's roll-out issue turns it on, once the project's daemon and pods write with tokens of their own: turned on before that, it stops every architect write and every role-holder publication on the shared token until a person turns it off, which costs time and loses no data.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
@@ -5976,10 +6243,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
 
-  What the dashboard's search bar files a person's typed words as when those words match nothing it found:
-  `{label, session}`, the label that new issue carries and the session it is routed to and its first message goes to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
-  Each is `""` where the deployment set none: the issue then carries no label, and the bar makes it and starts no conversation on it.
-  The bar writes the issue itself, through `POST /api/v1/issues` and the issue's own artifact, patch and message routes, so this read is all the configuration adds to the API.
+  What the command bar files a person's words as a new issue with:
+  `{label, session}`, the label that new issue carries and the session it is routed to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
+  Each is `""` where the deployment set none: the issue then carries no label, and takes no route.
+  Two readers file with it.
+  Enter on the bar's File as a new issue starts a new_issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`.
+  Where no deciding model is configured, the bar's New issue group writes the issue itself: `POST /api/v1/issues` with the label, `POST /api/v1/issues/{key}/artifacts` with its Verification document, and `PATCH /api/v1/issues/{key}` with the route `session:<id>`.
+  Neither posts a message on the issue, and neither sends the session a first message, since a message to an agent is a change of a plan the person approves.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -6073,7 +6343,7 @@ Each item below names a path with its method and identity, then its purpose.
     `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
     a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
-  - Summaries contain `key`, `title`, `status`, `priority`, `resolved_priority`, `priority_from`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
+  - Summaries contain `key`, `project` (the key of the project the issue belongs to), `title`, `status`, `priority`, `resolved_priority`, `priority_from`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:
     that copy is at most 5 s old, one listener call refreshes it for every read that asks while it runs, and a listener that fails or does not answer within 2 s is asked again only after 5 s, every read in that window reading `unknown` at once.
     The status is `live` (a live session holds the role, or the session is live;
@@ -6097,6 +6367,7 @@ Each item below names a path with its method and identity, then its purpose.
   every match ranked on one list across the kinds by one score (above), with `<mark>` snippets and SPA `href`s.
   One page `{results, total, reachable, limit, offset, took_ms}`:
   `limit` 1–50 (default 20), `offset` 0 or more (default 0), `total` every match, `reachable` the hits the pages can return (each leg's best 100).
+  A hit an issue owns (the issue itself, or its document, comment, ask or message) carries the issue's project in `owner.project`, as a project document's hit carries the document's.
   `kind` is repeated once per kind wanted (`issue`, `document`, `comment`, `ask`, `message`) and ranks, counts and pages those kinds alone; with none named every kind is searched, and it is declared on the results route below ([Search](#search)).
   Every `ask` hit carries `ask`, where the ask stands when the search ran:
   `{state: "open"}`, `{state: "answered", answer}` with its latest answer, or `{state: "resolved", resolution, answer?}` with the last answer it had, absent when nobody answered;
@@ -6144,12 +6415,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: every tool spec that writes but two, of the specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`); the route's own description carries both counts, read from what the build holds.
-  The two it leaves out are `dispatch_review` and `dispatch_project_update`, on purpose: a review records an approval or a changes request in a person's name, `dispatch_project_update` turns a check of a project on or off (its proven-sessions setting), and the loop that proposes operations on the graph must never propose either.
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the dispatch tools that write, of the specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`); the route's own description carries the counts, read from what the build holds.
+  `dispatch_review` is not among them, on purpose: a review records an approval or a changes request in a person's name, and the decision call that chooses from this catalogue never names one; a command-bar run proposes a review only as a row of its plan, which waits for the person in every mode.
+  Nor is `dispatch_project_update`, which turns a check of a project on or off (its proven-sessions setting), and the decision call that chooses from this catalogue never names it; a command-bar run proposes it only as a row of its plan, which waits for the person in every mode.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   The catalogue is under the count where a model's choice falls apart, so it is read whole: it takes no query and serves no page.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route and the two routes of the proven-sessions setting are kept out on purpose.
+  A write no catalogue action performs is named by the catalogue's own test instead, and the review route is kept out on purpose; a command-bar run's tools are another set, one for each route a person can use (`api/going_tools.go`).
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -6252,24 +6524,31 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, which may be any repository at all:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  `route` is the new issue's route, held to `PATCH /api/v1/issues/{key}`'s rule for a route.
   `parent` may be an issue of any project: `400 PARENT_INPUT` when no such issue exists, and `409 PARENT_INPUT` when the new issue would sit more than 32 links below its root, counting the links in every project.
   A credential that names one project gets the same `400 PARENT_INPUT` for a parent of a private project that it does not name, with the message of a parent that does not exist.
   A parent of another project passes on no repository, components, `legion` label or assignee:
   `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
-  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
-  External references skip the check.
-  A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
-  A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
-  A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
-  one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
-  so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
-  A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
-  With `DISPATCH_PARENT_STATUS_RULE` on, a create under a `done` parent is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, with `issues` naming the parent (`POST /api/v1/issues/{key}/status-change`, below).
-  A create under a parent and a close of that parent at the same moment never both go through: the one that reaches the parent's row second is refused.
-  When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
-  A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
+  A create the route made answers `201`; one naming an external reference Dispatch already holds an issue for answers that issue `200` and makes nothing, which is how a caller (the CLI's "already holds", the command bar's `unchanged` write) tells the two apart.
+
+  - The route refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+    a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+    External references skip the check.
+    A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
+
+  - A create that names `external`, an import of a GitHub issue, names its `project` too: one with no `project`, or an empty one, is `400 INVALID_ISSUE` (`project is required when external is set`), and it writes nothing.
+
+  - A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
+    one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
+    so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
+    A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
+
+  - With `DISPATCH_PARENT_STATUS_RULE` on, a create under a `done` parent is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, with `issues` naming the parent (`POST /api/v1/issues/{key}/status-change`, below).
+    A create under a parent and a close of that parent at the same moment never both go through: the one that reaches the parent's row second is refused.
+
+  - When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+    A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
 
   - A priority of `0` needs the `p0` scope: without it the create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
     A new issue with no priority of its own takes the priority its parent reads (`resolved_priority`), so a create with no priority under a parent that reads P0 needs `p0` too, unless the writer's session is the parent's architect (`refuseNewChildP0WithoutScope` in `internal/dispatch/api/p0_scope.go`).
@@ -6316,6 +6595,7 @@ Each item below names a path with its method and identity, then its purpose.
     The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
     A status the issue already has changes no pair, so it is not judged.
     The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
+  The answer is the issue, with `previous` and `rank_place` beside it (Undo, above, reads them).
 
   - `refuse_open_foreign_children: true`, beside a `status` of `retro` or `done`, asks for the check of an acceptance write, which the Legion daemon's `sign_off` and `close_root` send.
     While the issue has a child of another project in any status but `done` and `icebox`, the write is `409 FOREIGN_CHILD_OPEN` `{code, error, issues}`, each entry of `issues` `{key, project, status}`, in key order.
@@ -6335,30 +6615,31 @@ Each item below names a path with its method and identity, then its purpose.
     Only these checks judge a move out of every tree Legion runs.
     The `parent` write that takes the issue out of Legion, above, is a write of `parent: null`.
 
-  A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
-  decision blocks in its documents, plain asks and requests to approve one of its documents.
-  Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
-  its block is written `state="resolved"` in the live document.
-  The document's next settlement saves that write, and it writes a version when its rendering differs from the latest version.
-  That settlement runs while the issue is closed too, but it opens no ask and wakes nobody:
-  it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
-  An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
-  An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
-  A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
+  - A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
+    decision blocks in its documents, plain asks and requests to approve one of its documents.
+    Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
+    its block is written `state="resolved"` in the live document.
+    The document's next settlement saves that write, and it writes a version when its rendering differs from the latest version.
+    That settlement runs while the issue is closed too, but it opens no ask and wakes nobody:
+    it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
+    An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
+    An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
 
-  - The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
-    it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
-    Dispatch judges the request at the versions that it names when the reopen ends.
-    A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
-    The request then waits on its agent.
-    Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
-    A named version and an upload of the same text leave the request with its agent.
-    And Dispatch refuses a person's approval of a version that breaks the form.
-    The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
+  - A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
 
-  The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
-  For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
-  A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
+    - The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
+      it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
+      Dispatch judges the request at the versions that it names when the reopen ends.
+      A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
+      The request then waits on its agent.
+      Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
+      A named version and an upload of the same text leave the request with its agent.
+      And Dispatch refuses a person's approval of a version that breaks the form.
+      The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
+
+    The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
+    For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
+    A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
 
 - `/api/v1/issues/{key}/status-change` (POST; cookie, trusted header, or bearer)
 
@@ -7089,6 +7370,9 @@ Each item below names a path with its method and identity, then its purpose.
   Any other file's kind is read from its bytes, never from the part's declared `Content-Type`:
   it is `image` only when its bytes are a PNG, JPEG, GIF or WebP, stored with `mime` the type its bytes are (a JPEG declared `image/png` is `image/jpeg`), and otherwise a `file` under its declared type, an SVG among them, so no client stores other bytes as an image.
   An upload's name finds the issue's artifact whose name or slug it is, so a name that is an artifact's slug (`plan-md` for `plan.md`) is that artifact's next version, never a second artifact the same reference would also name.
+  The command bar's in-process caller makes an upload a create alone, or conditional on the document its read found, by a condition it carries on the request's context and never in the body: a create alone where the issue holds an artifact the name finds when the upload takes the owner's lock is `409 DOCUMENT_EXISTS`, and an undo's write back where the name no longer finds the document its read found `409 DOCUMENT_CHANGED`, each with nothing written.
+  The write back names the token that read returned as its `precondition`, as any upload does.
+  A body naming `expect_new`, from any client, is answered as one that does not name it.
 
   - A document an issue first holds under `verification.md`, `plan.md` or `decisions.md` carries that role (`artifacts.role`, `verification`, `plan` or `decisions`), which the row keeps for good:
     a later upload of the same name is that document's next version, and no upload moves a role.
@@ -7116,7 +7400,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts` (GET, POST; cookie, trusted header, or bearer)
 
-  List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are.
+  List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are, the command bar's conditions holding as they do there.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
@@ -7213,7 +7497,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
-  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
+  It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting), and `opened`, true only where this request opened the ask it answers.
   Two parts of the route have items of their own:
 
   - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
@@ -7703,6 +7987,8 @@ every signed-in caller's event feed on the live socket replays it, so it names n
 a mark-all (`POST /api/v1/me/inbox/read`) and a dismissal (`POST /api/v1/me/inbox/dismiss`) each name none, since one event per project stands for every thread they changed there.
 `priority.updated` is each priority write's (`POST /api/v1/priorities`, `PATCH` and `DELETE /api/v1/priorities/{id}`), and carries exactly `{id, change}`, `change` being `created`, `updated` or `deleted`:
 a priority belongs to no project, so the event names no owner (`issue_key` null, `project` empty, `seq` 0), wakes nobody, and is published on no NATS subject; a reader refetches its priorities on every write, and on a delete also the work under that priority, the work under none and every issue read or listing whose rows advance it.
+`going_plan.updated` carries exactly `{login}`: what that person's command-bar plans wait on changed - a run's plan began to wait for them, or a waiting plan was answered or stopped.
+A run belongs to no project, so the event names no owner (`issue_key` null, `project` empty, `seq` 0), wakes nobody, and is published on no NATS subject; the person's pages read their Inbox's plans and History again.
 `references_changed` names the targets whose inbound edges the write moved that a reader refreshes by name: an issue (`{kind:
 "issue", id}`), an ask (`{kind: "ask", id, issue_key?, artifact_id?}`, with the issue or document whose ask list holds its row) and a document or file (`{kind: "artifact", id, ref}`:
 its uuid, the node id `GET /api/v1/references` reports for it, and the `dispatch://` address its Referenced by panel is opened on, `ref` absent when its owner names no address), and a block of a document (`{kind: "block", id, ref, artifact_id}`:
@@ -8026,8 +8312,49 @@ go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memo
 go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
 bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
 bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
+bash scripts/build-dispatch-build.sh --commit 6c46f6bb7dd6a1ac9b6235fb3bce990ec82eae86 --out "$TMPDIR/dispatch-going-release"
 DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
+  DISPATCH_GOING_RELEASE_BUILD="$TMPDIR/dispatch-going-release" \
   go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
 ```
 
-"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
+"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build and the command bar's release.
+
+`TestTheServerEndsTheAgentBeforeTheKernel` (`agent_memory_group_test.go`) skips, naming why, unless `DISPATCH_TEST_MEMORY_GROUP=1`, which its CI job sets on an amd64 runner with control groups v2 and Docker.
+It runs the server, built for linux/amd64, in a Docker container whose memory limit is 8 GiB with swap off, on `--network host` against `DISPATCH_TEST_DATABASE_URL`; `DISPATCH_TEST_MEMORY_GROUP_IMAGE` names another image than its default, the copy of `debian:bookworm-slim` in `.github/ci-images.yaml`.
+It measures the agent's fastest growth in 50 ms, holds the server's heap so that the container keeps twice that growth beside a server and an agent at its ceiling, and requires the server's kill of the agent before the kernel's: the container's `memory.events` counts no `oom_kill`, and the server keeps its process id.
+
+`TestTheC28MethodFindsAPlantedLeak` (`memory_leaks_test.go`) runs the comparison of production's heap on a server that leaks on purpose, from two sets of `/debug/pprof/heap?gc=1` and `/debug/vars` read from its profiler (Profiling, above).
+The comparison holds the heap outside the rooms (samples with a `reearth/ygo` frame) and the read cache (a `coldRead` frame) to 2 MB an hour, and the rooms' part divided by `resident_bytes` under twice its value at the first set.
+With `DISPATCH_TEST_KEEP_CLOSED_ROOMS=1` the server keeps a copy of the document of each room a document socket leaves, and the rooms' ratio passes twice its first value;
+with `DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=1` it stores 1 MB for each request in a map nothing prunes, and the heap outside grows past its bound, with the hook's function among the five whose flat heap grew most.
+Both hooks are refused without `DISPATCH_TEST_HOOKS=1` (`testHookBool` in `main.go`).
+`TestTheLeaksOfC28AreFixed` holds a subtest for each leak that comparison named in production, and says it holds none while it named none.
+
+`TestBackgroundRunsHoldNoMemory` (`agent_soak_test.go`, under the `multiprocess` tag with the other tests of the agent process, `agent_loop_test.go` and `agent_supervisor_test.go`, which CI's `dispatch-multiprocess` job runs) works 1,000 runs through a server's own agent after 100 more fill the caches - answers, searches, reads of a spec of 1 MiB, approved plans, follow-ups, runs their person stops, runs stopped at a bound of their level, runs that lose their lease and runs whose tool panics - and holds the agent's live heap, read from its collection at a `SIGUSR1`, to less than 1 KiB of growth for each run, and its goroutines to their count at the start; it then leaves 1,000 plans waiting and holds the agent to no goroutine more and both processes to less than 1 KiB for each, the server's live heap read from `/metrics` just after `/debug/pprof/heap?gc=1` made it collect.
+`goleak` (`go.uber.org/goleak`) fails `going/agent`, `going/agentwire` and `internal/dispatch/api` at the end of their run when a test left a goroutine behind (`TestMain` in each).
+
+Two tests of `agent_load_test.go` build under the `memory` tag.
+`TestTheServerHeapUnderEightDeepRuns` seeds an Envoy listener of 200,000 sessions, a project of 5,000 issues, an issue of 1,000 comments and a spec of 1 MiB for each run, fills the read cache to its budget, and measures one Deep run at its limits:
+the most the agent's total Go memory rises while it works is one run's peak, and the claim gate (70% of the agent's `GOMEMLIMIT`) less the agent's base, divided by that peak, 8 at the most, must be the agent's slots (`agentSlots` in `memlimits.go`).
+Then 8 Deep runs at once fill every cache the runs fill, and 8 more read the issue listing, search, the roster, an issue's events and their spec, and edit it:
+the server's live heap outside the document rooms (samples with a `reearth/ygo` or a room frame of `internal/dispatch/docs`) stays under 1 GiB above its level at rest before them and comes back to within 5% of it at rest after them, and the agent's total Go memory stays under its `GOMEMLIMIT`.
+At rest is once the rooms have closed and the database owes the server no settlement, block index or re-index;
+the test logs the three caches' bytes at each end and the five functions whose flat heap outside the rooms grew most between them.
+`TestTheAgentLeavesTheServerItsCPU` holds the p99 of one fixed read under twice its p99 with the agent idle, every `/livez` under 1 s, and every thread of the agent under `SCHED_IDLE` (each thread's policy in its `/proc/<pid>/task/<tid>/stat`), while the agent works at its soft limit of 1 GiB through `test_soft_limit`, which allocates without pause beside a live heap it sizes after each collection so the memory the agent's runtime counts against its limit peaks at the limit, holding at most half the limit so each collection ends within a second (at about 80% held, a collection on the agent's one CPU outlasted a second).
+Each window, idle and at the load alike, times the read at least 500 times and for at least a second (`cpuWindowLeast`), so it holds collections of the agent at its soft limit:
+on a GKE node of 4 CPUs the hook refilled the heap in about 300 ms while 500 reads took 236 to 288 ms.
+The p99 is over all the reads of the window, and the log says which of how many reads it is.
+The idle window is one.
+At the soft limit the test times up to 3 windows in turn (`cpuAtLimitWindows`) and judges the first in which the agent's threads ran at least 80% of its CPUs (`cpuAtLimitShare`), it used 90% to 110% of its limit at the window's start and end, and its collector completed a collection;
+on a shared build node the agent at `SCHED_IDLE` once had 31 to 37% of its CPU in a second, and a mark the GC CPU limiter capped did not end in it, while the windows beside it were judged.
+It logs every window, judged or not, with its p99 against the idle one, the agent's CPU share and runtime figures, and why it was or was not judged, and fails with all of them where none of the 3 is judged, since such a window says nothing of an agent at work at its soft limit.
+The agent runs there with production's share of the runner's CPUs, a quarter of them and 1 at the least (`DISPATCH_TEST_AGENT_PROCS`), as production gives it 4 of a container's 16, since the 4 a server gives its agent are every CPU of a 4-CPU runner;
+the test logs the CPUs it runs on, the kernel, the agent's `GOMAXPROCS` and its threads by policy, the p50, p90 and p99 of the read and of a round trip to the database, idle and at the load, what each window's 8 slowest reads met, and the CPU time the agent's threads had in the window at its soft limit, which shows whether a run beside a busy server would spend its time budget waiting for a CPU.
+It skips on a kernel built with lazy preemption (`CONFIG_PREEMPT_LAZY=y`), such as the 7.0 kernel of GitHub's arm64 runners, where the read's p99 at the load was 2.0 to 2.6 times its idle p99 in five runs, the server's threads waiting 136 to 250 ms to run beside the agent at `SCHED_IDLE`, while on a GKE node of the 6.12 line production runs it was 1.00 and 1.06 times;
+so check c29 runs it as a Job in the cluster's `builds` namespace on a `build-nosandbox` node of its own (no gVisor, 4 CPUs), `-tags memory -count=3 -run '^TestTheAgentLeavesTheServerItsCPU$' ./cmd/dispatch`, and its record names the node, the kernel and the agent's share of its CPU in each judged run.
+The Job takes the node to itself with a `nodeSelector` and a matching `NoSchedule` toleration on a `group` label of its own, for which GKE Autopilot makes a tainted node no other workload shares.
+On a shared node, other pods' CPU left every process of the test's pod waiting to run, the agent included, and the read's p99 at 2.19 and 2.18 times idle: on 2026-11-22 two other jobs used 5.8 to 6.3 cores of a 16-vCPU node, and the server's threads waited 84 and 259 ms to run in a second, the agent's 85 and 111 ms.
+On a node of its own the p99 was 1.09 to 1.13 times idle, the server's threads waiting 4 to 31 ms.
+`TestTheAgentRunsUnderSchedIdle` (`agent_environment_test.go`, untagged) holds the setter to every thread of an agent process:
+`SCHED_IDLE`, or nice 10 where the kernel refuses it.

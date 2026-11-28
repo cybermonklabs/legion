@@ -127,6 +127,10 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
+// codePostDeleted is the code of the refusal deletedPostError writes, which the command bar's undo
+// of an edit reads as the post deleted since its read (goingUndoer.postBody).
+const codePostDeleted = "POST_DELETED"
+
 // closedByClient reports whether err failed the request w answers because the request's own
 // client closed it before the answer (a page that navigated away, a search the bar replaced), and
 // when it did, gives the request's line status 499 (accesslog.MarkClosedByClient) and logs the
@@ -155,7 +159,7 @@ func closedByClient(w http.ResponseWriter, err error) bool {
 // comment is deleted"). A deleted post keeps its row and its place, so a write that moves no
 // text - a resolve, a reopen - takes it and meets this refusal nowhere.
 func deletedPostError(kind refs.ItemKind) *apiError {
-	return errorf(http.StatusConflict, "POST_DELETED", "this %s is deleted", kind)
+	return errorf(http.StatusConflict, codePostDeleted, "this %s is deleted", kind)
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {

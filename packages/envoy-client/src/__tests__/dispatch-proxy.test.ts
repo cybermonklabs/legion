@@ -2409,6 +2409,9 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   // No named command sends these requests, so `dispatch api --method` is the one to use.
   acceptMessageDelivery: "api",
   nameArtifactVersion: "api",
+  // The commands whose specs bind their routes send these. No row of `dispatch api`'s table names
+  // such a command (`WRITE_ROUTES`), so the refusal names `dispatch api --method`.
+  callRoute: "api",
 };
 
 /** The methods whose request is the one write that the proxy sends with its key (R2), a comment

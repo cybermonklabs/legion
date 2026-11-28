@@ -99,9 +99,18 @@ func (s *server) lockedMessageForCorrection(
 	return message, now.UTC(), true
 }
 
+// codeMessageChanged is the refusal of an edit whose condition the message no longer meets: the
+// body the command bar's undo expects it to hold (goingCondition.ExpectBody).
+const codeMessageChanged = "MESSAGE_CHANGED"
+
 // editMessage answers PATCH /api/v1/messages/{id}. It writes the body the edit replaces into
 // post_body_history, re-indexes the blocks from the new body at the time of the edit, and
-// appends message.edited, which carries the new body as comment.edited does.
+// appends message.edited, which carries the new body as comment.edited does. The command bar's
+// undo of an edit makes the edit conditional (goingCondition.ExpectBody, on the request's
+// context): the message must still hold the body the edit it undoes wrote when this edit takes
+// its issue's owner lock, or it is refused, 409 MESSAGE_CHANGED, with nothing written. It answers
+// the message as the edit left it, with the body the edit replaced beside it (messageEdited),
+// which that undo writes back.
 func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "message") {
 		return
@@ -127,6 +136,11 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	condition := goingConditionOf(r)
+	if refusal := condition.writeBackRefusal(condition.ExpectBody != nil, "body it expects the message to hold"); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -135,6 +149,11 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	message, editedAt, ok := s.lockedMessageForCorrection(w, r, tx, actor, "edit", "edited")
 	if !ok {
+		return
+	}
+	if condition.ExpectBody != nil && message.Body != *condition.ExpectBody {
+		writeError(w, codeMessageChanged, http.StatusConflict,
+			"the message holds other words now than the edit expected, so nothing was written")
 		return
 	}
 	previousBody := message.Body
@@ -189,12 +208,25 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	edited := messageEdited{Message: message, Previous: editedPostBody{Body: previousBody}}
+	// What the edit answers it replaced and left, handed to the command bar's landing of this
+	// request, which records it in this transaction (goingRecordAnswer). The message is read
+	// whole in the read phase above and the batch fills nothing of it, so the record and the
+	// answer are the one value.
+	goingRecordAnswer(r.Context(), http.StatusOK, func() any { return edited })
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusOK, message)
+	WriteJSON(w, http.StatusOK, edited)
+}
+
+// messageEdited is what PATCH /api/v1/messages/{id} answers: the message as the edit left it, and
+// beside it previous, the body the edit replaced (editedPostBody).
+type messageEdited struct {
+	model.Message
+	Previous editedPostBody `json:"previous"`
 }
 
 // deleteMessage answers DELETE /api/v1/messages/{id}: the author withdraws its own message. The

@@ -460,7 +460,10 @@ func scanOneSource(row pgx.Row, name string, extra ...any) (model.ArchitectureSo
 // recorded only on the row as the sync loaded it, and the sync then carries
 // that write's version as its own; a row written by anything else since the
 // load is left alone, and the sync's own write finds it superseded and starts
-// again from the load, which resolves again.
+// again from the load, which resolves again. The record refreshes a cache and
+// is no import, and a token the installation then refuses fails the sync after
+// it, so it commits outside the request's commit step (store.WithoutBeforeCommit),
+// as recordFailure does.
 func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, name, token string, err error) {
 	// The stored `owner/name` is held to the names GitHub allows before its halves go into any
 	// GitHub path (refs.SplitGitHubRepo), and refused with an error naming it otherwise. The
@@ -476,7 +479,7 @@ func (i *Importer) resolve(ctx context.Context, source *loadedSource) (owner, na
 	}
 	if installation.ID != source.InstallationID {
 		var version string
-		err := i.inTransaction(ctx, func(tx pgx.Tx) error {
+		err := i.inTransaction(store.WithoutBeforeCommit(ctx), func(tx pgx.Tx) error {
 			return tx.QueryRow(ctx, `
 				update architecture_sources set installation_id = $3
 				where project_key = $1 and id = $2 and xmin::text = $4
@@ -881,10 +884,14 @@ func execBatch(ctx context.Context, tx pgx.Tx, batch *pgx.Batch, label func(inde
 // not replace it, capped so a pathological model cannot store tens of
 // kilobytes per event. The event fires only when the error text first appears
 // or changes, so a source that has been broken for a day emits one event, not
-// one every five minutes.
+// one every five minutes. The record is the importer's bookkeeping, not the
+// import a caller asked for, so it commits outside the request's commit step
+// (store.WithoutBeforeCommit): a keyed sync whose import failed marks no
+// Idempotency-Key committed, and a command-bar write that sent it records no
+// landing, for an import that never ran and a route that then refuses it.
 func (i *Importer) recordFailure(ctx context.Context, source loadedSource, failure error) (model.ArchitectureSource, error) {
 	message := capFailureMessage(failure)
-	tx, err := i.store.Pool.Begin(ctx)
+	tx, err := i.store.Pool.Begin(store.WithoutBeforeCommit(ctx))
 	if err != nil {
 		return model.ArchitectureSource{}, fmt.Errorf("begin architecture failure record: %w", err)
 	}

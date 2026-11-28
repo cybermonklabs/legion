@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  agentloop's structured reply (`Request.Final`) parses its snapshots in work linear in the reply.
+  The SDK parsed the whole reply so far at every delta, which over one reply was work in the
+  square of its length: a 4 MiB reply in 32 KiB deltas was 129 snapshots of 275 MB, and the
+  command bar's answer reached its 30 s window before its 4 MiB stream limit under the race
+  detector. Now a snapshot is parsed at each delta of a reply up to 16 KiB long, more than a reply
+  of 4,096 output tokens, and past that only once the reply has grown by half (11 snapshots of
+  8.9 MB for the same reply); a reply whose first byte that is not white space can start no JSON
+  value is not parsed at all. `OnPartial` gets those snapshots, and the reply's value is still
+  read whole as the call ends.

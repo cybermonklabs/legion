@@ -8,7 +8,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/projects/{key}/artifacts/{slug}/edits",
 	Auth:        authAny,
-	Description: "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename.",
+	Description: "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. The answer's token and previous_token are the document's as the edit left it and found it, as on the edits route by id.",
 	Handler:     (*server).editArtifact,
 	WriteClass:  scopeProject,
 	Shape: routeShape{

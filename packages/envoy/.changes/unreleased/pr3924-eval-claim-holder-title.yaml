@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The command bar's eval seeds each claim with its holder's title, as a real claim carries it.
+  The claim's actor, in the issue's row and in its `issue.claimed` event, holds the session's title
+  from the seed's roster in `origin.session_title`, so a read of `DEMO-15` names its holder
+  "Implementer of DEMO-15". Before, a seeded claim held only the session's id, and the agent named
+  the holder by that id. The agent's system prompt now says a claim gives its holder's title, and
+  sends the model to the roster for a title only where the claim gives none.

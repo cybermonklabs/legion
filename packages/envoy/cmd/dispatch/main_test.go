@@ -658,7 +658,7 @@ func TestDispatchsURLRefusalsPrintNoCredential(t *testing.T) {
 	}
 }
 
-// ENVOY_URL, the three model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
+// ENVOY_URL, the four model endpoints and DISPATCH_GITHUB_API_BASE refuse a user name, a
 // password, an "@" past the host, a query and a fragment, each by the setting alone, as
 // DISPATCH_AGENT_SECRETS_URL does (credentialURLRefusal): each URL booted with any of them, and
 // Dispatch's clients printed it in their errors, which reach the API's answers (the listener
@@ -686,6 +686,9 @@ func TestDispatchsURLSettingsRefuseACredentialByTheSettingAlone(t *testing.T) {
 		},
 		"DISPATCH_CHAT_ENDPOINT": func(value string) map[string]string {
 			return endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_ENDPOINT": value})
+		},
+		"DISPATCH_DECISION_MODEL_ENDPOINT": func(value string) map[string]string {
+			return signInEnvironment(decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": value}))
 		},
 		"DISPATCH_GITHUB_API_BASE": func(value string) map[string]string {
 			return signInEnvironment(map[string]string{"DISPATCH_GITHUB_API_BASE": value})
@@ -1738,15 +1741,15 @@ const memoryTestServeEnv = "DISPATCH_MEMORY_TEST_SERVE"
 // its tests measure processes' memory against a runner's 16 GB and were sized at that default.
 var dispatchTestParallelism = 8
 
-// TestMain runs the package's tests, or, run by a memory test with memoryTestServeEnv set, is that
-// test's Dispatch server. It sets the package's default -parallel (dispatchTestParallelism); go
-// test parses its flags inside m.Run, so a -parallel on the command line still wins. Only TestMain
-// makes a server of a copy a test starts: in a build of these tests without it, such a copy runs
-// the tests, each of which starts copies that run them again. dispatchCopy refuses to start a copy
-// in such a process (dispatchCopyRefusal), and TestACopyStartedAsTheServerRunsMain fails in such a
-// build by name.
+// TestMain runs the package's tests or, with memoryTestServeEnv set, the Dispatch server.
+// The server starts its agent from the same test binary with the agent subcommand, which also
+// enters main here.
+// Go test parses its flags inside m.Run, so a command-line -parallel overrides the default.
+// Without TestMain, a server copy would run the tests and could start more copies. dispatchCopy
+// refuses to start a copy from that process, and TestACopyStartedAsTheServerRunsMain checks that
+// the server copy enters main.
 func TestMain(m *testing.M) {
-	if os.Getenv(memoryTestServeEnv) == "1" {
+	if os.Getenv(memoryTestServeEnv) == "1" || (len(os.Args) == 2 && os.Args[1] == "agent") {
 		main()
 		os.Exit(0)
 	}

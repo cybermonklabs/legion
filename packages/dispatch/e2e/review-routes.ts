@@ -6,16 +6,40 @@
  *  through `e2e/two-builds-routes.ts`: a page the router adds is reviewed or excluded with a
  *  reason, never silently unreviewed.
  *
- *  This module holds data, locators, the one wait built from them, and the two sources that wait
- *  reads requests in flight from: `listedRequests`, Playwright's own list, and
- *  `trackDocumentRequests`, which opens a CDP session on the test's own page. The visual review
- *  runs in a container that carries no `psql` binary, so nothing here may reach `./psql`,
- *  `./seed` or `./delivery-seed`: its only imports are `@playwright/test` - its types and
- *  `expect`, which `waitForRouteSettled` asserts with - and `./two-builds-routes`'s route paths,
- *  and that module imports nothing at all. */
+ *  This module holds data, locators, the seed-file reader, and the wait that uses `listedRequests`
+ *  or `trackDocumentRequests`. The latter opens a CDP session on the test's own page. The visual
+ *  review container carries no `psql` binary, so nothing here may reach `./psql`, `./seed` or
+ *  `./delivery-seed`. The imports are `node:fs` for the seed file, `@playwright/test` for the
+ *  wait and locator types, and the route paths from `./two-builds-routes`, which imports nothing. */
+import { readFileSync } from "node:fs";
+
 import { expect, type Locator, type Page, type Request } from "@playwright/test";
 
 import type { WalkRoutePath } from "./two-builds-routes";
+
+/** The issues of project OPS the visual lane's command-bar rows read, plan on and change
+ *  (`e2e/going-bar.visual.e2e.ts`), each by its key. `e2e/review-seed.ts` writes them, and no
+ *  page of the shot set draws them: OPS shows there only as an entry of the rail, whose count is
+ *  of open asks, and none of these holds one or stands in a status the priority pages count. */
+export interface BarSeed {
+  /** The project the bar rows open the bar over, and the project a filing files into. */
+  readonly project: string;
+  /** Read and named in answers: "Calibrate the telescope mount", in todo. */
+  readonly mount: string;
+  /** Read and named in answers: "Map the lunar craters", in backlog. */
+  readonly craters: string;
+  /** Read by the follow-ups: "Grind the primary mirror", in icebox. */
+  readonly mirror: string;
+  /** The waiting plan's issue, whose spec says "The dome turns by hand.": "Raise the
+   *  observatory dome". */
+  readonly dome: string;
+  /** The issue the waiting plan closes: "Retire the old shutter". */
+  readonly shutter: string;
+  /** Changed by the applied plan and changed back by its Undo: "Polish the eyepiece". */
+  readonly eyepiece: string;
+  /** Changed by the applied plan and changed back by its Undo: "Align the finder scope". */
+  readonly finder: string;
+}
 
 /** The ids the review layers' seed makes, which a route's path is built from. */
 export interface ReviewSeed {
@@ -37,6 +61,8 @@ export interface ReviewSeed {
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
   readonly pipelineAt: string;
+  /** The issues the command-bar rows of the visual lane read. */
+  readonly bar: BarSeed;
   /** The read marks the seed wrote before any row (`markWhatTheShotPagesRead`), which the visual
    *  rows' guard lets a page write again only exactly as they stand (`e2e/visual-guard.ts`). */
   readonly readMarks: SeededReadMarks;
@@ -59,6 +85,38 @@ export interface VisualSeed extends ReviewSeed {
    *  their page clock a little after it, so every relative label the pages draw reads the same
    *  on every run. */
   readonly seededAt: string;
+}
+
+/** The host's seed, with the moment it was written, from the file `DISPATCH_E2E_VISUAL_SEED`
+ *  names in the container: both visual specs read it here. A file without `seededAt` fails the
+ *  row rather than leaving the clock unpinned: an unpinned page draws whatever relative label the
+ *  run's own pace earned it, which is the minute-boundary drift this layer removed, and it would
+ *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
+ *  always writes the field, so a file that lacks it did not come from it. */
+export function readVisualSeed(path: string): VisualSeed {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields the checks
+  // below hold: the moment the pages' rows pin their clock to, and the read marks their guard
+  // reads.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
+    readonly seededAt?: string;
+  };
+  const { readMarks, seededAt } = seed;
+  if (seededAt === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
+        "cannot pin its page clock and every relative label it shot would move with the run's " +
+        "pace. `e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** Which layer reads an entry: the accessibility scan, the desktop shot, and the phone shot -

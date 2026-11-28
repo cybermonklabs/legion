@@ -481,13 +481,19 @@ func chatDelta(delta map[string]any, finish any) []any {
 // arrives in deltas and that stops for finishReason, with the usage chunk the stream is asked
 // for and the [DONE] line that ends it.
 func chatStream(finishReason string, usage chatUsage, deltas ...string) reply {
+	return chatStreamOf(finishReason, usage.object(), deltas...)
+}
+
+// chatStreamOf is chatStream with the usage chunk carrying usage as it is, which a row writes
+// as the raw JSON a provider sends.
+func chatStreamOf(finishReason string, usage any, deltas ...string) reply {
 	var w sseWriter
 	w.event("chunk", chatChunk(chatDelta(map[string]any{"role": "assistant", "content": ""}, nil), nil))
 	for _, delta := range deltas {
 		w.event("chunk", chatChunk(chatDelta(map[string]any{"content": delta}, nil), nil))
 	}
 	w.event("chunk", chatChunk(chatDelta(map[string]any{}, finishReason), nil))
-	w.event("chunk", chatChunk([]any{}, usage.object()))
+	w.event("chunk", chatChunk([]any{}, usage))
 	fmt.Fprint(&w, "data: [DONE]\n\n")
 	return reply{body: w.Bytes()}
 }

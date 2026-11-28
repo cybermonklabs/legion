@@ -18,11 +18,12 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // ran and failed; that it never says shots exist, since it cannot tell that a row ran; and that
 // however the run ends, the stack it started is stopped. The script runs
 // whole, as CI runs it, with `bun` and `docker` standing in on PATH: the stand-in `bun` prints
-// the stack's last variable for `e2e/harness-up.ts` and holds the stack up as the real one does,
-// writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits with the
-// status the row asks for, which is the status the Playwright run inside the container would
-// have, after writing its pid to `STUB_DOCKER_STARTED` and holding `STUB_DOCKER_HOLD` seconds
-// where those are set.
+// the stack's models directory, which the script mounts into the container and refuses to run
+// without, and the stack's last variable for `e2e/harness-up.ts`, and holds the stack up as the
+// real one does, writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker`
+// exits with the status the row asks for, which is the status the Playwright run inside the
+// container would have, after writing its pid to `STUB_DOCKER_STARTED` and holding
+// `STUB_DOCKER_HOLD` seconds where those are set.
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const stubs = mkdtempSync(join(tmpdir(), "visual-run-"));
 afterAll(() => rmSync(stubs, { force: true, recursive: true }));
@@ -33,6 +34,7 @@ writeFileSync(
 case "$1" in
   e2e/harness-up.ts)
     [ -z "$STUB_STACK_PID" ] || echo $$ > "$STUB_STACK_PID"
+    echo "export DISPATCH_E2E_MODELS_DIR='$TMPDIR/models'"
     echo 'export DISPATCH_E2E_REUSE_SERVERS=1'
     exec sleep 60 2>/dev/null ;;
   *) exit 0 ;;

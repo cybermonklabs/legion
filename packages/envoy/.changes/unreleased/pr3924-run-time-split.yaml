@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+  A command-bar run's record says where its time went. Each model call's `reply` frame carries
+  `model_ms`, from the call's request to its last token, `first_token_ms`, to its first token of
+  prose (left out for a reply of tool calls alone), and `input_tokens` and `output_tokens`; each
+  tool call's `tool` frame carries `ms`, from the call's start to its end. The run's `used`, in
+  `GET /api/v1/going/runs/{id}` and in History, adds `model_ms` and `tool_ms`, summed over its
+  calls and turns, and `queued_ms`, how long the run waited in the queue before its first claim;
+  each is left out while 0, as on a run worked before. A turn's end now keeps every field of the
+  record's `budget_used` it does not add to. A `reply` frame also carries `pace_ms`, how long the
+  agent's pacer held the call before it was sent (left out where it held none; `model_ms` counts
+  it, so `model_ms - pace_ms` is the provider's own time), `reasoning_tokens`, the reasoning
+  tokens the provider counted among `output_tokens`, and `reserved_tokens`, the pacer's estimate
+  of the call summed over its HTTP attempts, counted where no quota is set too; the run's `used`
+  adds `pace_ms`, summed as `model_ms` is. Each 429 the chat model answers is logged at WARN
+  (`agentloop: the model service answered 429, its rate limit`), once for each attempt, with the
+  deployment, the attempt, the wait before the retry and whether the call is made again, by the
+  agent and by the server's short answers alike. The messages the model is given, its tools and
+  the steps of the agent's loop are unchanged. The server no longer logs a warning when the agent
+  closes its renew's connection on purpose as a claim lands, once for each run the agent starts:
+  that write is logged at debug.

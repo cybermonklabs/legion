@@ -25,6 +25,7 @@ import type {
   Priority,
   PriorityRow,
 } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -69,6 +70,7 @@ function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow
 function issue(key: string, advances: string[] = []): IssueSummary {
   return {
     key,
+    project: issueProject(key),
     advances: advances.map((id) => ({ id, inherited: false })),
     advances_revision: 0,
     title: `Work ${key}`,
