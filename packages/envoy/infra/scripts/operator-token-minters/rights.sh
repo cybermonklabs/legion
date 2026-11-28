@@ -231,6 +231,51 @@ rights_json() {
                      + (if .name != "" then " " + .name else "" end) + (if .ns != "" then " in " + .ns else " cluster-wide" end))}]
     | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)'
 }
+# rights_db: sets RIGHTS_DB to rights_json db, made once a run: the code step and the RBAC step both
+# join it, and the table, the pairs and --db-secret it reads stay as the run began.
+RIGHTS_DB=""
+rights_db() { [ -n "$RIGHTS_DB" ] || RIGHTS_DB="$(rights_json db)" || true; }
+# is_rights VALUE: whether VALUE is exactly one JSON array, as rights_json writes rights, by rec.jq's
+# is_one_array (through one_array), the one place that rule is written. An empty VALUE, which a jq
+# program that failed or printed nothing leaves, is none, so a step never reads it as no rights. jq
+# reads VALUE from a here-string, whose closing line break is JSON's whitespace, so no process but
+# jq starts.
+is_rights() { jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1 <<<"$1"; }
+# join_rights NAME RIGHTS MORE...: sets NAME to RIGHTS and each MORE joined left to right, JSON
+# arrays of rights, each right once by its key; where two hold one, the earlier's label stays, as
+# with_rights (reviews.sh) joins two. One jq judges and joins them all, each read from a file in
+# $WORK named by the shell's own pid, never its command line, and the shell sets NAME, so a join
+# starts no process but that jq. When it refuses (an argument that is not one JSON array), the joins
+# are made again with with_rights, two at a time, as `with_rights "$(with_rights RIGHTS MORE)" ...`
+# nests them: each refusal prints as it did, each join after one refuses its empty first, and NAME
+# is set to the last one's output with its status, 1 for a refusal. A step calls it as a command,
+# so under errexit the run stops there, UNKNOWN, rather than go on without the rights an argument
+# owed. Every rights value a step joins goes through it.
+join_rights() {
+  local jr_name="$1" jr_file="$WORK/join-rights.$BASHPID" jr_n=0 jr_arg jr_vars="" jr_args=() jr_acc jr_status=0
+  shift
+  for jr_arg in "$@"; do
+    printf '%s' "$jr_arg" >"$jr_file.$jr_n"
+    jr_args+=(--slurpfile "r$jr_n" "$jr_file.$jr_n")
+    jr_vars+="${jr_vars:+, }\$r$jr_n"
+    jr_n=$((jr_n + 1))
+  done
+  if jq -n -c -L "$LIB" "${jr_args[@]}" 'include "rec";
+    ['"$jr_vars"'] as $all
+    | if all($all[]; is_one_array(.)) then [$all[][0][]] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)
+      else "" | halt_error(10) end' >"$jr_file.out" 2>/dev/null; then
+    IFS= read -r "$jr_name" <"$jr_file.out"
+    return 0
+  fi
+  jr_acc="$1"
+  shift
+  for jr_arg in "$@"; do
+    jr_status=0
+    jr_acc="$(with_rights "$jr_acc" "$jr_arg")" || jr_status=$?
+  done
+  printf -v "$jr_name" '%s' "$jr_acc"
+  return "$jr_status"
+}
 # TABLE_JSON: the namespaced rows of RIGHTS_TABLE ({verb, group, resource, sub, named}), the ways in
 # a namespace to become a ServiceAccount of it that follow_becomes asks; `named` rows name the
 # ServiceAccount. A patch or update of a Role is left out: RBAC lets one who writes a role add only
@@ -253,9 +298,14 @@ done <<<"$RIGHTS_TABLE" | jq -R -s -c '[split("\n")[] | select(length > 0) | spl
 # bind clusterroles, patch and update clusterroles, and create, patch and update
 # clusterrolebindings, cluster-wide, and create and get nodes/proxy; bind and escalate roles,
 # patch and update roles, and create, patch and update rolebindings in each guarded namespace
-# (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS). The admission rights
-# are each cluster's own (admission_rights), and the writes of a binding or a role in each other
-# namespace that holds a RoleBinding are binding_rights'.
-GUARD_RIGHTS="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -f "$LIB/guard-rights.jq" | jq -c --argjson csr "$CSR_RIGHTS" '. + $csr')"
+# (guard-rights.jq); and the certificate signing chain's rights (CSR_RIGHTS), which guard-rights.jq
+# adds after them. The admission rights are each cluster's own (admission_rights), and the writes of
+# a binding or a role in each other namespace that holds a RoleBinding are binding_rights'.
+# GUARDED_LINES: the guarded pairs a line, as `printf '%s\n' "${GUARDED[@]}"` prints them less the
+# last line break, which a here-string adds back: a jq reads them on its stdin with no printf
+# process.
+printf -v GUARDED_LINES '%s\n' "${GUARDED[@]}"
+GUARDED_LINES="${GUARDED_LINES%$'\n'}"
+GUARD_RIGHTS="$(jq -R -s -c --argjson csr "$CSR_RIGHTS" -f "$LIB/guard-rights.jq" <<<"$GUARDED_LINES")"
 GUARDED_TEXT="$(printf '%s, ' "${GUARDED[@]}")"
 GUARDED_TEXT="${GUARDED_TEXT%, }"

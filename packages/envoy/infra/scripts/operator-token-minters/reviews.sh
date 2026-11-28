@@ -34,7 +34,8 @@ review_workers() {
   WORKERS=$((seats < REVIEW_WORKERS ? seats : REVIEW_WORKERS))
 }
 # review KUBECONFIG PRINCIPALS RIGHTS [FENCE]: one SubjectAccessReview for each principal of the
-# JSON array PRINCIPALS ({principal, user, groups}) and each right of the JSON array RIGHTS. The
+# records file PRINCIPALS (principal, user, groups joined by commas; principals_json makes them the
+# JSON array of {principal, user, groups}) and each right of the JSON array RIGHTS. The
 # principals are split into WORKERS chunks (review_workers: REVIEW_WORKERS, capped at the cluster's
 # seats), each asked by its own kubectl call as one List, so each call POSTs its share one at a time
 # and the calls run at once; the first chunk always holds the witness, whose reviews every
@@ -46,23 +47,22 @@ review_workers() {
 # broker's pod fence credited on this cluster (broker-fence.sh's FENCE_CREDITED), none on any other.
 # Returns 1 with REVIEW_ERROR when the API server refused any call, when a document of an answer is
 # not a SubjectAccessReview with a status, or when the answers do not hold each review asked once
-# (an empty body sent with exit 0 holds none). PRINCIPALS and RIGHTS reach jq through files
+# (an empty body sent with exit 0 holds none). The principals and RIGHTS reach jq through files
 # (--slurpfile), never its command line: a cluster's principals and rights are more than one
-# argument may hold. Each must be one JSON array (one_array), so an empty argument fails the
-# reviews' build.
+# argument may hold. Each must be one JSON array (one_array), so an empty RIGHTS fails the
+# reviews' build. The shell counts the principals, a record each, as principals_json reads them.
 review() {
-  local chunks chunk refused="" pids=()
+  local chunks chunk refused="" pids=() principals=0 line
   REVIEW_ERROR=""
-  printf '%s' "$2" >"$WORK/review-principals.json"
+  principals_json "$2" >"$WORK/review-principals.json"
   printf '%s' "$3" >"$WORK/review-rights.json"
   review_workers "$1" || return 1
   # The chunks: at most WORKERS, each a share of the principals, the witness's in the first.
-  if ! chunks="$(jq -r --argjson workers "$WORKERS" '
-      (if length < $workers then length else $workers end) as $n
-      | if $n < 1 then 1 else $n end' "$WORK/review-principals.json" 2>"$WORK/review.err")"; then
-    REVIEW_ERROR="this script could not count the principals: $(first_line "$WORK/review.err")"
-    return 1
-  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] || principals=$((principals + 1))
+  done <"$2"
+  chunks=$((principals < WORKERS ? principals : WORKERS))
+  [ "$chunks" -ge 1 ] || chunks=1
   rm -f "$WORK"/review-in-*.json "$WORK"/review-out-*.json "$WORK"/review-err-*
   for ((chunk = 0; chunk < chunks; chunk++)); do
     if ! jq -n --slurpfile principals "$WORK/review-principals.json" --slurpfile rights "$WORK/review-rights.json" \
@@ -110,7 +110,7 @@ review() {
 # saying no to anyone else, so judge_reviews and each follow_becomes round end on it.
 witness_held() {
   WITNESS_ERROR=""
-  [ "$(awk -F"$US" '$1 == "witness" { print $3 }' "$WORK/review.rec" | sort -u)" = allowed ] && return 0
+  awk -F"$US" '$1 == "witness" { n++; if ($3 != "allowed") refused = 1 } END { exit !(n > 0 && !refused) }' "$WORK/review.rec" && return 0
   WITNESS_ERROR="the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
   return 1
 }
@@ -217,7 +217,8 @@ sorted_join() {
 # make its own request; a seed's chain only seeds FOUND_SAS. Then forgets the parts.
 csr_chains() {
   local principal chain
-  for principal in $(printf '%s\n' ${CSR_APPROVAL_OF[@]+"${!CSR_APPROVAL_OF[@]}"} | sort); do
+  sort_keys CSR_APPROVAL_OF
+  for principal in $SORTED_KEYS; do
     [ -n "${CSR_SIGNERS_OF[$principal]:-}" ] || continue
     chain="${CSR_CREATE_OF[$principal]:+create certificatesigningrequests, }$(sorted_join ', ' "${CSR_APPROVAL_OF[$principal]}") and approve signers $(sorted_join ' and ' "${CSR_SIGNERS_OF[$principal]}") cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
     found_sa "$principal" "$chain"
@@ -349,23 +350,25 @@ follow_becomes() {
   local -A followed=() targets_of=() targets_why=()
   for ((round = 0; round < 5; round++)); do
     : >"$WORK/become.tsv"
-    while IFS= read -r sa; do
+    sort_keys FOUND_SAS
+    while IFS= read -r sa && [ -n "$sa" ]; do
       [ "${followed[$sa]:-}" != found ] || continue
       followed[$sa]=found
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${FOUND_SAS[$sa]}" >>"$WORK/become.tsv"
-    done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
+    done <<<"$SORTED_KEYS"
     # keep_sa keeps a found account out of RESIDUAL_SAS, so each account here reaches the residual alone.
-    while IFS= read -r sa; do
+    sort_keys RESIDUAL_SAS
+    while IFS= read -r sa && [ -n "$sa" ]; do
       [ -z "${followed[$sa]:-}" ] || continue
       followed[$sa]=residual
       printf '%s\t%s\t%s\n' "${sa%%:*}" "${sa#*:}" "${RESIDUAL_SAS[$sa]}" >>"$WORK/become.tsv"
-    done < <(printf '%s\n' ${RESIDUAL_SAS[@]+"${!RESIDUAL_SAS[@]}"} | sed '/^$/d' | sort)
+    done <<<"$SORTED_KEYS"
     [ -s "$WORK/become.tsv" ] || return 0
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
     targets_of=() targets_why=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
     while IFS=$'\t' read -r why targets; do targets_why[$why]="$targets"; done < <(jq -r '.[] | [.why, (.targets | join(" "))] | @tsv' <<<"$rights")
-    if ! review "$kube" "$(principals_json "$WORK/principals.rec")" "$rights" "$fence"; then
+    if ! review "$kube" "$WORK/principals.rec" "$rights" "$fence"; then
       unknown "$step" "$REVIEW_ERROR"
       return 0
     fi
@@ -417,11 +420,12 @@ follow_becomes() {
 # Google account a finding names and of each whose credited grant reaches the residual.
 REMEMBERED=()
 remember_cluster() {
-  local n="${#REMEMBERED[@]}" file
-  cp "$WORK/principals.rec" "$WORK/remembered-$n.principals"
+  local n="${#REMEMBERED[@]}" file kept=("$WORK/principals.rec")
+  mkdir "$WORK/remembered-$n"
   for file in api-resources bindings.json roles.json; do
-    if [ -e "$WORK/$file" ]; then cp "$WORK/$file" "$WORK/remembered-$n.$file"; else : >"$WORK/remembered-$n.$file"; fi
+    if [ -e "$WORK/$file" ]; then kept+=("$WORK/$file"); else : >"$WORK/remembered-$n/$file"; fi
   done
+  cp "${kept[@]}" "$WORK/remembered-$n/"
   REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US${5:-}")
 }
 # follow_members FOUND RESIDUAL: on every cluster remember_cluster kept, who can become a
@@ -431,11 +435,10 @@ remember_cluster() {
 # become it is followed as a found one; one RESIDUAL names reaches the broker's pod fence's residual
 # alone, and is followed as RESIDUAL_SAS are.
 follow_members() {
-  local n kube step suffix resource fence member label file
+  local n kube step suffix resource fence member label
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
     IFS="$US" read -r kube step suffix resource ROLES_OK fence <<<"${REMEMBERED[$n]}"
-    cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
-    for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
+    cp "$WORK/remembered-$n/"{principals.rec,api-resources,bindings.json,roles.json} "$WORK/"
     FOUND_SAS=() RESIDUAL_SAS=()
     while IFS=$'\t' read -r member label; do found_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
     while IFS=$'\t' read -r member label; do residual_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$2")
@@ -460,8 +463,8 @@ custom_rights() {
     CUSTOM_ERROR="the API server's discovery of namespaced resources could not be read whole, so create, update and patch of a custom resource it leaves out are not reviewed: $(first_line "$WORK/api-resources.err")"
   fi
   CUSTOM_RIGHTS='[]'
-  if built="$(printf '%s\n' "${GUARDED[@]}" | jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" \
-    -f "$LIB/custom-rights.jq" 2>"$WORK/custom-rights.err")" && is_rights "$built"; then
+  if built="$(jq -R -s -c -L "$LIB" --rawfile names "$WORK/api-resources" --arg style "$2" \
+    -f "$LIB/custom-rights.jq" <<<"$GUARDED_LINES" 2>"$WORK/custom-rights.err")" && is_rights "$built"; then
     CUSTOM_RIGHTS="$built"
   else
     CUSTOM_ERROR="${CUSTOM_ERROR:+$CUSTOM_ERROR; and }the rights on the custom resources could not be built, so none is reviewed: $(first_line "$WORK/custom-rights.err")"
@@ -475,7 +478,7 @@ custom_rights() {
 # ADMISSION_ALWAYS short, and when no JSON array of rights was built, which sets ADMISSION_RIGHTS to
 # none ([]) rather than to what jq printed.
 admission_rights() {
-  local missing="" resource built line
+  local missing="" resource built line always
   local -A listed=()
   ADMISSION_ERROR=""
   if ! kubectl --kubeconfig "$1" api-resources --api-group=admissionregistration.k8s.io -o name >"$WORK/admission-resources" 2>"$WORK/admission-resources.err"; then
@@ -493,8 +496,9 @@ admission_rights() {
       ADMISSION_ERROR="the API server's discovery of admissionregistration.k8s.io lists no $missing, which every API server serves, so its list is not whole"
   fi
   ADMISSION_RIGHTS='[]'
-  if built="$({ cat "$WORK/admission-resources"; printf '%s.admissionregistration.k8s.io\n' "${ADMISSION_ALWAYS[@]}"; } | jq -R -s -c '
-    [split("\n")[] | select(endswith(".admissionregistration.k8s.io")) | rtrimstr(".admissionregistration.k8s.io")] | unique
+  printf -v always '%s.admissionregistration.k8s.io\n' "${ADMISSION_ALWAYS[@]}"
+  if built="$(jq -n -c --rawfile discovery "$WORK/admission-resources" --arg always "$always" '$discovery + $always
+    | [split("\n")[] | select(endswith(".admissionregistration.k8s.io")) | rtrimstr(".admissionregistration.k8s.io")] | unique
     | [.[] as $res | ("create", "update", "patch")
        | {verb: ., group: "admissionregistration.k8s.io", resource: $res, sub: "", ns: "", name: "",
           label: "\(.) \($res).admissionregistration.k8s.io cluster-wide"}
@@ -775,10 +779,6 @@ binding_rights() {
     return 1
   fi
 }
-# is_rights VALUE: whether VALUE is exactly one JSON array, as rights_json writes rights, by rec.jq's
-# is_one_array (through one_array), the one place that rule is written. An empty VALUE, which a jq
-# program that failed or printed nothing leaves, is none, so a step never reads it as no rights.
-is_rights() { printf '%s' "$1" | jq -s -L "$LIB" 'include "rec"; one_array(.; "rights") | empty' >/dev/null 2>&1; }
 # is_list FILE ERR: whether FILE holds one JSON object whose items is an array, as kubectl get -o json
 # writes a list. jq reads an empty answer, which a proxy that drops a response's body sends with exit
 # 0, as no value: a program over it prints nothing and exits 0, so a read that checks only jq's exit
@@ -806,15 +806,15 @@ shape_error() {
   return 1
 }
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
-# where both hold one, RIGHTS's label stays. One jq both judges and joins them, each read from a
-# file in $WORK named by the shell's own pid (#5685), so two concurrent joins never share one;
-# never on its command line. It refuses anything but two JSON arrays (rec.jq's is_one_array, the
-# rule is_rights holds), an empty argument or one that is not JSON included, printing why and
-# returning 1: a step assigns its result, so under errexit the run stops there, UNKNOWN, rather
-# than go on without the rights the argument owed. Every rights value a step joins goes through
-# it, about twenty times a run. custom_rights, admission_rights and binding_rights check what they
-# build with is_rights too, so a failed build reads as their own UNKNOWN, naming those rights,
-# rather than stopping the run.
+# where both hold one, RIGHTS's label stays, printed. It is join_rights' join of two (rights.sh),
+# which makes a join that refused again through it, two arrays at a time, so each refusal prints as
+# nested joins of two print it. One jq both judges and joins them, each read from a file in $WORK
+# named by the shell's own pid (#5685), so two concurrent joins never share one; never on its
+# command line. It refuses anything but two JSON arrays (rec.jq's is_one_array, the rule is_rights
+# holds), an empty argument or one that is not JSON included, printing why and returning 1; or it
+# prints jq's own error and returns its status. custom_rights, admission_rights and binding_rights
+# check what they build with is_rights too, so a failed build reads as their own UNKNOWN, naming
+# those rights, rather than stopping the run.
 with_rights() {
   local rights="$WORK/with-rights.$BASHPID.rights" more="$WORK/with-rights.$BASHPID.more" status=0
   printf '%s' "$1" >"$rights"

@@ -65,13 +65,25 @@ crash_report() {
   echo "operator-token-minters: stopped before its end, ${#UNKNOWNS[@]} unknown: exit 2"
 }
 # mark, then unchanged: whether a step recorded no finding and no UNKNOWN since its mark, so it
-# prints PASS only then; credited and allowed, how many credits and residual ALLOWANCEs it recorded
-# since, which its PASS names.
+# prints PASS only then. A PASS that names the credits and residual ALLOWANCEs a step recorded since
+# its mark counts them in place, from MARK_C and MARK_A.
 mark() { MARK_F="${#FINDINGS[@]}" MARK_U="${#UNKNOWNS[@]}" MARK_C="${#CREDITS[@]}" MARK_A="${#RESIDUALS[@]}"; }
 unchanged() { [ "${#FINDINGS[@]}" -eq "$MARK_F" ] && [ "${#UNKNOWNS[@]}" -eq "$MARK_U" ]; }
-credited() { echo "$((${#CREDITS[@]} - MARK_C))"; }
-allowed() { echo "$((${#RESIDUALS[@]} - MARK_A))"; }
 have() { command -v "$1" >/dev/null; }
+# sort_keys NAME: sets SORTED_KEYS to the associative array NAME's keys, a line each, in the order
+# `printf '%s\n' "${!NAME[@]}" | sort` prints them, less its last line break. None or one key needs
+# no order, so only two or more start sort, which reads them from a here-string, never a pipe.
+sort_keys() {
+  local -n sort_keys_of="$1"
+  case "${#sort_keys_of[@]}" in
+    0) SORTED_KEYS="" ;;
+    1) SORTED_KEYS="${!sort_keys_of[*]}" ;;
+    *)
+      printf -v SORTED_KEYS '%s\n' "${!sort_keys_of[@]}"
+      SORTED_KEYS="$(sort <<<"${SORTED_KEYS%$'\n'}")"
+      ;;
+  esac
+}
 # The unit separator joins a record's fields; rec.jq says why. JQ_REC, prepended to a small inline
 # jq program, defines rec there as `include "rec";` does in the .jq files.
 US=$'\x1f'

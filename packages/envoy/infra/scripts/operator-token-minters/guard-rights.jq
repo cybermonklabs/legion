@@ -7,7 +7,8 @@
 # the node. In each guarded namespace: create and patch serviceaccounts and pods, and bind and
 # escalate roles, patch and update roles, and create, patch and update rolebindings; each label
 # there names the pairs the namespace holds. A rule a role limits by name is read from the
-# cluster's own roles (live_named), never asked by name for every principal.
+# cluster's own roles (live_named), never asked by name for every principal. The certificate signing
+# chain's rights ($csr, rights.sh's CSR_RIGHTS) follow them, as they are.
   [split("\n")[] | select(length > 0) | split("/") | {ns: .[0], sa: .[1]}] as $pairs
   | [("create", "patch") | {verb: ., group: "", resource: "namespaces", sub: "", ns: "", name: "", label: "\(.) namespaces cluster-wide"}]
     + ([["impersonate", "", "users", ""], ["impersonate", "", "groups", ""], ["impersonate", "", "serviceaccounts", ""],
@@ -27,3 +28,4 @@
           | {verb: .[0], group: "rbac.authorization.k8s.io", resource: .[1], sub: "", ns: $n, name: "",
              label: "\(.[0]) \(.[1]).rbac.authorization.k8s.io in \($n), guarding \($guarding)"})]
   | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))})
+  | . + $csr

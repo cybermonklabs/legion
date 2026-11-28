@@ -7,6 +7,9 @@
 # what the operator may apply. Sourced by operator-token-minters.sh, whose header says what each
 # step checks.
 
+# GUARDED_NS_JSON: the guarded pairs' namespaces, each once, as a JSON array, made by a run's first
+# admission_power (the pairs stay as the run began), from a here-string with no printf process.
+GUARDED_NS_JSON=""
 # admission_power KUBECONFIG STEP [operator]: sets POWER_RIGHTS, the JSON array, as rights_json writes
 # rights, of the writes that give admission power beside the admission objects' own on the cluster,
 # and prints UNKNOWN on STEP for what it cannot read. Each list it reads (the webhook configurations,
@@ -47,7 +50,11 @@ admission_power() {
   # broker-fence.sh reads it: entry into a backend's pod changes what its webhook does to every
   # object it admits.
   WEBHOOK_SERVICES=""
-  guarded="$(printf '%s\n' "${GUARDED[@]%%/*}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | unique')"
+  if [ -z "$GUARDED_NS_JSON" ]; then
+    printf -v guarded '%s\n' "${GUARDED[@]%%/*}"
+    GUARDED_NS_JSON="$(jq -R -s -c 'split("\n") | map(select(length > 0)) | unique' <<<"${guarded%$'\n'}")"
+  fi
+  guarded="$GUARDED_NS_JSON"
   # The cluster-scoped resources, so a webhook rule naming a resource that is namespaced in one group
   # it names and cluster-scoped in another (a CRD of the same plural) is judged. kubectl prints what
   # it read before an error, so a partial list is still used, and the error is UNKNOWN.
@@ -98,14 +105,14 @@ admission_power() {
       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/crds.json" 2>"$WORK/crds.err")"; then
     unknown "$step" "the API server's list of custom resource definitions could not be read, so a policy engine's cluster-scoped resources are not reviewed: $(first_line "$WORK/crds.err")"
   else
-    POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$engines")"
+    join_rights POWER_RIGHTS "$POWER_RIGHTS" "$engines"
     ! jq -e 'any(.items[]; .spec.group == "gkebackup.gke.io")' "$WORK/crds.json" >/dev/null ||
       unknown "$step" "Backup for GKE is installed (the gkebackup.gke.io API), so a restore can recreate a backup's workloads and RBAC here, chosen in Google Cloud by a holder of its restore rights, which this check does not read"
     if [ "${3:-}" = operator ] && jq -e 'any(.items[]; .spec.group == "auto.gke.io" and .spec.names.plural == "workloadallowlists")' "$WORK/crds.json" >/dev/null; then
-      POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$(jq -n -c '[("create", "update", "patch")
+      join_rights POWER_RIGHTS "$POWER_RIGHTS" "$(jq -n -c '[("create", "update", "patch")
         | {verb: ., group: "auto.gke.io", resource: "allowlistsynchronizers", sub: "", ns: "", name: "",
            label: "\(.) allowlistsynchronizers.auto.gke.io cluster-wide, which install the workload allowlists Autopilot admits privileged pods by"}
-        | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')")"
+        | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
       if ! kubectl --kubeconfig "$kube" get workloadallowlists.auto.gke.io -o json >"$WORK/allowlists.json" 2>"$WORK/allowlists.err"; then
         unknown "$step" "the API server refused the list of workload allowlists (it needs list on workloadallowlists.auto.gke.io), so whether Autopilot admits a privileged pod here is unknown: $(first_line "$WORK/allowlists.err")"
       elif ! is_list "$WORK/allowlists.json" "$WORK/allowlists.err" ||
@@ -120,8 +127,11 @@ admission_power() {
       fi
     fi
   fi
+  # The policy resources the discovery lists, each once in sort's order, joined by commas (as
+  # `paste -sd, -` joins them) by the shell.
   policies="$(sed -n 's/^\([a-z]*admissionpolic\(y\|ies\)\(bindings\)\?\)\.admissionregistration\.k8s\.io$/\1/p' "$WORK/admission-resources" 2>/dev/null |
-    sort -u | paste -sd, -)"
+    sort -u)"
+  policies="${policies//$'\n'/,}"
   [ -z "$policies" ] || param_rights "$kube" "$step" "$policies" "$guarded"
 }
 
@@ -160,7 +170,7 @@ param_rights() {
     # namespace, so each guarded namespace's is asked; a cluster-scoped kind, cluster-wide.
     if [ "$namespaced" != true ]; then namespaces='[""]'; elif [ -n "$pns" ]; then namespaces="$(jq -n -c --arg n "$pns" '[$n]')"; else namespaces="$4"; fi
     # Each policy's writes are built on their own, so one that cannot be built reads UNKNOWN naming
-    # the policy and leaves the others; with_rights joins them, as it joins every rights value.
+    # the policy and leaves the others; join_rights joins them, as it joins every rights value.
     if ! more="$(jq -n -c --arg res "$resource" --argjson namespaces "$namespaces" --arg name "$pname" --arg policy "$policy" '
       ($res | split(".")) as $parts | ($parts[0]) as $r | ($parts[1:] | join(".")) as $g
       | [$namespaces[] as $ns
@@ -172,6 +182,6 @@ param_rights() {
       unknown "$2" "the writes to the parameters of the admission policy $policy could not be built, so who may write them is not reviewed: $(first_line "$WORK/param.err")"
       continue
     fi
-    POWER_RIGHTS="$(with_rights "$POWER_RIGHTS" "$more")"
+    join_rights POWER_RIGHTS "$POWER_RIGHTS" "$more"
   done <"$WORK/policies.rec"
 }

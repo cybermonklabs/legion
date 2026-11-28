@@ -8,7 +8,8 @@
 # --- live: GKE IAM on the projects of the fleet's other GKE members, each once
 # (member_project_iam): the Workload Identity step ran it for each project whose clusters it read,
 # and this runs it for any it has not. --project's holders are the GKE IAM step's. ---
-for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
+sort_keys OTHER_PROJECTS
+for other in $SORTED_KEYS; do
   member_project_iam "$other"
 done
 
@@ -67,7 +68,8 @@ while :; do
     cluster_account "$principal" "$resource" || continue
     [ -n "${FOUND_CHECKED[$CLUSTER_ACCOUNT]:-}" ] || accounts[$CLUSTER_ACCOUNT]=1
   done
-  for email in $(printf '%s\n' ${accounts[@]+"${!accounts[@]}"} | sort); do
+  sort_keys accounts
+  for email in $SORTED_KEYS; do
     FOUND_CHECKED[$email]=1 new=true
     account_minters "rbac-account:$email" "$email" "live: minters of $email, which an RBAC finding names"
   done
@@ -92,7 +94,8 @@ while :; do
     [ -z "${FOUND_CHECKED[$CLUSTER_ACCOUNT]:-}" ] && [ -z "${RESIDUAL_CHECKED[$CLUSTER_ACCOUNT]:-}" ] || continue
     keep_least accounts "$CLUSTER_ACCOUNT" "$right"
   done
-  for email in $(printf '%s\n' ${accounts[@]+"${!accounts[@]}"} | sort); do
+  sort_keys accounts
+  for email in $SORTED_KEYS; do
     RESIDUAL_CHECKED[$email]="${accounts[$email]}" new=true
     account_minters "residual-account:$email" "$email" "live: minters of $email, whose credited grant reaches the broker's pod fence's residual" \
       "serviceAccount:$email, which can ${accounts[$email]}"
@@ -120,7 +123,8 @@ done
 # iam.roles.update can add a permission to a custom role it holds. ---
 ancestor_projects=("$PROJECT")
 [ -z "$POOL_PROJECT" ] || [ "$POOL_PROJECT" = "$PROJECT" ] || ancestor_projects+=("$POOL_PROJECT")
-for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
+sort_keys OTHER_PROJECTS
+for other in $SORTED_KEYS; do
   [ "$other" = "$POOL_PROJECT" ] || ancestor_projects+=("$other")
 done
 declare -A ANCESTORS_SEEN=()

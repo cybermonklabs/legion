@@ -6,6 +6,14 @@
 # declared_finding PRINCIPAL DETAIL ID: one grant the renders declare (ID, the binding) is a finding;
 # fence_settle (broker-fence.sh) finds the grants the fence would have credited the same way.
 declared_finding() { finding "$1" "$2, declared by $3" "$2" "cluster:$cluster_name" "$2" "$3"; }
+# renders_jq ERR ARGS...: jq ARGS with the renders, one after another, on its stdin and its stderr
+# to ERR: a render alone is its stdin itself, more come through cat. Either way an error jq prints
+# names no file.
+renders_jq() {
+  local err="$1"
+  shift
+  if [ "${#RBAC_RENDERS[@]}" -eq 1 ]; then jq "$@" <"${RBAC_RENDERS[0]}" 2>"$err"; else cat -- "${RBAC_RENDERS[@]}" | jq "$@" 2>"$err"; fi
+}
 step="code: RBAC"
 if [ "${#RBAC_RENDERS[@]}" -eq 0 ]; then
   unknown "$step" "no --rbac-render: what the cluster's RBAC program declares is not read"
@@ -28,19 +36,21 @@ else
     # naming them, unless a render is not JSON, which the read below names.
     fence_declared
     code_binding='[]' binding_built=true
-    if built="$(cat -- "${RBAC_RENDERS[@]}" | jq -n -c -L "$LIB" -f "$LIB/binding-rights.jq" 2>"$WORK/code-binding.err")" && is_rights "$built"; then
+    if built="$(renders_jq "$WORK/code-binding.err" -n -c -L "$LIB" -f "$LIB/binding-rights.jq")" && is_rights "$built"; then
       code_binding="$built"
     else
       binding_built=false
     fi
-    code_rights="$(with_rights "$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")" "$code_binding")"
-    [ -z "$FENCE_DECLARED" ] || code_rights="$(with_rights "$code_rights" "$FENCE_WRITE_RIGHTS")"
+    rights_db
+    join_rights code_rights "$RIGHTS_DB" "$GUARD_RIGHTS" "$ADMISSION_CODE_RIGHTS" "$code_binding"
+    [ -z "$FENCE_DECLARED" ] || join_rights code_rights "$code_rights" "$FENCE_WRITE_RIGHTS"
     csr_reset
     # jq reads the renders from its stdin, so an error it prints names no file, and the rights from a
     # file, never its command line.
     printf '%s' "$code_rights" >"$WORK/code-rights.json"
-    if ! cat -- "${RBAC_RENDERS[@]}" | jq -r -n --slurpfile rights "$WORK/code-rights.json" --slurpfile named_rights "$WORK/code-rights.json" \
-      --argjson live false --argjson fence "$(fence_declared_json)" -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
+    fence_declared_json
+    if ! renders_jq "$WORK/render.err" -r -n --slurpfile rights "$WORK/code-rights.json" --slurpfile named_rights "$WORK/code-rights.json" \
+      --argjson live false --argjson fence "$FENCE_DECLARED_JSON" -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
       [ "$binding_built" = true ] ||

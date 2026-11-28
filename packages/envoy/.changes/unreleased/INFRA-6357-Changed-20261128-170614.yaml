@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `infra/scripts/operator-token-minters.sh` starts fewer processes in a run (about 253 in place of
+  422 in the test's base world, and 332 in place of 559 in its broker-fence world): it joins rights,
+  counts a step's holders and credits, and sorts keys in the shell or in one `jq` where it started
+  several. Every line it prints, every exit status and every `--report` field stay as they were for
+  each input its test gives it.
+time: 2026-11-28T17:06:14Z
+custom:
+    Issue: INFRA-6357

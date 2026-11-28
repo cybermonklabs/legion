@@ -24,5 +24,9 @@ for permission in "${checked_names[@]}"; do
     unknown "$step" "$permission is not in $role's includedPermissions, so no check that names it can find a holder"
 done
 if unchanged; then
-  pass "$step" "each of the ${#checked_names[@]} permission names the IAM steps ask about is in the role that grants it ($(printf '%s\n' "${!roles_used[@]}" | sort | paste -sd ' ' | sed 's/ /, /g'))"
+  # The roles in sort's order, joined by ", " (each line break, then each space, as `paste -sd ' '`
+  # and `sed 's/ /, /g'` join them), with no process but sort.
+  sort_keys roles_used
+  roles_text="${SORTED_KEYS//$'\n'/ }"
+  pass "$step" "each of the ${#checked_names[@]} permission names the IAM steps ask about is in the role that grants it (${roles_text// /, })"
 fi
