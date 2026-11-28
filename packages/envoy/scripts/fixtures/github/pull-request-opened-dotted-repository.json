@@ -16,6 +16,7 @@
     "base": {
       "ref": "main"
     },
+    "state": "open",
     "merged": false,
     "updated_at": "2026-09-07T03:00:00Z"
   },

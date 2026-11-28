@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A pull request that closed without merging now stays closed in Dispatch when GitHub sends a
+  later `pull_request` event for it, such as a label, an edit, a lock, or the `auto_merge_disabled`
+  and `dequeued` events that a close sets off. Before, Dispatch decided the stored state from the
+  event's action, so every such event stored the closed pull request as open again. It was then a
+  subject of its issue's `before_merge` checks, which needed a pass at its head, until the
+  reconcile's next read of the pull request closed it again. The listener's `pull_request`
+  envelope now carries `state`, GitHub's `open` or `closed` for the pull request when the event
+  happened, and Dispatch stores the state from it. A reopened pull request is open again. An
+  envelope from a listener before this release has no `state`, and Dispatch then reads the state
+  from the action, as before.
+time: 2026-11-28T14:49:46Z
+custom:
+    Issue: INFRA-3992

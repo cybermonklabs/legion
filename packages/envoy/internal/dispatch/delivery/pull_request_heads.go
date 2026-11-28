@@ -80,19 +80,37 @@ type PullRequestHead struct {
 	MergedAt       *time.Time
 }
 
-// PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
-// that merged is merged, whatever the action, one that closed without merging is closed, and
-// every other action leaves it open. The merge is tested first: GitHub normalises every action
-// of a pull request, so a `labeled` or `edited` event on an already merged one must not store
-// its row as open again and put it back in the reconcile's stale list.
-func PullRequestHeadState(action string, merged bool) string {
+// PullRequestHeadState is the state a row stores for a pull request from GitHub's own word for
+// it: state is GitHub's `state` of the pull request, open or closed, and merged whether it
+// merged. A pull request that merged is merged, one that is closed without merging is closed,
+// and any other is open. The merge is tested first because GitHub calls a merged pull request
+// closed. Every writer passes GitHub's state, never an event's action (envelopeHeadState): GitHub
+// sends a `pull_request` event with every action on a pull request already closed — a label, an
+// edit, a lock, the auto-merge and merge-queue removals a close sets off — and an action names a
+// state only for opened, reopened and closed, so a state read from the action stores a closed pull
+// request as open again and makes it a subject of its issue's checks (headsAttributedQuery).
+func PullRequestHeadState(state string, merged bool) string {
 	if merged {
 		return "merged"
 	}
-	if action != "closed" {
-		return "open"
+	if state == "closed" {
+		return "closed"
 	}
-	return "closed"
+	return "open"
+}
+
+// envelopeHeadState is the state a `pull_request` envelope's head write stores
+// (PullRequestHeadState): from the pull request's state the listener copied from the webhook
+// (contracts' githubPayload). An envelope with no state is one a listener published before it
+// copied the field, which the stream can still hold, or redeliver, when this build starts; its
+// action is the only word on the state it has, and for opened, reopened and closed that word is
+// right.
+func envelopeHeadState(payload map[string]string) string {
+	state := payload["state"]
+	if state == "" && payload["action"] == "closed" {
+		state = "closed"
+	}
+	return PullRequestHeadState(state, payload["merged"] == "true")
 }
 
 // ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
@@ -1776,7 +1794,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	}
 	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
-		BaseRef: payload["base_ref"], State: PullRequestHeadState(payload["action"], payload["merged"] == "true"),
+		BaseRef: payload["base_ref"], State: envelopeHeadState(payload),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,

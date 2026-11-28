@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The shared GitHub pull request goldens (`fixtures/github-envelopes/pull-request-*.json`) carry
+  `state`, GitHub's `open` or `closed` for the pull request when the event happened, which the
+  Envoy listener now sends in every `pull_request` envelope.
+time: 2026-11-28T14:49:46Z
+custom:
+    Issue: INFRA-3992

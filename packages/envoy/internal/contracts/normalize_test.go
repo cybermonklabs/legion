@@ -2809,6 +2809,23 @@ func TestGithubPayloadFields(t *testing.T) {
 			want: map[string]string{"head_repo": "stranger/example-repo", "head_sha": "fork-sha"},
 		},
 		{
+			// GitHub sends every action with the pull request as it stands, so a label after an
+			// unmerged close carries `closed`: the action alone says nothing of the state, and
+			// Dispatch stores the state from this field (delivery's recordPullRequestHead).
+			name:  "a pull request labeled after it closed unmerged carries its closed state",
+			event: "pull_request",
+			body: map[string]any{
+				"action":     "labeled",
+				"repository": map[string]any{"full_name": "example-org/example-repo"},
+				"pull_request": map[string]any{
+					"number": 27, "state": "closed", "merged": false,
+					"head": map[string]any{"sha": "head-sha", "ref": "feature/payloads"},
+					"base": map[string]any{"ref": "main"},
+				},
+			},
+			want: map[string]string{"action": "labeled", "state": "closed", "merged": "false"},
+		},
+		{
 			name:  "workflow run carries branch, trigger event and pull request facts",
 			event: "workflow_run",
 			body: map[string]any{

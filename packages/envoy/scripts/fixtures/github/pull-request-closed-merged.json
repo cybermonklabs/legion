@@ -16,6 +16,7 @@
     "base": {
       "ref": "main"
     },
+    "state": "closed",
     "merged": true,
     "merge_commit_sha": "3333333333333333333333333333333333333333",
     "merged_by": {
