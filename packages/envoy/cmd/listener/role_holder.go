@@ -96,7 +96,7 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 type leaderHolderSessions struct{ *session.SessionRegistry }
 
 func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, sendRequestBound(roleHolderReadTimeout))
+	return bucketSessionEntry(ctx, clock.Real(), s.SessionRegistry, sessionID, sendRequestBound(roleHolderReadTimeout))
 }
 
 // resolveRoleHolderFromLeaders resolves role's holder within ctx (roles.ResolveHolder) from the
@@ -248,10 +248,10 @@ func liveSessionEntry(
 //
 // nats.ErrKeyNotFound is the leader's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read
-// gets bound, derived from ctx, so a route answers its 503 inside the deadline its own caller
-// holds.
-func bucketSessionEntry(ctx context.Context, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+// gets bound, derived from ctx and armed on clk (the route's clock, d.clk()), so a route answers
+// its 503 inside the deadline its own caller holds.
+func bucketSessionEntry(ctx context.Context, clk clock.Clock, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, bound)
 	defer cancel()
 	return sessions.RefreshFromLeader(readCtx, sessionID)
 }
@@ -427,7 +427,7 @@ func roleSupersessionVerdict(ctx context.Context, clk clock.Clock, sessions *ses
 			return roleStaysWithHolder, nil
 		}
 	}
-	predecessor, err := bucketSessionEntry(ctx, sessions, holder, sendRequestBound(roleHolderReadTimeout))
+	predecessor, err := bucketSessionEntry(ctx, clk, sessions, holder, sendRequestBound(roleHolderReadTimeout))
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil

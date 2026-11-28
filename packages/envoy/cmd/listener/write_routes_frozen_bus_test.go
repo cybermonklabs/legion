@@ -8,24 +8,22 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
-
-// writeRoutesWithin is how long a write route may take to answer a bus that stopped answering: its
-// sendRequestBudget (3.5 s) and a margin, inside the HTTP client's 5 s attempt.
-const writeRoutesWithin = 4 * time.Second
 
 // writeRouteRig is a listener's stores and /v1 routes on a bus reached through the relay
 // TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget freezes.
@@ -36,7 +34,7 @@ type writeRouteRig struct {
 	mux      *http.ServeMux
 }
 
-func newWriteRouteRig(t *testing.T) *writeRouteRig {
+func newWriteRouteRig(t *testing.T, clk clock.Clock) *writeRouteRig {
 	t.Helper()
 	relay := startListenerRelay(t, testnats.URL(t))
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
@@ -44,20 +42,17 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the interest registry: %v", err)
-	}
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
+	stores := openStampRig(t, client)
 	mux := http.NewServeMux()
 	// The session consumers connect to the server directly, not through the relay: the freeze
 	// under test is the store's, and a registration reaches the store only once it has its
 	// consumer.
-	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}), "test-machine", logging.New("test"))
-	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux}
+	consumers := setupSessionConsumers(t, client)
+	consumers.clock = clk
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{
+		client: client, registry: stores.registry, sessions: stores.sessions, consumers: consumers, clock: clk,
+	}), "test-machine", logging.New("test"))
+	return &writeRouteRig{relay: relay, registry: stores.registry, sessions: stores.sessions, mux: mux}
 }
 
 func (rig *writeRouteRig) register(t *testing.T, ids ...string) {
@@ -72,23 +67,17 @@ func (rig *writeRouteRig) register(t *testing.T, ids ...string) {
 	}
 }
 
-func (rig *writeRouteRig) serve(method, path, body string) (*httptest.ResponseRecorder, time.Duration) {
-	recorder := httptest.NewRecorder()
-	started := time.Now()
-	rig.mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))
-	return recorder, time.Since(started)
+func (rig *writeRouteRig) answer(t *testing.T, method, path, body string) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	return routeAnswer(t, rig.mux.ServeHTTP, httptest.NewRequest(method, path, strings.NewReader(body)))
 }
 
-// wantWriteBusUnansweredWithin asserts the named 503 with Retry-After: 1 (wantWriteBusUnanswered),
-// answered inside writeRoutesWithin.
-func wantWriteBusUnansweredWithin(t *testing.T, route string, recorder *httptest.ResponseRecorder, elapsed time.Duration) {
+// Expire only after the relay has swallowed this request's bus call.
+func expireFrozenRoute(t *testing.T, fake *clocktest.Fake, relay *listenerRelay, route string, deadline time.Time) {
 	t.Helper()
-	if elapsed >= writeRoutesWithin {
-		t.Fatalf("%s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
-			route, elapsed, recorder.Code, recorder.Body.String(), writeRoutesWithin)
-	}
-	wantWriteBusUnanswered(t, route, recorder)
-	t.Logf("%s with the bus silent: answered in %s", route, elapsed)
+	fake.AwaitArmedAt(t, route+" budget", deadline)
+	testwait.Receive(t, "the relay to swallow the bus call for "+route, relay.swallowed)
+	fake.Set(deadline)
 }
 
 // wantWriteBusUnanswered asserts the named 503 with Retry-After: 1.
@@ -107,12 +96,9 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
 	}
-	t.Logf("%s with the bus silent: 503 once its budget was spent: %s", route, refusal.Error)
+	t.Logf("%s with the bus silent: 503: %s", route, refusal.Error)
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
-//
 // Every /v1 route that writes - subscribe, unsubscribe, DELETE /v1/interests/<session_id>, POST
 // /v1/roles/set and DELETE /v1/sessions/<session_id> - does its store work within
 // sendRequestBudget of the request's own context. nats.go's KV reads and writes take no context
@@ -125,34 +111,17 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 // is cached, so the plan or the unsubscribe's first read is answered from memory and the write's
 // own work is what meets the silent bus - the row read a registration's compare-and-swap is built
 // from and fenced on (store.Registry.UpsertPlanned), and the unsubscribe's write itself. POST
-// /v1/roles/set's first bucket call is the read the claimant's registration write is built from
-// (store.Registry.UpsertWithin), and DELETE /v1/sessions/<session_id>'s the session bucket's
-// read-then-delete. The negative control is each route asked before the freeze, on the same rig,
-// for a session of its own: each is served.
+// /v1/roles/set first reads the claimant's session from the bucket, and DELETE
+// /v1/sessions/<session_id> reads before it deletes. Each row controls for a bad request by
+// serving the same route before the freeze for a session of its own.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
-	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
-	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
+	t.Parallel()
 	const (
-		topic         = "notifications.team.write-routes"
-		otherTopic    = "notifications.team.write-routes-other"
-		control       = "ses_write_routes_control"
-		controlLeaver = "ses_write_routes_control_leaving"
-		subscriber    = "ses_write_routes_subscriber_with_no_record"
-		unsubscriber  = "ses_write_routes_unsubscriber_with_no_record"
-		removed       = "ses_write_routes_removed_with_no_record"
-		cachedSub     = "ses_write_routes_cached_subscriber"
-		cachedUnsub   = "ses_write_routes_cached_unsubscriber"
-		claimant      = "ses_write_routes_claimant"
-		leaver        = "ses_write_routes_leaving"
+		topic      = "notifications.team.write-routes"
+		otherTopic = "notifications.team.write-routes-other"
+		control    = "ses_write_routes_control"
+		target     = "ses_write_routes_frozen"
 	)
-	rig := newWriteRouteRig(t)
-	rig.register(t, control, controlLeaver, claimant, leaver)
-	for _, id := range []string{cachedSub, cachedUnsub} {
-		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id},
-			[]string{contracts.LegacyAgentSubject(id), topic, otherTopic}); err != nil {
-			t.Fatalf("write %s's interest record: %v", id, err)
-		}
-	}
 	subscribe := func(id, topic string) string {
 		return `{"session_id":"` + id + `","topics":["` + topic + `"],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"}}`
 	}
@@ -160,99 +129,118 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 		return `{"session_id":"` + id + `","topics":["` + topic + `"]}`
 	}
 
-	// The control: with the bus answering, every route is served.
-	for _, request := range []struct {
-		method, path, body string
-		want               int
-	}{
-		{http.MethodPost, "/v1/interests/subscribe", subscribe(control, topic), http.StatusOK},
-		{http.MethodPost, "/v1/interests/unsubscribe", unsubscribe(control, topic), http.StatusOK},
-		{http.MethodDelete, "/v1/interests/" + control, "", http.StatusNoContent},
-		{http.MethodPost, "/v1/roles/set", `{"session_id":"` + control + `","role":"write-routes-control"}`, http.StatusOK},
-		{http.MethodDelete, "/v1/sessions/" + controlLeaver, "", http.StatusOK},
-	} {
-		if recorder, _ := rig.serve(request.method, request.path, request.body); recorder.Code != request.want {
-			t.Fatalf("%s %s with the bus answering: status %d, body %s; want %d", request.method, request.path, recorder.Code, recorder.Body.String(), request.want)
-		}
-	}
-	listed, err := rig.registry.List()
-	if err != nil {
-		t.Fatalf("list the interest cache: %v", err)
-	}
-	var cachedIDs []string
-	for _, item := range listed {
-		cachedIDs = append(cachedIDs, item.SessionID)
-	}
-	for _, id := range []string{subscriber, unsubscriber, removed} {
-		if slices.Contains(cachedIDs, id) {
-			t.Fatalf("the interest cache holds %s (%v), want it read from the bucket", id, cachedIDs)
-		}
-	}
-	for _, id := range []string{cachedSub, cachedUnsub} {
-		if !slices.Contains(cachedIDs, id) {
-			t.Fatalf("the interest cache does not hold %s (%v): its write would not be what meets the silent bus", id, cachedIDs)
-		}
-	}
-
-	// The next protocol line the client writes arms the swallow; every byte after it is discarded
-	// and the connection stays open, so the client still reports itself connected.
-	rig.relay.arm("\r\n", 1)
-
+	interest := func(id string) string { return "/v1/interests/" + id }
+	sessionPath := func(id string) string { return "/v1/sessions/" + id }
+	claim := func(id string) string { return `{"session_id":"` + id + `","role":"write-routes"}` }
 	t.Run("frozen", func(t *testing.T) {
-		for _, request := range []struct {
-			name, method, path, body string
+		for _, row := range []struct {
+			name, method string
+			path, body   func(string) string
+			want         int
+			registered   bool
+			cached       bool
 		}{
-			{"subscribe", http.MethodPost, "/v1/interests/subscribe", subscribe(subscriber, topic)},
-			{"subscribe a cached session", http.MethodPost, "/v1/interests/subscribe", subscribe(cachedSub, "notifications.team.write-routes-new")},
-			{"unsubscribe", http.MethodPost, "/v1/interests/unsubscribe", unsubscribe(unsubscriber, topic)},
-			{"unsubscribe a cached session", http.MethodPost, "/v1/interests/unsubscribe", unsubscribe(cachedUnsub, otherTopic)},
-			{"delete interests", http.MethodDelete, "/v1/interests/" + removed, ""},
-			{"claim a role", http.MethodPost, "/v1/roles/set", `{"session_id":"` + claimant + `","role":"write-routes"}`},
-			{"delete a session", http.MethodDelete, "/v1/sessions/" + leaver, ""},
+			{"subscribe", http.MethodPost, func(string) string { return "/v1/interests/subscribe" }, func(id string) string { return subscribe(id, topic) }, http.StatusOK, false, false},
+			{"subscribe a cached session", http.MethodPost, func(string) string { return "/v1/interests/subscribe" }, func(id string) string { return subscribe(id, "notifications.team.write-routes-new") }, http.StatusOK, false, true},
+			{"unsubscribe", http.MethodPost, func(string) string { return "/v1/interests/unsubscribe" }, func(id string) string { return unsubscribe(id, topic) }, http.StatusOK, false, false},
+			{"unsubscribe a cached session", http.MethodPost, func(string) string { return "/v1/interests/unsubscribe" }, func(id string) string { return unsubscribe(id, otherTopic) }, http.StatusOK, false, true},
+			{"delete interests", http.MethodDelete, interest, func(string) string { return "" }, http.StatusNoContent, false, false},
+			{"claim a role", http.MethodPost, func(string) string { return "/v1/roles/set" }, claim, http.StatusOK, true, false},
+			{"delete a session", http.MethodDelete, sessionPath, func(string) string { return "" }, http.StatusOK, true, false},
 		} {
-			t.Run(request.name, func(t *testing.T) {
+			t.Run(row.name, func(t *testing.T) {
 				t.Parallel()
-				recorder, elapsed := rig.serve(request.method, request.path, request.body)
-				wantWriteBusUnansweredWithin(t, request.method+" "+request.path, recorder, elapsed)
+				fake := clocktest.New(time.Unix(0, 0))
+				rig := newWriteRouteRig(t, fake)
+				rig.register(t, control)
+				if row.registered {
+					rig.register(t, target)
+				}
+				seed := func(id string) {
+					t.Helper()
+					if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id},
+						[]string{contracts.LegacyAgentSubject(id), topic, otherTopic}); err != nil {
+						t.Fatalf("write %s's interest record: %v", id, err)
+					}
+				}
+				seed(control)
+				if row.cached {
+					seed(target)
+				}
+				if recorder := testwait.Receive(t, "the control "+row.name+" to answer", rig.answer(t, row.method, row.path(control), row.body(control))); recorder.Code != row.want {
+					t.Fatalf("%s %s with the bus answering: status %d, body %s; want %d", row.method, row.path(control), recorder.Code, recorder.Body.String(), row.want)
+				}
+				if _, cached := rig.registry.Cached(target); cached != row.cached {
+					t.Fatalf("%s's interest record cached = %t, want %t", target, cached, row.cached)
+				}
+
+				rig.relay.arm(target, 1)
+				route := row.method + " " + row.path(target)
+				deadline := fake.Now().Add(sendRequestBudget)
+				answered := rig.answer(t, row.method, row.path(target), row.body(target))
+				expireFrozenRoute(t, fake, rig.relay, route, deadline)
+				wantWriteBusUnanswered(t, route, testwait.Receive(t, route+" to refuse the silent bus at its budget", answered))
 			})
 		}
 	})
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: each answer inside 4 s, from a route whose budget is 3.5 s (writeRoutesWithin).
-//
 // POST /v1/roles/set's claim (store.Registry.SetRoleWithPrevious) and a soft claim's read of the
 // role's holder are role-bucket calls the claimant's registration write does not reach, so each
 // is frozen on its own here: the relay passes everything up to the first protocol line naming the
 // role bucket and swallows that line and every one after it. For the claim's read that is the
 // direct get of the claim, published to $JS.API.DIRECT.GET; for the claim's write it is the
-// hard claim's unconditional publish of the claim to its own subject, which nats.go sends after
+// hard claim's conditional publish of the claim to its own subject, which nats.go sends after
 // the read and the claimant's interest write have answered, so the write itself is what meets the
 // silent bus, and the rollback that follows a write that did not answer must not take the request
 // past its budget either. The negative control is a hard claim of another role
 // (role-store-control) by the same claimant on the same rig before the freeze: it is served.
 func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.T) {
-	// Not parallel: it requires each 503 within writeRoutesWithin (4 s), 0.5 s past
-	// sendRequestBudget (3.5 s) (wantWriteBusUnanswered).
-	const claimant = "ses_role_store_claimant"
+	t.Parallel()
+	const (
+		claimant = "ses_role_store_claimant"
+		path     = "/v1/roles/set"
+	)
 	for _, freeze := range []struct {
 		name, trigger, body string
+		onClock             bool
 	}{
-		{"the claim's read", "KV_" + bus.RoleClaimBucket, `{"session_id":"` + claimant + `","role":"role-store-read"}`},
-		{"a soft claim's read", "KV_" + bus.RoleClaimBucket, `{"session_id":"` + claimant + `","role":"role-store-soft","soft":true}`},
-		{"the claim's write", "PUB $KV." + bus.RoleClaimBucket + ".", `{"session_id":"` + claimant + `","role":"role-store-write"}`},
+		{"the claim's read", "role-store-read", `{"session_id":"` + claimant + `","role":"role-store-read"}`, false},
+		{"a soft claim's read", "role-store-soft", `{"session_id":"` + claimant + `","role":"role-store-soft","soft":true}`, true},
+		{"the claim's write", "PUB $KV." + bus.RoleClaimBucket + ".role-store-write", `{"session_id":"` + claimant + `","role":"role-store-write"}`, false},
 	} {
 		t.Run(freeze.name, func(t *testing.T) {
 			t.Parallel()
-			rig := newWriteRouteRig(t)
+			var clk clock.Clock = clock.Real()
+			fake := clocktest.New(time.Unix(0, 0))
+			if freeze.onClock {
+				clk = fake
+			}
+			rig := newWriteRouteRig(t, clk)
 			rig.register(t, claimant)
-			if recorder, _ := rig.serve(http.MethodPost, "/v1/roles/set", `{"session_id":"`+claimant+`","role":"role-store-control"}`); recorder.Code != http.StatusOK {
+			if recorder := testwait.Receive(t, "the control role claim to answer", rig.answer(t, http.MethodPost, path, `{"session_id":"`+claimant+`","role":"role-store-control"}`)); recorder.Code != http.StatusOK {
 				t.Fatalf("POST /v1/roles/set with the bus answering: status %d, body %s; want 200", recorder.Code, recorder.Body.String())
 			}
 			rig.relay.arm(freeze.trigger, 1)
-			recorder, elapsed := rig.serve(http.MethodPost, "/v1/roles/set", freeze.body)
-			wantWriteBusUnansweredWithin(t, "POST /v1/roles/set", recorder, elapsed)
+			const route = "POST " + path
+			if freeze.onClock {
+				deadline := fake.Now().Add(sendRequestBudget)
+				answered := rig.answer(t, http.MethodPost, path, freeze.body)
+				expireFrozenRoute(t, fake, rig.relay, route, deadline)
+				wantWriteBusUnanswered(t, route, testwait.Receive(t, "the soft claim to refuse the unanswered role read at its budget", answered))
+				return
+			}
+			// The store's tries and detached rollback use real deadlines (INFRA-6348).
+			// Shorten the caller's attempt as an input to the route, not the test's wait.
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(freeze.body))
+			answered := routeAnswer(t, func(w http.ResponseWriter, r *http.Request) {
+				ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+				defer cancel()
+				rig.mux.ServeHTTP(w, r.WithContext(ctx))
+			}, request)
+			testwait.Receive(t, "the relay to swallow "+freeze.name, rig.relay.swallowed)
+			recorder := testwait.Receive(t, "the hard claim to refuse the unanswered role store", answered)
+			wantWriteBusUnanswered(t, route, recorder)
 		})
 	}
 }

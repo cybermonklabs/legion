@@ -11,6 +11,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	envoyclock "github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -259,7 +260,7 @@ func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve %s: %v", role, err)
 	}
-	leader, err := bucketSessionEntry(context.Background(), harness.sessions, holder, roleHolderReadTimeout)
+	leader, err := bucketSessionEntry(context.Background(), envoyclock.Real(), harness.sessions, holder, roleHolderReadTimeout)
 	if err != nil {
 		t.Fatalf("read %s from the leader: %v", holder, err)
 	}
