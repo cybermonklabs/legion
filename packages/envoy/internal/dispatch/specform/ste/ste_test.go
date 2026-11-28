@@ -342,9 +342,12 @@ const walksOfALine = 5
 // phrasal verb, marketing adjective and nominalization, and the first place of each member of a
 // synonym group, which stand after words of "é" here. An agent's document can hold such a line,
 // and the approval request holds its transaction while Lint reads it. The test counts the
-// characters that Lint counts through runes, which no load of the machine changes. All of the
-// work of a judgment, a count spelled in another way among it, is the work that
-// specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText measures.
+// characters that Lint counts through runes, which no load of the machine changes. It is the one
+// test that holds a count of a column spelled through runes: specform's work table
+// (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText) counts the statements a judgment
+// executes with coverage counters, which the standard library has none of, so a call of runes,
+// utf8.RuneCountInString, counts there as one statement whatever it reads, and a column counted
+// again from the start of the line through it grows that count no faster than the findings.
 func TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce(t *testing.T) {
 	var data ruleData
 	if err := json.Unmarshal(rulesJSON, &data); err != nil {
