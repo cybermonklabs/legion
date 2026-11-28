@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The refusals of the objects a /api/v2/me route's path names (dispatch://INFRA-4071/spec R7).
@@ -760,9 +761,16 @@ func markItemWrite(item markItemV2) (markWrite, error) {
 }
 
 // markStep is one write of a mark that is no dismissal, run in the transaction of every write of its
-// request once each has been read: it answers how many marks it changed and the events, not yet
-// appended, that announce them.
-type markStep func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error)
+// request once each has been read, with the threads that transaction took before its item writes
+// (markHeld): it answers how many marks it changed and the events, not yet appended, that announce
+// them.
+type markStep func(ctx context.Context, tx pgx.Tx, held markHeld) (int, []model.Event, error)
+
+// markHeld is the threads step 2 of writeMarksIn took (lockMarkThreads): those of the threads the
+// request names that the caller has a user_threads row for as that step reads them, whose owner
+// and row the transaction holds from there on. A read mark of any other thread writes nothing, as
+// one of a thread the caller has no row for does (planThreadMark).
+type markHeld map[string]struct{}
 
 // markEvents is the one event of a step that announces one, or none.
 func markEvents(event *model.Event) (int, []model.Event) {
@@ -817,7 +825,7 @@ func (s *server) writeMarks(w http.ResponseWriter, r *http.Request, actor model.
 			steps = append(steps, step)
 		}
 	}
-	updated, events, err := s.writeMarksIn(r.Context(), actor, steps, dismissals)
+	updated, events, err := s.writeMarksIn(r.Context(), actor, writes, steps, dismissals)
 	var stale *markStale
 	if errors.As(err, &stale) {
 		code, status := refusalPair(r, apicode.StateStale)
@@ -833,8 +841,9 @@ func (s *server) writeMarks(w http.ResponseWriter, r *http.Request, actor model.
 }
 
 // writeMarksIn is writeMarks' one transaction, which answers how many marks changed and the events
-// appended, to publish; any error rolls back everything before it. It takes its locks in one order
-// before any write, so no two of a person's mark writes can each hold a lock the other waits on:
+// appended, to publish; any error rolls back everything before it. It takes every lock an item
+// write takes before the first of them, in the order below, so that an item write only takes again
+// what the transaction already holds:
 //
 //  1. the caller's marks lock, alone (lockPersonMarks, marksAlone), first, before anything else.
 //     Every row of a mark is the caller's own - user_issue_state, user_agent_state,
@@ -844,28 +853,52 @@ func (s *server) writeMarks(w http.ResponseWriter, r *http.Request, actor model.
 //     taken up front can order: a row of user_issue_state or user_ask_snooze may not exist before
 //     its write inserts it. So this write runs before or after every other of the same person's
 //     that writes more than one mark row - another of these, a mark-all, a dismissal, a
-//     conversation's state - and waits holding nothing. Two people's writes never take one
-//     another's rows; what they share is taken in a level that does not conflict with itself (an
-//     owner `for share`, a foreign key's `for key share`) or in one sorted order (the projects,
-//     below), so neither waits on the other in a cycle.
+//     conversation's state - and waits holding nothing.
 //  2. then, before any item is written, steps 1 to 3 of the Inbox's lock order
-//     (markInboxReadThreads) over every thread the request names - the owner of each, `for share`,
-//     in owner-key order; the root of each Agent thread it dismisses, `for update`, in id order; and
-//     the caller's user_threads row of each, `for no key update`, in thread-id order - which is the
-//     order a mark-all, a dismissal, a one-thread read mark and a session's reply take them in, so
-//     this transaction takes them as every other writer of the Inbox does (lockMarkThreads).
+//     (markInboxReadThreads) over every thread the request names (lockMarkThreads): the owner of
+//     each, documents then issues, each statement in lock-key order; the root of each Agent thread
+//     it dismisses, `for update`, in id order; and the caller's user_threads row of each, `for no
+//     key update`, in thread-id order - the order a mark-all, a dismissal, a one-thread read mark
+//     and a session's reply take them in. The owners are taken exclusively where the request names
+//     a read mark, which takes its thread's owner exclusively (moveThreadReadIn), and in shared
+//     mode otherwise, as a dismissal takes them. They are all taken here and in one mode: two
+//     writes that each held an owner in shared mode and then asked for it exclusively would each
+//     wait for the other's shared hold to end, and a write that took some owners exclusively and
+//     then others in shared mode would take its owners in two orders. The threads it takes are
+//     those the caller has a row for as this step reads them (markHeld), and a read mark of any
+//     other writes nothing, as one of a thread the caller has no row for does, even where the
+//     caller's row on it lands before step 5: its write would take that thread's owner there,
+//     after step 4's projects.
 //  3. the dismissals and the restores, which take the order's steps 4 and 5 and re-take what step
-//     2 took; then each item write that is no dismissal, in order, over the caller's own rows.
-//  4. the project of every event, in one sorted order (LockOwners), after every row and before the
-//     first event is appended: the order's step 6, which every one of these writers takes last.
-func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []markStep, dismissals markDismissals) (int, []model.Event, error) {
+//     2 took.
+//  4. the project of every issue, ask and thread the request names, in one sorted order
+//     (lockMarkProjects): each project an item write takes as it writes (writeUserIssueStateIn,
+//     moveThreadReadIn) and each project an event of the request is appended to. That is the
+//     order's step 6, which every one of these writers takes after its rows, taken here before the
+//     first item write rather than after the last: two people's writes that each took a project
+//     as an item reached it, or took one there and the rest with the events, would each hold a
+//     project the other waits for. A read mark's project is taken here whether or not the mark
+//     moves, so on this path a revisit of a thread that moves nothing waits behind every event
+//     write in that thread's project; PUT /api/v1/me/threads/{id}/read keeps the old order, the
+//     owner and then the project only once its mark moves (moveThreadReadIn), and waits on no
+//     project for a revisit.
+//  5. each item write that is no dismissal, in order, over the caller's own rows: a read mark
+//     takes again its thread's owner and its project, and an issue mark its project, each held
+//     since step 2 or 4; then the project of every event, held too (LockOwners), and the appends.
+//
+// Two people's writes take no row of each other's. What they share is the owners of the threads
+// they name, taken in step 2's one order, the projects, taken in step 4's, and a foreign key's `for
+// key share` on a target's row, which no lock of another person's write of marks conflicts with,
+// so neither waits on the other in a cycle (TestV2BulkMarksOfTwoPeopleAtOnceBothLand).
+func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, writes []markWrite, steps []markStep, dismissals markDismissals) (int, []model.Event, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	// The transaction holds owner rows `for share` while its writes run, as the dismissal's own
-	// does, so it is held to the same bound (boundInboxStatements).
+	// The transaction holds the owners of the threads it names (step 2 above) while its writes
+	// run, as the dismissal holds its own, so every comment, answer and issue message on those
+	// owners waits behind it: it is held to the dismissal's bound (boundInboxStatements).
 	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the marks' statements: %w", err)
 	}
@@ -881,7 +914,13 @@ func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []ma
 	}
 	threads := slices.Concat(dismissals.read, dismissals.dismiss.threads, dismissals.restore.threads)
 	slices.Sort(threads)
-	if err := lockMarkThreads(ctx, tx, actor, login, slices.Compact(threads), dismissals.dismiss.roots); err != nil {
+	threads = slices.Compact(threads)
+	owners := store.LockOwnersShared
+	if len(dismissals.read) > 0 {
+		owners = store.LockOwners
+	}
+	held, err := lockMarkThreads(ctx, tx, actor, login, threads, dismissals.dismiss.roots, owners)
+	if err != nil {
 		return 0, nil, err
 	}
 	updated := 0
@@ -901,8 +940,11 @@ func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []ma
 		updated += changed
 		events = append(events, announced...)
 	}
+	if err := lockMarkProjects(ctx, tx, login, writes, threads); err != nil {
+		return 0, nil, err
+	}
 	for _, step := range steps {
-		changed, announced, err := step(ctx, tx)
+		changed, announced, err := step(ctx, tx, held)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -930,36 +972,101 @@ func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []ma
 
 // lockMarkThreads takes steps 1 to 3 of the Inbox's lock order (markInboxReadThreads) over the
 // threads a request of the caller's marks names, sorted, and over the Agent threads it dismisses,
-// sorted: each thread's owner's lock in shared mode, documents then issues (lockInboxReadOwners,
-// store.LockOwnersShared); the root of each Agent thread still in the caller's Inbox `for update`
-// (inboxDismissLockAgentRoots), read as the dismissal reads its roots so that no root of another
-// person's is ever taken; and the caller's user_threads row of each thread `for no key update`
-// (inboxReadLockThreads). A thread the caller has no row for takes nothing, as it is written
+// sorted: each thread's owner's lock through owners - store.LockOwners or store.LockOwnersShared,
+// as writeMarksIn chooses - documents then issues (lockInboxReadOwners); the root of each Agent
+// thread still in the caller's Inbox `for update` (inboxDismissLockAgentRoots), read as the
+// dismissal reads its roots so that no root of another person's is ever taken; and the caller's
+// user_threads row of each thread `for no key update` (inboxReadLockThreads). It answers the
+// threads it took (markHeld). A thread the caller has no row for takes nothing, as it is written
 // nothing.
-func lockMarkThreads(ctx context.Context, tx pgx.Tx, actor model.Actor, login string, threads, roots []string) error {
+func lockMarkThreads(
+	ctx context.Context, tx pgx.Tx, actor model.Actor, login string, threads, roots []string,
+	owners func(context.Context, store.OwnerLocker, ...store.Owner) error,
+) (markHeld, error) {
 	read := newInboxReadThreads()
 	if len(threads) > 0 {
 		if err := readInboxReplyRows(ctx, tx, &read, inboxDismissNamedThreads, login, threads); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if len(roots) > 0 {
 		if err := readInboxAgentRows(ctx, tx, &read, inboxDismissAgentByID, append(unreadDirectRepliesArgs(actor.ID, nil), roots)); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	if err := lockInboxReadOwners(ctx, tx, read); err != nil {
-		return err
+	if err := lockInboxReadOwners(ctx, tx, read, owners); err != nil {
+		return nil, err
 	}
 	if len(read.agentRoots) > 0 {
 		if _, err := tx.Exec(ctx, inboxDismissLockAgentRoots, read.agentRoots); err != nil {
-			return fmt.Errorf("lock the agent threads' roots: %w", err)
+			return nil, fmt.Errorf("lock the agent threads' roots: %w", err)
 		}
 	}
+	var held markHeld
 	if len(read.threads) > 0 {
 		if _, err := tx.Exec(ctx, inboxReadLockThreads, login, read.threads); err != nil {
-			return fmt.Errorf("lock the caller's threads: %w", err)
+			return nil, fmt.Errorf("lock the caller's threads: %w", err)
 		}
+		held = make(markHeld, len(read.threads))
+		for _, thread := range read.threads {
+			held[thread] = struct{}{}
+		}
+	}
+	return held, nil
+}
+
+// markProjects is the project of every issue ($1), ask ($2) and thread of the caller's ($3, $4) a
+// request of the caller's marks names, each once: the issue's; the ask's issue's or its document's,
+// as askSnoozeEvent reads it; and the caller's user_threads row's, which a thread the caller has no
+// row for has none of.
+const markProjects = `
+	select project_key from (
+		select project_key from issues where key = any($1::text[])
+		union
+		select coalesce(i.project_key, ar.project_key)
+		from asks a
+		left join issues i on i.key = a.issue_key
+		left join artifacts ar on ar.id = a.artifact_id
+		where a.id = any($2::uuid[])
+		union
+		select project_key from user_threads where login = $3 and thread_id = any($4::uuid[])
+	) named
+	where project_key is not null`
+
+// lockMarkProjects takes, in one statement sorted by lock key (store.LockOwners), the project of
+// every issue, ask and thread a request of the caller's marks names (markProjects): the project an
+// issue mark and a read mark take as they write (writeUserIssueStateIn, moveThreadReadIn), and the
+// project of every event the request appends - an issue mark's, a read mark's, an ask snooze's,
+// and a thread dismissal's or restore's - so that each of those takes again a lock the
+// transaction holds. An agent mark's and a message's events name no project, and a document mark
+// appends none.
+func lockMarkProjects(ctx context.Context, tx pgx.Tx, login string, writes []markWrite, threads []string) error {
+	var issues, asks []string
+	for _, write := range writes {
+		switch write.kind {
+		case "issue":
+			issues = append(issues, write.id)
+		case "ask":
+			asks = append(asks, write.id)
+		}
+	}
+	if len(issues) == 0 && len(asks) == 0 && len(threads) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, markProjects, issues, asks, login, threads)
+	if err != nil {
+		return fmt.Errorf("read the marks' projects: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read the marks' projects: %w", err)
+	}
+	projects := make([]store.Owner, 0, len(keys))
+	for _, key := range keys {
+		projects = append(projects, store.ProjectOwner(key))
+	}
+	if err := store.LockOwners(ctx, tx, projects...); err != nil {
+		return fmt.Errorf("lock the marks' projects: %w", err)
 	}
 	return nil
 }
@@ -979,7 +1086,7 @@ func (s *server) planMarkWrite(w http.ResponseWriter, r *http.Request, actor mod
 			return nil, false
 		}
 		state := userIssueStateInput{Pinned: input.Pinned, LastReadSeq: input.LastReadSeq, Dismissed: input.PinnedItems, Seq: input.Seq}
-		return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+		return func(ctx context.Context, tx pgx.Tx, _ markHeld) (int, []model.Event, error) {
 			_, event, err := s.writeUserIssueStateIn(ctx, tx, acting, write.id, state)
 			var stale *userStateStale
 			if errors.As(err, &stale) {
@@ -996,7 +1103,7 @@ func (s *server) planMarkWrite(w http.ResponseWriter, r *http.Request, actor mod
 			s.writeHandlerError(w, r, err)
 			return nil, false
 		}
-		return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+		return func(ctx context.Context, tx pgx.Tx, _ markHeld) (int, []model.Event, error) {
 			announced, err := s.writeUserAgentStateIn(ctx, tx, actor, write.id, parsed)
 			if err != nil || !announced {
 				return 0, nil, err
@@ -1011,7 +1118,7 @@ func (s *server) planMarkWrite(w http.ResponseWriter, r *http.Request, actor mod
 			writeError(w, r, apicode.InvalidState, fmt.Sprintf("read_version must be a whole number from 0 to %d", maxIntegerColumn))
 			return nil, false
 		}
-		return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+		return func(ctx context.Context, tx pgx.Tx, _ markHeld) (int, []model.Event, error) {
 			_, err := writeDocumentRead(ctx, tx, model.CanonicalLogin(actor.ID), write.id, *input.ReadVersion)
 			return 1, nil, err
 		}, true
@@ -1056,7 +1163,14 @@ func (s *server) planThreadMark(w http.ResponseWriter, r *http.Request, actor mo
 		return nil, true
 	}
 	dismissals.read = append(dismissals.read, id)
-	return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+	return func(ctx context.Context, tx pgx.Tx, held markHeld) (int, []model.Event, error) {
+		// A thread step 2 of writeMarksIn did not take is written nothing, as one the caller has no
+		// row for: a row of the caller's that landed after that step read them names an owner this
+		// transaction does not hold, and taking it here, after the projects (lockMarkProjects),
+		// would wait for a writer of that owner that may itself wait for one of those projects.
+		if _, taken := held[id]; !taken {
+			return 0, nil, nil
+		}
 		event, err := s.moveThreadReadIn(ctx, tx, actor, id, *input.ReadThrough)
 		changed, events := markEvents(event)
 		return changed, events, err
@@ -1107,7 +1221,7 @@ func (s *server) planAskMark(w http.ResponseWriter, r *http.Request, actor model
 		return nil, false
 	}
 	if string(input.SnoozedUntil) == "null" {
-		return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+		return func(ctx context.Context, tx pgx.Tx, _ markHeld) (int, []model.Event, error) {
 			event, err := s.unsnoozeAskIn(ctx, tx, actor, id)
 			changed, events := markEvents(event)
 			return changed, events, err
@@ -1123,7 +1237,7 @@ func (s *server) planAskMark(w http.ResponseWriter, r *http.Request, actor model
 		writeError(w, r, apicode.SnoozeInput, "snoozed_until must be an RFC3339 timestamp, or null to un-snooze the ask")
 		return nil, false
 	}
-	return func(ctx context.Context, tx pgx.Tx) (int, []model.Event, error) {
+	return func(ctx context.Context, tx pgx.Tx, _ markHeld) (int, []model.Event, error) {
 		_, event, err := s.snoozeAskIn(ctx, tx, actor, id, until)
 		changed, events := markEvents(event)
 		return changed, events, err

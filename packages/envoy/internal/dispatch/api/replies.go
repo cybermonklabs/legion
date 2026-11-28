@@ -969,13 +969,21 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 // announces it, for its caller to append: the work of PUT /api/v1/me/threads/{id}/read and of a
 // thread mark's write under /api/v2. A thread the caller has no row for writes nothing, and
 // neither does a mark already at or past readThrough.
+//
+// The two lock orders differ. PUT /api/v1/me/threads/{id}/read takes the thread's owner here and
+// then, only once the mark moves, its project. Under /api/v2 the write of every mark has taken the
+// thread's owner and the thread's project before this runs, whether or not the mark moves
+// (writeMarksIn's steps 2 and 4), and calls this only for a thread it took (markHeld), so both
+// locks below are taken again and wait on nothing.
 func (s *server) moveThreadReadIn(ctx context.Context, tx pgx.Tx, actor model.Actor, threadID, readThrough string) (*model.Event, error) {
 	login := model.CanonicalLogin(actor.ID)
-	// The read phase holds no transaction id. The caller's row is read first and plainly, for
-	// the owners it names: the thread's, which the lock below takes, and the project, which the
-	// event's append takes. Neither ever changes on a row that stands - the trigger writes them
-	// when it inserts the row and moves only its marks afterwards (user_threads_record,
-	// migration 20261105093501) - so they are read before any lock and used after it.
+	// On PUT /api/v1/me/threads/{id}/read the read phase holds no transaction id; under /api/v2
+	// the row locks of writeMarksIn's step 2 already gave it one. The caller's row is read first
+	// and plainly, for the owners it names: the thread's, which the lock below takes, and the
+	// project, which the event's append takes. Neither ever changes on a row that stands - the
+	// trigger writes them when it inserts the row and moves only its marks afterwards
+	// (user_threads_record, migration 20261105093501) - so they are read before any lock and used
+	// after it.
 	var project string
 	var issueKey, artifactID *string
 	err := tx.QueryRow(ctx, `
@@ -1004,10 +1012,13 @@ func (s *server) moveThreadReadIn(ctx context.Context, tx pgx.Tx, actor model.Ac
 	// now(), which is this transaction's own start. Nothing can move the row between the read and
 	// the update: every writer of it holds the owner this transaction now holds exclusively.
 	//
-	// A revisit that moves nothing stops here, having taken no project lock and no transaction
-	// id: the thread on screen marks itself on every visit, and a mark that announced one would
-	// refetch the count in every tab the viewer has open, and would queue every such visit behind
-	// every write of events in that project.
+	// On PUT /api/v1/me/threads/{id}/read a revisit that moves nothing stops here, having taken no
+	// project lock and no transaction id: the thread on screen marks itself on every visit, and a
+	// mark that announced one would refetch the count in every tab the viewer has open, and would
+	// queue every such visit behind every write of events in that project. Under /api/v2 such a
+	// revisit announces nothing either, but writeMarksIn took the project and the caller's row
+	// before this ran, so there it has already waited behind that project's event writes: the cost
+	// of taking every project of a write of marks in one sorted order before its first item write.
 	var moves bool
 	if err := store.LockOwnerAndRead(ctx, tx, *owner,
 		`select exists (select 1 from user_threads where `+threadReadMoves+`)`,

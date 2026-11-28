@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // POST /api/v1/me/inbox/dismiss takes a thread out of the person's Inbox, and puts it back, and so
@@ -705,7 +706,7 @@ func (s *server) dismissInboxThreadsIn(
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := lockInboxReadOwners(ctx, tx, read); err != nil {
+	if err := lockInboxReadOwners(ctx, tx, read, store.LockOwnersShared); err != nil {
 		return 0, nil, err
 	}
 	if !plan.restore && len(read.agentRoots) > 0 {

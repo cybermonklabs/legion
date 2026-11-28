@@ -553,7 +553,7 @@ func (s *server) markInboxReadThreads(
 	if err != nil {
 		return 0, nil, err
 	}
-	if err := lockInboxReadOwners(ctx, tx, read); err != nil {
+	if err := lockInboxReadOwners(ctx, tx, read, store.LockOwnersShared); err != nil {
 		return 0, nil, err
 	}
 
@@ -727,30 +727,35 @@ func readInboxAgentRows(
 	return nil
 }
 
-// lockInboxReadOwners takes the owner of every thread this request marks, in shared mode, step 1
-// of the lock order markInboxReadThreads writes down. The caller's rows follow, in
-// writeInboxThreadMarks, and the projects after them.
+// lockInboxReadOwners takes the owner of every thread this request marks, step 1 of the lock order
+// markInboxReadThreads writes down, through lock: store.LockOwnersShared, the shared mode the
+// mark-all and the dismissal take, or store.LockOwners, which a write of marks under /api/v2 that
+// names a read mark takes (writeMarksIn). The caller's rows follow, in writeInboxThreadMarks, and
+// the projects after them.
 //
 // The documents go first and the issues after them, one statement each, which is the order every
-// request takes them in; each statement sorts its own owners by lock key (store.LockOwnersShared),
-// so two requests naming overlapping sets take them in one order throughout. A single statement
-// over both would order the two kinds by their hashes instead, and a request waiting on a
-// document would then already hold the issues that hashed below it, which is a lock an ordinary
-// writer of that issue waits for while the request waits for something else
+// request takes them in; each statement sorts its own owners by lock key (store.LockOwnersShared
+// and store.LockOwners alike), so two requests naming overlapping sets take them in one order
+// throughout. A single statement over both would order the two kinds by their hashes instead, and
+// a request waiting on a document would then already hold the issues that hashed below it, which
+// is a lock an ordinary writer of that issue waits for while the request waits for something else
 // (TestDismissLeavesAThreadRepliedToWhileItRan).
-func lockInboxReadOwners(ctx context.Context, tx pgx.Tx, read inboxReadThreads) error {
+func lockInboxReadOwners(
+	ctx context.Context, tx pgx.Tx, read inboxReadThreads,
+	lock func(context.Context, store.OwnerLocker, ...store.Owner) error,
+) error {
 	documents := make([]store.Owner, 0, len(read.documents))
 	for _, document := range read.documents {
 		documents = append(documents, store.ArtifactOwner(document))
 	}
-	if err := store.LockOwnersShared(ctx, tx, documents...); err != nil {
+	if err := lock(ctx, tx, documents...); err != nil {
 		return fmt.Errorf("lock the marked threads' documents: %w", err)
 	}
 	issues := make([]store.Owner, 0, len(read.issues))
 	for _, issue := range read.issues {
 		issues = append(issues, store.IssueOwner(issue))
 	}
-	if err := store.LockOwnersShared(ctx, tx, issues...); err != nil {
+	if err := lock(ctx, tx, issues...); err != nil {
 		return fmt.Errorf("lock the marked threads' issues: %w", err)
 	}
 	return nil
