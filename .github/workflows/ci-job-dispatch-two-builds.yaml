@@ -381,7 +381,7 @@ jobs:
   # A pull request's run (`full-ci`) or a dispatched run costs what it did. The `if:` reads the
   # caller's event: a called workflow's `github` context is its caller's.
   dispatch-two-builds-same:
-    if: (github.event_name == 'merge_group' || github.event_name == 'pull_request_review') && inputs.dispatch_two_builds_go == 'true'
+    if: (github.event_name == 'merge_group' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch') && inputs.dispatch_two_builds_go == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
