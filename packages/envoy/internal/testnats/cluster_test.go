@@ -157,6 +157,7 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 // by any other. The routes are frozen while the first request through member n1 makes its
 // wildcard, so the other members cannot have heard it.
 func TestTheClusterIsNotReadyUntilEveryMembersReplyWildcardIsRouted(t *testing.T) {
+	t.Parallel()
 	cluster := startCluster(t, 3, "")
 	cluster.awaitMeta(t)
 	if err := cluster.replyRoutesReady(); err == nil || !strings.Contains(err.Error(), "member n1 has no reply wildcard") {

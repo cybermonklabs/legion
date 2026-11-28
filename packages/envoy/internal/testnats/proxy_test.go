@@ -91,8 +91,7 @@ func TestAProxyRelaysUntilCutAndAgainOnceRestored(t *testing.T) {
 // reach a subscriber, and a flush gets no answer. Restore delivers what was held, and the
 // connection that stayed open answers again.
 func TestAFrozenProxyKeepsTheConnectionAndMovesNothingUntilRestored(t *testing.T) {
-	// Not parallel: a tight wall-clock bound: the publish the freeze held must reach the subscriber
-	// within 2 s of the flush after the restore.
+	t.Parallel()
 	uri := URL(t)
 	proxy := StartProxy(t, uri)
 	conn, _, _ := proxiedClient(t, proxy)
@@ -168,6 +167,7 @@ func echoListener(t *testing.T) string {
 // half the round trip away from the moment that leg's bytes were read, and nothing moves until the
 // test moves the clock to it.
 func TestAProxyWithLatencyHoldsEachLegHalfTheRoundTrip(t *testing.T) {
+	t.Parallel()
 	const rtt = 200 * time.Millisecond
 	start := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)

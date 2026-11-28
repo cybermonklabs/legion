@@ -169,6 +169,7 @@ const holdChildGuard = 2 * time.Minute
 // and passes its URL to the child, so a server whose start is slow costs the parent time and not
 // the child.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	stdout, stderr, err := testwait.RunChild(t, os.Args[0], holdChildGuard, "^TestTakeWriteLockOnAHooksGoroutineChild$", holdChildEnv+"="+uri)
 	text := stdout + stderr
@@ -197,6 +198,7 @@ func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 // its hook calls gives up at its first question. It runs only when the parent re-executes this
 // binary.
 func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
+	t.Parallel()
 	uri := os.Getenv(holdChildEnv)
 	if uri == "" {
 		t.Skip(holdChildEnv + " is not set: this test is the child of TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns")

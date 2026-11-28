@@ -24,25 +24,20 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// testnatsTestParallelism is how many of this package's tests, and of a test's parallel subtests,
-// run at once when the command line names no -parallel. A plain run of the package alone on 4
-// CPUs used 3.6 s of them over its 148 s (build-cluster Job legion-ci-testnatspar-lllr2,
-// 2026-11-25): its tests wait on servers and clusters of their own, on child test binaries and on
-// the waits they test, not on a core. At -parallel 4, go test's default on CI's 4-CPU runner, the
-// package took 42-49 s; at 8, 29-32 s; at 12, 28-29 s; at 16, 26 s (Job legion-ci-testnatspar-q8jxh,
-// two runs each, main 140-154 s), which is the floor: the serial tests take about 7 s and the
-// longest parallel one, a child binary's bucket create, 18 s. Every test calls t.Parallel except
-// those that change something every other test of the process reads (dialNATS, the shared server
-// and startShared) or that hold a wall-clock bound close to what they wait for, which stay serial
-// and run before the rest. A test that needs a server has an account of its own on the shared one
-// (URL) or a server of its own; a run takes about 20 accounts, under the firstAccounts the server
-// starts with.
+// testnatsTestParallelism is the default limit on tests and parallel subtests running at once.
+// Tests that replace the shared server and its start function, or check short wall-clock bounds,
+// run serially. URL gives each test and subtest its own account on the shared server.
+//
+// On #5604's tree, the package used 3.6 s of CPU over 148 s before parallelization.
+// The sweep took 42–49 s at -parallel 4 and 26 s at 16 on four CPUs.
+// The serial tests took about 7 s and the longest parallel test, a bucket-create child, took 18 s.
+// These are measurements from Jobs legion-ci-testnatspar-lllr2 and legion-ci-testnatspar-q8jxh
+// (2026-11-25), before the bucket-create child moved to a step clock.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const testnatsTestParallelism = 16
 
-// TestMain sets the package's default -parallel and removes the NATS server the package's tests
-// share (Main).
+// TestMain sets the package's default -parallel and uses Main to clean up the shared NATS server.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(testnatsTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
@@ -85,6 +80,8 @@ const shortDeadline = 4 * time.Second
 // where testwait.Context's has passed. A fact that never holds fails until at its end, halfway to
 // the deadline and not before, naming what it waited for and testDeadline.
 func TestTheWaitsOnAServersOwnFactEndHalfwayToAShortDeadline(t *testing.T) {
+	// Not parallel: a tight wall-clock bound: its waits end halfway to a deadline 4 s away, and its
+	// receive fails when the machine holds its goroutine 100 ms, as a test running beside it can.
 	began := time.Now()
 	short := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(shortDeadline)}
 	if giveUp, _ := testwait.GiveUpAt(short); giveUp.After(began) {
@@ -145,6 +142,7 @@ func (noDeadline) Deadline() (time.Time, bool) { return time.Time{}, false }
 // Under -timeout 0 the test binary has no deadline, so testwait.Context has none, and nats.go
 // refuses a flush on a context with none. Context refuses nothing there: the flush on it is made.
 func TestAFlushOnContextIsMadeWhenTheBinaryHasNoDeadline(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	defer conn.Close()
 	timeless := noDeadline{t}
@@ -233,8 +231,6 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 // runs the burst first.
 func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	t.Parallel()
-	// The subtests run in order: the second recreates the stream once the first has left its burst
-	// in flight.
 	const burst = 20000
 	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
 	var publisher uint64
@@ -959,6 +955,7 @@ func TestOverlappingFreezesThawInEitherOrderWithoutPanicking(t *testing.T) {
 // on a connection that stays CONNECTED, as an acknowledgement lost on its way back does, and
 // reaches the client once the relay passes the server's replies again.
 func TestFrozenRepliesKeepAPublishAndHoldItsAcknowledgement(t *testing.T) {
+	t.Parallel()
 	server, uri := Start(t)
 	conn := Connect(t, uri)
 	defer conn.Close()
