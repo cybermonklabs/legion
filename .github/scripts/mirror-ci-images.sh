@@ -204,11 +204,12 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     check_go "$source" "$claimed_go" "${source%@*}"
   fi
   echo "copy   $source -> $registry:$tag"
-  # 300 s per attempt: the ci-images job's 15-minute budget has to carry a copy of every row
-  # this loop copies — 13 of .github/ci-images.yaml's 14 rows, the fourteenth being the browser
-  # image this repository builds, which the `built` arm above skips — onto a package that holds
-  # none, so one row's copy is under 70 s in the shape that budget was written for, and the
-  # bound is over four times that.
+  # 300 s per attempt. When that bound was written, the ci-images job had a budget of 15 minutes
+  # to copy each row this loop copies onto a package that held none, then 13 rows, so a row's
+  # copy had under 70 s, and the bound is over four times that. This loop copies every row of
+  # .github/ci-images.yaml but the ones the `built` arm above skips; the step that runs it is
+  # held to this loop's own retry arithmetic, which the comment above that step's key in
+  # .github/workflows/ci-job-ci-images.yaml derives.
   retry_fetch "the copy of $source" 300 -- crane copy "$source" "$registry:$tag"
   have=$(retry_fetch "the digest of $registry:$tag" 60 -- crane digest "$registry:$tag")
   if [ "$have" != "$digest" ]; then

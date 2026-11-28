@@ -203,7 +203,7 @@ After the Bun halves it proves the other arm64 rows the same way (main's #4313):
 Those faulted installs read the copies the ci-images job fills, so this job needs that job for order and carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
 
 The budget its key carries is added up from the slowest run this job can have rather than copied from another job:
-the checkout and the runner's download of the actions (1), the healthy install of the 34 MB release zip (2), the fault and its probe, whose two requests are bounded at 15 s each (1), the faulted install
+the checkout and the runner's download of the actions (1), the healthy install of the release zip, bun-linux-aarch64.zip, 51,644,673 bytes at the version .bun-version pins (2), the fault and its probe, whose two requests are bounded at 15 s each (1), the faulted install
 — oven-sh/setup-bun's own download against a proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose `--retry-max-time 300` allows new attempts for five minutes, then takes the last 64 s wait a decision made just under that limit still sleeps, and then one last attempt of the row's `max_time` 60 s: 424 s at worst, written as 427 s, the ceiling the fetch helper ci-tools.sh derives in its block on that option (8)
 — the 107 MB npm tarball, its gunzip and the write (3), the two readings, each a sha256 of that binary (2), the report step (1), and the machine watch's start and its report (1).
 That is 19 minutes, 1140 s, the term of the two Bun halves.
