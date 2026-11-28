@@ -44,6 +44,20 @@ func (g gitCase) script(t *testing.T, reads string) {
 	writeScript(t, filepath.Join(g.repo, ".github", "scripts", "go-test-reads.sh"), stubScript(reads))
 }
 
+// own is g with the same repo, reports and needs, and a root, a --json file and a TMPDIR, which it
+// makes, in a new t.TempDir(). So two runs of cite can go at once over one repository: the clone
+// is only read, since specgraph.GitHistory.Checkout changes nothing of it, and each run writes its
+// own changed list, --json file and checkout.
+func (g gitCase) own(t *testing.T) gitCase {
+	t.Helper()
+	root := t.TempDir()
+	g.root, g.json, g.tmp = root, filepath.Join(root, "out", "faults.json"), filepath.Join(root, "tmp")
+	if err := os.Mkdir(g.tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
 // cite runs changed from base to HEAD, then citations over its list, as the job runs them, with
 // TMPDIR at g.tmp; it fails the test unless changed exits 0 and the checkout of the base is gone
 // after the run.
@@ -101,7 +115,8 @@ func TestCitationsReadsTheTieAtTheBaseCommit(t *testing.T) {
 // the merge base with the default branch, never the branch's push before. Push 1 adds t.Skip to
 // TestA, push 2 changes docs alone. From the merge base the list holds a/a_test.go, and the skipped
 // test is refused at push 2; from push 1, the control, the list holds the docs alone, and the check
-// reads as cited although its test has not run since a/a_test.go changed.
+// reads as cited although its test has not run since a/a_test.go changed. Once the repository is
+// built, the two runs are parallel subtests over it, each with its own files of a run (own).
 func TestCitationsFromTheMergeBase(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -126,8 +141,16 @@ func TestCitationsFromTheMergeBase(t *testing.T) {
 		t.Fatalf("merge base %s, want main %s", mergeBase, main)
 	}
 	dir := filepath.Join(g.repo, ".dispatch", "spec")
-	expect(t, g.cite(t, binary, workflow, main), refused(dir, "test-not-run: a/a_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"))
-	expect(t, g.cite(t, binary, workflow, push1), cited(dir))
+	t.Run("from the merge base", func(t *testing.T) {
+		t.Parallel()
+		g := g.own(t)
+		expect(t, g.cite(t, binary, workflow, main), refused(dir, "test-not-run: a/a_test.go changed, and go-checks did not run example.com/citations/a TestA (its report shows it skipped)"))
+	})
+	t.Run("from push 1, the control", func(t *testing.T) {
+		t.Parallel()
+		g := g.own(t)
+		expect(t, g.cite(t, binary, workflow, push1), cited(dir))
+	})
 }
 
 // citations derives a tie only for a check whose test did not run: a run where each test ran starts
