@@ -192,7 +192,7 @@ func TestResumingSocketsResumeFromTheLastIDAndGoStaleAtTheRestart(t *testing.T) 
 	var framesMu sync.Mutex
 	fake := clocktest.New(time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC))
 	sockets := &liveSockets{
-		url: url, dialer: &websocket.Dialer{}, retry: 10 * time.Millisecond, resume: true, stale: 1, clock: fake,
+		url: url, dialer: &websocket.Dialer{}, resume: true, stale: 1, clock: fake,
 		head:         func(context.Context) (int64, error) { return heads.Load(), nil },
 		restartBegun: restarted.Load,
 		refetch: func(context.Context, int) *refetchRec {

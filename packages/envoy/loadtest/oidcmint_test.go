@@ -353,11 +353,14 @@ func startCopysListener(t *testing.T, what, binary, issuer, accounts string) (*c
 }
 
 // healthRead is one read of a listener's /healthz: the status it answered and the body it decoded,
-// or the transport error the read ended with. Exported for the reason statusRead's fields are.
+// or the transport error the read ended with, and, on a read that is not healthy, the listener's
+// output so far, so that a wait that gives up prints it. Exported for the reason statusRead's
+// fields are.
 type healthRead struct {
 	Status int
 	Health map[string]any
 	Err    error
+	Output string
 }
 
 // healthyAt waits until the listener p, which what names, answers /healthz at base with status
@@ -379,12 +382,17 @@ func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[s
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			return healthRead{Err: err}, false
+			return healthRead{Err: err, Output: p.Output.String()}, false
 		}
 		health := map[string]any{}
 		_ = json.NewDecoder(response.Body).Decode(&health)
 		_ = response.Body.Close()
-		return healthRead{Status: response.StatusCode, Health: health}, health["status"] == "healthy"
+		answer := healthRead{Status: response.StatusCode, Health: health}
+		if health["status"] != "healthy" {
+			answer.Output = p.Output.String()
+			return answer, false
+		}
+		return answer, true
 	})
 	return read.Health
 }

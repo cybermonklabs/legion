@@ -247,10 +247,10 @@ type liveSockets struct {
 	bytes atomic.Int64
 	mu    sync.Mutex
 	recs  []reconnectRec
-	// clock is what a socket's wait before its next attempt runs on (nextDelay). Nil, in every
-	// liveSockets but a test's, is clock.Real(); a test hands a clocktest.Fake and moves it past
-	// each wait once the socket has armed it. A reconnect's times (reconnectRec) stay on the wall
-	// clock: they time real sockets.
+	// clock is what a socket's wait before its next attempt runs on (nextDelay). Nil, unless a
+	// test sets it, is clock.Real(); a test hands a clocktest.Fake and moves it past each wait once
+	// the socket has armed it. A reconnect's times (reconnectRec) stay on the wall clock: they time
+	// real sockets.
 	clock clock.Clock
 }
 
