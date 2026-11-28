@@ -264,9 +264,10 @@
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": true,
+      "omp": false,
       "evidence_variable": "REGISTER_GATE_BASIS_EVIDENCE_DIR",
       "timeout_minutes": 25,
-      "why_hosted": "register-gate-basis.sh across two projects with REGISTER_GATE_BASIS_LINK=sql, so it takes what that script takes: a checkout on a Linux host with go, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis-across-projects.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch of this checkout and the daemon itself, writes each parent of another project in that Dispatch's own database, the lib installs the nats-server it needs with go install, and it starts no container; a run takes one to five minutes, most of it building the driver and Dispatch",
+      "why_hosted": "register-gate-basis.sh across two projects through Dispatch's own parent route, so it takes what that script takes: a checkout on a Linux host with go, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis-across-projects.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch of this checkout, which takes a parent of another project, and the daemon itself, the lib installs the nats-server it needs with go install, and it starts no container; a measured run took 42 seconds with a warm Go build cache, most of it building the driver and Dispatch",
       "jj": true
     },
     {

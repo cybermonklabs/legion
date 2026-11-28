@@ -61,7 +61,7 @@
 # parent_key straight into the scratch Dispatch's database, as the daemon's own tests write it,
 # which makes no event, so the daemon reads the link only from Dispatch itself, at a registration
 # and at a controller tick. sql proves the daemon's part on a Dispatch that refuses the link on
-# every route, which is what register-gate-basis-across-projects.sh runs in CI. sql without
+# every route; register-gate-basis-across-projects.sh, the run CI makes, takes route. sql without
 # REGISTER_GATE_BASIS_ACROSS_PROJECTS=1, and any other value, is refused with exit 2.
 # REGISTER_GATE_BASIS_EVIDENCE_DIR (default a fresh directory under TMPDIR, or /tmp when it is
 # unset, kept and printed) keeps the transcript, the nats-server's log, the daemon's, Dispatch's

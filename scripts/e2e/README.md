@@ -502,9 +502,9 @@ Each item below names a script, then what it proves.
 
 - `register-gate-basis-across-projects.sh`
 
-  `register-gate-basis.sh` across two projects with `REGISTER_GATE_BASIS_LINK=sql`, on the Dispatch this checkout builds, which takes no parent of another project on any route: each root of `LEGION` is set under its issue of `OTHR` in the scratch Dispatch's database, its registration on an approved issue of `OTHR` opens its step, a registration on an open approval request of `OTHR` opens at the one controller tick after the person approves, and a registration once that issue is accepted is refused with `BASIS_ACCEPTED`.
+  `register-gate-basis.sh` across two projects through Dispatch's own parent route, on the Dispatch this checkout builds, which takes a parent of another project: each root of `LEGION` is set under its issue of `OTHR`, its registration on an approved issue of `OTHR` opens its step, a registration on an open approval request of `OTHR` opens at the one controller tick after the person approves, and a registration once that issue is accepted is refused with `BASIS_ACCEPTED`.
   This is the run of the cross-project gate `e2e.yaml` makes on a hosted runner.
-  With the daemon of the commit before the daemon's cross-project change (`packages/daemon` alone at that commit, Dispatch and the tool this checkout's), it fails at `pending`: the step still waits after the controller tick that follows the person's approval.
+  With `REGISTER_GATE_BASIS_DISPATCH_ROOT` at a checkout of the commit before the change that lets a parent be in another project, it fails at `world` with `400 PARENT_INPUT`.
   No GitHub, no cluster
 
 - `parent-waits.sh`
@@ -5467,8 +5467,7 @@ With `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` the daemon is project `LEGION`'s, w
 The roots R, R2 and R3 are issues of `LEGION`, and P, P2 and P3, the issues they rest on, are issues of a second project of the same Dispatch, `OTHR`, which no daemon runs.
 In `world` the person sets P as R's parent through Dispatch's own route, `PATCH /api/v1/issues/<R>` with `parent`; a Dispatch that takes no parent of another project answers `400 PARENT_INPUT` `parent must be in the same project`, and the run fails there.
 With `REGISTER_GATE_BASIS_LINK=sql` each of the three links, R under P, R2 under P2 and R3 under P3, is instead a write of the root's `parent_key` straight into the scratch Dispatch's database (`linkAcross` of `internal/daemon/basis_gate_scratch_dispatch_test.go`, which the daemon's own tests of a parent of another project write it with).
-That write makes no event, so the daemon reads each link only from Dispatch itself, at the registration and at the controller tick, and the run passes on a Dispatch that refuses the link on every route, this checkout's among them.
-That is the run [`register-gate-basis-across-projects.sh`](#register-gate-basis-across-projectssh) makes, and the one `e2e.yaml` runs on a hosted runner.
+That write makes no event, so the daemon reads each link only from Dispatch itself, at the registration and at the controller tick, and the run passes on a Dispatch that refuses the link on every route.
 It proves less than the run through the route:
 no event of a parent in another project reaches the daemon, so the daemon's handling of such an event (a root moved under a parent of another project) is not exercised, and is held by the daemon's own tests instead (`TestARootMovedUnderAParentOfAnotherProjectKeepsWhatAMoveToNoParentKeeps`);
 of its five steps, only `pending` separates this daemon from the one before its cross-project change, as that section's negative control shows;
@@ -5527,11 +5526,10 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/register-gate-basis-across-projects.sh     # → "register gate basis e2e: PASS in <n>s", exit 0
 ```
 
-[`register-gate-basis.sh`](#register-gate-basissh) with `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` and `REGISTER_GATE_BASIS_LINK=sql`, set whatever the caller's environment holds, and nothing else:
-the steps, the checks, the evidence and the daemon's negative control are that section's.
-It proves the daemon's part of the cross-project gate on the Dispatch this checkout builds, which takes no parent of another project on any route, so `e2e.yaml` runs it on a hosted runner, from its row of `.github/e2e-scripts.json`.
-What it proves less than a run through Dispatch's parent route is that section's.
-A run against a Dispatch that takes such a parent through its own route is `register-gate-basis.sh` with `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` alone and `REGISTER_GATE_BASIS_DISPATCH_ROOT` at that Dispatch's checkout; on this checkout's Dispatch that run fails at `world`.
+[`register-gate-basis.sh`](#register-gate-basissh) with `REGISTER_GATE_BASIS_ACROSS_PROJECTS=1` and `REGISTER_GATE_BASIS_LINK=route`, set whatever the caller's environment holds, and nothing else:
+the steps, the checks, the evidence and the negative control are that section's.
+It proves the cross-project gate end to end on the Dispatch this checkout builds, which takes a parent of another project through its own route, so `e2e.yaml` runs it on a hosted runner, from its row of `.github/e2e-scripts.json`.
+On a Dispatch from before that change the run fails at `world`.
 
 ## parent-waits.sh
 
