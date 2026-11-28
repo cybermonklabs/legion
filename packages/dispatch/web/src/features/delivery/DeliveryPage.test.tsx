@@ -1789,19 +1789,25 @@ function ownColourNames(user: UserEvent): Promise<string[]> {
   );
 }
 
-// The same, for the Own colour list, which counts each agent from the same answer: while a new
-// filter's read was out it drew the previous filter's "N PRs" beside each agent.
-test("while a new filter's read is out the Own colour list draws no count beside an agent, and the answer's counts once it is in", async () => {
+/** A window's answer coloured by Parent agent, whose Own colour list offers Release crew with 3
+ *  pull requests and Reviewer with 2. */
+const colouredByAgent: DeliveryTimelineWithMeasures = {
+  ...everyFacet,
+  color_counts: { ...emptyTimeline.color_counts, parent_agent: { "group:g1": 3, Reviewer: 2 } },
+  session_groups: [RELEASE_CREW],
+};
+
+// The Own colour list counts each agent over every pull request of the window, with no facet or
+// search applied (`deliveryColorCounts` in Dispatch's `api/delivery.go`), so a facet pick's read
+// or a search's cannot change a count. The list drew none while such a read was out; by the
+// ruling of 2026-11-25 13:0xZ a read a count does not count never hides it, so it keeps them.
+test("while a new facet's or search's read is out in the same window the Own colour list keeps each agent's count", async () => {
   const user = userEvent.setup();
-  const colouredByAgent: DeliveryTimelineWithMeasures = {
-    ...everyFacet,
-    color_counts: { ...emptyTimeline.color_counts, parent_agent: { "group:g1": 3, Reviewer: 2 } },
-    session_groups: [RELEASE_CREW],
-  };
+  const counted = ["Release crew, 3 PRs", "Reviewer, 2 PRs"];
   renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
   const socket = await answered(colouredByAgent);
   expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
-  expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+  expect(await ownColourNames(user)).toEqual(counted);
 
   await user.click(screen.getByRole("button", { name: "Filter Author" }));
   await user.click(
@@ -1815,13 +1821,52 @@ test("while a new filter's read is out the Own colour list draws no count beside
     query: "author=octocat",
   });
   await user.keyboard("{Escape}");
-  // The first answer is still on screen while the filter's read is out.
+  // The first answer is still on screen while the pick's read is out.
   await screen.findByText("Counting PRs in current filter/window…");
-  expect(await ownColourNames(user)).toEqual(["Release crew", "Reviewer"]);
+  expect(await ownColourNames(user)).toEqual(counted);
 
   serve(socket, snapshotFrame(sub, colouredByAgent));
   expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
+  await user.type(screen.getByLabelText("Search pull requests"), "widget");
+  await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "q=widget&author=octocat",
+  });
+  // The pick's answer is still on screen while the search's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await ownColourNames(user)).toEqual(counted);
+});
+
+// The other half of the list's gate: its counts are the window's, so while a new window's read is
+// out the previous window's answer on screen holds that window's counts, and the list draws none
+// until the new window answers.
+test("while a new window's read is out the Own colour list draws no count beside an agent, and the new window's counts once it is in", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  const socket = await answered(colouredByAgent);
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
   expect(await ownColourNames(user)).toEqual(["Release crew, 3 PRs", "Reviewer, 2 PRs"]);
+
+  await pickIn(user, () => screen.getByLabelText("Window"), "Last 7 days");
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: { preset: 7 },
+    query: "",
+  });
+  // The first window's answer is still on screen while the new window's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await ownColourNames(user)).toEqual(["Release crew", "Reviewer"]);
+
+  serve(
+    socket,
+    snapshotFrame(sub, {
+      ...colouredByAgent,
+      color_counts: { ...emptyTimeline.color_counts, parent_agent: { "group:g1": 1, Reviewer: 4 } },
+    })
+  );
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
+  expect(await ownColourNames(user)).toEqual(["Reviewer, 4 PRs", "Release crew, 1 PR"]);
 });
 
 /** Each session the session-groups editor lists under "Sessions in this window", by its text,
@@ -1890,6 +1935,54 @@ test("while a new window's read is out the session-groups editor draws no count 
     expect.stringMatching(/^Builder\b.*\b3 PRs$/u),
     expect.stringMatching(/^Planner one\b.*\b1 PR · Release crew$/u),
   ]);
+});
+
+// The editor's counts are of every pull request of the window, whatever the facets and the search
+// (`sessionPRCounts` in Dispatch's `api/delivery.go`), so a facet pick's read or a search's cannot
+// change one: by the ruling of 2026-11-25 13:0xZ such a read never hides them.
+test("while a new facet's or search's read is out in the same window the session-groups editor keeps each session's count", async () => {
+  const user = userEvent.setup();
+  const crewWindow: DeliveryTimelineWithMeasures = {
+    ...everyFacet,
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
+  };
+  const counted = [
+    expect.stringMatching(/^Planner one\b.*\b2 PRs · Release crew$/u),
+    expect.stringMatching(/^Planner two\b.*\b1 PR · Release crew$/u),
+    expect.stringMatching(/^Reviewer\b.*\b1 PR$/u),
+  ];
+  renderPage();
+  const socket = await answered(crewWindow);
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
+  expect(await editorSessions(user)).toEqual(counted);
+
+  await user.click(await panelFacet(user, "Repository"));
+  await user.click(
+    within(screen.getByRole("listbox", { name: "Repository options" })).getByRole("option", {
+      name: /^acme\/widgets/,
+    })
+  );
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "repo=acme%2Fwidgets",
+  });
+  // The first answer is still on screen while the pick's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await editorSessions(user)).toEqual(counted);
+
+  serve(socket, snapshotFrame(sub, crewWindow));
+  expect(await screen.findByText("1 PR in current filter/window")).toBeDefined();
+  await user.type(screen.getByLabelText("Search pull requests"), "widget");
+  await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "q=widget&repo=acme%2Fwidgets",
+  });
+  // The pick's answer is still on screen while the search's read is out.
+  await screen.findByText("Counting PRs in current filter/window…");
+  expect(await editorSessions(user)).toEqual(counted);
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was
