@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -60,14 +60,23 @@ const CHECK_NODE = blockNodeId("verification-md", "c1");
 
 let stubs: { mockRestore(): void }[] = [];
 let rangeStubs: { mockRestore(): void }[] = [];
+/** The root's client width, the width the control stands inside, which happy-dom, laying nothing
+ *  out, reports as 0: each case stands in a window 1024 px wide, wide enough for the control
+ *  beside the words, and a case of a narrower window stubs its own width over it. */
+let rootWidth: { mockRestore(): void } | undefined;
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+beforeEach(() => {
+  rootWidth = clientWidthOf(1024);
 });
 afterEach(() => {
   clearSelection();
   for (const stub of [...rangeStubs, ...stubs]) stub.mockRestore();
   rangeStubs = [];
   stubs = [];
+  rootWidth?.mockRestore();
+  rootWidth = undefined;
 });
 
 /** The page as `drawFrame` draws it with the control beside it, `reads` answered, once the
@@ -125,9 +134,9 @@ function placeOf(control: HTMLElement): { readonly left: number; readonly top: n
   return { left: Number.parseFloat(box.style.left), top: Number.parseFloat(box.style.top) };
 }
 
-/** Makes the window `width` px wide for what reads `innerWidth`, until the stub is restored. The
- *  control reads it only where the root reports no client width, as happy-dom's, which lays
- *  nothing out, reports 0 (`clientWidthOf`). */
+/** Makes the window `width` px wide for what reads `innerWidth`, until the stub is restored: a
+ *  width that counts a classic vertical scrollbar, which the control does not read
+ *  (`clientWidthOf`). */
 function windowWidthOf(width: number): { mockRestore(): void } {
   const own = Object.getOwnPropertyDescriptor(window, "innerWidth");
   Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
@@ -383,9 +392,9 @@ test("control shown, the page scrolls, a box around the words scrolls, or the wi
 
 test("no selection, words selected to the end of a line at the window's right edge: the control stands inside the window, under the line", async () => {
   const { client, row, view } = await drawn({ threads: [] });
-  // A window 390 px wide, as a phone's, which the control reads (`innerWidth`, where the root
-  // reports no client width), and the control's box 80 px wide, as a browser draws it.
-  stubs.push(windowWidthOf(390), controlWidthOf(80));
+  // A window 390 px wide, as a phone's, which the control reads (the root's `clientWidth`), and
+  // the control's box 80 px wide, as a browser draws it.
+  stubs.push(clientWidthOf(390), controlWidthOf(80));
   try {
     const end = rectOf(305, 200, 80, 20);
     rangeEndsAt(end);

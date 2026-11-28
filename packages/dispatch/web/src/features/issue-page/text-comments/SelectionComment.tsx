@@ -49,9 +49,7 @@ interface Selected {
   /** The last client rectangle of the range, in px from the window's top left corner. */
   readonly end: DOMRectReadOnly;
   /** The width a fixed element can use, in px: the root's `clientWidth`, which leaves out a
-   *  classic vertical scrollbar that `innerWidth` counts, so the control never stands under it;
-   *  `innerWidth` only where the root reports no width, as happy-dom's, which lays nothing out,
-   *  reports 0. */
+   *  classic vertical scrollbar that `innerWidth` counts, so the control never stands under it. */
   readonly viewportWidth: number;
   readonly words: SelectedWords;
 }
@@ -142,8 +140,7 @@ function selectedIn(
   if (sendTargetOf(view, node, issue, selected) === null) return null;
   const rects = range.getClientRects();
   const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-  return { end, viewportWidth, words: selected };
+  return { end, viewportWidth: document.documentElement.clientWidth, words: selected };
 }
 
 /** Whether `event` is `$mod+Alt+m` by the key's place: Meta or Control, as the page's keymap

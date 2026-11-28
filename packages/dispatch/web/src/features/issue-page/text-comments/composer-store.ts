@@ -150,9 +150,7 @@ function holdComposer(
     store.landingActs?.abort();
     store.landingActs =
       landed !== undefined && "root" in landed.outcome
-        ? abortOnReaderAct(() => {
-            if (store.landed === landed) holdComposer(store, store.held, undefined);
-          })
+        ? abortOnReaderAct(() => holdComposer(store, store.held, undefined))
         : undefined;
     store.landed = landed;
   }

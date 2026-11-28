@@ -207,3 +207,77 @@ test("an entry stands under the nearest entry above the node its comment is on",
     root
   );
 });
+
+// R8: a thread whose node no page the list's tree holds read yet, nor the node it hangs from - a
+// statement of a question past Conversation's first page - stands at the list's top level, after
+// the entries the tree places, in the order of the threads' words, and a press on it opens its
+// thread; once a later page brings its node into the tree, it stands under the nearest entry above
+// that node, and no longer at the top level.
+test("an entry whose node no page read yet holds stands at the list's top level until a page holds it", () => {
+  const ask = node({ id: "ask", type: "ask" });
+  const post = node({ author: alice, id: "post", type: "comment" });
+  const threads = threadsOn(
+    ["post", KEY, [mine("on-post")]],
+    [
+      "late-statement",
+      "late-ask",
+      [
+        mine("on-late-first"),
+        { ...mine("on-bobs"), author: { id: "bob", kind: "user" } },
+        mine("on-late-second"),
+      ],
+    ]
+  );
+  const first = withThreadEntries(tree(ask, post), threads, "alice", KEY);
+  expect(shape(contentsOf(first.root, "alice", producingMessages(first.root)))).toEqual([
+    "ask",
+    "post",
+    "on-post",
+    "on-late-first",
+    "on-late-second",
+  ]);
+  expect(Object.fromEntries(first.kinds), "what each entry opens").toEqual({
+    "on-late-first": "comment",
+    "on-late-second": "comment",
+    "on-post": "comment",
+  });
+  const laterPage = tree(
+    ask,
+    post,
+    node({
+      children: [node({ id: "late-statement", type: "requirement" })],
+      id: "late-ask",
+      type: "ask",
+    })
+  );
+  const later = withThreadEntries(laterPage, threads, "alice", KEY);
+  expect(shape(contentsOf(later.root, "alice", producingMessages(later.root)))).toEqual([
+    "ask",
+    "post",
+    "on-post",
+    "late-ask: on-late-first, on-late-second",
+  ]);
+});
+
+// R8: a thread on a node Conversation does not draw - a result, which Graph draws, on a check the
+// list's tree does not hold either - stands at the list's top level, after the entries the tree
+// places, though its node comes first among the threads, and a press on it opens its thread.
+test("an entry on a node Conversation does not draw stands at the list's top level", () => {
+  const root = tree(
+    node({ children: [node({ id: "statement", type: "requirement" })], id: "ask", type: "ask" })
+  );
+  const { kinds, root: held } = withThreadEntries(
+    root,
+    threadsOn(
+      ["result", "check", [mine("on-result")]],
+      ["statement", "ask", [mine("on-statement")]]
+    ),
+    "alice",
+    KEY
+  );
+  expect(shape(contentsOf(held, "alice", producingMessages(held)))).toEqual([
+    "ask: on-statement",
+    "on-result",
+  ]);
+  expect(kinds.get("on-result"), "what a press on the entry opens").toBe("comment");
+});

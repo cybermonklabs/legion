@@ -89,10 +89,13 @@ interface WithEntries {
  * `isContentsEntry`), draws it in the tree's order under the nearest entry above that node, and
  * none for a reply in a thread. A thread that stands by a node `root` holds none of -
  * Conversation draws no row of a plan task with no step - has its entry under the node it hangs
- * from (`NodeThreads.parent`) instead. A node that is a comment or a message takes no entry as a
- * child, which the rule refuses as a reply: its entries follow it, in its parent's place, under
- * the nearest entry above it. The entries are no row: `held` stays as it was, and `root` is the
- * same object where no entry is added.
+ * from (`NodeThreads.parent`) instead. Where `root` holds neither - no page read yet holds them,
+ * or Conversation does not draw them, as a result - the entry stands at `root`'s top level, after
+ * the entries the tree places, in the order of the threads' words, until a page holds its node.
+ * A node that is a comment or a message takes no entry as a child, which the rule refuses as a
+ * reply: its entries follow it, in its parent's place, under the nearest entry above it. The
+ * entries are no row: `held` stays as it was, and `root` is the same object where no entry is
+ * added.
  *
  * `viewer` is the reader's login, and `key` the issue, which an entry's address names where its
  * comment names none.
@@ -105,23 +108,23 @@ export function withThreadEntries(
 ): ThreadEntryTree {
   const kinds = new Map<string, "comment" | "message">();
   const entries = new Map<string, TreeNode[]>();
+  const topLevel: TreeNode[] = [];
   const present =
     threads.size === 0 ? new Set<string>() : new Set(nodesInOrder(root).map((node) => node.id));
   for (const [nodeId, { parent, threads: held }] of threads) {
     const host = present.has(nodeId) ? nodeId : parent;
-    if (!present.has(host)) continue;
     for (const { thread } of held) {
       const comment = thread.root.comment;
       if (!isViewer(comment.author, viewer)) continue;
       const kind = threadKindOf(thread);
       kinds.set(comment.id, kind);
-      const own = entries.get(host);
+      const own = present.has(host) ? entries.get(host) : topLevel;
       const entry = threadCommentNode(comment, kind, key);
       if (own === undefined) entries.set(host, [entry]);
       else own.push(entry);
     }
   }
-  if (entries.size === 0) return { kinds, root };
+  if (entries.size === 0 && topLevel.length === 0) return { kinds, root };
   const place = (node: TreeNode): WithEntries => {
     const own = entries.get(node.id) ?? [];
     const item = node.type === "comment" || node.type === "message";
@@ -139,5 +142,7 @@ export function withThreadEntries(
     if (own.length === 0 && !changed) return { after: [], node };
     return { after: [], node: { ...node, children: [...own, ...children] } };
   };
-  return { kinds, root: place(root).node };
+  const tree = place(root).node;
+  if (topLevel.length === 0) return { kinds, root: tree };
+  return { kinds, root: { ...tree, children: [...tree.children, ...topLevel] } };
 }

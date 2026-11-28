@@ -537,9 +537,7 @@ function Column({
       thread.root.comment.id === landing.id
         ? card
         : (lens ?? card?.querySelector<HTMLElement>('li[data-reply][aria-current="true"]'));
-    if (landFocus(target, { boxAttribute: THREAD_NODE_ATTRIBUTE, reveal: "center" })) {
-      landed.current = landing.following;
-    }
+    if (landFocus(target, "center")) landed.current = landing.following;
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its
@@ -553,7 +551,7 @@ function Column({
     if (sent === undefined || !("root" in sent) || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
     const card = thread === undefined ? null : cardIn(region.current, thread.thread.thread.key);
-    if (landFocus(card, { boxAttribute: THREAD_NODE_ATTRIBUTE })) composer.settle();
+    if (landFocus(card)) composer.settle();
   });
 
   // Escape in a thread, outside its composer, gives the focus to the row of the thread's node
