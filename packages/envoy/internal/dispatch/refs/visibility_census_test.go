@@ -162,8 +162,15 @@ const (
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
 // the reason it binds no predicate (storeReads lists them from the package's source).
 var readsWithoutAViewer = map[string]string{
-	"AskPartIDs":           nodeDetail,
-	"BlockChanges":         nodeDetail,
+	"AskPartIDs":   nodeDetail,
+	"BlockChanges": nodeDetail,
+	"BlockContainers": "it reads, for each document block its caller has already read through a read that binds that block's predicate " +
+		"(TargetNames for GET /api/v1/reference-targets, Node for GET /api/v1/references), the texts of the blocks of the same document " +
+		"that hold it, and the caller answers only that block's own text with its containers' prefix taken off, which its lines already carry, " +
+		"and nothing of any other node",
+	"BlockContainersAt": "it reads, for one document block its caller has already read through Node and pinned to a version, the texts at " +
+		"that version of the blocks that held it, and the caller answers only the pin's own text with its containers' prefix taken off, " +
+		"which its lines already carry, and nothing of any other node",
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
