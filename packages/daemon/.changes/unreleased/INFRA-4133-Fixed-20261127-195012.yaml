@@ -1,14 +1,17 @@
 kind: Fixed
 body: |-
   A workspace checkout (`jj sparse reset`) that was cut short mid-write is now redone from an empty
-  working copy on the next provision, so no file is left cut off. `Provision` writes a link-safe
-  marker (`.jj/legion-checkout`) as soon as it registers a fresh workspace, keeps it through every
-  retry until a checkout finishes, then removes it (and removes any leftover marker when a later
-  provision finds the workspace already checked out). On a retry that finds no sparse patterns and
-  that marker, `Provision` removes every entry of the workspace directory except `.jj` and `.git`
-  without following a link before running `jj sparse reset` again (`workspace-init` logs this as
-  step `checkout-clear`). A workspace whose sparse patterns an agent cleared carries no marker, so
-  its untracked files stay untouched.
+  working copy on the next provision, for a workspace this release registers. `Provision` writes a
+  link-safe marker (`.jj/legion-checkout`) right after `jj workspace add` registers a fresh
+  workspace, before any later step of the provision, keeps it through every retry until a checkout
+  finishes, then removes it (and removes any leftover marker when a later provision finds the
+  workspace already checked out). On a retry that finds no sparse patterns and that marker,
+  `Provision` removes every entry of the workspace directory except `.jj` and `.git` without
+  following a link before running `jj sparse reset` again (`workspace-init` logs this as step
+  `checkout-clear`). A workspace whose sparse patterns an agent cleared carries no marker, so its
+  untracked files stay untouched. A workspace an earlier release registered, such as one on a tmux
+  host or on a microVM pod's kept volume, carries no marker either, so its next provision checks
+  out over whatever a cut-short checkout of it left, as before.
 time: 2026-11-27T19:50:12Z
 custom:
     Issue: INFRA-4133

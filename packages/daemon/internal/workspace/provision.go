@@ -88,19 +88,15 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 			return Workspace{}, err
 		}
 	} else {
+		// createWorkspace marks the workspace (checkoutMarkerFile) as soon as its `jj workspace
+		// add` has registered it with no file, so a provision stopped anywhere from there to the
+		// checkout's end leaves it marked.
 		if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
-			return Workspace{}, err
-		}
-		// The marker goes on the workspace as soon as it is registered, with no file yet, so a
-		// provision stopped anywhere from here to the checkout's end leaves it marked, and the next
-		// one clears whatever a cut-short checkout wrote before checking out again.
-		if err := writeCheckoutMarker(workspace.Dir); err != nil {
 			return Workspace{}, err
 		}
 	}
 	checkout := !exists
 	clearCheckout := false
-	markCheckout := !exists
 	if exists {
 		request.Steps.Begin("checkout-check")
 		// A workspace whose checkout never finished — registered with no files, then the checkout
@@ -123,7 +119,6 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 			}
 			checkout = true
 			clearCheckout = marked
-			markCheckout = marked
 		}
 	}
 	request.Steps.Begin("configuration")
@@ -199,10 +194,10 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
 		}
-		if markCheckout {
-			if err := removeCheckoutMarker(workspace.Dir); err != nil {
-				return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
-			}
+		// A workspace that carried no marker (an agent cleared its patterns) has none to remove,
+		// which removeCheckoutMarker takes as done.
+		if err := removeCheckoutMarker(workspace.Dir); err != nil {
+			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
 		}
 	}
 	return workspace, nil

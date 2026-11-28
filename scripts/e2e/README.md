@@ -8273,6 +8273,19 @@ Each item below names a function, then what it does.
 
   writes the kubeconfig a container on the kind network reads, whose server is the node's address on that network
 
+- `kind_sandbox_on_kind NAME WORK OPTION… -- COMMAND…`
+
+  runs `COMMAND`, a static binary of `WORK`, in a busybox container named `<the cluster>-NAME` on the kind network beside the node, with `--cpus 2 --memory 2g`, `WORK` mounted at its own path, the caller's user and each `docker run` `OPTION`:
+  the pods reach the kind network's containers, while a host firewall can drop what they send the host at the network's gateway.
+  The container is busybox as `.github/ci-images.yaml` copies it by digest (`kind_busybox`), and the caller's `EXIT` trap removes it by its name;
+  `shared-clone-kind.sh` and `issue-pod-start-kind.sh` run their launch drivers in it
+
+- `kind_sandbox_worker_image COMMIT`
+
+  prints the worker image of `COMMIT` by digest: the digest the registry gives `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of COMMIT>`, which `worker-image.yaml` publishes, read with an anonymous pull token that reaches `curl` on its standard input, never on an argv.
+  It fails where ghcr.io gives no token, and returns 1, printing nothing, where the registry has no such tag, so the caller fails naming the tag and what publishes it:
+  `shared-clone-kind.sh` asks it for `HEAD` where `LEGION_E2E_IMAGE` is unset, and `issue-pod-start-kind.sh` for each arm's commit
+
 - `kind_sandbox_teardown STATUS EVIDENCE`
 
   when `STATUS` is not 0, writes the cluster's pods, the `legion` namespace's Sandboxes, volume claims, events and container logs to `EVIDENCE/cluster-at-failure.txt`; then deletes the cluster.

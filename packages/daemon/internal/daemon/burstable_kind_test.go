@@ -315,6 +315,60 @@ func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt st
 	}
 }
 
+// kindProofOptions builds a one-repository kind proof's Sandbox runtime as the proof's driver does
+// before it reaches the cluster, and returns the options the runtime was built from, which hold
+// the pods' reservations as sandboxOptions translated them, for the proof's own test to check. The
+// proof's legion.yaml for project, written under the directory slug of a scratch directory with
+// resources appended to its runtime.kubernetes block (writeBurstableLiveConfig), passes the
+// daemon's loader and builds the runtime, with repo as the cache set, through sandboxOptions and
+// sandbox.New against an API server standing in for the kind cluster (burstableLiveRuntime). The
+// providers Secret the driver creates holds the key the file names (requireLiveProvidersSecret),
+// the runtime's reader of the leak check serves a check a pod's launcher installs
+// (requireLiveLeakCheckInstalls), and the root launch of each of issues, on repo at defaultBranch,
+// passes the spawn-spec checks. shared_clone_kind_test.go and issue_pod_start_kind_test.go use it.
+func kindProofOptions(t *testing.T, project, slug string, repo ghrepo.Repository, defaultBranch, resources string, issues ...string) sandbox.Options {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(newIssueSandboxAPI())
+	t.Cleanup(func() { cancel(); server.Close() })
+	dir := t.TempDir()
+	path := writeBurstableLiveConfig(t, filepath.Join(dir, slug), project, "192.0.2.10",
+		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test", resources)
+	cfg, err := config.LoadForValidation(path, nil)
+	if err != nil {
+		t.Fatalf("load %s: %v", path, err)
+	}
+	rc, err := kubeClient(*cfg.Runtime.Kubernetes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }
+	listener, err := stream.Listen(ctx, "tcp://127.0.0.1:0", refuse, stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: quietLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), repo)
+	if err != nil {
+		t.Fatalf("the proof's runtime: %v", err)
+	}
+	requireLiveProvidersSecret(t, cfg)
+	requireLiveLeakCheckInstalls(t, opts.LeakCheck)
+	projectToken, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, issue := range issues {
+		token, err := claim.NewToken(projectToken, issue, claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := runtime.ValidateSpawnSpec(liveRootSpec(projectToken, issue, token, "boot-token", filepath.Join(dir, "role.md"), repo, defaultBranch), nil); err != nil {
+			t.Fatalf("the proof's launch of %s: %v", issue, err)
+		}
+	}
+	return opts
+}
+
 // firstLaunchStore answers the runtime as the daemon's store does for an issue's first launch:
 // its tree live, no other tree running it, its Sandbox its own tree's, and no controller claim
 // stored.

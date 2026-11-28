@@ -12,13 +12,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
-// checkoutMarkerFile is the marker Provision writes inside a workspace's `.jj` directory as soon as
-// createWorkspace has registered it, with no file yet, and keeps through every provision that finds
-// it there with no sparse pattern, until a `jj sparse reset` into the workspace succeeds and
-// Provision removes it. While it exists beside an empty sparse-pattern set, the next provision
-// knows the last checkout Legion started, or was about to start, was cut short, so it clears every
-// entry of the workspace except `.jj` and `.git` before running `jj sparse reset` again. Without
-// the marker, a workspace whose sparse patterns an agent cleared keeps its untracked files.
+// checkoutMarkerFile is the marker createWorkspace writes inside a workspace's `.jj` directory
+// right after its `jj workspace add` succeeds, with no file yet, before it records the workspace's
+// creation time and, for an issue GitHub has no branch of, sets its bookmark. Provision keeps it
+// through every provision that finds it there with no sparse pattern, until a `jj sparse reset`
+// into the workspace succeeds and Provision removes it. While it exists beside an empty
+// sparse-pattern set, the next provision knows the last checkout Legion started, or was about to
+// start, was cut short, so it clears every entry of the workspace except `.jj` and `.git` before
+// running `jj sparse reset` again. Without the marker, a workspace whose sparse patterns an agent
+// cleared keeps its untracked files.
 const checkoutMarkerFile = "legion-checkout"
 
 // writeCheckoutMarker creates or truncates `.jj/legion-checkout` in dir through openJJ and

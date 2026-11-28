@@ -33,6 +33,16 @@
 # that digest, so a pod's start never waits on a registry.
 # kind_sandbox_internal_kubeconfig FILE writes the kubeconfig a container on the kind network reads,
 # whose server is the node's address on that network.
+# kind_sandbox_on_kind NAME WORK OPTION… -- COMMAND… runs COMMAND, a static binary of WORK, in a
+# busybox container (kind_busybox) named <the cluster>-NAME on the kind network beside the node,
+# with WORK mounted at its own path, as the caller's user, and each docker run OPTION: the pods
+# reach the kind network's containers, while a host firewall can drop what they send the host at
+# the network's gateway. The caller's EXIT trap removes the container by that name.
+# kind_sandbox_worker_image COMMIT prints the worker image of COMMIT by digest: the digest the
+# registry gives ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of COMMIT>, which
+# .github/workflows/worker-image.yaml publishes, read with an anonymous pull token. It fails where
+# ghcr.io gives no token, and returns 1, printing nothing, where the registry has no such tag, so
+# the caller fails naming the tag and what publishes it.
 # kind_sandbox_teardown STATUS EVIDENCE writes, when STATUS is not 0, what the cluster held (pods,
 # Sandboxes, volume claims, events and the legion namespace's container logs) to
 # EVIDENCE/cluster-at-failure.txt, then deletes the cluster. It does nothing before
@@ -134,6 +144,30 @@ kind_sandbox_load_image() {
 
 kind_sandbox_internal_kubeconfig() {
   "$kind_bin" get kubeconfig --internal --name "$kind_cluster" >"$1"
+}
+
+kind_sandbox_on_kind() {
+  local name=$1 work=$2 options=()
+  shift 2
+  while [ "$1" != -- ]; do
+    options+=("$1")
+    shift
+  done
+  shift
+  docker run --rm --name "$kind_cluster-$name" --cpus 2 --memory 2g --network kind --user "$(id -u):$(id -g)" \
+    -v "$work:$work" -e HOME=/tmp "${options[@]}" "$kind_busybox" "$@"
+}
+
+kind_sandbox_worker_image() {
+  local token digest
+  token=$(curl -fsS "https://ghcr.io/token?scope=repository:cybermonklabs/legion-worker:pull" | jq -er .token) ||
+    fail "no anonymous pull token for ghcr.io/cybermonklabs/legion-worker"
+  # The pull token goes to curl on standard input, never as an argument every process can read.
+  digest=$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsSI -H @- \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/cybermonklabs/legion-worker/manifests/sha-${1:0:12}" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}') || true
+  [[ $digest == sha256:* ]] || return 1
+  echo "ghcr.io/cybermonklabs/legion-worker@$digest"
 }
 
 kind_sandbox_teardown() {

@@ -345,7 +345,6 @@ REACH = (
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
-    "scripts/e2e/shared-clone-kind.sh",
     "scripts/e2e/issue-pod-start-kind.sh",
     "scripts/e2e/lib/kind-sandbox.sh",
 )
@@ -366,11 +365,6 @@ IMAGE_FROM = {
         "scripts/e2e/lib/nats-image.sh sets it to testnats.HubImage, the Go string constant "
         "packages/envoy/internal/testnats/nats.go declares, which is in the reach above and whose "
         "reference this check reads (scripts/e2e/lib/nats-image.test.ts holds the helper to it)"
-    ),
-    ("scripts/e2e/shared-clone-kind.sh", "kind_busybox"): (
-        "scripts/e2e/lib/kind-sandbox.sh, which the script sources, assigns it the busybox copy of "
-        ".github/ci-images.yaml by digest; that file is in the reach above, and this check reads "
-        "the reference in it"
     ),
     ("scripts/e2e/issue-pod-start-kind.sh", "kind_busybox"): (
         "scripts/e2e/lib/kind-sandbox.sh, which the script sources, assigns it the busybox copy of "

@@ -180,9 +180,16 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 			return err
 		}
 	}
-	// Recorded the moment the add has made the workspace, ahead of anything that can still fail:
-	// a provisioning that failed after it finds the workspace there next time and adds it no more,
-	// so only this one can record when it was created (Created).
+	// The checkout marker goes on the workspace first, the moment the add has made it and before
+	// any of its files is written: a provisioning that fails or stops anywhere after this, up to
+	// its checkout's end, leaves the workspace marked, so the next one clears whatever a cut-short
+	// checkout wrote before checking out again (Provision, checkoutMarkerFile).
+	if err := writeCheckoutMarker(workspace.Dir); err != nil {
+		return err
+	}
+	// Recorded next, ahead of anything else that can still fail: a provisioning that failed after
+	// the add finds the workspace there next time and adds it no more, so only this one can record
+	// when it was created (Created).
 	if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
 		return err
 	}

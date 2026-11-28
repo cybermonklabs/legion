@@ -129,37 +129,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# on_kind NAME OPTION… -- COMMAND… runs COMMAND, a static binary of the work directory, in a
-# busybox container (kind_busybox) on the kind network beside the node, with each docker run
-# OPTION, as shared-clone-kind.sh's does: the pods reach the kind network's containers, while a
-# host firewall can drop what they send the host at the network's gateway. Run in the background,
-# it leaves the shell free to answer the driver's handshake.
-on_kind() {
-  local name=$1 options=()
-  shift
-  while [ "$1" != -- ]; do
-    options+=("$1")
-    shift
-  done
-  shift
-  docker run --rm --name "$cluster-$name" --cpus 2 --memory 2g --network kind --user "$(id -u):$(id -g)" \
-    -v "$work:$work" -e HOME=/tmp "${options[@]}" "$kind_busybox" "$@"
-}
-
-# worker_image COMMIT is the image the arm of COMMIT runs: the digest the registry gives that
-# commit's sha- tag, read as shared-clone-kind.sh's worker_image reads the checkout's own.
+# worker_image COMMIT is the image the arm of COMMIT runs (lib/kind-sandbox.sh's
+# kind_sandbox_worker_image), and fails naming the tag where the registry has none.
 worker_image() {
-  local tag token digest
-  tag=sha-$(cut -c1-12 <<<"$1")
-  token=$(curl -fsS "https://ghcr.io/token?scope=repository:cybermonklabs/legion-worker:pull" | jq -er .token) ||
-    fail "no anonymous pull token for ghcr.io/cybermonklabs/legion-worker"
-  # The pull token goes to curl on standard input, never as an argument every process can read.
-  digest=$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsSI -H @- \
-    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "https://ghcr.io/v2/cybermonklabs/legion-worker/manifests/$tag" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}') || true
-  [[ $digest == sha256:* ]] ||
-    fail "ghcr.io/cybermonklabs/legion-worker has no $tag, the worker image of $1; run worker-image.yaml on a branch at that commit (gh workflow run worker-image.yaml --repo cybermonklabs/legion --ref <branch>)"
-  echo "ghcr.io/cybermonklabs/legion-worker@$digest"
+  kind_sandbox_worker_image "$1" ||
+    fail "ghcr.io/cybermonklabs/legion-worker has no sha-${1:0:12}, the worker image of $1; run worker-image.yaml on a branch at that commit (gh workflow run worker-image.yaml --repo cybermonklabs/legion --ref <branch>)"
 }
 
 # github_tip prints GitHub's tip of the repository's default branch, as git ls-remote reads it. git's
@@ -239,8 +213,10 @@ run_arm() {
   begin "$arm-launch"
   result=$arm_work/result
   local first_ended=$arm_work/first-ended tip_before=$arm_work/tip-before driver tip_t0='' tip_t1
+  # The driver's container (lib/kind-sandbox.sh's kind_sandbox_on_kind) runs in the background, so
+  # the shell stays free to answer the driver's handshake.
   # shellcheck disable=SC2016 # expanded by the driver container's shell
-  on_kind driver \
+  kind_sandbox_on_kind driver "$work" \
     -e LEGION_E2E_KUBECONFIG="$arm_work/kubeconfig-internal" -e LEGION_E2E_KUBE_CONTEXT="$kind_context" \
     -e LEGION_E2E_IMAGE="$image" -e LEGION_E2E_WORK="$arm_work" -e LEGION_E2E_RESULT="$result" \
     -e LEGION_E2E_REPOSITORY="$repository" -e LEGION_E2E_DEFAULT_BRANCH="$default_branch" \

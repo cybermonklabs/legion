@@ -1,20 +1,12 @@
 package daemon
 
 import (
-	"context"
-	"net/http/httptest"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 )
 
 // The issue-clone live proof (scripts/e2e/shared-clone-kind.sh, whose driver is
@@ -41,56 +33,16 @@ const sharedCloneLiveResources = `    resources:
       resources: {cpu: 1, memory: 2Gi, ephemeral_storage: 4Gi, ephemeral_storage_request: 1Gi}
 `
 
-// The shared clone proof's legion.yaml passes the daemon's loader, holds the issue pod's small
-// reservation, and builds its runtime, with the proof's repository as the cache set, through
-// sandboxOptions and sandbox.New against an API server standing in for the kind cluster; the
-// providers Secret the driver creates holds the key the file names, the runtime's reader of the
-// leak check serves a check a pod's launcher installs, and both of its root launches pass the
-// spawn-spec checks. Every step is the one the driver takes before it reaches the cluster.
+// The shared clone proof's legion.yaml passes the daemon's loader and builds its runtime as its
+// driver does before it reaches the cluster (kindProofOptions), with the proof's repository as the
+// cache set, and holds the issue pod's small reservation.
 func TestTheSharedCloneKindProofBuildsItsRuntimeFromItsConfiguration(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	server := httptest.NewServer(newIssueSandboxAPI())
-	t.Cleanup(func() { cancel(); server.Close() })
-	dir := t.TempDir()
-	path := writeBurstableLiveConfig(t, filepath.Join(dir, "shared-clone"), "CLONE", "192.0.2.10",
-		"ghcr.io/cybermonklabs/legion-worker@sha256:"+strings.Repeat("a", 64), writeKubeconfig(t, server.URL, ""), "test", sharedCloneLiveResources)
-	cfg, err := config.LoadForValidation(path, nil)
-	if err != nil {
-		t.Fatalf("load %s: %v", path, err)
-	}
-	rc, err := kubeClient(*cfg.Runtime.Kubernetes)
-	if err != nil {
-		t.Fatal(err)
-	}
-	refuse := func(string) (claim.Token, uint64, bool, bool, error) { return "", 0, false, false, nil }
-	listener, err := stream.Listen(ctx, "tcp://127.0.0.1:0", refuse, stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: quietLogger()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, opts, err := burstableLiveRuntime(ctx, cfg, rc, listener, serveLiveLeakCheck(t), quietLogger(), sharedCloneLiveRepository)
-	if err != nil {
-		t.Fatalf("the proof's runtime: %v", err)
-	}
+	opts := kindProofOptions(t, "CLONE", "shared-clone", sharedCloneLiveRepository, "master", sharedCloneLiveResources, "CLONE-1", "CLONE-2")
 	reservation := opts.Resources.Issue
 	for kind, want := range map[corev1.ResourceName]string{corev1.ResourceCPU: "500m", corev1.ResourceMemory: "2Gi", corev1.ResourceEphemeralStorage: "2Gi"} {
 		if got := reservation.Requests[kind]; got.Cmp(resource.MustParse(want)) != 0 {
 			t.Errorf("the proof's issue pod requests %s %s, want %s", kind, got.String(), want)
-		}
-	}
-	requireLiveProvidersSecret(t, cfg)
-	requireLiveLeakCheckInstalls(t, opts.LeakCheck)
-	project, err := claim.ProjectToken(cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, issue := range []string{"CLONE-1", "CLONE-2"} {
-		token, err := claim.NewToken(project, issue, claim.RoleArchitect)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := runtime.ValidateSpawnSpec(liveRootSpec(project, issue, token, "boot-token", filepath.Join(dir, "role.md"), sharedCloneLiveRepository, "master"), nil); err != nil {
-			t.Fatalf("the proof's launch of %s: %v", issue, err)
 		}
 	}
 }
