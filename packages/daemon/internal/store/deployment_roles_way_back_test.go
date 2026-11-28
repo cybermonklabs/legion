@@ -118,7 +118,10 @@ func decodedStrictly(payload []byte, into any) error {
 // Legion's six, which its MergeForwardReaches names for neither; a pause's stop, a phase-ended
 // message, a hook prompt or an update ask to a role outside the six (its claim.IsRole, which holds
 // the six alone); a hook prompt of a move that leaves or reaches step, whatever role it goes to (its
-// phase.IsMovePair: movePairBeforeTheRoles); and a state change naming the field stepRole, or a
+// phase.IsMovePair: movePairBeforeTheRoles); a task's stop, a suspension, an idle release or a
+// tree's close of a role outside the six, whose claim its outbox derives from the row's role
+// (claim.NewToken, which holds the six alone) and fails at every attempt, since its
+// permanentRefusal ends no supervise row; and a state change naming the field stepRole, or a
 // claim change of a role outside the six (its stateevent.Change.Validate).
 func refusedBeforeTheRoles(row record.OutboxRow) error {
 	var named struct {
@@ -163,6 +166,17 @@ func refusedBeforeTheRoles(row record.OutboxRow) error {
 	case record.OutboxKindSupervise:
 		if named.Op == "pause_stop" && !claim.IsBuiltin(named.Role) {
 			return fmt.Errorf("a pause's stop names its pause and the role it stops; it names role %q", named.Role)
+		}
+		// main at 167c7d3ed6e7, daemon/outbox.go:3189-3192 (outbox.supervise) and :3991-3993
+		// (reservedTreeClose): the release before's executor of these ops derives the claim of
+		// the row's role, and its claim.NewToken (claim/token.go:96-98 there) refuses a role
+		// outside the six. Its permanentRefusal (:940) ends no supervise row, so the row is
+		// retried on its backoff for ever, with its failure logged at each attempt.
+		switch named.Op {
+		case "step_stop", "suspend", "release", "tree_close":
+			if !claim.IsBuiltin(named.Role) {
+				return fmt.Errorf("derive claim for outbox row %d: claim token: %q is not a role", row.ID, named.Role)
+			}
 		}
 	case record.OutboxKindPhaseEnded, record.OutboxKindHookPrompt, record.OutboxKindUpdateAsk:
 		if !claim.IsBuiltin(named.Role) {
@@ -220,10 +234,12 @@ const (
 // step's role as its worker, waiting to retry, which the way back strips of its worker, and one in
 // retro. A merge-forward hold and a landed, a pause's stop, a phase-ended message, a hook prompt
 // and an update ask to checker, which the way back deletes, and each of them to one of Legion's
-// six. A hook prompt to the implementer on step-implementing and one to the tester on
-// reviewing-step, which the way back deletes though each goes to one of Legion's six. A state
-// change into checker's step and one of checker's claim, which the way back deletes, and one of
-// the implementer's claim and one of a phase and a slot.
+// six. A task's stop, a suspension, an idle release and a tree's close of checker, which the way
+// back deletes, and a task's stop of the implementer. A hook prompt to the implementer on
+// step-implementing and one to the tester on reviewing-step, which the way back deletes though
+// each goes to one of Legion's six. A state change into checker's step and one of checker's
+// claim, which the way back deletes, and one of the implementer's claim and one of a phase and a
+// slot.
 func deploymentRolesWayBackRows(project string) []deploymentRolesQueued {
 	issue := project + "-311"
 	checker := deploymentRolesRole
@@ -286,6 +302,16 @@ func deploymentRolesWayBackRows(project string) []deploymentRolesQueued {
 			Generation: 3, Pause: 7}),
 		keeps("a pause's stop of the implementer", issue, record.SuperviseRequest{Op: "pause_stop", Tree: issue, Role: claim.RoleImplementer,
 			Generation: 3, Pause: 7}),
+		deletes("a task's stop of a role of the deployment", issue, record.SuperviseRequest{Op: "step_stop", Tree: issue, Role: checker,
+			Generation: 1, Reason: "task a of " + issue + " was stopped by its owner"}),
+		keeps("a task's stop of the implementer", issue, record.SuperviseRequest{Op: "step_stop", Tree: issue, Role: claim.RoleImplementer,
+			Generation: 1, Reason: "task a of " + issue + " was stopped by its owner"}),
+		deletes("a suspension of a role of the deployment", issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: checker,
+			Generation: 1, Reason: "the pod is idle"}),
+		deletes("an idle release of a role of the deployment", issue, record.SuperviseRequest{Op: "release", Tree: issue, Role: checker,
+			Generation: 1, Reason: "the pod is idle"}),
+		deletes("a tree's close of a role of the deployment", issue, record.SuperviseRequest{Op: "tree_close", Tree: issue, Role: checker,
+			Generation: 1, Linger: 1}),
 		deletes("a phase-ended message to a role of the deployment", issue, record.PhaseEnded{Role: checker, From: phase.Step,
 			To: phase.AwaitingChildren, Reason: "the admission pass stopped checker's step, while these Dispatch children of " + issue +
 				" were open: " + project + "-312 (todo)"}),
