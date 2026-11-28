@@ -1435,16 +1435,21 @@ type fallbackRecord struct {
 // It reports what the holder does next, as a batch reports it (Outbox.scan): full, the claim
 // filled its batch, so rows it did not reach are due now and the holder scans and passes again
 // rather than waiting for a wake of its own - a fresh row's next_attempt_at is null, which no
-// retry timer is armed to (Outbox.nextRetry); and failed, the claim itself failed, so the holder
-// waits retry.BaseDelay before its next pass rather than spinning on a claim that keeps failing.
-// A row the pass decided and failed needs neither: its record moves its next_attempt_at out, and
-// the timer is armed to that.
-func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed bool) {
+// retry timer is armed to (Outbox.nextRetry); failed, the claim itself failed, so the holder
+// waits retry.BaseDelay before its next pass rather than spinning on a claim that keeps failing;
+// and natsLost, a keep of the pass answered that the probe its handover made of the pass's
+// connection failed (errHandoverProbeFailed, handOverKept), so the holder gives the hold up for
+// NATS lost, as it does for a batch that found so (publishBatch), with no second probe. A client
+// that has reconnected since the pass's window opened is not NATS lost, as it is not for a batch:
+// the probe failed on the connection the reconnect replaced. A row the pass decided and failed
+// needs none of the three: its record moves its next_attempt_at out, and the timer is armed to
+// that.
+func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance uuid.UUID) (full, failed, natsLost bool) {
 	if ctx.Err() != nil {
 		// Nothing this pass claimed could be decided: every row would be read and handed straight
 		// back, and the events behind them read on a context that is already done. The rows are
 		// left for whatever process runs next, as a pass that claimed them would leave them.
-		return false, false
+		return false, false, false
 	}
 	if !time.Now().Before(hold.Deadline()) {
 		// The hold's deadline has passed before a row was claimed, so this process may be one the
@@ -1452,15 +1457,15 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		// landed - and a claim it took would keep rows out of the holder's own pass for
 		// fallbackClaim while every send it made met the window's refusal. It claims nothing, as
 		// a scan starts no batch past the deadline (Outbox.scan).
-		return false, false
+		return false, false, false
 	}
 	copies, err := claimFallbackCopies(ctx, deps)
 	if err != nil {
 		slog.Error("dispatch outbox: claim fallback copies", "error", err)
-		return false, true
+		return false, true, false
 	}
 	if len(copies) == 0 {
-		return false, false
+		return false, false, false
 	}
 	full = len(copies) == batchSize
 	var records []fallbackRecord
@@ -1497,18 +1502,24 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		for _, held := range copies {
 			fail(held)
 		}
-		return full, false
+		return full, false, false
 	}
 	type sentCopy struct {
 		held   fallbackCopy
 		out    fallbackSend
 		answer <-chan error
 	}
+	// changed is taken before the window's first send, as a batch takes it (publishBatch), so a
+	// keep's failed probe on a connection the client has replaced since is told from NATS lost.
+	changed := deps.Publisher.ConnectionChanged()
 	sender := deps.Publisher.WindowUntil(hold.Deadline)
 	// One record for the pass, as a batch keeps one for its own window of sends (sendChains):
 	// what the handovers behind this pass's keeps have already handed a role's holder.
 	handed := newKeptHandovers()
 	var sent []sentCopy
+	// probeFailed is whether a keep answered that its handover's probe of the window's connection
+	// failed (errHandoverProbeFailed).
+	probeFailed := false
 	for _, held := range copies {
 		if ctx.Err() != nil {
 			release(held, 0)
@@ -1554,6 +1565,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 	}
 	for _, item := range sent {
 		err := awaitAnswer(ctx, item.answer)
+		probeFailed = probeFailed || errors.Is(err, errHandoverProbeFailed)
 		// A send's answer is read, counted and logged by the one rule both passes share
 		// (judgeSend). A role forward its holder's resolution held pending sent nothing at all
 		// and is counted under that holder.
@@ -1578,7 +1590,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 		}
 		records = append(records, fallbackRecord{held: item.held, settled: true, published: true})
 	}
-	return full, false
+	return full, false, probeFailed && !(connectionReplaced(changed) && deps.Publisher.Connected())
 }
 
 // fallbackDecision is what a fallback pass does with one row (decideFallbackCopy).

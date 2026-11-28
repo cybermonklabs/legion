@@ -108,7 +108,8 @@ type Deps struct {
 	// listener's next handover of the lane - the role's next claim, a keep, the registration that
 	// makes a session holding the role live again or the claim route's refresh that does, or the
 	// sweep (handOverKept) - which is what this package's tests that publish through a stand-in
-	// with no stream behind it leave it to. A nil reader reads no notice either.
+	// with no stream behind it leave it to. A nil reader reads no notice either. New bounds each
+	// of its calls at probeTimeout (boundedKeptLanes).
 	KeptLanes KeptLaneReader
 	// PostIssueMessage posts message, written by actor, a system actor, on the issue
 	// message.IssueKey names, under the id message.ID, and answers the id of the message it
@@ -267,7 +268,9 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // failed for the connection either way then looks at the connection: a client that has
 // reconnected since the batch began (its connection changed and it is connected again) releases
 // the not-acknowledged events too and keeps the hold, since the resend follows on the
-// reconnect's wake; otherwise the batch probes its window's connection, and a probe that fails -
+// reconnect's wake; otherwise a batch a keep of which answered that its handover's probe of the
+// window's connection failed (errHandoverProbeFailed, handOverKept) takes that probe's answer and
+// makes no second one, and every other batch probes its window's connection. A probe that fails -
 // a silent cut on a connection still the window's, or a client not connected - reports NATS
 // lost, which gives the publisher hold up (Outbox), and releases the not-acknowledged events
 // rather than backing them off.
@@ -483,6 +486,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	sendChains(ctx, deps, window, chains, settleOwner)
 
 	connectionFailed := false
+	// probeFailed is the answer of a keep whose handover already probed this window's connection
+	// and found it not answering (errHandoverProbeFailed), nil when no send answered so.
+	var probeFailed error
 	for _, event := range events {
 		sent := false
 		for _, send := range event.sends {
@@ -491,6 +497,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 				result.fenced = true
 			case send.connection:
 				connectionFailed = true
+				if probeFailed == nil && errors.Is(send.err, errHandoverProbeFailed) {
+					probeFailed = send.err
+				}
 			}
 			if send.sent() {
 				sent = true
@@ -506,13 +515,21 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	}
 	releaseUnacknowledged := false
 	if connectionFailed && !result.fenced && ctx.Err() == nil {
-		if connectionReplaced(changed) && deps.Publisher.Connected() {
+		switch {
+		case connectionReplaced(changed) && deps.Publisher.Connected():
 			slog.Info("dispatch outbox: the batch's connection was replaced, so the sends it failed are released for the resend on the new one")
 			releaseUnacknowledged = true
-		} else if err := window.Probe(probeTimeout); err != nil {
-			slog.Error("dispatch outbox: the batch's sends failed and its connection does not answer", "error", err)
+		case probeFailed != nil:
+			slog.Error("dispatch outbox: the batch's sends failed and its connection does not answer the probe a keep's handover made of it",
+				"error", probeFailed)
 			result.natsLost = true
 			releaseUnacknowledged = true
+		default:
+			if err := window.Probe(probeTimeout); err != nil {
+				slog.Error("dispatch outbox: the batch's sends failed and its connection does not answer", "error", err)
+				result.natsLost = true
+				releaseUnacknowledged = true
+			}
 		}
 	}
 
@@ -545,9 +562,10 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	return result, nil
 }
 
-// connectionReplaced reports whether changed, the client's connection-change channel taken before a
-// batch's first send (Publisher.ConnectionChanged), has closed: the connection the batch's window
-// pinned was lost or replaced since.
+// connectionReplaced reports whether changed, the client's connection-change channel taken before
+// the work it guards (Publisher.ConnectionChanged) - a batch's first send, the fallback pass's
+// window (publishFallbackCopies), or the expiry pass (Outbox.passKeptExpiriesWhileNATSAnswers) -
+// has closed: the connection that work started on was lost or replaced since.
 func connectionReplaced(changed <-chan struct{}) bool {
 	select {
 	case <-changed:

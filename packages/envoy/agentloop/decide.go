@@ -148,10 +148,12 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	url := strings.TrimSuffix(req.Model.Endpoint.BaseURL, "/") + decidePath
 	post, err := http.NewRequestWithContext(callCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, err)
+		return DecideResult{}, fmt.Errorf("agentloop: the %s endpoint: %w", SystemOne, shownFailure(req.Model.Endpoint.BaseURL, err))
 	}
 	post.Header.Set("Content-Type", "application/json")
-	transport := newModelTransport(req.Model)
+	// A decision carries no schema, so its transport never warns and is given no logger.
+	transport := newModelTransport(req.Model.Endpoint, nil, nil)
+	transport.deployment = deploymentOf(req.Model)
 
 	resp, err := transport.client().Do(post)
 	var raw []byte
@@ -160,8 +162,10 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 		raw, err = io.ReadAll(io.LimitReader(resp.Body, answerLimit+1))
 		_ = resp.Body.Close()
 		if err != nil {
-			err = fmt.Errorf("reading the answer: %w", err)
+			err = fmt.Errorf("reading the answer: %w", shownFailure(req.Model.Endpoint.BaseURL, err))
 		}
+	} else {
+		err = transport.failure(err)
 	}
 	var result DecideResult
 	switch {
@@ -170,7 +174,7 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case errors.Is(callCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the decision went past %s", req.Bounds.Time)
 	case err != nil:
-		result.Fault, result.Detail = FaultProviderError, transport.failure(err).Error()
+		result.Fault, result.Detail = FaultProviderError, err.Error()
 	case resp.StatusCode/100 != 2:
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, raw)
 	case len(raw) > answerLimit:
