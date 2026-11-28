@@ -405,7 +405,7 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the six controls are named in the order the row draws them, and none is called Tree", () => {
+test("the controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
     "Dashboard",
     "Conversation",
@@ -413,6 +413,7 @@ test("the six controls are named in the order the row draws them, and none is ca
     "Verification",
     "Plan",
     "Decisions",
+    "Threads",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
@@ -435,11 +436,25 @@ test("the six controls are named in the order the row draws them, and none is ca
   ).toEqual([]);
 });
 
+// R22: the Spec view draws Statement, never Requirement (R7), so no word of the list is
+// the model's name for a statement. The list is lowercase, so its words cannot tell where a
+// word came from: they are read from every declaration but one entry, let through by name,
+// `BLOCK_TYPE_NAMES.requirement`, the tag of a requirement block in a document other than the
+// spec, which is no statement.
+test("no word of the list is requirement", () => {
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => /^requirements?$/iu.test(word))
+  ).toEqual([]);
+});
+
 test("every empty-state line is one sentence a person reads", () => {
   for (const line of Object.values(EMPTY_STATE_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(EMPTY_STATE_LINES.spec_summary).toBe("This spec has no summary.");
 });
 
 test("every key report is one sentence saying where the key could not go", () => {
@@ -925,9 +940,10 @@ test("the join adds each file's keys after the table's own, nested as the table 
 });
 
 // A part's file that the join does not read fails here. So does a part that has no file. The
-// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) is named.
+// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) and Threads' part
+// (dispatch://INFRA-5704) are named.
 test("each open part of the page has its own words file, which the join reads", () => {
-  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard"];
+  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard", "Threads"];
   const expected = parts.map((part) => `page-words-${part.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);

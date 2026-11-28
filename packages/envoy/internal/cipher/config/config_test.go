@@ -113,6 +113,44 @@ func TestTheMachineLoginURLIsOptionalAndHeldToItsForm(t *testing.T) {
 	}
 }
 
+// TestTheDispatchSignInSwitchIsOnOrOff: BROKER_DISPATCH_SIGNIN unset or blank is off and on is
+// on; any other value refuses the start naming the setting and the value, and on refuses beside
+// no BROKER_MACHINE_LOGIN_URL, since a Dispatch sign-in is a device login.
+func TestTheDispatchSignInSwitchIsOnOrOff(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{set: false, want: false},
+		{value: "", set: true, want: false},
+		{value: "  ", set: true, want: false},
+		{value: "on", set: true, want: true},
+	} {
+		e := validEnv()
+		if row.set {
+			e["BROKER_DISPATCH_SIGNIN"] = row.value
+		}
+		if cfg, err := Load(env(e)); err != nil || cfg.DispatchSignIn != row.want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q, set %t) = (%t, %v), want %t", row.value, row.set, cfg.DispatchSignIn, err, row.want)
+		}
+	}
+	for _, bad := range []string{"off", "ON", "true", "1", "yes"} {
+		e := validEnv()
+		e["BROKER_DISPATCH_SIGNIN"] = bad
+		want := "BROKER_DISPATCH_SIGNIN must be on or unset, got " + strconv.Quote(bad)
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q) = %v, want %q", bad, err, want)
+		}
+	}
+	e := validEnv()
+	e["BROKER_DISPATCH_SIGNIN"] = "on"
+	delete(e, "BROKER_MACHINE_LOGIN_URL")
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_DISPATCH_SIGNIN=on needs BROKER_MACHINE_LOGIN_URL") {
+		t.Errorf("Load(BROKER_DISPATCH_SIGNIN=on, no BROKER_MACHINE_LOGIN_URL) = %v, want a refusal naming both", err)
+	}
+}
+
 func TestLoadKeepsTheAzureProjectedTokenPathForEachRelease(t *testing.T) {
 	for _, row := range []struct{ configured, want string }{
 		{"", "/var/run/secrets/azure/tokens/azure-identity-token"},
@@ -831,6 +869,259 @@ func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
 	e["BROKER_AIRLOCK_CLUSTER_RANGES"] = "2001:db8:5::%eth0/48"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "element 1 is not a CIDR prefix") {
 		t.Fatalf("Load(a zoned prefix) = %v; want the refusal naming element 1", err)
+	}
+}
+
+// TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne: each entry of BROKER_PROXY_PRIVATE_UPSTREAM
+// is one <host>=<url> entry, read as that host and that URL. An entry not of that form, a host
+// that is not one lower-case host name, and a URL that does not parse, is not http or https, names
+// no host or a port outside 1 to 65535, carries a user, a path, a query or a fragment, or names a
+// host every dial of the proxy refuses (localhost or a name under .localhost, with or without the
+// root's trailing dot; a loopback, link-local, unspecified, multicast or the IPv4 broadcast
+// address, or one of 0.0.0.0/8; a cloud metadata server's IPv6 address; an IPv6 address that
+// carries an IPv4 address, in each form, whatever it carries, and even inside the cluster ranges;
+// an address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each
+// refuse the start, naming the setting and the fault. No refusal quotes the URL's user, path,
+// query or fragment, where a credential can sit, nor a URL written with no <host>= before it,
+// whose user and path then sit before the first =. A private address, one in 100.64.0.0/10, one
+// inside the cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW
+// names with its port, the local stack's stand-in of Dispatch, are read: each is an address the
+// dial opens. (TestAPrivateUpstreamSettingIsRefusedUnlessEachEntryIsOne holds the list: entries
+// in order, and a host named twice.)
+func TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.ProxyPrivateUpstreams != nil {
+		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.ProxyPrivateUpstreams, err)
+	}
+	for _, row := range []struct{ value, dialAllow, ranges, wantURL string }{
+		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
+		{" dispatch.test=https://10.0.0.5/ ", "", "", "https://10.0.0.5/"},
+		{"dispatch.test=http://10.0.0.5:8766", "", "", "http://10.0.0.5:8766"},
+		{"dispatch.test=http://[fd12:3456::5]:8766", "", "", "http://[fd12:3456::5]:8766"},
+		{"dispatch.test=http://100.64.1.1:8766", "", "", "http://100.64.1.1:8766"},
+		{"dispatch.test=http://34.118.224.10:8766", "", "34.118.224.0/20", "http://34.118.224.10:8766"},
+		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "", "http://127.0.0.1:8766"},
+		{"dispatch.test=http://localhost", "localhost:80", "", "http://localhost"},
+	} {
+		e := airlockEnv()
+		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
+		e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", setting, row.value, row.dialAllow, row.ranges, err)
+		}
+		if got := cfg.ProxyPrivateUpstreams; len(got) != 1 || got[0].Host != "dispatch.test" || got[0].URL == nil || got[0].URL.String() != row.wantURL {
+			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
+		}
+	}
+	// The URL's user, path, query and fragment carry a word a refusal must not quote; each URL is
+	// put together here, so the word is one constant the check below reads too. A URL written with
+	// no <host>= before it puts its user, and its path up to a query's =, before the first =.
+	const userWord = "secret-word"
+	for _, row := range []struct{ name, value, dialAllow, want string }{
+		{"an entry with no =", "dispatch.test", "", "must be <host>=<url> entries"},
+		{"an entry with no URL", "dispatch.test=", "", "must be <host>=<url> entries"},
+		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a URL that does not parse", "dispatch.test=http://u:" + userWord + "@[10.0.0.5", "", "does not parse"},
+		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21/" + userWord, "", "must be http or https"},
+		{"a URL with no host", "dispatch.test=http://:8766/" + userWord, "", "names no host"},
+		{"a URL with port 0", "dispatch.test=http://10.0.0.5:0/" + userWord, "", "port outside 1 to 65535"},
+		{"a URL with port 65536", "dispatch.test=http://10.0.0.5:65536", "", "port outside 1 to 65535"},
+		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "", "carries a user"},
+		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/" + userWord, "", "has a path"},
+		{"a loopback URL with a path", "dispatch.test=http://127.0.0.1:8766/" + userWord, "", "has a path"},
+		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q=" + userWord, "", "has a query"},
+		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
+		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
+		{"a URL with no <host>=, a user and a query", "http://u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>= and no scheme, a user and a query", "u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>=, a path and a query", "10.0.0.5:8766/" + userWord + "?a=b", "", "holds a URL's scheme, user or path"},
+		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
+		{"localhost with the root's trailing dot", "dispatch.test=http://localhost.:8766", "", "resolves to loopback"},
+		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},
+		{"a name under .localhost with the root's trailing dot", "dispatch.test=http://dispatch.localhost.:8766", "", "resolves to loopback"},
+		{"a public address", "dispatch.test=http://8.8.8.8:8766", "", "which this proxy would also tunnel to"},
+		{"a documentation address, which the proxy reads as public", "dispatch.test=http://203.0.113.5:8766", "", "which this proxy would also tunnel to"},
+		{"a public IPv6 address", "dispatch.test=http://[2001:4860:4860::8888]:8766", "", "which this proxy would also tunnel to"},
+		{"a loopback address", "dispatch.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
+		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
+		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
+		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
+		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
+		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
+		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
+		{"an address of 0.0.0.0/8", "dispatch.test=http://0.0.0.1:8766", "", "an address of 0.0.0.0/8"},
+		{"the NAT64 form of the IPv4 metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "carries an IPv4 address"},
+		{"the NAT64 form of a loopback address", "dispatch.test=http://[64:ff9b::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"the NAT64 form of a private address", "dispatch.test=http://[64:ff9b::a00:5]:8766", "", "carries an IPv4 address"},
+		{"the 6to4 form of the IPv4 metadata server", "dispatch.test=http://[2002:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"the IPv4-compatible form of a loopback address", "dispatch.test=http://[::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"a Teredo address whose server is the IPv4 metadata server", "dispatch.test=http://[2001:0:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"an address of the local-use translation prefix", "dispatch.test=http://[64:ff9b:1::a9fe:a9fe]", "", "a local-use translation IPv6 address"},
+		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
+	} {
+		e := airlockEnv()
+		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), row.want) {
+			t.Errorf("%s: Load(%s=%q) = %v; want a refusal naming the setting and %q", row.name, setting, row.value, err, row.want)
+			continue
+		}
+		if strings.Contains(err.Error(), userWord) {
+			t.Errorf("%s: the refusal quotes a part of the URL a credential can sit in: %v", row.name, err)
+		}
+	}
+	e := validEnv()
+	e[setting] = "dispatch.test=http://10.0.0.5:8766"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_PROFILES_FILE") {
+		t.Errorf("Load(%s with no profiles file) = %v; want a refusal naming the setting and BROKER_PROFILES_FILE", setting, err)
+	}
+	// The cluster ranges are the dial's: a public address the rows above take inside
+	// 34.118.224.0/20 is refused just outside it, naming both settings.
+	ranged := airlockEnv()
+	ranged["BROKER_AIRLOCK_CLUSTER_RANGES"] = "34.118.224.0/20"
+	ranged[setting] = "dispatch.test=http://34.118.240.1:8766"
+	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
+	}
+	// The cluster ranges widen the private ranges and nothing else: a range that holds an IPv6
+	// form carrying the metadata server's address does not make that form a destination.
+	carried := airlockEnv()
+	carried["BROKER_AIRLOCK_CLUSTER_RANGES"] = "64:ff9b::/96"
+	carried[setting] = "dispatch.test=http://[64:ff9b::a9fe:a9fe]"
+	if _, err := Load(env(carried)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "carries an IPv4 address") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=64:ff9b::/96) = %v; want a refusal naming the setting and the form", setting, carried[setting], err)
+	}
+}
+
+// TestTheCheckOfADestinationsAddressIsTheStartsRule: the address checks `profiles check
+// --private-upstream` makes are the start's own. Given the cluster ranges (`--cluster-ranges`, read
+// by ParseAirlockClusterRanges), it calls PrivateUpstreamDialable with them, which answers what
+// Load answers for that destination and those ranges, in the same words, for each ranges below:
+// none, the Service range, an IPv6 range that holds the NAT64 forms, and every address. Without
+// them, PrivateUpstreamRefusedOnEveryBroker is the start's rule for every cluster ranges a broker
+// can have: where it refuses, the
+// start refuses in the same words with no ranges and with ranges that hold every address; where it
+// takes a destination and judges it, the start takes it with both; and where it answers the
+// address unjudged, the start refuses that address with no ranges and takes it with ranges that
+// hold it, so that answer is exactly the part that needs the ranges.
+func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	everything := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	for _, url := range []string{
+		"http://127.0.0.1:8766", "http://[::1]:8766", "http://localhost:8766", "http://dispatch.localhost.:8766",
+		"http://169.254.169.254", "http://[fe80::1]", "http://[fd20:ce::254]", "http://[fd00:ec2::254]",
+		"http://255.255.255.255:8766", "http://0.0.0.0:8766", "http://0.0.0.1:8766", "http://224.0.0.1",
+		"http://[64:ff9b::a9fe:a9fe]", "http://[2002:a9fe:a9fe::1]", "http://[::7f00:1]:8766", "http://[2001:0:a9fe:a9fe::1]",
+		"http://[64:ff9b:1::a9fe:a9fe]", "http://[64:ff9b::a00:5]:8766",
+		"http://8.8.8.8:8766", "http://203.0.113.5:8766", "http://34.118.224.10:8766", "http://34.118.240.1:8766", "http://[2001:4860:4860::8888]",
+		"http://10.0.0.5:8766", "https://10.0.0.5", "http://100.64.1.1:8766", "http://[fd12:3456::5]:8766",
+		"http://dispatch.dispatch.svc.cluster.local:8766",
+	} {
+		upstreams, err := ParsePrivateUpstreams("dispatch.test=" + url)
+		if err != nil || len(upstreams) != 1 {
+			t.Fatalf("ParsePrivateUpstreams(%s) = %v, %v; want one entry", url, upstreams, err)
+		}
+		upstream := upstreams[0]
+		unjudged, checked := PrivateUpstreamRefusedOnEveryBroker(upstream)
+		bare, wide := PrivateUpstreamDialable(upstream, nil, nil), PrivateUpstreamDialable(upstream, nil, everything)
+		switch {
+		case checked != nil:
+			if unjudged.IsValid() || bare == nil || wide == nil || bare.Error() != checked.Error() || wide.Error() != checked.Error() {
+				t.Errorf("%s: the check refuses it (%v, unjudged %v); the start, with no ranges and with every address as a range, answers %v and %v; want the same refusal", url, checked, unjudged, bare, wide)
+			}
+		case unjudged.IsValid():
+			if bare == nil || !strings.Contains(bare.Error(), " names "+unjudged.String()+", ") || wide != nil {
+				t.Errorf("%s: the check answers %s unjudged; the start answers %v with no ranges and %v with every address as a range; want a refusal of that address and none", url, unjudged, bare, wide)
+			}
+		default:
+			if bare != nil || wide != nil {
+				t.Errorf("%s: the check takes it and judges it; the start answers %v and %v; want it taken with any ranges", url, bare, wide)
+			}
+		}
+		for _, text := range []string{"", "34.118.224.0/20", "64:ff9b::/96", "0.0.0.0/0, ::/0"} {
+			ranges, err := ParseAirlockClusterRanges(text)
+			if err != nil {
+				t.Fatalf("ParseAirlockClusterRanges(%q): %v", text, err)
+			}
+			checked := PrivateUpstreamDialable(upstream, nil, ranges)
+			e := airlockEnv()
+			e[setting] = "dispatch.test=" + url
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = text
+			_, started := Load(env(e))
+			if (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
+				t.Errorf("%s with the ranges %q: the check answers %v; Load answers %v; want Load's answer", url, text, checked, started)
+			}
+		}
+	}
+}
+
+// privateEntry is the proxy block the private destination's host is bound by: the profile
+// DISPATCH_RESULTS_TOKEN's (resultsEntry), bound to dispatch.test.
+func privateEntry() proxyrules.Binding {
+	entry := resultsEntry()
+	entry.Inline.Hosts = []string{"dispatch.test"}
+	return entry
+}
+
+// TestAPrivateUpstreamNeedsOneBindingEntry: the start check of the results capability
+// (resultsStart: ResultsEntryRules and ProxyMintedRules) takes the profiles' proxy blocks when the
+// block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's, bound to that
+// host alone, of kind dpop, with a non-empty allow list, carried in Authorization alone (a block
+// naming no headers carries the default, Authorization). A profile bound to another host, a kind
+// over it (proxyrules.HostBound, so a "*." kind over the host binds it too, and the refusal names
+// that host), a profile of no kind, no allow list, an empty one and
+// another header are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and
+// what is wrong. With no destination, no result entries and no dpop block, any profiles are taken.
+func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	e := airlockEnv()
+	e[setting] = "dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load(%s): %v", setting, err)
+	}
+	upstreams := cfg.ProxyPrivateUpstreams
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{privateEntry()}}, upstreams, false); err != nil {
+		t.Fatalf("the one entry: %v", err)
+	}
+	defaultHeader := privateEntry()
+	defaultHeader.Inline.Headers = nil
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{defaultHeader}}, upstreams, false); err != nil {
+		t.Fatalf("the entry with the default header: %v", err)
+	}
+	if err := resultsStart(proxyrules.Rules{}, nil, false); err != nil {
+		t.Fatalf("no destination and no rules: %v", err)
+	}
+	pattern := proxyrules.Kind{Name: "wildcard", Hosts: []string{"*.test"}, Ways: []string{proxyrules.WaySwap}}
+	for _, c := range []struct {
+		name, says string
+		spoil      func(*proxyrules.Rules)
+	}{
+		{"a profile bound to another host", "binds other.test, which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", func(r *proxyrules.Rules) { r.Names[0].Inline.Hosts = []string{"other.test"} }},
+		{"a kind *.test", "the kind wildcard of BROKER_PROFILES_FILE binds dispatch.test", func(r *proxyrules.Rules) { r.Kinds = append(r.Kinds, pattern) }},
+		{"a profile of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Names[0].Way = "" }},
+		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Names[0].Inline.Allow = nil }},
+		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Names[0].Inline.Allow = []proxyrules.Allow{} }},
+		{"a header X-Token", "Authorization header alone", func(r *proxyrules.Rules) { r.Names[0].Inline.Headers = []string{"X-Token"} }},
+	} {
+		rules := proxyrules.Rules{Names: []proxyrules.Binding{privateEntry()}}
+		c.spoil(&rules)
+		err := resultsStart(rules, upstreams, false)
+		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
+			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
+		}
 	}
 }
 
@@ -2640,6 +2931,63 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	e["BROKER_EXCHANGE_WORKFLOWS"] = entry + "=EXAMPLE=ada@example.com"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
 		t.Errorf("BROKER_EXCHANGE_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
+// TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
+// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, none when unset,
+// one workflow under two patterns, and refusals naming the setting and the entry for one that is
+// not of that form, a ref pattern exchange.CheckRefPattern refuses, and one workflow under one
+// pattern twice. It needs GitHub's issuer and audience, whose tokens its runs present.
+func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeResultWorkflows != nil {
+		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
+	}
+	withGitHub := func() map[string]string {
+		e := withResultsAirlock(validEnv())
+		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+		return e
+	}
+	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml"
+	e := withGitHub()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com\n " + workflow + "=refs/heads/*/*=EXAMPLE=ada@example.com "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.ResultWorkflowEntry{
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
+	}
+	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
+		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
+	}
+	for _, bad := range []string{
+		"example-org/example-repo", workflow + "=refs/heads/*=EXAMPLE",
+		workflow + "==EXAMPLE=ada@example.com", workflow + "=refs/heads/*=EXAMPLE=ada@example.com=a-session",
+		workflow + "=refs/*/main=EXAMPLE=ada@example.com", workflow + "=refs/heads/[x=EXAMPLE=ada@example.com",
+	} {
+		e := withGitHub()
+		e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	e = withGitHub()
+	const again = workflow + "=refs/heads/*=OTHER=ada@example.com"
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com " + again
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS naming one workflow and pattern twice: err = %v, want a refusal naming the setting and the entry", err)
+	}
+	e = validEnv()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_GITHUB_ISSUER", err)
 	}
 }
 

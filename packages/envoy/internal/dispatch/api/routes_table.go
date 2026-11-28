@@ -227,44 +227,62 @@ type routeDecl struct {
 	// route and not what a request writes. Their personal tokens hold the set each token's row
 	// names. A broker-issued token that acts for its person holds `person` alone
 	// (brokerTokenActor), except an approve-only token, which holds `person` and `approve` and
-	// calls only the routes that state ApproveOnly; no broker-issued token holds `p0`. The shared
-	// token, a pod's service-account token, a project-scoped session's token and a broker-issued
-	// token that names a service and no person hold none of them.
+	// calls only the routes that state ApproveOnly, and a Dispatch sign-in's token, which holds the
+	// ones of `person` and `p0` its person approved; no other broker-issued token holds `p0`. The
+	// shared token, a pod's service-account token, a project-scoped session's token and a
+	// broker-issued token that names a service and no person hold none of them.
 	//
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
 	// caller must hold, and no person holds that one. The routes such a credential may call are
 	// the GET routes whose declarations class them as reads (Read), which its own gate reads
-	// (refuseReadOnlyToken).
+	// (refuseLimitedToken). The scope `results` a results token holds is never one of these
+	// either: the routes that token may call are the routes that state ResultsScope, which the
+	// same gate reads.
 	//
 	// A route that takes an id written short needs no scope of its own for it: the prefix layer
 	// (resolveIDPrefixes, ID) runs inside this gate - register wraps the gate around it, so a
 	// credential that holds none of the route's scopes is refused before any id is read, and
 	// the one check a request meets ahead of the route's scopes is whether a read-only token may
-	// call the route at all (refuseReadOnlyToken) - and it only rewrites the path value, so a
-	// short id reaches exactly the scopes the whole id reaches, and a route that needs none with
-	// a whole id needs none with a prefix.
+	// call the route at all, or a results token may call it (refuseLimitedToken) - and it only
+	// rewrites the path value, so a short id reaches exactly the scopes the whole id reaches, and
+	// a route that needs none with a whole id needs none with a prefix.
 	OAuthScopes routeScopeSet
 
-	// Read is the read class of a GET route: what it writes when it serves a request, and the
-	// note that says so (readEntry, read_classes.go). A route a read-only credential may call is
-	// one whose class is readWritesNothing; every other route, and GET /ws/live beside them,
-	// answers such a caller 403 READ_ONLY_TOKEN before anything else the route does
-	// (refuseReadOnlyToken), so a route added later is closed to it until someone has read the
+	// Read is the read class of a GET route: what it writes when it serves a request, the note
+	// that says so, and how it answers a read at a past time, its as_of kind (AsOf) with what it
+	// answers at a cut (AtACut) (readEntry, read_classes.go). A route a read-only credential may
+	// call is one whose class is readWritesNothing; every other route, and GET /ws/live beside
+	// them, answers such a caller 403 READ_ONLY_TOKEN before anything else the route does
+	// (refuseLimitedToken), so a route added later is closed to it until someone has read the
 	// handler and classed it here.
 	//
-	// Every GET route states a class, and no other route states one: a write is not a read
-	// whatever its handler does, and register refuses to mount a table that breaks either rule
-	// (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
-	// OpenAPI document and the reference generated from it do not carry it, and only the
-	// read-only gate reads it.
+	// Every GET route states a class and a kind, and no other route states either: a write is not
+	// a read whatever its handler does, and register refuses to mount a table that breaks either
+	// rule (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
+	// OpenAPI document and the reference generated from it do not carry it. Only the
+	// limited-token gate and the as_of gate read it (refuseLimitedToken, asOfGate), and routes()
+	// writes what it says of as_of into the route's description (asOfDescription) as it builds the
+	// table.
 	Read readEntry
+
+	// ResultsScope is a route a results token may call: a token the secrets broker minted from a
+	// result entry for one CI run, which holds the scope results alone and names a person, one
+	// project and the run (model.Credential.ResultsOnly). Every route that does not state
+	// ResultsScope, and GET /ws/live beside them, answers such a token 403 RESULTS_ONLY_TOKEN
+	// before anything else the route does (refuseLimitedToken), so a route added later stays
+	// closed to it until its file states it. It is no value of OAuthScopes: a scope there is one
+	// the caller must hold, and no person holds results, so ResultsScope says what a credential
+	// that holds results alone may still call rather than what a route requires; for the same
+	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
+	// it do not carry it, and only the limited-token gate reads it.
+	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
 	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
 	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
 	// /ws/live beside them, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
-	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
+	// (refuseLimitedToken), so a route added later stays closed to it until its file states
 	// it.
 	//
 	// The routes that state it are the routes whose OAuthScopes name approve, the routes that
@@ -274,8 +292,8 @@ type routeDecl struct {
 	// states it. Beside them is the answer of an ask, which checks approve in its handler for an
 	// approval request and refuses an approve-only token the answer of every other ask, 403
 	// APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). Like Read, it is no
-	// scope: the route index and the OpenAPI document do not carry it, and only the approve-only
-	// gate reads it.
+	// scope: the route index and the OpenAPI document do not carry it, and only the
+	// limited-token gate reads it.
 	ApproveOnly bool
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
@@ -300,10 +318,13 @@ func declareRoute(route routeDecl) routeDecl {
 
 // readClassRefusals names, sorted, every way the table's declarations fail to class their reads,
 // each line naming its route: a GET route stating no class, one whose Writes is no class at all, a
-// GET that writes (readWritesState) stating no WriteNote to name what it writes, and a route that
-// is not a GET stating a class, which would open a write to a credential minted only to read.
-// register refuses to mount a table this names anything for, so a GET route added later is served
-// to no read-only credential until someone has read its handler and classed it.
+// GET that writes (readWritesState) stating no WriteNote to name what it writes, a GET route
+// stating no as_of kind (AsOf) or one that is no kind at all, asOfCaller on a route but GET
+// /api/v1/whoami (asOfCallerRow), a route of kind answers stating no AtACut, a route of another
+// kind stating one, and a route that is not a GET stating any of it, which would open a write to a
+// credential minted only to read. register refuses to mount a table this names anything for, so a
+// GET route added later is served to no read-only credential and answers no as_of until someone
+// has read its handler and classed it.
 //
 // There is no "a class naming no route" case, which the map beside the table needed: a class is a
 // field of the route's own declaration, so it cannot name a route that is not there.
@@ -311,17 +332,36 @@ func readClassRefusals(routes []apiRoute) []string {
 	var refused []string
 	for _, route := range routes {
 		name, entry := route.Method+" "+route.Pattern, route.Read
-		switch {
-		case route.Method != http.MethodGet:
-			if entry.Writes != readWritesUnset {
+		if route.Method != http.MethodGet {
+			if entry != (readEntry{}) {
 				refused = append(refused, name+": a route that is not a GET states a read class, and a write is no read")
 			}
+			continue
+		}
+		switch {
 		case entry.Writes == readWritesUnset:
 			refused = append(refused, name+": a GET route stating no read class")
 		case entry.Writes != readWritesNothing && entry.Writes != readWritesState:
 			refused = append(refused, name+": its read class is "+strconv.Itoa(int(entry.Writes))+", which is neither readWritesNothing nor readWritesState")
 		case entry.Writes == readWritesState && strings.TrimSpace(entry.WriteNote) == "":
 			refused = append(refused, name+": a GET that writes (readWritesState) stating no WriteNote naming what it writes")
+		}
+		switch entry.AsOf {
+		case asOfAnswers, asOfNoHistory:
+		case asOfCaller:
+			if name != asOfCallerRow {
+				refused = append(refused, name+": its read class's AsOf is asOfCaller, which only "+asOfCallerRow+" may hold: the route would answer a read-only token's cut with the present")
+			}
+		case asOfUnset:
+			refused = append(refused, name+": a GET route whose read class leaves AsOf unset")
+		default:
+			refused = append(refused, name+": its read class's AsOf is "+strconv.Itoa(int(entry.AsOf))+", which is neither asOfAnswers, asOfNoHistory nor asOfCaller")
+		}
+		switch {
+		case entry.AsOf == asOfAnswers && strings.TrimSpace(entry.AtACut) == "":
+			refused = append(refused, name+": a route of kind asOfAnswers whose read class has no AtACut saying what it answers at a cut")
+		case entry.AsOf != asOfAnswers && entry.AtACut != "":
+			refused = append(refused, name+": its read class has an AtACut, and the route is not of kind asOfAnswers")
 		}
 	}
 	sort.Strings(refused)
@@ -361,12 +401,12 @@ func searchDescription(declares string) string {
 }
 
 // searchDeclaresFour is the paragraph of GET /api/v1/search: six of the ten members this
-// handler reads are declared elsewhere, and a client sends them elsewhere.
-const searchDeclaresFour = "This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all ten: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. ?kind= is younger than that path, so a build serving it but released before ?kind= answers either route 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for: sending ?kind= there buys no refusal, and a client that must know the rows are narrowed reads each result's own kind. This route still reads all ten, so a page served by an earlier release that sends one of the six here is still answered narrowed."
+// handler reads, and as_of, are declared elsewhere, and a client sends them elsewhere.
+const searchDeclaresFour = "This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all ten and as_of: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. ?kind= is younger than that path, so a build serving it but released before ?kind= answers either route 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for: sending ?kind= there buys no refusal, and a client that must know the rows are narrowed reads each result's own kind. A client sends a search at a past time (as_of) there too. This route still reads all ten and as_of, so a page served by an earlier release that sends one of the six here is still answered narrowed."
 
 // searchDeclaresTen is the paragraph of GET /api/v1/search/results, the route that declares
 // every member the handler reads.
-const searchDeclaresTen = "This route declares all ten members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. ?kind= is younger than this path, so a build serving it but released before ?kind= answers both routes 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for; a client that must know the rows are narrowed reads each result's own kind. GET /api/v1/search still reads all ten, so a page served by an earlier release that sends one of the six there is still answered narrowed."
+const searchDeclaresTen = "This route declares all ten members and as_of, and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. ?kind= is younger than this path, so a build serving it but released before ?kind= answers both routes 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for; a client that must know the rows are narrowed reads each result's own kind. A client sends a search at a past time (as_of) here too. GET /api/v1/search still reads all ten and as_of, so a page served by an earlier release that sends one of the six there is still answered narrowed."
 
 // commentPartiesDescription is the paragraph both comment-create rows carry: who a comment
 // delivers to is part of its contract, and a mention is a reference, so the body itself names
@@ -415,6 +455,10 @@ func (s *server) routes() []apiRoute {
 		if route.TestHook && !s.deps.TestHooksEnabled {
 			continue
 		}
+		// What the route's read class says of as_of, which is nothing on a route that is not a GET
+		// (readClassRefusals), so the route index, the OpenAPI document and each client generated
+		// from it carry it. route is this loop's copy, so the declaration keeps its own text.
+		route.Description += asOfDescription(route.Method+" "+route.Pattern, route.Read)
 		routes = append(routes, apiRoute{routeDecl: route, Handler: s.bound(route.Handler)})
 	}
 	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
@@ -423,8 +467,8 @@ func (s *server) routes() []apiRoute {
 
 // byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
 // and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
-// does the approve-only refusal, whose message promises the order routes() mounts them in
-// (approveOnlyRefusal).
+// do the results and approve-only refusals, whose messages promise the order routes() mounts them
+// in (resultsOnlyRefusal, approveOnlyRefusal).
 func byPatternThenMethod(left, right routeDecl) int {
 	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
 }

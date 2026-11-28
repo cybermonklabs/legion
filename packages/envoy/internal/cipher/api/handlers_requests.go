@@ -543,7 +543,8 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 // every other session is 403 NOT_YOURS, but before that owner check a session other than the
 // holder is answered 403 GRANT_NOT_LIVE exactly as for an id no grant has when the grant touches a
 // private project the session cannot see, and 503 PROJECT_ACCESS_UNAVAILABLE, releasing nothing,
-// when Dispatch could not say.
+// when Dispatch could not say. A stored secret under a proxy block of kind dpop is answered 403
+// MINTED_ONLY, releasing nothing: the refusal is the policy's, never a fault of the broker's.
 func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "GRANT_ID_INPUT", "grant")
 	if !ok {

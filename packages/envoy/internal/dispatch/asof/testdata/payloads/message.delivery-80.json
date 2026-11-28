@@ -1,0 +1,23 @@
+{
+  "id": 80,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "",
+  "seq": 0,
+  "type": "message.delivery",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-16T17:29:00.137419Z",
+  "payload": {
+    "state": "sent",
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+    "target": "session:01a13dca-e979-7264-af32-f654ef57a6f5",
+    "attempt": 1,
+    "delivery": "steer",
+    "message_id": "eda06aec-910d-48a0-be90-e9292af40b90",
+    "session_id": "01a13dca-e979-7264-af32-f654ef57a6f5"
+  }
+}

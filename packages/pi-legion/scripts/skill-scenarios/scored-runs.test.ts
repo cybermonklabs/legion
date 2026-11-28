@@ -759,6 +759,68 @@ describe("cells", () => {
       },
     ]);
   });
+
+  // Catches: a download's cells read at the stage's count rather than the batch's, so a cell the
+  // batch ran to two reads UNKNOWN at three, or one short of the batch's count reads decided; and
+  // one count given to every case, which no Job runs: a default head Job runs A three times and C
+  // once, so one number reads an honest Job as broken at 3 and a short one as clean at 1.
+  test("cells at the counts given: each case's cell takes its own, and a case with none keeps its form's", () => {
+    const runs = fresh();
+    for (let n = 1; n <= 2; n += 1)
+      plantRow(runs, { form: "A", n, clauses: [clause("read", true), clause("choices", true)] });
+    plantRow(runs, { form: "C", n: 1, clauses: [clause("read", true), clause("cites", true)] });
+    const at = (counts?: Record<string, number>) =>
+      cells(runs, "owner-walk", counts).map(({ cell, count, scored, verdict }) => [
+        cell,
+        count,
+        scored,
+        verdict,
+      ]);
+    // The stage's own runs: A three, C one. Two A runs are short of three.
+    expect(at()).toEqual([
+      ["guidance/root-A-claude", 3, 2, "UNKNOWN"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
+    // Each case at the count its Job ran it to: both decided.
+    expect(at({ "head\troot-A-claude": 2, "head\troot-C-claude": 1 })).toEqual([
+      ["guidance/root-A-claude", 2, 2, "pass"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
+    // One number for every case, which is what the per-case map replaces: at 3 the honest C cell
+    // reads UNKNOWN, and at 1 the A cell reads decided on a third of its runs.
+    expect(at({ "head\troot-A-claude": 3, "head\troot-C-claude": 3 })).toEqual([
+      ["guidance/root-A-claude", 3, 2, "UNKNOWN"],
+      ["guidance/root-C-claude", 3, 1, "UNKNOWN"],
+    ]);
+    // A case the map does not name keeps its form's runs.
+    expect(at({ "head\troot-A-claude": 2 })).toEqual([
+      ["guidance/root-A-claude", 2, 2, "pass"],
+      ["guidance/root-C-claude", 1, 1, "pass"],
+    ]);
+  });
+
+  // Catches: a control form's cell taking a case's count. A control is one count over its twelve
+  // owners, never one case's runs, so a map naming its cases must leave it at 12: with the case's
+  // count taken, four runs of root-D-claude at 3 would read the whole control at 3, scored 12,
+  // and a control that passes would read UNKNOWN.
+  test("a control form's cell keeps the control's own count, whatever the counts name for its cases", () => {
+    const runs = fresh();
+    plantControl(runs, "D", "ctl-D", (owner) => [0, 1, 3, 6, 9].includes(owner));
+    const named = {
+      "ctl-D\troot-D-claude": 3,
+      "ctl-D\troot-D-gpt": 3,
+      "ctl-D\tchild-D-claude": 3,
+      "ctl-D\tchild-D-gpt": 3,
+    };
+    expect(
+      cells(runs, "owner-walk", named).map(({ cell, count, scored, verdict }) => [
+        cell,
+        count,
+        scored,
+        verdict,
+      ])
+    ).toEqual([["guidance/D", 12, 12, "pass"]]);
+  });
 });
 
 /** A run directory with the transcripts `sessions` names: each file's entries, by its path under

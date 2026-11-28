@@ -81,7 +81,7 @@ func TestK3TradesByDispatchState(t *testing.T) {
 		{"(b) answers 403", refuses},
 		{"(c) cannot be reached", unreachable},
 	}
-	policy, err := exchange.NewSet(nil, nil, nil, nil, "")
+	policy, err := exchange.NewSet(nil, nil, nil, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

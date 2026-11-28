@@ -46,11 +46,16 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
     body: text === "" ? undefined : JSON.parse(text),
   });
   if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/comments") {
-    return Response.json({
+    const answer = Response.json({
       id: "comment-1",
       issue_key: "DSP-1",
       advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
     });
+    // Dispatch's keyed layer names a keyed write's key back on each answer; a 2xx that names none
+    // is no answer of Dispatch's to the write (dispatch-http.ts), so the stub names it too.
+    const key = request.headers.get("Idempotency-Key");
+    if (key !== null) answer.headers.set("Idempotency-Key", key);
+    return answer;
   }
   return Response.json({ error: "not found", code: "NOT_FOUND" }, { status: 404 });
 }) as typeof fetch;
