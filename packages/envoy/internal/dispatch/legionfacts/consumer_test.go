@@ -168,6 +168,10 @@ func (c *consumer) head(t *testing.T, statement string) int64 {
 	return position
 }
 
+// cursorNames is the four cursors that stand in a feed, each at a position of its feed: the
+// cursor rows a pass writes (cursorRows) less the roll row, which stands at no position.
+var cursorNames = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor}
+
 // feedHeads is where the feeds stand, by the cursor each is read by: the observations' head for
 // both of that feed's cursors, which a pass that holds no observation leaves there.
 func (c *consumer) feedHeads(t *testing.T) map[string]int64 {

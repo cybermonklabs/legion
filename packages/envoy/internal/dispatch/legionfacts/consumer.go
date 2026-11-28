@@ -122,9 +122,6 @@ const (
 	rollCursor              = "stamped_builds_roll"
 )
 
-// cursorNames is the four cursors that stand in a feed, each at a position of its feed.
-var cursorNames = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor}
-
 // cursorRows is the four cursors and the roll row in one list, which is how a pass reads them
 // (readCursors) and the order it writes them in (advanceCursors).
 var cursorRows = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor, rollCursor}
