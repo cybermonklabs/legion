@@ -2069,7 +2069,9 @@ Two workflows make it:
   has one of the two at 5,000), or the label already on, and skips every other push before a
   runner starts. The job of any other edit (its title or body) skips too, and cancels nothing,
   since the concurrency group is on the job, not the run: a group on the run would let such an
-  edit cancel a push's label run and then write no label. The script reads the size
+  edit cancel a push's label run and then write no label. The job is named `label` only where
+  its `if:` holds, so such an edit's skipped run posts its name expression's text, a check name
+  new to the head, and never replaces the push's `label`. The script reads the size
   from the event's payload and puts the label `large-pr` on a large pull request, or takes it off
   one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
   need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
