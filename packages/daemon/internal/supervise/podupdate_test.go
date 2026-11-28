@@ -108,7 +108,7 @@ func (h *harness) unsentAsk(round string) Delivery {
 func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
 	h.t.Helper()
 	h.markAsked(round)
-	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(claim.RoleImplementer, round, testReasons, epoch.Add(time.Hour)),
+	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now()}
 	if sent {
 		if err := h.conn.Prompt(h.ctx, ask.ID, ask.Task); err != nil {
@@ -860,7 +860,7 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
-	text := UpdateTask(claim.RoleImplementer, testRound, `image "sha256:1"`, endsAt)
+	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
 	for _, want := range []string{
 		"The round is " + testRound + ".",
 		`The reasons are: image "sha256:1".`,
@@ -936,7 +936,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 // mounts keeps the work on the disk. GPT-6.1 Sol's non-blocking point on #5285 at 0259f8af.
 func TestUpdateTaskOfARoundThatBreaksThePodPromisesNoKeep(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.UTC)
-	text := UpdateTask(claim.RoleImplementer, testRound, runtime.BreakingDrift+"account default, now legion-worker", endsAt)
+	text := UpdateTask(testRound, runtime.BreakingDrift+"account default, now legion-worker", endsAt)
 	for _, want := range []string{
 		"The round is " + testRound + ".",
 		"This round is over a change that stops each role from working in this pod. So when the round ends, the daemon replaces the pod whatever the workspace holds.",

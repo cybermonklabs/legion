@@ -252,7 +252,9 @@ default steps, the reviewer's approval). That step's notice of it comes to you f
 for another issue when neither its own architect nor an architect between it and the root holds its
 role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
 handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
-where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
+where a reviewer step comes before yours; where the reviewer pushed a text commit, also that
+commit and the implementer's comment that accepts it, or the implementer's push and the reviewer's
+approval of the head that push made (the daemon refuses a sign-off while an issue beneath it
 is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
 carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
@@ -278,6 +280,13 @@ step) or send it back with `request_backward_move` (`issue`, `to` the phase of a
 the task, and `reason`), a parent whose pass names an older base commit,
 or none, to `testing` (`implementing` where no tester step comes before acceptance); a parent's code fix goes to a child.
 Your acceptance comment names each check with its result.
+Where the reviewer pushed a text commit or left a thread for the implementer's last chance, hold
+`sign_off` until the implementer, or you in its place, has answered and the reviewer has approved
+the head that the answer left (your daemon part below says what you do while you wait). Then
+check three things: that the reviewer's commit and the implementer's correction change no code
+that runs; that an agent that did not make each commit recorded each pass that holds at it; and
+that each such reason holds when you read it against the change. Say on the issue what you read
+and decided.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's

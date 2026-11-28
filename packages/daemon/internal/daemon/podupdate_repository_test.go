@@ -107,9 +107,10 @@ func TestRepositoryCorrectionOpensAnUpdateRoundNamingBothRepositories(t *testing
 		rig.awaitAsked(role, podUpdateRound)
 	}
 	asked := map[claim.Role]int{}
+	// Every role gets the same text, so it is built once.
+	text := supervise.UpdateTask(podUpdateRound, podUpdateRepositoryReason, podUpdateStart.Add(podUpdateGrace))
 	for _, ask := range rig.asks() {
 		asked[ask.Role]++
-		text := supervise.UpdateTask(ask.Role, podUpdateRound, podUpdateRepositoryReason, podUpdateStart.Add(podUpdateGrace))
 		if ask.Round != podUpdateRound || ask.Text != text {
 			t.Errorf("the ask to the %s = %+v, want round %s with the text:\n%s", ask.Role, ask, podUpdateRound, text)
 		}

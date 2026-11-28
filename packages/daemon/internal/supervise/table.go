@@ -364,9 +364,8 @@ type PodUpdateOpen struct {
 // that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
-// round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
-// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
-// and asks no commit or push of what its work made (createsNoCommit).
+// round, which podUpdateSignalled records in place of the first answer. The text is the same for
+// every role: each role, the reviewer included, gets the same five steps.
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -397,16 +396,8 @@ type PodUpdateOpen struct {
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
+func UpdateTask(round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
-	push := "1. Push every commit that you want to keep to this issue's branch."
-	made := " Then commit and push what it made."
-	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
-	if createsNoCommit(role) {
-		push = "1. You create no commit, so you push nothing."
-		made = ""
-		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
-	}
 	read := "When the round ends, the daemon reads the workspace on the pod's disk before it replaces the pod. " +
 		"If the read finds work that no branch or tag on origin holds, or the read fails, the daemon does not replace the pod: " +
 		"the round ends with no replacement, the pod and its disk stay, and every role keeps working in the pod on its old image and settings. " +
@@ -429,13 +420,13 @@ If every role answers, the round can end before that moment. It then ends once e
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
-%[5]s
-2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s.%[6]s
+1. Push every commit that you want to keep to this issue's branch.
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
 3. If you need a scratch file as evidence, put it on Dispatch.
 4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
 5. End your turn.
 
-%[7]s with round: "%[1]s" before you end that turn.
+If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
 
 A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
 
@@ -449,16 +440,7 @@ These things go with the pod when the daemon replaces it:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. %[4]s Do not start new work now.`, round, ends, read, held, push, made, after)
-}
-
-// createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
-// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
-// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
-// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
-// replaced is lost with the pod.
-func createsNoCommit(role claim.Role) bool {
-	return role == claim.RoleReviewer
+The daemon starts your process again on the new pod, in this same session. %[4]s Do not start new work now.`, round, ends, read, held)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the

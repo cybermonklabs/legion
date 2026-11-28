@@ -182,7 +182,9 @@ the child to `accepting` (in the default steps, the reviewer's approval), where 
 the acceptance is yours (`skill://legion-architect`, section 6): read
 `dispatch results --issue <issue>` at the head that step passed, the tester's handoff where a
 tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
-step comes before yours
+step comes before yours; where the reviewer pushed a text commit, also that commit and the
+implementer's comment that accepts it, or the implementer's push and the reviewer's approval of
+the head that push made
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed
 child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
@@ -199,6 +201,13 @@ acceptance is its last step, or send it back with
 `request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`), a
 parent whose pass names an older base commit, or none, to `testing` (`implementing` where no tester
 step comes before acceptance); a parent's code fix goes to a child.
+Where the reviewer pushed a text commit or left a thread for the implementer's last chance, hold
+`sign_off` until the implementer, or you in its place, has answered and the reviewer has approved
+the head that the answer left (your daemon part below says what you do while you wait). Then
+check three things: that the reviewer's commit and the implementer's correction change no code
+that runs; that an agent that did not make each commit recorded each pass that holds at it; and
+that each such reason holds when you read it against the change. Say on the issue what you read
+and decided.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
