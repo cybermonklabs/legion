@@ -142,8 +142,19 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // fails does. The release's refusal is a wait (wait.ErrWaiting), which lasts as long as the
 // release holds, up to its bound, and which nobody has to act on: the operator who released the
 // project asked for it. So a refusal that is a wait is logged at Info where the wait begins and at
-// Debug at each retry it refuses after that (relaunchWaitLine, checkWaiting), and every other
-// refusal at Warn at each retry (relaunchRefusedLine).
+// Debug at each retry it refuses after that (relaunchWaitLine, launchCheckWaiting), and every
+// other refusal at Warn at each retry (relaunchRefusedLine).
+//
+// A wait is answered to no caller: once its retry is armed, the decision answers only the claim's
+// write. Every caller that got it would log it at Error or answer it as a failure: the timer that
+// retries it, at each probe interval for as long as the release holds (fire), the daemon's feeder
+// of a worker's events (internal/daemon's supervisor.decisionFailed), and the routes of a turn's
+// outcome and of an operator's retry (api's claimFailure, operationFailure). The retry is the one
+// such answer a person reads, and it meets the wait only where the release marked after the
+// route's own check had let it through (api's releaseRefused, runDroppedLaunchForRetry): it is
+// answered as a start that wrote no launch, the claim waiting launching with its retry armed,
+// which the release's stop then lets go as it lets go every start it holds. A refusal that is no
+// wait is still answered with its error.
 func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch func(context.Context) error, err error) error {
 	if m.claim.Locator != nil || !slices.Contains(live, m.claim.State) {
 		return err
@@ -152,24 +163,24 @@ func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch f
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
 		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
+	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
 	if errors.Is(err, wait.ErrWaiting) {
 		level := slog.LevelDebug
-		if !m.checkWaiting {
+		if !m.launchCheckWaiting {
 			level = slog.LevelInfo
 		}
-		m.checkWaiting = true
+		m.launchCheckWaiting = true
 		m.log.Log(ctx, level, relaunchWaitLine, "error", err)
-	} else {
-		m.checkWaiting = false
-		m.log.Warn(relaunchRefusedLine, "error", err)
+		return m.persist(ctx)
 	}
-	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
+	m.launchCheckWaiting = false
+	m.log.Warn(relaunchRefusedLine, "error", err)
 	return errors.Join(err, m.persist(ctx))
 }
 
-// relaunchWaitLine is the line of a relaunch the launch check refused with a wait
-// (relaunchRefused): at Info at the refusal that begins the wait, and at Debug at each retry it
-// refuses after that (checkWaiting).
+// relaunchWaitLine is the line of a relaunch the launch check refused with a wait other than a
+// reserved cleanup's, which suspends the claim instead (relaunchRefused): at Info at the refusal
+// that begins the wait, and at Debug at each retry it refuses after that (launchCheckWaiting).
 const relaunchWaitLine = "supervise: the relaunch waits: the launch check holds it; trying it again at the probe interval"
 
 // relaunchRefusedLine is the line of a relaunch the launch check refused with anything but a wait
@@ -266,9 +277,10 @@ type waitingRelaunch struct {
 //   - relaunchAtProbe reads it off the intent of the try's launch, the one its retry restores
 //     (launchFromTop).
 //   - startWaitsForStore, startWaitsForPodRound and startWaitsForRelease pass WakeLaunch whatever
-//     launch they retry, and their retries restore no intent: each waits on a fault outside the
-//     daemon, on a pod's round or on a project release, which can take hours (a release lasts up
-//     to its bound), and a credit held that long would stop the lane.
+//     launch they retry, and their retries restore no intent. The first two wait on a fault
+//     outside the daemon or on a pod's round, which can take hours, and a credit held that long
+//     would stop the lane. startWaitsForRelease passes WakeLaunch as they do, though a credit held
+//     through the release would cost the lane nothing (below).
 //
 // A launch of the lane that the launch check refuses while a project release holds every start is
 // relaunchRefused's, not startWaitsForRelease's, so its retry records the lane's kind, and the

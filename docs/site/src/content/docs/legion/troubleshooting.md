@@ -1612,6 +1612,18 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   its task; the same relaunch is tried again every `probe_interval_seconds` until the store
   answers, and the agent is handed its task once it is ready. A daemon restart meanwhile launches
   the claim again as an unfinished launch. If the line keeps coming, look at the database.
+- **`supervise: the relaunch waits: the launch check holds it; trying it again at the probe
+  interval`** means a project release (`legion project release`, [Releasing a project's
+  pods](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#releasing-a-projects-pods))
+  holds every start until the daemon's next boot, and it held the relaunch of a claim whose
+  process was already stopped. The claim waits `launching` with no process and keeps its task,
+  nothing is counted, and the same relaunch is tried again every `probe_interval_seconds`. The line
+  is at Info where the wait begins and at Debug at each try after that, and nothing of the wait is
+  logged at Warn or Error. It is routine, and nothing to do: the operator who released the project
+  asked for it. It stops when the release's stop lets the claim go, when a release whose start
+  failed has cleared its mark and the next try starts the claim, or when the daemon's next boot
+  ends the release and launches the claim again. A try the store did not answer writes the line
+  above instead and ends the wait, so a wait that follows logs at Info again.
 - **`supervise: the launch could not be written; trying it again at the probe interval`** means
   the daemon's Postgres did not take a launch's write, after the launch had let the claim's process
   go. The process is stopped and nothing is started; the claim waits `launching` with no process,

@@ -208,7 +208,7 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 				deliveredTx(releasedByPause(holderClaim(supervise.StateSuspended, "ses-8")), task("delivery-3")), ""},
 			{"PutClaimAndDeliveryTx of a fresh session written with its task",
 				deliveredTx(forgotten(holderClaim(supervise.StateSuspended, "ses-8")), task("delivery-3")), "ses-8"},
-			{"PutClaim of the registration after it", put(holderClaim(supervise.StateRegistered, "ses-9")), ""},
+			{"PutClaim of the registration before the project release's stop", put(holderClaim(supervise.StateRegistered, "ses-9")), ""},
 			// A claim the project release stopped keeps its session for the next boot, which starts
 			// it again over that session: no session is left behind.
 			{"PutClaim of a project release's stop, which keeps the session", put(stoppedByProjectRelease(holderClaim(supervise.StateSuspended, "ses-9"))), ""},
