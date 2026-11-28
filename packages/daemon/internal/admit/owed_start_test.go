@@ -155,6 +155,9 @@ func TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot(t *testing.T) {
 		Clock: func() time.Time { return fixedNow }}, nil)
 	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: "root", Tree: root, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", LastDispatchSeq: 1})
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so its todo re-admits its tree as today.
+	confirmNeverMerged(t, pool, root)
 	tester := midPhaseChild(t, pool, root, testing_, phase.Testing, "in_progress")
 	implementer := midPhaseChild(t, pool, root, retro, phase.Retro, "retro")
 

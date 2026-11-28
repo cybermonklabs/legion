@@ -39,11 +39,14 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		Status: "todo", Title: "root", Rank: "A", HandedOver: handed}
 
 	// seedTree records the tree a re-admission opens: the root its linger closed at generation 1,
-	// and, where stands names a phase, one member of it left standing there by the close.
+	// and, where stands names a phase, one member of it left standing there by the close. The
+	// root closed with no merge in its record, and a person confirmed that its work never merged
+	// (D17), so the re-admission is today's.
 	seedTree := func(t *testing.T, pool *pgxpool.Pool, stands phase.Phase, status string) {
 		t.Helper()
 		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 			Title: "root", Tree: root, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", LastDispatchSeq: 1})
+		confirmNeverMerged(t, pool, root)
 		if stands == "" {
 			return
 		}

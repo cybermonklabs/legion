@@ -474,6 +474,9 @@ func TestATreeTakenBackAfterItsLingerStartsAgainWhateverItsLinksSay(t *testing.T
 				finished.LingerUntil = &until
 			}
 			putIssue(t, pool, finished)
+			// The root closed with no merge in its record: a person confirmed that its work never
+			// merged (D17), so its todo re-admits its tree as today.
+			confirmNeverMerged(t, pool, root)
 			seedMirror(t, pool, root, "done", blocker)
 			seedMirror(t, pool, blocker, "in_progress")
 
@@ -620,6 +623,11 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: testProject, Title: child, Tree: root, Parent: &parent, Phase: tc.at, Generation: 1, Status: tc.status,
 				Rank: "B", TakenBack: true, LastDispatchSeq: 1})
+			// The done child closed with no merge in its record, so it runs as today only on a
+			// person's confirmation that its work never merged (D17).
+			if tc.at == phase.Done {
+				confirmNeverMerged(t, pool, child)
+			}
 			seedMirror(t, pool, child, tc.status, blocker)
 			seedMirror(t, pool, blocker, "todo")
 
@@ -677,6 +685,9 @@ func TestATreeTakenBackIsNeitherHeldNorReportedBlockedOnALaterPass(t *testing.T)
 	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: "a finished tree", Tree: root, Phase: phase.Done, Generation: 3,
 		Status: "done", Rank: "B", HandedOver: true, TakenBack: true, LastDispatchSeq: 1, LingerUntil: &until})
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so its todo re-admits its tree as today.
+	confirmNeverMerged(t, pool, root)
 	seedMirror(t, pool, root, "done", blocker)
 	seedMirror(t, pool, blocker, "in_progress")
 
