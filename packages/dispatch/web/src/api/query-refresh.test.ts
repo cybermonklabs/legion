@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
+import { ApiError } from "./client";
 import {
   MIN_REFETCH_INTERVAL_MS,
   ownQuery,
@@ -129,6 +130,31 @@ test("events during a fetch give exactly one more fetch, once it settles", async
   } finally {
     detail.stop();
   }
+});
+
+// A search whose last answer was that it ran past the server's bound is never sent again on its
+// own (`heldAfterSearchTimeout`). A refresh that arrives while the search is out is owed all the
+// same, since the search's start cleared its last answer; once the search answers `503
+// SEARCH_TIMEOUT` the debt is dropped, not paid, while a search refused for another reason pays it.
+test("a refresh during a search that answers 503 SEARCH_TIMEOUT fetches nothing more, and one during a search refused otherwise fetches once more", async () => {
+  const starts: Record<string, readonly number[]> = {};
+  for (const code of ["SEARCH_TIMEOUT", "DATABASE_BUSY"]) {
+    const queryClient = newClient();
+    const refusal = new ApiError(503, { code, error: "the search was refused" });
+    const search = servedQuery(queryClient, ["search", "astrolabe"], 400, () =>
+      Promise.reject(refusal)
+    );
+    try {
+      // The search is out from 0 to 400 ms; the refresh arrives at 100 ms.
+      await advance(100);
+      refreshQueries(queryClient, [{ queryKey: ["search"] }]);
+      await advance(3_000);
+      starts[code] = search.starts;
+    } finally {
+      search.stop();
+    }
+  }
+  expect(starts).toEqual({ DATABASE_BUSY: [0, MIN_REFETCH_INTERVAL_MS], SEARCH_TIMEOUT: [0] });
 });
 
 test("a fetch slower than a second is fetched again the moment it settles", async () => {
