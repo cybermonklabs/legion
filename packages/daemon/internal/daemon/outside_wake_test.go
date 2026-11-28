@@ -86,6 +86,7 @@ func (r *priorityWakeRig) wantQueueLines(want map[claim.Token]string) {
 // reading Claim.DeathCharged in place of Claim.chargedDeath puts all five in the first queue,
 // where the death's relaunch, raised last, runs last.
 func TestADeathRelaunchGoesAheadOfRelaunchesAfterEndsFromOutsideThePod(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	var outside []claim.Token
 	for range 4 {
@@ -118,6 +119,7 @@ func TestADeathRelaunchGoesAheadOfRelaunchesAfterEndsFromOutsideThePod(t *testin
 // supervise.WakeQueue reading Claim.DeathCharged in place of Claim.chargedDeath places the end
 // from outside the pod in the first queue, where its work owed before the death's runs it first.
 func TestARestartPlacesTheRelaunchAfterAnEndFromOutsideThePodInTheSecondQueue(t *testing.T) {
+	t.Parallel()
 	r := newPriorityWakeRig(t)
 	early := r.start(pods.WakeChecks)
 	outside := r.seed(supervise.StateWorking)
