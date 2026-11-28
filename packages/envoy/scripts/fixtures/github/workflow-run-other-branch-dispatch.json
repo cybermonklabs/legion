@@ -5,7 +5,7 @@
     "name": "Dispatch browser nightly",
     "path": ".github/workflows/dispatch-browser-nightly.yaml",
     "event": "workflow_dispatch",
-    "head_branch": "infra-3862-browser-shards",
+    "head_branch": "acme-1-browser-shards",
     "head_sha": "d03572cc3f9e5e8a4c5236bf89307f129904bb74",
     "status": "completed",
     "conclusion": "cancelled",

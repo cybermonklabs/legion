@@ -1,6 +1,6 @@
 package webhook
 
-//ci:reads packages/envoy/scripts/fixtures/github/workflow-run-default-branch-schedule.json TestGitHubHandlerPublishesTheDefaultBranchWorkflowCopyBeforeTheWorkflowEnvelope posts it
+//ci:reads packages/envoy/scripts/fixtures/github/workflow-run-default-branch-schedule.json TestGitHubHandlerPublishesTheDefaultBranchWorkflowCopyBeforeTheWorkflowEnvelope posts it, and TestOneGUIDWithTwoInstallationsIsOneStreamMessage (github_delivery_key_test.go) posts it under two installations
 
 import (
 	"bytes"

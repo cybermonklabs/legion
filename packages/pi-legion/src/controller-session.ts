@@ -201,12 +201,20 @@ export function createControllerSession(
   let watchedSubscriptions: AbortController | undefined;
 
   /** Tells the session `content` as Envoy tells it its own notices (`handNotice` in
-   * pi-envoy's envoy.ts): shown in the transcript, and no turn starts for it. */
+   * pi-envoy's envoy.ts): shown in the transcript, and no turn starts for it. A session that
+   * refuses it (`pi.sendMessage` throws) is not told: the refusal is logged with the notice, and
+   * nothing reaches the caller, so no notice of a watched topic fails the claim. */
   const tellWatched = (content: string): void => {
-    pi.sendMessage(
-      { customType: WATCHED_WORKFLOWS_NOTICE, content, display: true },
-      { deliverAs: "steer", triggerTurn: false }
-    );
+    try {
+      pi.sendMessage(
+        { customType: WATCHED_WORKFLOWS_NOTICE, content, display: true },
+        { deliverAs: "steer", triggerTurn: false }
+      );
+    } catch (error) {
+      logger.warn(
+        `[legion] the session refused this notice of its watched workflows, so it is not told: ${messageFor(error)}. The notice: ${content}`
+      );
+    }
   };
 
   /**
@@ -281,8 +289,12 @@ export function createControllerSession(
    * not wait for: nothing Envoy answers about a watched topic reaches the claim, so none exits the
    * process, costs the role or another topic, or holds back the daemon's ready, whose registration
    * deadline would retire a controller that never reported ready while an edge listener withheld
-   * its GitHub topics. A list other than the one the session knows of (`watchedListKnown`) is told
-   * first: the session's prompt names the list of this process's first registration.
+   * its GitHub topics. A failure the task did not expect ends it with one error line, and reaches
+   * the claim no more than the notices do (`tellWatched`). A list other than the one the session
+   * knows of (`watchedListKnown`) is told first: the session's prompt names the list of this
+   * process's first registration. No bridge call unsubscribes one topic, so the topics of an entry
+   * or an event the new list drops stay subscribed until the role ends, and the notice tells the
+   * session to drop their runs.
    */
   const subscribeWatchedWorkflows = (
     sessionID: string,
@@ -292,7 +304,7 @@ export function createControllerSession(
   ): void => {
     if (watched.listed !== watchedListKnown) {
       tellWatched(
-        `legion: the daemon now names this controller's watched workflows as ${watched.listed}, where this session knew them as ${watchedListKnown ?? "none"} (its prompt names the list of this process's first registration); this session hears the completed default-branch runs of the new list's entries and events.`
+        `legion: the daemon now names this controller's watched workflows as ${watched.listed}, where this session knew them as ${watchedListKnown ?? "none"} (its prompt names the list of this process's first registration); this session hears the completed default-branch runs of the new list's entries and events. A run of an entry or an event that the new list does not name still arrives until this session's controller role ends: drop that run.`
       );
       watchedListKnown = watched.listed;
     }
@@ -307,7 +319,11 @@ export function createControllerSession(
         )
           return;
       }
-    })();
+    })().catch((error: unknown) => {
+      logger.error(
+        `[legion] the subscriptions of this session's watched workflows stopped on an error, and no more of them are made until the controller claims its role again: ${messageFor(error)}`
+      );
+    });
   };
 
   const serialised = (task: () => Promise<void>): Promise<void> => {

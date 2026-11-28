@@ -81,6 +81,7 @@ interface DaemonAnswers {
   readonly register?: () => Response | Promise<Response>;
   readonly hostStop?: () => Promise<void> | undefined;
   readonly steps?: string[];
+  readonly tell?: (message: Told["message"]) => void;
 }
 
 /**
@@ -90,9 +91,11 @@ interface DaemonAnswers {
  * default). Envoy's one bound instance answers each role claim with the next of `claims` and each
  * subscription with `subscribe` of its topic (both default to landing), recording each. The host's
  * stop is `answers.hostStop`; by default none has begun. Every exit is recorded, in `exits` and as
- * `exit <code>` on `answers.steps`, and `exited` settles at the first. Every line the Oh My Pi log
- * takes, every message the process hands its session (`told`), and every daemon route, role claim
- * and subscription in the order they were asked (`order`) is recorded too.
+ * `exit <code>` on `answers.steps`, and `exited` settles at the first. The session takes each
+ * message the process hands it unless `answers.tell` throws for it, which refuses it as
+ * `pi.sendMessage` throws. Every line the Oh My Pi log takes, every message the session took
+ * (`told`), and every daemon route, role claim and subscription in the order they were asked
+ * (`order`) is recorded too.
  */
 function daemonLaunchedController(answers: DaemonAnswers) {
   process.env.LEGION_CONTROLLER = "1";
@@ -150,6 +153,7 @@ function daemonLaunchedController(answers: DaemonAnswers) {
     persistedTranscript: async () => ({ sessionFile: TRANSCRIPT, agentId: CONTROLLER_SESSION }),
     pi: {
       sendMessage: (message: Told["message"], options: unknown) => {
+        answers.tell?.(message);
         told.push({ message, options });
       },
     } as unknown as PiApi,
@@ -433,7 +437,8 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
 // is waited out as a role claim's is, the wait doubling from 1 s to 30 s, and the session is told
 // once that the topic waits and once that it landed; any other refusal gives that topic up and
 // tells the session so. The session is told as Envoy tells it its own notices, as a message that
-// starts no turn.
+// starts no turn; a notice the session refuses is logged, and reaches the claim no more than an
+// answer of Envoy's does.
 
 /** One entry of the registration's `watchedWorkflows`. */
 type WatchedWorkflow = NonNullable<LegionControllerRegistration["watchedWorkflows"]>[number];
@@ -578,6 +583,8 @@ test("watched workflows: launched again with one entry, it subscribes only that 
 // The session's prompt names the list of the process's first registration, and a later claim in
 // the same process can be registered with another: the session is then told the list it hears
 // now, since the prompt still names the first. A later claim whose list is the same tells nothing.
+// No bridge call takes one topic back, so the notice also says that a run of what the new list
+// leaves out still arrives until the role ends, and that the session drops it.
 test("watched workflows: a later claim in this process whose list differs tells the session the new list", async () => {
   const lists = [[NIGHTLY], [NIGHTLY], [NIGHTLY, RELEASE]];
   let registrations = 0;
@@ -607,7 +614,59 @@ test("watched workflows: a later claim in this process whose list differs tells 
         options: NO_TURN,
       },
     ]);
+    for (const words of [
+      "run of an entry or an event that the new list does not name still arrives until this session's controller role ends",
+      "drop that run",
+    ]) {
+      expect(toldWatched(run)[0]).toContain(words);
+    }
     expect(run.exits).toEqual([]);
+  } finally {
+    run.stopSink();
+  }
+});
+
+// What the session refuses to take is no failure of the claim: a list-change notice that
+// `pi.sendMessage` throws on is logged, and the claim, its ready and the new list's topics go on.
+test("watched workflows: a session that refuses the list-change notice still holds its claim, and its topics are still asked for", async () => {
+  const refused = "the session takes no message now";
+  const lists = [[NIGHTLY], [NIGHTLY, RELEASE]];
+  let registrations = 0;
+  const run = watchingController({
+    register: () => registeredWith(lists[registrations++] ?? [])(),
+    tell: () => {
+      throw new Error(refused);
+    },
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await until("the first claim's watched subscriptions", () => asked(run, NIGHTLY_DISPATCH));
+    await run.controller.claim(run.context);
+    await until(
+      "the second claim's watched subscriptions, or an exit",
+      () => asked(run, RELEASE_PUSH) > 0 || run.exits.length > 0
+    );
+    await settled();
+
+    expect(run.exits).toEqual([]);
+    expect(run.claims).toEqual(["legion-legion-controller", "legion-legion-controller"]);
+    expect(run.posted.filter((route) => route === "/legion/v1/claims/ready")).toHaveLength(2);
+    expect(run.subscriptions).toEqual([
+      NOTICE_TOPIC,
+      SLACK_TOPIC,
+      NIGHTLY_SCHEDULE,
+      NIGHTLY_DISPATCH,
+      NOTICE_TOPIC,
+      SLACK_TOPIC,
+      NIGHTLY_SCHEDULE,
+      NIGHTLY_DISPATCH,
+      RELEASE_PUSH,
+    ]);
+    expect(run.told).toEqual([]);
+    expect(run.lines).toEqual([{ level: "warn", message: expect.stringContaining(refused) }]);
+    expect(run.lines[0]?.message).toContain(
+      "acme/gadgets/release.yml@push, acme/widgets/nightly.yaml@schedule,workflow_dispatch"
+    );
   } finally {
     run.stopSink();
   }
@@ -777,6 +836,56 @@ test("watched workflows: a watched topic Envoy takes after its 503s is told once
       expect(told[1]).toContain(named);
     }
     expect(run.told.map(({ options }) => options)).toEqual([NO_TURN, NO_TURN]);
+    expectTheClaimAsBefore(run);
+  } finally {
+    jest.useRealTimers();
+    run.stopSink();
+  }
+});
+
+test("watched workflows: a notice the session refuses after a 503 is logged, and the topic is still asked again", async () => {
+  jest.useFakeTimers();
+  const refused = "the session takes no message now";
+  let refusals = 1;
+  const run = watchingController({
+    subscribe: (topic) =>
+      topic === NIGHTLY_SCHEDULE && refusals-- > 0 ? Promise.reject(withheld()) : Promise.resolve(),
+    tell: (message) => {
+      if (String(message.content).includes(WITHHELD)) throw new Error(refused);
+    },
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(
+      () => run.lines.length > 1,
+      "the 503's log line and the refused notice's",
+      ROW_TURNS
+    );
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the next watched topic asked for",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(asked(run, NIGHTLY_SCHEDULE)).toBe(2);
+    expect(run.lines).toEqual([
+      {
+        level: "warn",
+        message: expect.stringContaining(
+          "was answered 503 at attempt 1; subscribing it again in 1000 ms"
+        ),
+      },
+      { level: "warn", message: expect.stringContaining(refused) },
+    ]);
+    for (const named of [NIGHTLY_SCHEDULE, WITHHELD]) {
+      expect(run.lines[1]?.message).toContain(named);
+    }
+    const told = toldWatched(run);
+    expect(told).toHaveLength(1);
+    expect(told[0]).not.toContain(WITHHELD);
+    expect(told[0]).toContain(NIGHTLY_SCHEDULE);
     expectTheClaimAsBefore(run);
   } finally {
     jest.useRealTimers();
