@@ -31,38 +31,39 @@ import (
 //
 // The fourth row cuts before each code point but the surrogates, after the same code point and
 // after each of 62 strings of one or two code points, and wants the cut to leave the code point
-// out. The strings are a letter, an emoji that takes a skin-tone modifier, and the left side of
-// each rule of Unicode Standard Annex #29 that keeps two code points in one grapheme cluster: CR
-// (GB3); the first Hangul L, V, T, LV and LVT, and the first Kirat Rai V (GB6 to GB8); each of the
-// 27 Prepends (GB9b), since GB9b keeps any code point but a control after a Prepend; each of the
-// 23 linkers, after the first consonant of its script or, for the two Vedic signs, whose script
-// Common has no consonant, after Devanagari's (GB9c); two pictographs, each with a zero-width
-// joiner (GB11); and the first regional indicator (GB12 and GB13). The fifth row cuts between the
-// two code points of each pair that GB6 to GB8, GB12 and GB13 keep together, every one of them;
-// before each letter of the script of a linker's consonant, after each letter of that script and
-// the linker, and after the consonant, the linker and each code point the sixth row cuts before,
-// since GB9c, as Unicode 18.0 writes it, keeps a consonant after a linker and any InCB=Extend, and
-// those code points hold each InCB=Extend of Go's tables; and before the first pictograph, after
-// each code point and a joiner. A linker that makes no cut fails the fifth row, so tables with no
-// script for its consonant cannot make the row hold less unseen. The sixth cuts before each
-// combining mark and each of 107 more code points, which GB9 and GB9a keep after any other but
-// for 31 spacing marks of Myanmar, Tai Tham and Ahom, after each letter of its own script, and
-// after each letter among its 128 code points (those that share all but its last seven bits); it
-// cuts each of these of the script Inherited, which takes the script of the letter before it,
-// after the first letter of each script, each mark of SignWriting, which has no letter, after each
-// SignWriting base, and each emoji modifier after each emoji modifier base. So a count that keeps
-// a code point with one of these before it fails a row, whatever its length: a character is one
-// code point, not a grapheme cluster. A count keyed on code points that no row cuts together can
-// pass, such as a mark after a code point that is no letter of its script and not among its 128
-// code points (U+0301 after e, or a tag after U+1F3F4), an Inherited mark after a letter that is
-// not the first of its script, a consonant that GB9c keeps after a linker in any case but the three
-// the rows cut (each letter of the script of the linker's consonant after each letter of that
-// script and the linker, or after the consonant, the linker and one code point of joined, and any
-// code point after the consonant and the linker), so one of another script, one after a code point
-// before the linker that is no letter of that script (U+093C, the nukta), one after a letter other
-// than the consonant, the linker and an InCB=Extend, and one after two InCB=Extend, or a pictograph
-// after another and a joiner, where the first is neither U+00A9 nor U+1F44D and the second is not
-// U+00A9.
+// out; it also returns each code point whole, keeps it after a letter (a, it and a, cut to two)
+// and leaves it out after a letter (a, a and it, cut to one). The strings are a letter, an emoji
+// that takes a skin-tone modifier, and the left side of each rule of Unicode Standard Annex #29
+// that keeps two code points in one grapheme cluster: CR (GB3); the first Hangul L, V, T, LV and
+// LVT, and the first Kirat Rai V (GB6 to GB8); each of the 27 Prepends (GB9b), since GB9b keeps any
+// code point but a control after a Prepend; each of the 23 linkers, after the first consonant of
+// its script or, for the two Vedic signs, whose script Common has no consonant, after Devanagari's
+// (GB9c); two pictographs, each with a zero-width joiner (GB11); and the first regional indicator
+// (GB12 and GB13). The fifth row cuts between the two code points of each pair that GB6 to GB8,
+// GB12 and GB13 keep together, every one of them; before each letter of the script of a linker's
+// consonant, after each letter of that script and the linker, and after the consonant, the linker
+// and each code point the sixth row cuts before, since GB9c, as Unicode 18.0 writes it, keeps a
+// consonant after a linker and any InCB=Extend, and those code points hold each InCB=Extend of
+// Go's tables; and before the first pictograph, after each code point and a joiner. A linker that
+// makes no cut fails the fifth row, so tables with no script for its consonant cannot make the row
+// hold less unseen. The sixth cuts before each combining mark and each of 107 more code points,
+// which GB9 and GB9a keep after any other but for 31 spacing marks of Myanmar, Tai Tham and Ahom,
+// after each letter of its own script, and after each letter among its 128 code points (those that
+// share all but its last seven bits); it cuts each of these of the script Inherited, which takes
+// the script of the letter before it, after the first letter of each script, each mark of
+// SignWriting, which has no letter, after each SignWriting base, and each emoji modifier after each
+// emoji modifier base. So a count that keeps a code point with one of these before it fails a row,
+// whatever its length: a character is one code point, not a grapheme cluster. A count keyed on
+// code points that no row cuts together can pass, such as a mark after a code point that is no
+// letter of its script and not among its 128 code points (U+0301 after e, or a tag after U+1F3F4),
+// an Inherited mark after a letter that is not the first of its script, a consonant that GB9c
+// keeps after a linker in any case but the three the rows cut (each letter of the script of the
+// linker's consonant after each letter of that script and the linker, or after the consonant, the
+// linker and one code point of joined, and any code point after the consonant and the linker), so
+// one of another script, one after a code point before the linker that is no letter of that script
+// (U+093C, the nukta), one after a letter other than the consonant, the linker and an InCB=Extend,
+// and one after two InCB=Extend, or a pictograph after another and a joiner, where the first is
+// neither U+00A9 nor U+1F44D and the second is not U+00A9.
 //
 // The code points that a rule names are written here from the data of Unicode 18.0, since Go's
 // unicode package gives no grapheme property. The letters, the marks and their scripts are read
@@ -73,59 +74,73 @@ import (
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. A copy has another address, so each row that holds such pairs
 // wants each answer at the value's address and of the reference's length, the fourth, fifth and
-// sixth rows too (keptCuts). So a copy keyed on a character fails a row whose values hold it: the
-// fourth row puts each code point but the surrogates in values of 3 to 13 bytes, and the thirteenth
-// puts prose, which holds each printable ASCII byte, a tab, a carriage return, a newline and 42
-// characters of six scripts, outside the BMP too, in values of each length the seventh and eighth
-// rows hold. The thirteenth and fourteenth rows cut their values, of prose and of letters, in the
-// middle and at each limit a caller of HeadRunes passes as a constant (callerLimits), which the
-// length rows below do not: a read-back cuts its last block to the room it has left, any count up
-// to 2,000, which the middle cuts reach in a value of twice it, and an excerpt cuts a block to 240
-// or 480 characters. The rows that call copiesNothing cut each pair 22 times, so a copy fails on
-// whichever of a pair's first 22 calls makes it, and count the allocations of those calls; one of
-// them for each shape of such a pair (shapeOf) cuts every pair of that shape. Two rows cut values
-// at each length from 0 to 8,001 bytes, at every 32nd from 8,033 to 32,001 and at every 199th from
-// 32,001 to 128,001, to their own length and to one character short, since an embedding input of
-// any script reaches each of those lengths: one of letters and, for each of é, 界 and U+1F54C,
-// characters of two, three and four bytes, values of letters and one run of the character or the
-// character once (lengthPairs lists them): a run first or last with up to 66 letters or half the
-// length on its other side, a run between one letter and up to four or between two quarters of the
-// length, two of the character between two halves, the run alone, the character once first, last,
-// in the middle, or with up to 63 letters on one side and the rest on the other, and the character
-// once and a run first or last at one more place for each length, which the length's place in its
-// row spreads evenly over the value in every row (lengthPairs says how). They cut each pair once
-// (answersSlices), which catches a copy keyed on what a value of theirs holds; a third cuts the
-// values of each kind they hold 22 times, at each edge of the ranges of lengths the rows hold and
-// one byte each side of it, and at 500 and 1,000 bytes and one byte each side, which catches a copy
-// keyed on how many times a pair was cut. Three more put the character once at every place, and a
-// run beside every count of letters on one side of it: one cuts those pairs 22 times at each length
-// the third cuts up to 2,005 bytes, the 2,000 characters a document edit reads back among them, one
-// once at 5,000 bytes, at 8,001, where the seventh row ends, and at 8,033, where the eighth starts,
-// and one once at 127,919, where the eighth ends. No argument from HeadRunes' code stands for the
-// lengths, places or limits between (everyPlacePairs says why), so these can pass: a copy keyed on
-// a value with two runs of wider characters or more, such as one at each end, or with characters
-// of two widths besides letters, or on a run between two stretches of letters (say, ten letters, a
-// run of three, then 5,000 letters), or on a count of letters beside one run or the character once
-// at a length that no row cuts at every place, where the length rows put it at a few places only
-// (say, the character once after exactly 100 letters, in values of 4,999 bytes only, or of 32,001);
-// a copy keyed both on a character and on a length of more than 17 bytes, where the rows put only
-// é, 界, U+1F54C, U+FFFD, U+20000, the characters of prose and, up to 64 bytes, those the alphabet's
-// bytes make (say, a copy of each value of more than 17 bytes that holds ź, 漢 or U+1F680), or on a
-// place of a character of prose that no value of the thirteenth row puts it at, since the row starts
-// each of its values at one place of prose; a copy of a cut below the value's own count less one,
-// keyed on a length and a limit that no row cuts together, since the thirteenth and fourteenth rows
-// cut each length at its middle and at the callers' limits only, the third row its values of 2,001
-// characters around one place, and the kept rows five more (say, 3,000 letters cut to 1,499); and a
-// copy of a value of the length rows keyed on how many times a pair was cut, or an allocation
-// HeadRunes makes and does not return, each keyed too on lengths inside a range, away from its
-// edges and from the lengths the ninth and tenth rows hold (from 1,100 to 1,900 bytes, say), or
-// keyed on how many times a pair was cut and on a place of one run or the character once that the
-// ninth row does not hold, at a length of 8,000 bytes or more, where each row that holds the other
-// places cuts each pair once (say, from a pair's second call on, the character once after 80 to
-// 100 letters, in values of 8,001 bytes only). The last rows hold values longer than five bytes,
-// each cut to a slice with no copy, up to 32,000 characters, the most an embedding input keeps.
-// Among them, a cut after characters outside the BMP fails a count of UTF-16 units, and a cut
-// before a combining mark fails a count that keeps a mark with its letter.
+// sixth rows too (keptCuts). So a copy keyed on a character fails a row whose values hold it, at
+// the lengths and cuts the row holds it at: the fourth row puts each code point but the surrogates
+// in values of 1 to 13 bytes, each cut to one or two characters (the code point alone, between two
+// letters, after two letters, three times, and after each of the 62 strings with a letter after
+// it), and the thirteenth puts prose, which holds each printable ASCII byte, a tab, a carriage
+// return, a newline and 42 characters of six scripts, outside the BMP too, in values of each length
+// the seventh and eighth rows hold. The thirteenth and fourteenth rows cut their values, of prose
+// and of letters, in the middle and at each limit a caller of HeadRunes passes as a constant
+// (callerLimits), which the length rows below do not, and the fifteenth cuts the values of letters
+// at each limit from 0 to 2,000: a read-back cuts its last block to the room it has left, any count
+// up to 2,000, and an excerpt cuts a block to 240 or 480 characters. The rows that call
+// copiesNothing cut each pair 22 times, so a copy fails on whichever of a pair's first 22 calls
+// makes it, and count the allocations of those calls; one of them for each shape of such a pair
+// (shapeOf) cuts every pair of that shape. Two rows cut values at each length from 0 to 8,001
+// bytes, at every 32nd from 8,033 to 32,001 and at every 199th from 32,001 to 128,001, to their own
+// length and to one character short, since an embedding input of any script reaches each of those
+// lengths: one of letters and, for each of é, 界 and U+1F54C, characters of two, three and four
+// bytes, values of letters and one run of the character or the character once (lengthPairs lists
+// them): a run first or last with up to 66 letters or half the length on its other side, a run
+// between one letter and up to four or between two quarters of the length, two of the character
+// between two halves, the run alone, the character once first, last, in the middle, or with up to
+// 63 letters on one side and the rest on the other, and the character once and a run first or last
+// at one more place for each length, which the length's place in its row spreads evenly over the
+// value in every row (lengthPairs says how). They cut each pair once (answersSlices), which catches
+// a copy keyed on what a value of theirs holds; a third cuts the values of each kind they hold 22
+// times, at each edge of the ranges of lengths the rows hold and one byte each side of it, and at
+// 500 and 1,000 bytes and one byte each side, which catches a copy keyed on how many times a pair
+// was cut. Three more put the character once at every place, and a run beside every count of
+// letters on one side of it: one cuts those pairs 22 times at each length the third cuts up to
+// 2,005 bytes, the 2,000 characters a document edit reads back among them, one once at 5,000 bytes,
+// at 8,001, where the seventh row ends, and at 8,033, where the eighth starts, and one once at
+// 127,919, where the eighth ends. No argument from HeadRunes' code stands for the lengths, places
+// or limits between (everyPlacePairs says why), so these can pass: a copy keyed on a value with two
+// runs of wider characters or more, such as one at each end, or with characters of two widths
+// besides letters, or on a run between two stretches of letters (say, ten letters, a run of three,
+// then 5,000 letters), or on a count of letters beside one run or the character once at a length
+// that no row cuts at every place, where the length rows put it at a few places only (say, the
+// character once after exactly 100 letters, in values of 4,999 bytes only, or of 32,001); a copy
+// keyed both on a character and on a value of 14 bytes or more, since the fourth row, the one row
+// that holds every code point, puts each in values of 13 bytes at most: of longer values the fifth
+// row holds only a linker's consonant, the linker, the code points of joined and the letters of the
+// linker's script, up to 17 bytes, and the other rows only é, 界, U+1F54C, U+FFFD, U+20000, U+0301,
+// the 140 characters of prose and, up to 64 bytes, 81 of the 259 characters the alphabet's bytes
+// make (say, a copy of each value of 14 bytes or more that holds ź, 漢, U+1F680 or 畟), or keyed on a
+// place of a character of prose that no value of the thirteenth row puts it at, since the row
+// starts each of its values at one place of prose; a copy keyed both on a character that no row but
+// the fourth holds and on a cut of three characters or more, since the fourth row cuts each code
+// point's values to two characters at most (say, a copy of each cut of three characters or more of
+// a value that holds ź); an allocation HeadRunes makes and does not return, keyed on a character
+// that only the fourth, fifth and sixth rows hold, since those rows want each answer at the value's
+// address but count no allocation (say, a []rune of each value that holds ź); a copy of a cut below
+// the value's own count less one, keyed on a length and a limit that no row cuts together, since
+// the fifteenth row cuts the values of letters of each length the seventh and eighth rows hold at
+// each limit up to 2,000, the thirteenth and fourteenth rows those lengths at their middle and at
+// the callers' limits only, the third row its values of 2,001 characters around one place, and the
+// kept rows five more (say, 8,040 letters, a length those rows do not hold, cut to 1,000; 5,000
+// letters cut to 2,600, above 2,000 and neither the middle nor a caller's limit; or 3,000 bytes of
+// prose cut to 1,001 characters); and a copy of a value of the length rows keyed on how many times
+// a pair was cut, or an allocation HeadRunes makes and does not return, each keyed too on lengths
+// inside a range, away from its edges and from the lengths the ninth and tenth rows hold (from
+// 1,100 to 1,900 bytes, say), or keyed on how many times a pair was cut and on a place of one run
+// or the character once that the ninth row does not hold, at a length of 8,000 bytes or more, where
+// each row that holds the other places cuts each pair once (say, from a pair's second call on, the
+// character once after 80 to 100 letters, in values of 8,001 bytes only). The last rows hold values
+// longer than five bytes, each cut to a slice with no copy, up to 32,000 characters, the most an
+// embedding input keeps. Among them, a cut after characters outside the BMP fails a count of UTF-16
+// units, and a cut before a combining mark fails a count that keeps a mark with its letter.
 //
 // Each numbered row stops the test, naming itself, when it makes another count of comparisons,
 // cuts or pairs than the one written with it, the fifth and sixth too, and the shape rows stop it
@@ -354,11 +369,17 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			character := string(r)
 			rest := character + "a"
 			cuts.cut(character+character, character)
+			// The code point returned whole, kept after a letter, and further on than the first code
+			// point the cut leaves out, so a copy keyed on the code point and on one of those cuts
+			// fails too.
+			cuts.cut(character, "")
+			cuts.cut("a"+character, "a")
+			cuts.cut("a", "a"+character)
 			for _, before := range befores {
 				cuts.cut(before, rest)
 			}
 		}
-		wantCount(t, "this row", cuts.cuts, 70060032, "cuts", "it would cut before fewer code points, or after fewer strings")
+		wantCount(t, "this row", cuts.cuts, 73396224, "cuts", "it would cut before fewer code points, or after fewer strings")
 		cuts.check("before a code point")
 	})
 
@@ -790,7 +811,11 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	for _, r := range prose {
 		held[r] = true
 	}
-	for _, r := range append(spanRunes(' ', '~'), '\t', '\r', '\n') {
+	// The characters prose must hold: each printable ASCII byte, a tab, a carriage return and a
+	// newline. A list cut short would leave the guard below holding fewer, and the test passing.
+	mustHold := append(spanRunes(' ', '~'), '\t', '\r', '\n')
+	wantCount(t, "the characters prose must hold", len(mustHold), 98, "characters", "the guard would hold prose to fewer characters")
+	for _, r := range mustHold {
 		if !held[r] {
 			t.Fatalf("prose holds no %+q, so the prose row would cut no value that holds it", r)
 		}
@@ -863,6 +888,33 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		pairs := callerPairs("a", slices.Concat(short, long), false)
 		wantCount(t, "this row", len(pairs), 68156, "pairs", "it would cut fewer values, or each to fewer limits")
 		copiesNothing(t, pairs)
+	})
+	// A read-back cuts its last block to the room it has left, any count of characters from 0 to
+	// 2,000, so a copy keyed on a length and one such room passed the rows above wherever the room
+	// was not the length's middle or a caller's limit (say, 3,000 letters cut to 1,499). This row
+	// cuts each value of letters of each length the seventh and eighth rows hold at each limit from
+	// 0 to 2,000 below its own count, once each: a cut of letters at limit L reads L bytes, so the
+	// row's 16,474,233 cuts read about 1.6 × 10^10 bytes, where every limit of every such value
+	// would read about 3.5 × 10^14.
+	t.Run("a value of letters of each length the seventh and eighth rows hold, cut at each limit from 0 to 2,000 below its own count, copies nothing", func(t *testing.T) {
+		lengths := slices.Concat(short, long)
+		letters := strings.Repeat("a", slices.Max(lengths))
+		cuts, wrong := 0, 0
+		for _, n := range lengths {
+			value := letters[:n]
+			for limit := 0; limit <= 2000 && limit < n; limit++ {
+				cuts++
+				if got := HeadRunes(value, limit); !isSlice(got, value, limit) {
+					if wrong++; wrong <= 5 {
+						t.Errorf("HeadRunes of %d letters to %d = %d bytes, want the first %d bytes of the value itself, at its address", n, limit, len(got), limit)
+					}
+				}
+			}
+		}
+		wantCount(t, "this row", cuts, 16474233, "cuts", "it would cut fewer values, or each at fewer rooms of a read-back")
+		if wrong > 0 {
+			t.Errorf("%d of %d cuts are not the value's own first bytes at its address", wrong, cuts)
+		}
 	})
 
 	shapes := map[string][]pair{}
