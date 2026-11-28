@@ -366,7 +366,7 @@ const mergerAskedAtEntryLine = "workflow: a merge forward still owed is asked ag
 
 // askMergerAtEntry sends the record's ask again to the merger's current launch at a move into
 // merging where the merger owes it (mergeForwardOnEntry), by the rule a launch's ready and a row's
-// end send it by (askAgain): only to a launch later than the one a row of the ask reached
+// end send it by (askAgain): only to a launch later than the one the record names as told
 // (record.MergeForward.SentLaunch), and nothing while a row of it is queued. The merger owes its
 // ask in merging alone (owedTo), so a row of it that ended while the issue stood outside merging
 // sent nothing (MergeForwardAskEnded), and neither did a ready that came there
@@ -393,11 +393,16 @@ const mergerAskedAtEntryLine = "workflow: a merge forward still owed is asked ag
 // launch 0, as the executor reads them (the daemon's claimEnded), so nothing is sent and the ready
 // of the next launch asks; a released claim reads as its launch, and the row wakes it.
 //
-// The one exception is R1's (dispatch://INFRA-5792): where the launch read is behind a relaunch
-// in flight and the listener names no holder of the row's delivery, the delivery is credited to
-// the launch the row was sent at, and the row's end sends the later launch a second row. So that
-// launch is told twice, never zero times, as with every row of a merge-forward ask (the daemon's
-// deliverHeld).
+// The exception is R1's (dispatch://INFRA-5792): a delivery whose listener answer names no holder
+// credits no launch the listener stored it for, so the record can name a launch earlier than one a
+// row reached, and a later send tells that launch a second time. It happens in two cases. Where the
+// launch read is behind a relaunch in flight, the delivery is credited to the launch the row was
+// sent at, and the row's end sends the later launch a second row. And a first ask's row carries no
+// launch (record.MergeForwardMessage.SentLaunch), so its delivery records none (recordAskEnd), and
+// each later send at the launch it reached tells that launch again: the row's end
+// (MergeForwardAskEnded), and, where the row that end queued itself ends while the issue stands
+// outside merging, this send at the move back. So a launch can be told twice, never zero times, as
+// with every row of a merge-forward ask (the daemon's deliverHeld).
 func (e *Engine) askMergerAtEntry(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	token, err := stepClaim(issue, issue.Key, claim.RoleMerger)
 	if err != nil {
