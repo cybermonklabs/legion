@@ -434,10 +434,13 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 // record's answers (contracts.CheckStepAnswers), and answers the attribute that holds them, in the
 // order the write gives them. A record names at most contracts.StepAnswersMax models, each in the
 // form of an agent's text, each once and with 1 call or more. Its value tuple holds the list as
-// JSON text, an empty list as [], which is a run whose agent made no call.
+// JSON text, an empty list as [], which is a run whose agent made no call. A fault
+// contracts.CheckStepAnswers names that this Dispatch does not know is refused by its number.
 func answersAttribute(answers []StepAnswer) (attribute, error) {
 	fault, at := contracts.CheckStepAnswers(answers, func(answer StepAnswer) (string, int64) { return answer.Model, answer.Calls })
 	switch fault {
+	case contracts.StepAnswersHold:
+		// The answers keep every rule; their attribute follows the switch.
 	case contracts.StepAnswersTooMany:
 		return attribute{}, refusal(ErrStepInput, "%s holds %d entries, more than the %d a step record holds",
 			AttributeAnswers, len(answers), contracts.StepAnswersMax)
@@ -450,6 +453,9 @@ func answersAttribute(answers []StepAnswer) (attribute, error) {
 	case contracts.StepAnswerModelTwice:
 		return attribute{}, refusal(ErrStepInput, "%s names %s twice: each model is listed once with all its calls",
 			AttributeAnswers, answers[at].Model)
+	default:
+		return attribute{}, refusal(ErrStepInput, "%s breaks rule %d of a step record's answers, which this Dispatch does not know",
+			AttributeAnswers, fault)
 	}
 	// A pointer to a nil list states the empty list, as a pointer to an empty one does, and JSON
 	// writes a nil list as null.
