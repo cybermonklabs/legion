@@ -1939,10 +1939,11 @@ What the command gets is the placeholder and the way to spend it. `agent-secrets
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus every root the release carries) and a wgetrc naming it,
-and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback and the private
-ranges stay direct. The environment it reads is the one the command will have, released values
-included. A trust file or `WGETRC` named by a relative path is resolved from the directory the
-command starts in, and a line on stderr names that variable. Each trust a grant's commands name
+and sets `NO_PROXY` so the grant's bound hosts reach the proxy while loopback, the private
+ranges and, in a Kubernetes pod, the cluster API server's address stay direct. The environment it
+reads is the one the command will have, released values included. A trust file or `WGETRC` named
+by a relative path is resolved from the directory the command starts in, and a line on stderr
+names that variable. Each trust a grant's commands name
 gets a directory of its own, named for the grant and a keyed hash of the bundle and wgetrc it
 holds, so a later command of the same grant never gets an earlier command's bundle; the key is a
 random file in the same private directory, so the name, which the command's variables carry,
@@ -2137,7 +2138,9 @@ What the airlock does not stop is as much of the design as what it does:
   (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
   broker whose profiles file declares a kind or a `dpop` block refuses to start without that
   setting, or when no range in it holds that address. A command that needs such a call sets its
-  own `NO_PROXY` entry for that name.
+  own `NO_PROXY` entry for that name. `agent-secrets` sets one itself: in a Kubernetes pod the
+  child's `NO_PROXY` ends with the address in `KUBERNETES_SERVICE_HOST`, the cluster API
+  server's, unless the grant binds it, so `kubectl` under a grant reaches its own cluster directly.
   The one exception is `BROKER_PROXY_PRIVATE_UPSTREAM` (`<host>=<url>` entries, one per bound
   host): the allowed requests of the dpop blocks that bind a host, such as the profile
   `DISPATCH_RESULTS_TOKEN`, go to that host's URL.

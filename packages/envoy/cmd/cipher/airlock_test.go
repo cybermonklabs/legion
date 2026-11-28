@@ -248,6 +248,59 @@ func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
 	}
 }
 
+// TestAirlockNoProxyReachesTheClusterAPIServerDirectly: in a Kubernetes pod the kubelet puts the
+// cluster API server's address in KUBERNETES_SERVICE_HOST, a ClusterIP of the cluster's Service
+// range, which can be public address space that no fixed entry covers: GKE's default range is
+// 34.118.224.0/20. Through the proxy that address is the broker's network's, not the command's, and
+// the proxy refuses the broker cluster's own ranges, so kubectl under a grant failed with
+// "Unable to connect to the server: Forbidden". The list carries the address after every other
+// entry, once, and drops or moves none of them; with the variable unset or empty, or holding no
+// address, or holding one the release binds, the list is what it was.
+func TestAirlockNoProxyReachesTheClusterAPIServerDirectly(t *testing.T) {
+	t.Parallel()
+	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com"}, map[string]string{"value": testAirlockPlaceholder})
+	broker := "AGENT_SECRETS_URL=https://broker.internal.example"
+	inherited := "NO_PROXY=intranet.example.org"
+	// The list without the variable: the inherited entry, every fixed entry and the broker's host,
+	// in that order.
+	before := "intranet.example.org," + strings.Join(airlockFixedNoProxy, ",") + ",broker.internal.example"
+	for _, row := range []struct {
+		name    string
+		environ []string
+		release *AirlockRelease
+		want    string
+	}{
+		{"unset", []string{broker, inherited}, release, before},
+		{"empty", []string{broker, inherited, "KUBERNETES_SERVICE_HOST="}, release, before},
+		{"an address in GKE's default Service range", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=34.118.224.1"}, release, before + ",34.118.224.1"},
+		{"an IPv6 address", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=fd00:10:96::1"}, release, before + ",fd00:10:96::1"},
+		{"the last of two entries, as execve reads them", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=198.51.100.7", "KUBERNETES_SERVICE_HOST=34.118.224.1"}, release, before + ",34.118.224.1"},
+		{
+			"an address the inherited list already holds stays where it is, once",
+			[]string{broker, "NO_PROXY=intranet.example.org,34.118.224.1", "KUBERNETES_SERVICE_HOST=34.118.224.1"},
+			release,
+			"intranet.example.org,34.118.224.1," + strings.Join(airlockFixedNoProxy, ",") + ",broker.internal.example",
+		},
+		{
+			"an address the release binds",
+			[]string{broker, inherited, "KUBERNETES_SERVICE_HOST=34.118.224.1"},
+			testRelease("AIRLOCK_ME", []string{"api.example.com", "34.118.224.1"}, map[string]string{"value": testAirlockPlaceholder}),
+			before,
+		},
+		// No kubelet writes anything but an address there. A name is not added, a bound one least of
+		// all, and neither is a star or a list, which would take more than one address off the proxy.
+		{"a bound host's name", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=api.example.com"}, release, before},
+		{"a star", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=*"}, release, before},
+		{"a list", []string{broker, inherited, "KUBERNETES_SERVICE_HOST=34.118.224.1,api.example.com"}, release, before},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := airlockNoProxy(row.environ, row.release); got != row.want {
+				t.Errorf("NO_PROXY = %q\nwant        %q", got, row.want)
+			}
+		})
+	}
+}
+
 // TestAirlockNoProxyReachesBothSpellings: a client reads one spelling or the other, so the child
 // carries the same list under both.
 func TestAirlockNoProxyReachesBothSpellings(t *testing.T) {
@@ -888,7 +941,8 @@ func TestPrepareAirlockRefusesAParentThatIsASymbolicLink(t *testing.T) {
 // TestExecFormRunsACommandForANameBehindTheAirlock is the whole form end to end against the
 // package's fake broker: a grant whose answer carries an airlock name and no value for it is not
 // the "released no value" refusal, the command runs, its source line is the one it has always
-// been, and its environment holds the placeholder and the proxy.
+// been, and its environment holds the placeholder, the proxy and a NO_PROXY that keeps the
+// cluster API server of the pod it runs in off the proxy.
 func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	t.Parallel()
 	binary := buildAgentSecrets(t)
@@ -904,6 +958,8 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 			// lower-case one wins: what is under test is the list the child gets.
 			"NO_PROXY=api.example.com,intranet.example.org",
 			"no_proxy=api.example.com,intranet.example.org",
+			// A pod's: GKE's default Service range, which no private range covers.
+			"KUBERNETES_SERVICE_HOST=34.118.224.1",
 		},
 		"AIRLOCK_ME", "--", "env")
 	if exit != 0 {
@@ -937,6 +993,11 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	// The bound host is off the inherited list and the entry that names nothing bound is on it.
 	if strings.Contains(env["NO_PROXY"], "api.example.com") || !strings.Contains(env["NO_PROXY"], "intranet.example.org") {
 		t.Errorf("the command's NO_PROXY is %q, want the bound host gone and the other inherited entry kept", env["NO_PROXY"])
+	}
+	for _, key := range []string{"NO_PROXY", "no_proxy"} {
+		if !slices.Contains(strings.Split(env[key], ","), "34.118.224.1") {
+			t.Errorf("the command's %s is %q, want the cluster API server's address 34.118.224.1 in it", key, env[key])
+		}
 	}
 	airlockRoot := filepath.Join(runtimeDir, "agent-secrets", "airlock")
 	bundle := env["CURL_CA_BUNDLE"]
