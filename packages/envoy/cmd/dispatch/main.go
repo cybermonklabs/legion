@@ -212,6 +212,11 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// PoolBudget is how many connections this process may open to Postgres in all, which its pools
+	// scale to (store.OpenWithin), zero for production's sizes; only DISPATCH_TEST_POOL_BUDGET,
+	// under the test hooks, sets it, which cmd/dispatch's test harness does on a test server too
+	// small for production's sizes (connection_ceiling_test.go).
+	PoolBudget int
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -431,7 +436,7 @@ func main() {
 		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
 	}
 
-	database, err := store.Open(ctx, boot.DatabaseURL)
+	database, err := openDatabase(ctx, boot)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
@@ -711,10 +716,12 @@ func main() {
 	//     writes' own sweep - the Idempotency-Keys past their window, and the deliveries a process
 	//     that died left owed - keeps a timer of its own below, because no wake announces either:
 	//     a death commits nothing.
-	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats its identity steps and its record of issues' inputs every 10 minutes for
-	//     as long as the process runs) and the task progress reconciliation (retrying, briefly,
-	//     rows another writer held).
+	//   - boot passes, which run at start, and again only as stated here: the embedding coverage
+	//     pass (on a process with an embedder, embedqueue.Run starts it once this process has
+	//     registered, runs it again whole every identityRecheckInterval while it fails, and after
+	//     it succeeds repeats only its identity steps and its record of issues' inputs on that
+	//     interval for as long as the process runs) and the task progress reconciliation
+	//     (retrying, briefly, rows another writer held).
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
@@ -1017,23 +1024,6 @@ func main() {
 	textVersionsEventsWake := listenerHub.Wake(api.EventsChannel)
 	textVersionsReleasedWake := listenerHub.Wake(duty.HoldReleasedChannel)
 
-	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so this always starts: the server's
-	// embedding queue keeps coverage itself, so a later deploy that gives meaning search a place
-	// to embed needs no other wiring change and no person-run step to cover existing content.
-	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
-	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
-	// pacing only its calls - never a live search request's own query embedding, which always
-	// goes straight through the unwrapped client - is what keeps saturating background work from
-	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
-	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
-	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
-	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
-	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
-	// embedqueue.Run's own nil check depends on. The queue starts before this process registers
-	// below; it embeds and drops only while its embedder's identity is the active one, which every
-	// process decides from the live registry rows (embedqueue, active.go), so a process configured
-	// with another embedder than the fleet's leaves the vectors as they are.
-	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The block schema the store holds, read again each time a supertag write announces itself.
 	// A read that fails, and a value the install refuses, leaves the installed schema in place
 	// and is read again; a store a newer build migrated is installed at this build's own
@@ -1465,6 +1455,32 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The embedding queue starts only now, with this process's row live, and never before: it
+	// embeds and drops only while its embedder's identity is the active one, which every process
+	// decides from the live registry rows and, when no live row carries an identity, takes as its
+	// own (embedqueue, active.go). A process that looked before it registered is in no live row,
+	// so two processes booting at once with different embedders and no live carrier would each
+	// find its own identity active and drop the other's vectors - and one the registration then
+	// refused would exit having dropped them. Registered, every process that looks is a live
+	// carrier of its own identity, so all of them keep the identity a live process carries or
+	// take the same earliest-started carrier's. Nothing written while this process waited for
+	// admission is missed: the queue's first scan, at start, reads every pending row, and a
+	// notification that arrived meanwhile waits in the wake's buffer of one (pglisten.Hub.Wake).
+	//
+	// embedqueue.Run no-ops when its own Deps.Embedder is nil, so main always starts it here: the
+	// server's embedding queue keeps coverage itself, so a later deploy that gives meaning search a
+	// place to embed needs no other wiring change and no person-run step to cover existing content.
+	// It gets a rate-limited wrapper around the same client api.Deps holds unwrapped above
+	// (embedder, BuildAppContext's Embedder option): the queue is the only embedqueue caller, and
+	// pacing only its calls - never a live search request's own query embedding, which always
+	// goes straight through the unwrapped client - is what keeps saturating background work from
+	// taking live search down with it (LEGION-549 round 5; embed.RateLimitedEmbedder's own doc
+	// comment has the AIMD mechanism and the headroom this leaves). Deps.Paced makes the wrapper
+	// and keeps it as the queue's pace, so the pace's wait renews the queue's claim on the rows it
+	// waits to embed, and a canary that meets an outage backs the pace off. A nil embedder (meaning
+	// search off) stays nil rather than becoming a non-nil wrapper around nothing, which
+	// embedqueue.Run's own nil check depends on.
+	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: embedder, Wake: embeddingsWake}.Paced())
 	// The registry admitted this process, so it serves: the keyword fill starts (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
@@ -1791,6 +1807,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.PoolBudget, err = testHookPoolBudget(env, boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
 	}
 	switch rule := env.get("DISPATCH_PARENT_STATUS_RULE"); rule {
 	case "", "off":
@@ -2831,6 +2850,45 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	}
 	*target = raw == "1"
 	return nil
+}
+
+// testHookPoolBudget reads DISPATCH_TEST_POOL_BUDGET, how many connections a test process may open
+// to Postgres in all, which its pools scale to (store.OpenWithin); zero when it is unset, which
+// keeps production's sizes. Like every test-only setting it is refused without
+// DISPATCH_TEST_HOOKS=1, and so is a value that is not a whole number of at least
+// store.MinBudget.
+func testHookPoolBudget(env settingValues, testHooksEnabled bool) (int, error) {
+	const name = "DISPATCH_TEST_POOL_BUDGET"
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return 0, nil
+	}
+	if !testHooksEnabled {
+		return 0, fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	budget, err := strconv.Atoi(raw)
+	if err != nil || strings.TrimLeft(raw, "0123456789") != "" || budget < store.MinBudget() {
+		return 0, fmt.Errorf("%s=%q (expected a whole number of connections, at least store.MinBudget's %d)", name, raw, store.MinBudget())
+	}
+	return budget, nil
+}
+
+// openDatabase opens the server's database: at production's pool sizes (store.Open), which every
+// deployment runs, or, for a test process given DISPATCH_TEST_POOL_BUDGET, with every pool scaled
+// to that budget (store.OpenWithin), whose sizes it logs so a test can read what the process runs.
+func openDatabase(ctx context.Context, boot bootConfig) (*store.Store, error) {
+	if boot.PoolBudget == 0 {
+		return store.Open(ctx, boot.DatabaseURL)
+	}
+	database, err := store.OpenWithin(ctx, boot.DatabaseURL, boot.PoolBudget)
+	if err != nil {
+		return nil, err
+	}
+	sizes := database.Pool.Sizes()
+	slog.Info("dispatch: pools scaled to the test connection budget", "budget", boot.PoolBudget,
+		"shared", sizes.Shared, "rooms", sizes.Rooms, "room_appends", sizes.RoomAppends, "leases", sizes.Leases,
+		"outbox", sizes.Outbox, "compaction", sizes.Compaction, "text_trees", sizes.TextTrees, "horizon", sizes.Horizon)
+	return database, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read

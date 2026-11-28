@@ -20,7 +20,7 @@ GATE = gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
     # start the harness's own Postgres rather than using the service.
     pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
         (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-         "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+         "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.FullSizeServerConnections",
          {"mode": "build"}),
     ]),
 ], reads=reads(

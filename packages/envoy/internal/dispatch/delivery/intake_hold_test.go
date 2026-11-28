@@ -42,10 +42,13 @@ var errCutOff = errors.New("the process is cut off from the database")
 
 // cuttableLeases is one process's lease pool, whose every statement fails once the test cuts it, as
 // a process the network cut off from Postgres or the kernel killed sends nothing: the hold it
-// renews on this pool then lapses.
+// renews on this pool then lapses. A row that kills the process the instant after a renewal of that
+// hold lands runs the kill from inside that renewal's Exec (afterNextRenewal).
 type cuttableLeases struct {
 	pool *pgxpool.Pool
 	cut  atomic.Bool
+	// afterRenewal is what afterNextRenewal armed, nil until then and once it has run.
+	afterRenewal atomic.Pointer[func()]
 }
 
 func (l *cuttableLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
@@ -59,7 +62,13 @@ func (l *cuttableLeases) Exec(ctx context.Context, sql string, arguments ...any)
 	if l.cut.Load() {
 		return pgconn.CommandTag{}, errCutOff
 	}
-	return l.pool.Exec(ctx, sql, arguments...)
+	tag, err := l.pool.Exec(ctx, sql, arguments...)
+	if l.afterRenewal.Load() != nil && err == nil && tag.RowsAffected() > 0 && strings.HasPrefix(sql, holdRenewal) {
+		if then := l.afterRenewal.Swap(nil); then != nil {
+			(*then)()
+		}
+	}
+	return tag, err
 }
 
 func (l *cuttableLeases) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
@@ -68,6 +77,16 @@ func (l *cuttableLeases) QueryRow(ctx context.Context, sql string, args ...any) 
 	}
 	return l.pool.QueryRow(ctx, sql, args...)
 }
+
+// afterNextRenewal runs then once, inside the Exec of the next renewal of the hold this pool renews
+// that lands: the instant Postgres has answered it, before that answer returns to the hold
+// (duty.Hold.renew).
+func (l *cuttableLeases) afterNextRenewal(then func()) { l.afterRenewal.Store(&then) }
+
+// holdRenewal opens the statement a hold renews itself with, duty.Hold.renew's, which the duty
+// package keeps to itself. No other statement of a hold's opens with it: the one that lapses a
+// hold sets its expiry inside a with clause.
+const holdRenewal = "update duty_holds set expires_at = now() + "
 
 // cutOffRow is the row a cut-off process reads.
 type cutOffRow struct{}

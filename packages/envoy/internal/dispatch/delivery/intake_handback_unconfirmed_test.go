@@ -365,7 +365,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 			default:
 			}
 		})
-	if !durable.takeHold(ctx) {
+	if durable.takeHold(ctx); !durable.holds() {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
 	first := durable.config(durable.tuning)
@@ -494,7 +494,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 			<-letKeyingGo
 			return intakeKey(msg)
 		}, func(*intakeDelivery, intakeMessage) {})
-	if !durable.takeHold(ctx) {
+	if durable.takeHold(ctx); !durable.holds() {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
 	first := durable.config(durable.tuning)
@@ -631,7 +631,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 			}
 		})
 	before := lossWatchers()
-	if !durable.takeHold(ctx) {
+	if durable.takeHold(ctx); !durable.holds() {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
 	first := durable.config(durable.tuning)

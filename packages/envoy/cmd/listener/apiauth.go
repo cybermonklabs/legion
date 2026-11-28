@@ -226,12 +226,18 @@ func identityRefusal(err error, reason string) error {
 // rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
 // that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
 // listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
-// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
-// refused credential gets here.
+// no takeover copies them for the role's next holder. The 503 carries
+// listenerwire.CodeIdentityUnchecked, which tells Dispatch's client that nothing was done and that
+// it may make the call again after the Retry-After, within the window it gives the call
+// (internal/dispatch/envoy, Client.do). Every other outcome is the 401 every other refused
+// credential gets here.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{
+			Code:  listenerwire.CodeIdentityUnchecked,
+			Error: "this identity token could not be checked; try again in a minute",
+		})
 		return
 	}
 	writeJSONError(w, http.StatusUnauthorized, "unauthorized")

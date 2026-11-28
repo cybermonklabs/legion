@@ -2673,7 +2673,7 @@ def browser_gate(filter, job):
         # timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
-             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.FullSizeServerConnections",
              {"mode": "build"}),
         ], workflow=BROWSER_SITE)
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),

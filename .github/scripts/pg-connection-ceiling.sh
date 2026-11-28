@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Check that a CI Postgres service allows the connections a Dispatch test lane needs.
 #
-# A lane's server must allow enough because a server that allows fewer connections than the suite
-# opens does not fail where the size is wrong. It fails later, as a 53300 refusal (`remaining
+# A lane's server must allow enough connections for every Dispatch process its tests start to run
+# at production's pool sizes, with the test hooks' listener every such process holds besides:
+# testlimits.FullSizeServerConnections (packages/envoy/internal/dispatch/testlimits) beyond its
+# own superuser_reserved_connections. On a smaller server
+# packages/envoy/cmd/dispatch/connection_ceiling_test.go scales each process's pools to its share
+# of the server (testlimits.PoolBudget), which tests smaller pools than production runs, and
+# refuses by name a server too small for even the smallest; a server smaller than the processes
+# open would not fail where the size is wrong, but later, as a 53300 refusal (`remaining
 # connection slots are reserved for roles with the SUPERUSER attribute`) inside a room, a lease or
-# a socket, and nothing in the failure names the cause. What a lane's server must allow is
-# testlimits.ServerConnections (packages/envoy/internal/dispatch/testlimits) beyond its own
-# superuser_reserved_connections. packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses,
-# by name, a test start on a server too small for the Dispatch processes then running.
+# a socket, and nothing in the failure would name the cause.
 #
 # Usage: pg-connection-ceiling.sh <container>
 #   container  the service container id (${{ job.services.postgres.id }})
 #
 # It holds no number of its own: internal/dispatch/store/cmd/connections prints
-# testlimits.ServerConnections, and this script adds only the server's own
+# testlimits.FullSizeServerConnections, and this script adds only the server's own
 # superuser_reserved_connections. The server's max_connections is on its command line, which
 # .github/scripts/postgres-service-settings.sh writes for every CI Postgres service, so this
 # script changes nothing: it reads `show max_connections` and fails, naming both numbers, when
@@ -35,7 +38,7 @@ case $allowed in
     ;;
 esac
 
-echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.ServerConnections) + ${reserved} reserved for superusers = ${want}; the service allows ${allowed}"
+echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.FullSizeServerConnections) + ${reserved} reserved for superusers = ${want}; the service allows ${allowed}"
 [ "$allowed" -ge "$want" ] || {
   echo "::error::pg-connection-ceiling: the service allows ${allowed} connections, and this lane needs ${want}. Raise max_connections in .github/scripts/postgres-service-settings.sh to at least ${want}, and every Postgres service's command: line with it (check-workflow-files.sh names each one)."
   exit 1

@@ -24,8 +24,9 @@ import (
 // Client.requestConfirmed returns it (every session consumer call, the stream read behind them
 // and the stored-message reads), and so do Client.RequestCore (the send route's connection probe),
 // a KV call BoundedOn waits for, a call BoundedOnConnection waits for (roles.Buckets' reads) and a
-// JetStream request RequestOnConnection makes (the stream's ensure on each connection event, and
-// the STREAM.INFO of Client.TakeoverRecords and Client.KeptRoleLanes).
+// JetStream request RequestOnConnection makes (the stream's ensure on each connection event, the
+// STREAM.INFO of Client.TakeoverRecords and Client.KeptRoleLanes, and Dispatch's delivery intake
+// taking its durable over).
 //
 // A close, and so the replacement that follows one, is the exception. nats.go then fails each
 // request in its request map and wakes each sync subscription itself, with

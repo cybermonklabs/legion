@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +17,15 @@ import (
 )
 
 // An identity token the listener reaches no verdict on, because its issuer's key set cannot be
-// read, is answered 503 with Retry-After: 1, and not 401: a 401 is the listener's refusal of
-// Dispatch's identity, which Dispatch's client meets by a second try and then, for a call that
-// carries no role mark, by the shared token, and a send for a role it refused twice fails for good
-// rather than go out unmarked. The real Dispatch client, holding its account token and the shared
-// token, sends a marked message to the role's old holder A after B took the role. With the keys
-// unavailable the send fails as unavailable, to be retried, after one call, and neither A nor B
-// receives a copy. The control is the same send with the keys served: kept for the role, marked,
-// and B receives it.
+// read, is answered 503 with Retry-After: 1 and the code identity_unchecked, and not 401: a 401 is
+// the listener's refusal of Dispatch's identity, which Dispatch's client meets by a second try and
+// then, for a call that carries no role mark, by the shared token, and a send for a role it
+// refused twice fails for good rather than go out unmarked. The real Dispatch client, holding its
+// account token and the shared token, sends a marked message to the role's old holder A after B
+// took the role. With the keys unavailable the client makes the send again on its identity token
+// after each Retry-After while its window lasts, never on the shared token, and the send then fails
+// as unavailable, to be retried, and neither A nor B receives a copy. The control is the same send
+// with the keys served: kept for the role, marked, and B receives it.
 func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 	t.Parallel()
 	warm, cold := trailingListeners(t)
@@ -91,8 +93,8 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 			if !errors.Is(err, dispatchenvoy.ErrUnavailable) {
 				t.Fatalf("the send while the key set cannot be read = %+v, %v; want unavailable, to be retried", result, err)
 			}
-			if len(statuses) != 1 || statuses[0] != http.StatusServiceUnavailable {
-				t.Fatalf("the listener answered the sends %v; want one 503 and no retry on the shared token", statuses)
+			if len(statuses) < 2 || slices.ContainsFunc(statuses, func(status int) bool { return status != http.StatusServiceUnavailable }) {
+				t.Fatalf("the listener answered the sends %v; want each a 503, the client trying again after each Retry-After, and none on the shared token", statuses)
 			}
 			for _, s := range []*rigSession{a, b} {
 				if frames := received(s, 3*time.Second, text)[text]; len(frames) != 0 {

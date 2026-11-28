@@ -92,8 +92,9 @@ type TmuxPlace struct {
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
 // status (the list routes' refilling 503, code refilling; a send's or publish's 503 that may have
-// stored the message, CodeMaybeStored; and a role claim's 503 that stands with no handover
-// recorded, CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
+// stored the message, CodeMaybeStored; the 503 of an identity token the listener could not check,
+// CodeIdentityUnchecked; and a role claim's 503 that stands with no handover recorded,
+// CodeHandoverUnrecorded); every other answer leaves it out. Expected names the request
 // fields the refusal is about.
 //
 // Two answers say more in Error than their status says. A request whose work on the message bus
@@ -114,6 +115,14 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeIdentityUnchecked is the code of the 503 a /v1 request gets when the listener could not check
+// its identity token: it has not read the token's issuer's discovery document or key set within the
+// check's budget, from its start while that issuer cannot be read or during a key rotation. The
+// answer carries Retry-After: 1, and it is given before any route runs, so the request did nothing
+// and the same request made again after that wait is no repeat; it is answered once the listener
+// has read the issuer.
+const CodeIdentityUnchecked = "identity_unchecked"
 
 // CodeHandoverUnrecorded is the code of POST /v1/roles/set's 503 for a claim that landed and
 // stands, and names the session it replaces (previous_session_id), whose handover of that

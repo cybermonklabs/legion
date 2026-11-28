@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -465,7 +466,19 @@ func (b windowedBody) Close() error {
 // without it is not copied when the role moves: it ends with the second try's answer, logged at
 // Error, and the delivery records that failure. A 401 is answered before the listener's route runs
 // (cmd/listener, apiAuth), so a try it answered did nothing and the next is no repeat.
-func (c *Client) do(route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
+//
+// A try on the identity token the listener could not check - it has not read the token's issuer
+// yet, and answers 503 with listenerwire.CodeIdentityUnchecked and a Retry-After - is made again
+// on the same token once that Retry-After has passed (identityUnchecked), as often as the call's
+// window allows: while the time since the call began, with that wait added, is still inside the
+// window every listener call gets (CallWindow, WithTimeout), and ctx has not ended. That 503
+// is answered before any route runs too, so the tries are no repeat, and none of them is ever made
+// on the shared token: the listener answers it once it has read the issuer, which a listener that
+// started while the issuer could not be read does within seconds of the issuer answering. A call
+// whose window runs out first ends with the last 503, which the caller reads as ErrUnavailable and
+// ErrUnreachable, as every 503 is.
+func (c *Client) do(ctx context.Context, route string, marked bool, build func() (*http.Request, error), transport func(error) error) (*http.Response, error) {
+	began := time.Now()
 	try := func(shared bool) (*http.Response, error) {
 		request, err := build()
 		if err != nil {
@@ -480,13 +493,35 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 		}
 		return response, nil
 	}
-	response, err := try(false)
+	// tryIdentity is a try on Dispatch's identity, made again while the listener answers that it
+	// could not check the token and the call's window holds the wait it names.
+	tryIdentity := func() (*http.Response, error) {
+		for {
+			response, err := try(false)
+			if !c.presentsIdentity() {
+				return response, err
+			}
+			wait, unchecked := identityUnchecked(response, err)
+			if !unchecked || time.Since(began)+wait >= c.window {
+				return response, err
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return response, err
+			}
+			closeBody(response)
+		}
+	}
+	response, err := tryIdentity()
 	if !c.presentsIdentity() || !identityNotTaken(response, err) {
 		return response, err
 	}
 	closeBody(response)
 	c.identity.forget()
-	if response, err = try(false); !identityNotTaken(response, err) {
+	if response, err = tryIdentity(); !identityNotTaken(response, err) {
 		return response, err
 	}
 	if marked || c.apiToken == "" {
@@ -498,6 +533,32 @@ func (c *Client) do(route string, marked bool, build func() (*http.Request, erro
 	c.logger.Warn("dispatch: the Envoy listener did not take Dispatch's identity token on two tries, so the call is made again on the shared token",
 		"route", route, "refusal", identityRefusal(response, err))
 	return try(true)
+}
+
+// identityUncheckedBodyLimit bounds what identityUnchecked reads of a 503's body: the listener's
+// answer is one short JSON object (listenerwire.APIError).
+const identityUncheckedBodyLimit = 64 << 10
+
+// identityUnchecked reports whether a try was answered 503 with listenerwire.CodeIdentityUnchecked
+// and a Retry-After of one whole second or more, and that wait; a Retry-After of none, of 0 or
+// that is no number of seconds asks for no try the client paces. It reads the body of such an
+// answer and puts back what it read, so a caller that ends with this answer reads it whole.
+func identityUnchecked(response *http.Response, err error) (time.Duration, bool) {
+	if err != nil || response.StatusCode != http.StatusServiceUnavailable {
+		return 0, false
+	}
+	seconds, parseErr := strconv.Atoi(response.Header.Get("Retry-After"))
+	if parseErr != nil || seconds < 1 {
+		return 0, false
+	}
+	read, _ := io.ReadAll(io.LimitReader(response.Body, identityUncheckedBodyLimit))
+	_ = response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(read))
+	var body listenerwire.APIError
+	if json.Unmarshal(read, &body) != nil || body.Code != listenerwire.CodeIdentityUnchecked {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
 }
 
 // transportCause is err, a call's failure roundTrip answered, as do hands it to transport:
@@ -633,7 +694,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 		return nil, fmt.Errorf("encode POST /v1/interests/unsubscribe body: %w", err)
 	}
 	const route = "POST /v1/interests/unsubscribe"
-	response, err := c.do(route, false, func() (*http.Request, error) {
+	response, err := c.do(ctx, route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(
 			ctx, http.MethodPost, c.baseURL+"/v1/interests/unsubscribe", bytes.NewReader(body),
 		)
@@ -908,7 +969,7 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 // reads alike however it was asked. A transport failure is ErrUnavailable and ErrUnreachable
 // both: no listener answered it (unreachable).
 func (c *Client) get(ctx context.Context, route, query string) (*http.Response, error) {
-	return c.do("GET "+route, false, func() (*http.Request, error) {
+	return c.do(ctx, "GET "+route, false, func() (*http.Request, error) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+route+query, nil)
 		if err != nil {
 			return nil, fmt.Errorf("%w: build GET %s request: %v", ErrUnavailable, route, err)
@@ -1004,13 +1065,14 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
 	// that never came up (nothing was). Both surface as the same client-timeout error. It is
-	// cleared as each request is built, so a second try after a 401 is judged by its own write:
-	// the 401 came from the listener's authentication, before any route ran.
+	// cleared as each request is built, so a try after a 401 or after an identity_unchecked 503 is
+	// judged by its own write: either answer came from the listener's authentication, before any
+	// route ran.
 	var written atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
-	response, err := c.do("POST /v1/messages/send", marked, func() (*http.Request, error) {
+	response, err := c.do(ctx, "POST /v1/messages/send", marked, func() (*http.Request, error) {
 		written.Store(false)
 		request, err := http.NewRequestWithContext(
 			ctx, http.MethodPost, c.baseURL+"/v1/messages/send", bytes.NewReader(encoded),

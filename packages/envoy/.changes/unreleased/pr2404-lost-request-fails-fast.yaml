@@ -15,7 +15,7 @@ body: |-
     no longer delays the other sessions: every consumer create waited for that read, so one read
     lost for 5 s made every registration behind it run past its 3.5 s budget and answer 503. The
     next read now starts once the lost one has been out 250 ms, and the creates that arrive
-    together still share one read. Requests in one more place now end at the reconnect too. A
+    together still share one read. Requests in two more places now end at the reconnect too. A
     listener sets up
     its notification stream each time its NATS connection comes back, before it rewatches its
     records and receives again; when the connection dropped again during that setup, the setup
@@ -23,7 +23,10 @@ body: |-
     health check 503. It now sends a lost read or create of the stream again at once on the new
     connection, with no cap on the sends: it sends again until the server answers, that connection
     drops too, the listener stops or the setup's 36 s bound passes, and after a lost update it
-    reads the stream back, and sends the update again only when the stream does not hold it.
+    reads the stream back, and sends the update again only when the stream does not hold it. And
+    Dispatch's GitHub intake, taking over from a process that died, could lose one answer the same
+    way and take the work over up to 12 s late, past the 17 s it promises; it now sends that
+    request again at once too.
 time: 2026-11-14T23:49:48.000000000Z
 custom:
     Issue: pr2404
