@@ -432,7 +432,8 @@ func (w *roomLoads) count() int {
 // goroutine and fires the observer there), and a third is the service projecting comment records.
 // Under -race the walk of the live tree is a data race with the other writers.
 func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
-	t.Parallel()
+	// Not parallel: its fixed 2 s window gets too few projections beside other tests: 198 peer
+	// writes and 4 projections, under its bound of 5, in a run beside 25 others under -race.
 	logs, logger := testLogger(slog.LevelWarn)
 	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
