@@ -38,17 +38,18 @@ type adoptReport struct {
 	// taken are the old layout's shared files written as the new side holds them: routes_table.go
 	// and routes_shapes.go always, and read_classes.go where the new side holds one.
 	taken []string
-	// readClassesRemoved is set where the new side removed read_classes.go, and so did this.
-	readClassesRemoved bool
+	// removedShared are the old layout's shared files this removed because the new side removed
+	// them: read_classes.go, where the merge base holds one and the new side none.
+	removedShared []string
 
 	// conflicted are route files the three-way merge left markers in.
 	conflicted []string
 	// decide are routes the two sides each changed in a way no merge settles: one side removed
 	// the route the other changed.
 	decide []string
-	// carry are the old-layout side's edits to routes_table.go, routes_shapes.go and
-	// read_classes.go outside the moved entries, each a diff of that file's shared code from the
-	// merge base to that side.
+	// carry are the old-layout side's edits to oldLayoutFiles outside the moved entries, each a
+	// diff of that file's shared code from the merge base, or from nothing where the merge base
+	// holds no such file, to that side.
 	carry []string
 	// unmerged are the paths git still holds in conflict once the run is done.
 	unmerged []string
@@ -76,13 +77,9 @@ func (r *adoptReport) print(w io.Writer) {
 			fmt.Fprintf(w, "  %s: %s\n", list.what, path.Join(apiDir, name))
 		}
 	}
-	took := make([]string, len(r.taken))
-	for index, name := range r.taken {
-		took[index] = path.Join(apiDir, name)
-	}
-	fmt.Fprintf(w, "  took %s from %s\n", spokenList(took), r.newSide)
-	if r.readClassesRemoved {
-		fmt.Fprintf(w, "  removed %s, which %s does not hold\n", path.Join(apiDir, readClassesFile), r.newSide)
+	fmt.Fprintf(w, "  took %s from %s\n", spokenList(prefixed(r.taken)), r.newSide)
+	for _, name := range prefixed(r.removedShared) {
+		fmt.Fprintf(w, "  removed %s, which %s does not hold\n", name, r.newSide)
 	}
 	if r.fixtureRemoved {
 		fmt.Fprintf(w, "  removed %s, which the new layout does not commit\n", path.Join(apiDir, routesFixture))
@@ -128,6 +125,13 @@ type routeWrite struct {
 	sides *conflictSides
 }
 
+// mergeSide is one side of the merge adopt makes: how the report names it, "the branch" or the
+// revision merged, and its commit.
+type mergeSide struct{ name, rev string }
+
+// described is the side as the report and the conflict labels name it: its name and its commit.
+func (s mergeSide) described() string { return s.name + " " + s.rev[:12] }
+
 // adopt makes the merge of into and resolves its route layer (see the package comment).
 //
 // It reads, then merges, then writes. The tree is refused or accepted, and both sides, the merge
@@ -151,25 +155,27 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s's %s: %w", into, tableFile, err)
 	}
-	report := &adoptReport{}
-	var oldRev, newRev string
+	// The merge's two sides in git's order, HEAD first and MERGE_HEAD last, which is the order of
+	// the index stages and of every three-way merge's inputs and labels. oldAt is the one that
+	// holds the old layout, decided here alone: the report's names, the revisions split and taken
+	// from, and the merge's order of ours and theirs all read from it.
+	sides := [2]mergeSide{{"the branch", here}, {into, there}}
+	var oldAt int
 	switch {
 	case hereOld && thereOld:
 		return nil, fmt.Errorf("the branch and %s both hold the old route table: neither side has the layout to adopt, and nothing is merged", into)
 	case !hereOld && !thereOld:
 		return nil, fmt.Errorf("the branch and %s both hold the route files already: there is nothing to adopt, and nothing is merged", into)
 	case hereOld:
-		report.oldName, report.newName = "the branch", into
-		oldRev, newRev = here, there
+		oldAt = 0
 	default:
-		report.oldName, report.newName = into, "the branch"
-		oldRev, newRev = there, here
+		oldAt = 1
 	}
-	report.oldSide, report.newSide = report.oldName+" "+oldRev[:12], report.newName+" "+newRev[:12]
-	hereSide, thereSide := report.oldSide, report.newSide
-	if !hereOld {
-		hereSide, thereSide = thereSide, hereSide
+	report := &adoptReport{
+		oldName: sides[oldAt].name, newName: sides[1-oldAt].name,
+		oldSide: sides[oldAt].described(), newSide: sides[1-oldAt].described(),
 	}
+	oldRev, newRev := sides[oldAt].rev, sides[1-oldAt].rev
 	base, err := repo.line("merge-base", here, there)
 	if err != nil {
 		return nil, fmt.Errorf("the branch and %s share no merge base, so there is no old layout to split their routes from, and nothing is merged (%w)", into, err)
@@ -192,15 +198,13 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	newSide := gitTree{repo, newRev}
 	var writes []routeWrite
 	var remove []string
-	// The inputs and labels of every three-way merge are in git's order, HEAD first and
-	// MERGE_HEAD last, as the index stages are: an editor's "current change" in a route file is
-	// HEAD's, as it is in every file git merged itself.
-	labels := [3]string{"HEAD (" + hereSide + ")", "merge base", into + " (" + thereSide + ")"}
+	// Every three-way merge's inputs and labels are in the order of sides, so an editor's
+	// "current change" in a route file is HEAD's, as it is in every file git merged itself.
+	labels := [3]string{"HEAD (" + sides[0].described() + ")", "merge base", into + " (" + sides[1].described() + ")"}
 	merge := func(name string, newContent, baseContent, oldContent []byte) (routeWrite, error) {
-		ours, theirs := oldContent, newContent
-		if oldRev != here {
-			ours, theirs = newContent, oldContent
-		}
+		var contents [2][]byte
+		contents[oldAt], contents[1-oldAt] = oldContent, newContent
+		ours, theirs := contents[0], contents[1]
 		merged, conflict, err := repo.mergeFile(ours, baseContent, theirs, labels)
 		if err != nil {
 			return routeWrite{}, err
@@ -275,31 +279,34 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	// new layout's, and the old-layout side's edit to each outside the moved entries is printed
 	// for the person to carry by hand, since nothing can place it mechanically.
 	baseTree, oldTree := gitTree{repo, base}, gitTree{repo, oldRev}
-	for _, name := range []string{tableFile, shapesFile, readClassesFile} {
+	for _, name := range oldLayoutFiles {
+		baseContent, inBase, err := readIfPresent(baseTree, name)
+		if err != nil {
+			return nil, err
+		}
 		content, err := newSide.read(name)
 		switch {
 		case err == nil:
 			writes = append(writes, routeWrite{name: name, content: content})
 			report.taken = append(report.taken, name)
-		case name == readClassesFile && errors.Is(err, os.ErrNotExist):
+		case mayBeMissing(name) && errors.Is(err, os.ErrNotExist):
 			// read_classes.go is #4557's, and a new side made before #4557 holds none, so nothing
 			// is written for it. Where the merge base holds one, the new side removed it, and so
 			// does this: its readClasses entries are the route files' now and its other edits are
 			// carried below, and git and jj otherwise leave an old-layout side's change to it in
 			// conflict with the removal. Where the merge base holds none, the old-layout side added
 			// it with #4557 and the merge adds it cleanly, with the types that side's Read fields
-			// name. It is left as that side wrote it, and since it is not taken, the stale-line
-			// check names its readClasses for the person.
-			if _, inBase, err := readIfPresent(baseTree, name); err != nil {
-				return nil, err
-			} else if inBase {
-				remove = append(remove, name)
-				report.readClassesRemoved = true
+			// name. It is left as that side wrote it, so nothing of it is carried, and since it is
+			// not taken, the stale-line check names its readClasses for the person.
+			if !inBase {
+				continue
 			}
+			remove = append(remove, name)
+			report.removedShared = append(report.removedShared, name)
 		default:
 			return nil, err
 		}
-		carried, err := sharedCodeChange(repo, name, baseTree, oldTree, report.oldName)
+		carried, err := sharedCodeChange(repo, name, baseContent, inBase, oldTree, report.oldName)
 		if err != nil {
 			return nil, err
 		}
@@ -369,29 +376,27 @@ func writeTheMerge(repo gitRepo, writes []routeWrite, remove []string) error {
 
 // sharedCodeChange is the old-layout side's change to one old-layout file outside the entries the
 // route files took over - the rows of routes() and the side maps' entries - as a diff from the
-// merge base, and empty where that side changed nothing else of it. side is how the report names
-// that side: the branch, or the revision merged.
+// merge base's text of it, base, and empty where that side changed nothing else of it. inBase
+// reports whether the merge base holds the file: where it holds none, the diff is from nothing,
+// so the whole of a file that side added is carried, its moved entries cut out. side is how the
+// report names that side: the branch, or the revision merged.
 //
-// It is empty too where the merge base or that side holds no such file. Only read_classes.go can
-// be missing, since the split read the table and the shapes at both, and a side without it was
-// made before #4557: the old-layout side then never had it, or added it whole with #4557, which
-// the new side's own read_classes.go holds where there is one, and the merge leaves as that side
-// wrote it where there is none.
-func sharedCodeChange(repo gitRepo, name string, base, old tree, side string) (string, error) {
-	baseContent, inBase, err := readIfPresent(base, name)
-	if err != nil {
-		return "", err
-	}
+// It is empty where that side holds no such file. Only read_classes.go can be missing, since the
+// split read the table and the shapes at both, and a side without it never had it or removed
+// it: either way, that side holds no code of it to carry.
+func sharedCodeChange(repo gitRepo, name string, base []byte, inBase bool, old tree, side string) (string, error) {
 	oldContent, inOld, err := readIfPresent(old, name)
 	if err != nil {
 		return "", err
 	}
-	if !inBase || !inOld || bytes.Equal(baseContent, oldContent) {
+	if !inOld || inBase && bytes.Equal(base, oldContent) {
 		return "", nil
 	}
-	baseShared, err := sharedCode(name, baseContent)
-	if err != nil {
-		return "", fmt.Errorf("read the merge base's %s: %w", name, err)
+	var baseShared string // nothing, where the merge base holds no such file
+	if inBase {
+		if baseShared, err = sharedCode(name, base); err != nil {
+			return "", fmt.Errorf("read the merge base's %s: %w", name, err)
+		}
 	}
 	oldShared, err := sharedCode(name, oldContent)
 	if err != nil {

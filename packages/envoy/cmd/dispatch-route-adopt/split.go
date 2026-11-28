@@ -37,6 +37,15 @@ const (
 	hooksCondition = "s.deps.TestHooksEnabled"
 )
 
+// oldLayoutFiles are the old layout's files that hold its route facts, in the order the split
+// reads them and the adopter takes them whole from the new side: the table, the shapes and the
+// read classes. A side may hold none of one only where mayBeMissing says so.
+var oldLayoutFiles = []string{tableFile, shapesFile, readClassesFile}
+
+// mayBeMissing reports whether a side may hold none of one of oldLayoutFiles. Every old layout
+// holds the table and the shapes; read_classes.go is #4557's, and a side made before it has none.
+func mayBeMissing(name string) bool { return name == readClassesFile }
+
 // tree is the files of one revision of package api: a commit read through git, or a directory.
 type tree interface {
 	// read answers the bytes of one file of the package, by its base name.
@@ -126,16 +135,16 @@ func hasOldLayout(src tree) (bool, error) {
 
 // readOldLayout parses the old layout's files and joins every route's row to its side-map
 // entries. It answers the routes in the table's order and the import path of every package name
-// those files import. The table and the shapes are required; read_classes.go is #4557's and a
-// branch made before it has none.
+// those files import. It reads each of oldLayoutFiles, and only a file mayBeMissing names may be
+// missing.
 func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 	fset := token.NewFileSet()
 	parsed := map[string]*ast.File{}
 	sources := map[string][]byte{}
-	for _, name := range []string{tableFile, shapesFile, readClassesFile} {
+	for _, name := range oldLayoutFiles {
 		content, err := src.read(name)
 		if err != nil {
-			if name == readClassesFile && errors.Is(err, os.ErrNotExist) {
+			if mayBeMissing(name) && errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			return nil, nil, err
@@ -208,7 +217,7 @@ func readOldLayout(src tree) ([]*oldRoute, map[string]string, error) {
 	}
 	for _, side := range maps {
 		file, read := parsed[side.file]
-		if !read && side.file == readClassesFile {
+		if !read { // a file mayBeMissing names, which src holds none of
 			continue
 		}
 		literal := packageLiteral(file, side.name)
