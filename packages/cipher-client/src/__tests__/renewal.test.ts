@@ -26,7 +26,7 @@ import {
   TradeUnansweredError,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted, refusalOf, stubBroker } from "./stub";
+import { accepted, keySetOutage, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -431,6 +431,67 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect(isFinalRefusal(refusal)).toBe(false);
     expect((refusal as Error).message).toContain("too many token requests; try again later");
+  } finally {
+    client.close();
+    broker.stop();
+  }
+});
+
+// The broker answers a renewal 503 with `Retry-After` when it could not check the identity's
+// token, because the key set of its issuer could not be read: its own answer, as its real server
+// wrote it, asking for 5 s. The live token in hand answers every caller at once through that wait,
+// with no trade, and the loop trades again no sooner than the wait allows: here its own 15 s step,
+// the longer of the two.
+test("Retry-After: a live token in hand is answered at once and the broker is not asked before the wait ends", async () => {
+  const outage = await keySetOutage();
+  const clock = { now: Date.now() };
+  const arrivals: number[] = [];
+  const broker = stubBroker((_trade, count) => {
+    arrivals.push(clock.now);
+    return count === 2 ? outage : { body: accepted(`token-${count}`, 600) };
+  });
+  // The retry loop's waits are held until the row lets them go, each then moving the clock by its
+  // length.
+  const waits: number[] = [];
+  const held: (() => void)[] = [];
+  const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+    waits.push(ms);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    held.push(() => {
+      clock.now += ms;
+      resolve();
+    });
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+    return promise;
+  };
+  const client = await clientAt(broker.url, clock, countingSource(), 60_000, sleep);
+  try {
+    const first = await client.token();
+    expect(first.accessToken).toBe("token-1");
+    // Into the renewal window: the renewal meets the outage, and the caller is answered the live
+    // token in hand.
+    clock.now += 560_000;
+    expect(await client.token()).toBe(first);
+    expect(arrivals).toHaveLength(2);
+    // At once and 4 s into the 5 s the broker asked for: the token in hand, with no trade.
+    for (const step of [0, 4_000]) {
+      clock.now += step;
+      expect(await client.token()).toBe(first);
+    }
+    expect(arrivals).toHaveLength(2);
+    expect(waits).toEqual([15_000]);
+    // The loop's wait ends, and its trade is the next the broker sees, past the 5 s.
+    for (const release of held.splice(0)) release();
+    await until("the loop's trade after its wait", () => arrivals.length === 3);
+    expect((arrivals[2] as number) - (arrivals[1] as number)).toBeGreaterThanOrEqual(5_000);
+    // Once the first token has lapsed, a caller that waits for ready takes the renewal's.
+    clock.now = first.expiresAt.getTime();
+    const renewed = await settled(
+      "the renewal's token",
+      client.token(undefined, { waitForReady: true })
+    );
+    expect(renewed.accessToken).toBe("token-3");
+    expect(arrivals).toHaveLength(3);
   } finally {
     client.close();
     broker.stop();

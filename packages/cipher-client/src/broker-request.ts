@@ -7,6 +7,7 @@
 // (`token-client.ts`), a device login's requests (`device-login.ts`) and the person's identity
 // source (`person-identity.ts`) send through them.
 
+import { retryAfterMs } from "@legion/contracts/http-status";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
   type CustomFetchOptions,
@@ -14,7 +15,7 @@ import {
   WWWAuthenticateChallengeError,
 } from "openid-client";
 import type { DpopKey } from "./dpop";
-import type { RefusalContext } from "./refusal-text";
+import { type RefusalContext, shownOAuthCode } from "./refusal-text";
 import { BrokerRefusedError, BrokerTradeFailedError } from "./token-errors";
 import { HEADER_DPOP_HOLDER } from "./wire";
 
@@ -22,6 +23,17 @@ import { HEADER_DPOP_HOLDER } from "./wire";
  *  of `BrokerTokenClient` (`token-client.ts`) refuses such a URL, and `brokerTokenClient` names
  *  AGENT_SECRETS_URL in its refusal. A device login names it the same way (`device-login.ts`). */
 export const BROKER_URL_SETTING = "the broker URL";
+
+/** The longest wait a 503's `Retry-After` holds a client's next trade back: a larger value, the
+ *  broker's or a proxy's before it, is read as this, so no answer holds a trade back for longer
+ *  than a minute. The Go client's `maxRetryAfter` (packages/envoy/internal/cipherclient). The
+ *  broker asks for the spacing of its reads of a key set that failed, 5 s by default. */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/** The code the broker names beside OAuth's `temporarily_unavailable`, with a 503 and
+ *  `Retry-After`, for a trade whose subject or actor token it could not check because the key set
+ *  of that token's issuer could not be read: the Go client's `issuerUnavailable`. */
+const ISSUER_UNAVAILABLE = "ISSUER_UNAVAILABLE";
 
 /**
  * The HTTP answer behind `error`, or undefined where it carries none: an OAuth error answer and a
@@ -63,13 +75,21 @@ export function statusOf(error: unknown): number {
  * and with no `cause`: an answer the library refused hangs off its error (oauth4webapi's `cause`
  * is the body it read), and that answer can hold a minted token, which no log may carry.
  * `context` is what the request sent that a known refusal may name.
+ *
+ * A 503 keeps the wait its `Retry-After` asks for (`retryAfterMs`), read as at most
+ * {@link MAX_RETRY_AFTER_MS}, so the token client sends no trade before it has passed. A 5xx
+ * whose `body`, the answer's own body where the caller kept it (the library reads none of a
+ * 5xx), names the code {@link ISSUER_UNAVAILABLE} is that outage, and its text says so: the
+ * broker could not check `refused`, because its issuer's key set could not be read, with the
+ * status and the OAuth code where it is one the clients know. It is never a refusal.
  */
 export function brokerRefusal(
   doing: string,
   refused: string,
   endpoint: string,
   error: unknown,
-  context: RefusalContext = {}
+  context: RefusalContext = {},
+  body: unknown = undefined
 ): BrokerRefusedError | BrokerTradeFailedError {
   if (error instanceof ResponseBodyError && error.status >= 400 && error.status < 500) {
     // The library checks only that `error` is a string; a description of any other type is a
@@ -83,11 +103,24 @@ export function brokerRefusal(
       context
     );
   }
-  const status = statusOf(error);
+  const answer = responseOf(error);
+  const status = answer?.status ?? 0;
+  const waitMs =
+    status === 503 && answer !== undefined
+      ? Math.min(retryAfterMs(answer.headers), MAX_RETRY_AFTER_MS)
+      : 0;
+  const broker = urlForText(endpoint, BROKER_URL_SETTING);
+  const answered =
+    typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+  if (status >= 500 && answered["code"] === ISSUER_UNAVAILABLE) {
+    const code = typeof answered["error"] === "string" ? shownOAuthCode(answered["error"]) : "";
+    return new BrokerTradeFailedError(
+      `the secrets broker at ${broker} could not check ${refused}, because its issuer's key set could not be read: HTTP ${status}${code === "" ? "" : ` ${code}`}`,
+      waitMs
+    );
+  }
   const said = status === 0 ? errorClass(error) : `HTTP ${status}: ${errorClass(error)}`;
-  return new BrokerTradeFailedError(
-    `${doing} ${refused} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
-  );
+  return new BrokerTradeFailedError(`${doing} ${refused} at ${broker}: ${said}`, waitMs);
 }
 
 /**

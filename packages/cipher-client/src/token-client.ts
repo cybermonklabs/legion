@@ -26,6 +26,14 @@
 // has been refused in a way no retry can cure (`isFinalRefusal`): by the broker, or by the issuer
 // that no longer honours a person's sign-in. So a caller that writes only with what `token()`
 // gave it never writes with no identity, nor with one that has been ended.
+//
+// When it waits: the broker answers a trade 503 with `Retry-After` when it could not check the
+// identity's token because the key set of that token's issuer could not be read, and the token
+// may well be sound once that wait has passed. The client keeps the moment the wait ends, read as
+// at most a minute on (`MAX_RETRY_AFTER_MS`), and sends no trade before it: the retry loop waits
+// the larger of its own step and that wait, and `proxyPlaceholder` waits for it until its signal
+// ends, or for two minutes in all where it is given none (`PLACEHOLDER_CALL_BOUND_MS`). The Go
+// client keeps the same rule.
 
 import { holdSecret, holdUrlUserinfo, scrub } from "@legion/contracts/held-secrets";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
@@ -158,6 +166,11 @@ const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
  *  (packages/envoy/internal/cipherclient/environment.go). */
 export const TRADE_ATTEMPT_MS = 30_000;
 
+/** How long one {@link BrokerTokenClient.proxyPlaceholder} given no signal waits out the
+ *  broker's 503s before it answers the outage, so a caller that set no deadline of its own still
+ *  learns of an outage within it: the Go client's `callBound`. */
+const PLACEHOLDER_CALL_BOUND_MS = 2 * 60_000;
+
 /** Waits `ms`, or less when `signal` aborts first: the default of
  *  {@link BrokerTokenClientOptions.sleep}, of the device login's poll and of its lock's wait.
  *  `holdsProcess` says whether its timer holds the process open. The retry loop's does not: the
@@ -284,8 +297,12 @@ export interface BrokerTokenClientOptions {
    *  replaces it. */
   readonly attemptMs?: number | undefined;
   /** Waits `ms` before the retry loop's next trade, returning early when `signal` aborts (the
-   *  client's {@link BrokerTokenClient.close}); a timer unless a test replaces it. */
-  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+   *  client's {@link BrokerTokenClient.close}), and before a placeholder trade's next try after a
+   *  503 asked for a wait (`holdsProcess`: its caller awaits it), returning early at the call's
+   *  own signal; a timer unless a test replaces it. */
+  readonly sleep?:
+    | ((ms: number, signal?: AbortSignal, holdsProcess?: boolean) => Promise<void>)
+    | undefined;
   /** A number in [0, 1) for each wait's jitter; `Math.random` unless a test replaces it. */
   readonly random?: (() => number) | undefined;
   /** Where the retry loop says, at each wait, what its last trade came to and when it trades
@@ -320,7 +337,7 @@ export class BrokerTokenClient {
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
   readonly #attemptMs: number;
-  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly #sleep: (ms: number, signal?: AbortSignal, holdsProcess?: boolean) => Promise<void>;
   readonly #log: (line: string) => void;
   readonly #fetch: typeof fetch;
   readonly #random: () => number;
@@ -350,6 +367,10 @@ export class BrokerTokenClient {
   #nextAt = 0;
   #pendingWait = PENDING_FIRST_WAIT_MS;
   #retryWait = RETRY_FIRST_WAIT_MS;
+  /** The wait the broker's last 503 with a `Retry-After` asked for, whichever trade of this
+   *  client it answered: no trade goes to the broker before `until`, and one that would is
+   *  answered `error`, that 503, with nothing sent (`#gated`). The Go client's `outageGate`. */
+  #outage: { readonly until: number; readonly error: BrokerTradeFailedError } | null = null;
   /** Ended by {@link close}, which stops the retry loop. */
   readonly #closed = new AbortController();
 
@@ -406,6 +427,11 @@ export class BrokerTokenClient {
    * - With no live token in hand, a fail-fast caller (the default) is told the loop's last
    *   failure at once where it was one the loop trades again on, other than a pod session not
    *   registered yet; a wait-for-ready caller waits on ({@link TokenCallOptions}).
+   * - A 503 that asks for a wait (`Retry-After`, the broker's answer when it could not read the
+   *   key set of the identity's issuer among them) is such a failure: the token in hand is
+   *   answered at once while it is live, with no trade and no wait, and the loop trades no sooner
+   *   than that wait allows (`#retried`). A caller that waits for ready waits as long as the loop
+   *   does: no bound of the client's own ends that wait, only its signal.
    * - A refusal no trade cures ({@link isFinalRefusal}) ends the loop: it drops the token in hand
    *   and answers every caller with the refusal, and a caller arriving before the schedule's next
    *   slot is answered the same, with no trade.
@@ -544,6 +570,20 @@ export class BrokerTokenClient {
     return Math.round(ms / 2 + this.#random() * (ms / 2));
   }
 
+  /** What is left at `now` of the wait the broker's last 503 with a `Retry-After` asked for
+   *  (`#outage`), in milliseconds; 0 once it has passed, or where none asked for one. The Go
+   *  client's `outageLeft`. */
+  #outageLeft(now: number): number {
+    const gate = this.#outage;
+    return gate !== null && now < gate.until ? gate.until - now : 0;
+  }
+
+  /** Throws the 503 whose wait is still running (`#outageLeft`), so a trade that would go to the
+   *  broker before that wait has passed sends nothing and reads no identity token for it. */
+  #gated(): void {
+    if (this.#outage !== null && this.#outageLeft(this.#now()) > 0) throw this.#outage.error;
+  }
+
   /**
    * The retry loop: capped exponential backoff with jitter around a per-trade timeout, the shape
    * of gRPC's connection backoff (grpc/grpc, doc/connection-backoff.md), whose callers wait for
@@ -560,6 +600,10 @@ export class BrokerTokenClient {
    *   error, an answer that is not this grant's, or a trade that could not be made: traded again
    *   on the Go client's schedule, {@link RETRY_FIRST_WAIT_MS} doubling to
    *   {@link RETRY_MAX_WAIT_MS}.
+   *
+   * No trade goes before the wait a 503 asked for with `Retry-After` has passed, whichever trade
+   * of this client the 503 answered: the loop waits the larger of its schedule's step and what is
+   * left of that wait (`#retried`), and a trade that would go sooner sends nothing (`#gated`).
    *
    * It says at each wait what the trade came to, naming the session, and when it trades again.
    * Only a token landing starts a schedule over: no caller arriving, and no trade failing
@@ -607,10 +651,11 @@ export class BrokerTokenClient {
    * Reads a trade that failed, `timedOut` where its own time ran out, and says whether the loop
    * trades again. A refusal no trade cures does not: the token in hand is dropped, and the next
    * loop waits out the longer schedule's slot, answering a caller before it with the refusal.
-   * Any other failure is traded again at the next slot of its schedule, with a line saying so: a
-   * live token in hand answers every waiting caller; otherwise a failure other than a pending
-   * registration answers a fail-fast caller `TradeRetryingError` at once, and a wait-for-ready
-   * caller waits on. Both kinds wait out a pending registration within their own signals.
+   * Any other failure is traded again at the next slot of its schedule, or once the wait a 503
+   * asked for has passed where that is later, with a line saying so: a live token in hand answers
+   * every waiting caller; otherwise a failure other than a pending registration answers a
+   * fail-fast caller `TradeRetryingError` at once, and a wait-for-ready caller waits on. Both
+   * kinds wait out a pending registration within their own signals.
    */
   #retried(error: unknown, timedOut: boolean): boolean {
     const now = this.#now();
@@ -638,6 +683,8 @@ export class BrokerTokenClient {
       wait = this.#jittered(this.#retryWait);
       this.#retryWait = Math.min(this.#retryWait * 2, RETRY_MAX_WAIT_MS);
     }
+    // Never before the wait a 503 asked for, whichever trade of this client it answered.
+    wait = Math.max(wait, this.#outageLeft(now));
     this.#nextAt = now + wait;
     this.#last = failure;
     this.#since ??= now;
@@ -727,6 +774,7 @@ export class BrokerTokenClient {
    * `.dispatch/architecture/broker-client.md` says by how much and how they recover.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    this.#gated();
     const source = this.#subject;
     if (source.spend !== undefined) {
       const leastLifeMs =
@@ -755,10 +803,18 @@ export class BrokerTokenClient {
    * how the session reaches the proxy that holds the grant's token; no token that can act ever
    * reaches this process. A client narrowed to reading sends its scope, its cut and its holder
    * proof here as on every trade, and the broker refuses the trade: a session narrowed to reading
-   * approves nothing. Each call is one trade and one grant, outside the retry loop of
-   * {@link token}: a caller asks for a placeholder at the moment it sends the one request it is
-   * for. A refusal is thrown as `#exchange` throws one; an answer that is not a placeholder is
+   * approves nothing. Each call is one grant, outside the retry loop of {@link token}: a caller
+   * asks for a placeholder at the moment it sends the one request it is for. A refusal is thrown
+   * as `#exchange` throws one; an answer that is not a placeholder is
    * {@link BrokerTradeFailedError} (`#readPlaceholder`).
+   *
+   * A 503 that asks for a wait (`Retry-After`, the broker's answer when it could not read the key
+   * set of the identity's issuer among them) is waited out: no trade goes before the wait has
+   * passed, then the trade goes again, until `signal` ends, or for
+   * {@link PLACEHOLDER_CALL_BOUND_MS} in all where the call is given no signal and the next wait
+   * would run past it. It then throws the outage, a {@link BrokerTradeFailedError} whose words
+   * name it and how long the call tried; never a refusal. Every other failure is thrown as it
+   * came.
    */
   async proxyPlaceholder(signal?: AbortSignal): Promise<ProxyPlaceholder> {
     const trade = async (subject: SubjectToken): Promise<ProxyPlaceholder> => {
@@ -767,9 +823,37 @@ export class BrokerTokenClient {
       });
       return this.#readPlaceholder(endpoint, answered, raw);
     };
-    const source = this.#subject;
-    if (source.spend !== undefined) return await source.spend(trade, signal);
-    return await trade(await source.read(signal));
+    const once = async (): Promise<ProxyPlaceholder> => {
+      this.#gated();
+      const source = this.#subject;
+      if (source.spend !== undefined) return await source.spend(trade, signal);
+      return await trade(await source.read(signal));
+    };
+    const started = this.#now();
+    while (true) {
+      try {
+        return await once();
+      } catch (error) {
+        const now = this.#now();
+        const left = this.#outageLeft(now);
+        if (!(error instanceof BrokerTradeFailedError) || error.retryAfterMs === 0 || left === 0) {
+          throw error;
+        }
+        if (signal === undefined && now + left >= started + PLACEHOLDER_CALL_BOUND_MS) {
+          throw new BrokerTradeFailedError(
+            `${error.message}; tried for ${Math.round((now - started) / 1000)} s, and the wait of ${Math.ceil(left / 1000)} s the broker asked for runs past the ${PLACEHOLDER_CALL_BOUND_MS / 1000} s a call with no signal tries for`,
+            error.retryAfterMs
+          );
+        }
+        await this.#sleep(left, signal, true);
+        if (signal?.aborted) {
+          throw new BrokerTradeFailedError(
+            `${error.message}; tried for ${Math.round((this.#now() - started) / 1000)} s, until the call's signal ended`,
+            error.retryAfterMs
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -784,12 +868,16 @@ export class BrokerTokenClient {
    * form encoding, the endpoint and the shape of what came back — and the proof is signed by the
    * fetch it is given, so one signer serves the token endpoint and every later request this
    * process makes with the token it got.
+   *
+   * No request goes while the wait a 503 asked for is still running (`#gated`), and a 503 that
+   * asks for one starts that wait (`#outage`).
    */
   async #grant(
     subject: SubjectToken,
     signal: AbortSignal | undefined,
     asked: Readonly<Record<string, string>>
   ): Promise<{ endpoint: string; answered: TokenEndpointResponse; raw: unknown }> {
+    this.#gated();
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
     // held until an hour past its lapse (`heldUntil`), so a session that trades all its life holds
@@ -844,10 +932,22 @@ export class BrokerTokenClient {
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
     } catch (error) {
-      throw brokerRefusal("trade", this.#subject.describe(), endpoint, error, {
-        ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
-        ...(this.#session === "" ? {} : { session: this.#session }),
-      });
+      const failed = brokerRefusal(
+        "trade",
+        this.#subject.describe(),
+        endpoint,
+        error,
+        {
+          ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
+          ...(this.#session === "" ? {} : { session: this.#session }),
+        },
+        raw.body
+      );
+      // A 503 that asks for a wait closes the gate for that long (`#outage`).
+      if (failed instanceof BrokerTradeFailedError && failed.retryAfterMs > 0) {
+        this.#outage = { until: this.#now() + failed.retryAfterMs, error: failed };
+      }
+      throw failed;
     }
     // Named as every text of a trade names the broker (`urlForText`).
     return { endpoint: urlForText(endpoint, BROKER_URL_SETTING), answered, raw: raw.body };
@@ -857,7 +957,8 @@ export class BrokerTokenClient {
    * One request with a proof of this client's key, and of its holder key where it has one
    * ({@link sendWithProof}). The answer's own body is kept in `raw`, since `openid-client`
    * lowercases `token_type` (RFC 6749 makes it case-insensitive) while the corpus names the
-   * spelling the broker wrote.
+   * spelling the broker wrote, and reads no body of a 5xx, whose `code` names the broker's outage
+   * (`brokerRefusal`).
    */
   async #send(
     url: string,
