@@ -37,7 +37,8 @@ const (
 // DaemonSeedFileKey, DaemonSeedFileVariable and DaemonSeedVariable name the seed the daemon's own
 // connection authenticates with, the same three ways: a `legion.yaml` key, a variable naming a file,
 // and a variable holding the seed. No pane is ever handed it; unset, the daemon connects with its
-// service token when one is set (ServiceTokenFileKey), else as the pane seed.
+// service token when one is set (ServiceTokenFileKey), else as the pane seed, else with no
+// credential.
 const (
 	DaemonSeedFileKey      = "nats_daemon_nkey_seed_file"
 	DaemonSeedFileVariable = "NATS_DAEMON_NKEY_SEED_FILE"
@@ -87,7 +88,8 @@ func Seed(file string, lookup func(string) (string, bool)) (string, error) {
 // DaemonSeed is Seed of the daemon's own seed, under its own names: the file the configuration's
 // DaemonSeedFileKey names ("" when it names none), else the file NATS_DAEMON_NKEY_SEED_FILE names,
 // else NATS_DAEMON_NKEY_SEED, with Seed's refusals and file mode rule. None set is "": the daemon
-// then connects as the pane seed. It never falls back to the pane seed's names, nor they to it.
+// then connects with its service token when one is set (DaemonCredential), else as the pane seed,
+// else with no credential. It never falls back to the pane seed's names, nor they to it.
 func DaemonSeed(file string, lookup func(string) (string, bool)) (string, error) {
 	src, ok := resolve(daemonSeed, file, lookup, config.ReadGroupSecretPointer)
 	if !ok {

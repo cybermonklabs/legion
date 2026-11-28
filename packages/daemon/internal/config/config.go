@@ -185,8 +185,9 @@ type Config struct {
 	// a 0600 file of its own.
 	EnvoyTokenFile string
 	// NatsNkeySeedFile is the file holding the NATS nkey user seed every pane receives, and the
-	// daemon connects as when it has no seed of its own, "" when the file names none (natsauth.Seed
-	// then reads NATS_NKEY_SEED_FILE or NATS_NKEY_SEED from the daemon's environment).
+	// daemon connects as when it has neither a service token (NatsDaemonServiceTokenFile, else
+	// NATS_DAEMON_SERVICE_TOKEN_FILE) nor a seed of its own, "" when the file names none
+	// (natsauth.Seed then reads NATS_NKEY_SEED_FILE or NATS_NKEY_SEED from the daemon's environment).
 	NatsNkeySeedFile string
 	// NatsDaemonNkeySeedFile is the file holding the NATS nkey user seed the daemon's own connection
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
