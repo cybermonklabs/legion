@@ -6,11 +6,12 @@ import { envoyPluginInterface, readEnvoyPluginInterface } from "./interface";
 // `session_start`, `markStartupTurnPending`), the start message the Legion entry sends to an idle
 // session, or the start prompt the daemon delivers once its controller reports ready. The Legion
 // entry marks it sent right before that start (`markStartupTurnSent`) and clears it from that
-// session's `agent_start` and `session_shutdown`, and an unsent one when the start command's claim
-// fails before the send or hands over to a new session (`clearStartupTurn`). A start message
-// queued as a follow-up behind a turn the operator already started is never marked sent: that run,
-// the session's first, has already fired its one `agent_start`, which cleared an unsent mark, and
-// the follow-up runs inside it.
+// session's `agent_start` and `session_shutdown`, an unsent one when a controller claim fails
+// before the send with no other claim queued behind it or hands over to a new session, and a sent
+// one when the host fails the start message's send (the operator-launched controller's)
+// (`clearStartupTurn`). A start message queued as a follow-up behind a turn the operator already
+// started is never marked sent: that run, the session's first, has already fired its one
+// `agent_start`, which cleared an unsent mark, and the follow-up runs inside it.
 
 /** Marks `sessionID` as the session whose start is due and not sent yet. */
 export function markStartupTurnPending(sessionID: string): void {

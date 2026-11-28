@@ -17,6 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -31,11 +33,14 @@ import (
 // The bound and the scan lists are package variables, read by every test that runs a search, a
 // related-item check or a scan, many of them parallel:
 // TestMeaningScanAppliesTheServersBoundToItsTransaction,
-// TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction and
-// TestEverySearchStatementRunsInsideItsBoundedTransaction among them. Swapping them is safe only
-// because every test that writes one - this helper's callers
+// TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction,
+// TestSearchScansAtACutApplyTheBoundAndTheConnectionCheck,
+// TestEverySearchStatementRunsInsideItsBoundedTransaction and
+// TestEverySearchStatementAtACutRunsInsideItsBoundedTransaction among them. Swapping them is safe
+// only because every test that writes one - this helper's callers
 // (TestSearchReportsAMeaningStatementTheServerEnded,
-// TestSearchReportsAKeywordStatementTheServerEnded, TestASearchWhoseClientLeftIsNotATimeout and
+// TestSearchReportsAKeywordStatementTheServerEnded, TestSearchReportsAStatementAtACutTheServerEnded,
+// TestASearchWhoseClientLeftIsNotATimeout and
 // TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout), which write the bound, and
 // TestMeaningScanRollsBackWhenASettingFails, which writes searchMeaningScan - calls no
 // t.Parallel: Go runs the part of a top-level test after its t.Parallel only once every
@@ -520,14 +525,19 @@ func (b *backendStatements) statements() []backendStatement {
 var searchBoundSetting = store.StatementTimeoutSetting(15 * time.Second)
 
 // unboundedBecause says why the statement at position at of seen did not run inside a
-// transaction that, after its begin, ran a setting statement holding both searchBoundSetting and
-// searchClientConnectionCheck, and is empty when it did. It reads the statements its own
-// backend ran before it, newest first: a commit or a rollback met before any begin is a statement
-// run outside any transaction, and a begin met before one Exec with both settings is a
-// transaction that did not apply both together. A rollback to a savepoint ends no transaction.
-func unboundedBecause(seen []backendStatement, at int) string {
+// transaction that, after its begin, ran both searchBoundSetting and searchClientConnectionCheck,
+// and is empty when it did. It reads the statements its own backend ran before it, newest first:
+// a commit or a rollback met before any begin is a statement run outside any transaction, and a
+// begin met before both settings is a transaction that did not apply both. A rollback to a
+// savepoint ends no transaction.
+//
+// apart is how beginSearchScan sent the settings. At the present it sends them in one Exec,
+// separated by "; ", and apart is false: the two must be in one statement. At a cut the store
+// refuses a list of statements, so it sends each in an Exec of its own, and apart is true: the
+// two may be in statements of their own between the begin and the statement.
+func unboundedBecause(seen []backendStatement, at int, apart bool) string {
 	pid := seen[at].pid
-	set := false
+	var bound, check bool
 	for earlier := at - 1; earlier >= 0; earlier-- {
 		if seen[earlier].pid != pid {
 			continue
@@ -538,23 +548,26 @@ func unboundedBecause(seen []backendStatement, at int) string {
 			return fmt.Sprintf("it ran on backend %d in no transaction: the last one there ended (%s) before it and none began after",
 				pid, text)
 		case text == "begin" || strings.HasPrefix(text, "begin ") || strings.HasPrefix(text, "start transaction"):
-			if !set {
-				return fmt.Sprintf("it ran on backend %d in a transaction that ran no statement holding both %q and %q after its begin",
-					pid, searchBoundSetting, searchClientConnectionCheck)
+			if !bound || !check {
+				return fmt.Sprintf("it ran on backend %d in a transaction that did not run both %q and %q after its begin (apart: %t)",
+					pid, searchBoundSetting, searchClientConnectionCheck, apart)
 			}
 			return ""
-		case !set && strings.HasPrefix(text, "set local "):
-			// beginSearchScan sends all settings in one Exec, separated by "; ".
-			var bound, check bool
+		case strings.HasPrefix(text, "set local "):
+			var holdsBound, holdsCheck bool
 			for setting := range strings.SplitSeq(text, "; ") {
 				switch setting {
 				case searchBoundSetting:
-					bound = true
+					holdsBound = true
 				case searchClientConnectionCheck:
-					check = true
+					holdsCheck = true
 				}
 			}
-			set = bound && check
+			if apart {
+				bound, check = bound || holdsBound, check || holdsCheck
+			} else if holdsBound && holdsCheck {
+				bound, check = true, true
+			}
 		}
 	}
 	return fmt.Sprintf("it ran on backend %d, which began no transaction before it", pid)
@@ -777,7 +790,7 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 					continue
 				}
 				ran[name]++
-				if why := unboundedBecause(seen, at); why != "" {
+				if why := unboundedBecause(seen, at, false); why != "" {
 					t.Errorf("%s, run %d of this search: %s", name, ran[name], why)
 				} else {
 					covered[name] = true
@@ -791,6 +804,290 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 	for set := range searchKinds(sets) {
 		for _, field := range set.statements().fields() {
 			if name := searchSetStatementName(set, field.name); !covered[name] {
+				t.Errorf("%s ran inside its bounded transaction in none of this test's searches, so nothing here holds it to its bound", name)
+			}
+		}
+	}
+}
+
+// A search at a cut runs its statements in the transactions beginKeywordScan and beginMeaningScan
+// open, as a search of the present does, under the same bound and the same connection check. At a
+// cut the store refuses the list of statements beginSearchScan sends the settings in at the
+// present (asof.Bind), so it sends each of them in an Exec of its own there: a scan whose settings
+// went in one Exec would fail to begin here. Each scan is begun on a context that carries a cut,
+// and the bound and the check are read with `show` inside it, the meaning scan's two index
+// settings with them, and the server's own defaults on the pool after it: every setting is local
+// to the transaction.
+func TestSearchScansAtACutApplyTheBoundAndTheConnectionCheck(t *testing.T) {
+	t.Parallel()
+	_, database, deps := newTestServer(t, testServerOptions{})
+	defaultTimeout, defaultCheck := showSearchScanSettings(t, database.Pool, "before the scans at a cut")
+	if defaultTimeout == "15s" || defaultCheck == "1s" {
+		t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q on the pool before any scan, "+
+			"want defaults other than the scan's, or this test reads nothing", defaultTimeout, defaultCheck)
+	}
+	atCut := asof.WithCut(context.Background(), databaseCut(t, database))
+	served := directServer(deps)
+	for _, scan := range []struct {
+		name    string
+		begin   func(context.Context) (pgx.Tx, error)
+		meaning bool
+	}{
+		{"keyword", served.beginKeywordScan, false},
+		{"meaning", served.beginMeaningScan, true},
+	} {
+		t.Run(scan.name, func(t *testing.T) {
+			tx, err := scan.begin(atCut)
+			if err != nil {
+				t.Fatalf("begin the %s scan at a cut: %v", scan.name, err)
+			}
+			defer func() { _ = tx.Rollback(context.Background()) }()
+			if timeout, check := showSearchScanSettings(t, tx, "inside the "+scan.name+" scan at a cut"); timeout != "15s" || check != "1s" {
+				t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q in the %s statement's "+
+					"transaction at a cut, want 15s and 1s", timeout, check, scan.name)
+			}
+			if scan.meaning {
+				var efSearch, iterativeScan string
+				if err := tx.QueryRow(context.Background(), `select current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).
+					Scan(&efSearch, &iterativeScan); err != nil {
+					t.Fatalf("read the index settings of the meaning scan at a cut: %v", err)
+				}
+				if efSearch != "400" || iterativeScan != "relaxed_order" {
+					t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q at a cut, want 400 and relaxed_order", efSearch, iterativeScan)
+				}
+			}
+			if err := tx.Rollback(context.Background()); err != nil {
+				t.Fatalf("roll the %s transaction at a cut back: %v", scan.name, err)
+			}
+			if timeout, check := showSearchScanSettings(t, database.Pool, "after the "+scan.name+" scan at a cut"); timeout != defaultTimeout || check != defaultCheck {
+				t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q outside the %s transaction at a cut, "+
+					"want the defaults %q and %q: `set local` must not follow a pooled connection to the next request",
+					timeout, check, scan.name, defaultTimeout, defaultCheck)
+			}
+		})
+	}
+}
+
+// The search route reports a statement at a cut the server ended as it reports one of the present
+// (TestSearchReportsAKeywordStatementTheServerEnded, TestSearchReportsAMeaningStatementTheServerEnded):
+// 503 SEARCH_TIMEOUT, naming the bound in force, and no result. A search at a cut runs its keyword
+// statement (searchAsOfQuery) and its meaning statement (searchAsOfMeaningQuery) in the
+// transactions beginKeywordScan and beginMeaningScan open, under the server's bound. It holds on
+// each path that runs one of them - keywords only, keywords because no embedder answered, and
+// meaning - for the statement built for a search that ranks first and for the one built for a
+// search that reads whole (a search narrowed by its author), and for a search naming the issue's
+// kind. Each search is first answered at the cut on this server, so the 503 after it is the
+// statement the server ended and not a broken fixture.
+//
+// The bounded search runs while the table its statement reads is held: messages for the keyword
+// statement at a cut, which reads each matched message's present row (searchAsOfPosts,
+// searchAsOfBoundedPosts), as holdKeywordStatements holds it for the present one, and embeddings
+// for the meaning one (holdMeaningStatements). Nothing a search at a cut reads before its
+// statement reads either: the reach of the keyword table (store.TextVersionsAt), the key lookup and
+// the numnode check read neither.
+func TestSearchReportsAStatementAtACutTheServerEnded(t *testing.T) {
+	// Not parallel: it writes the package variable searchStatementBound (endSearchStatementsAt).
+	const title, spec = "Quillmotor gearbox maintenance", "Routine upkeep notes."
+	embedder := refusingQueryEmbedder{
+		fakeEmbedder: &fakeEmbedder{vectors: map[string][]float32{
+			issueEmbeddingText(title, spec): angledVector(0.9, 2),
+			searchAtCutQuery:                queryVector(),
+		}},
+		refused: "quillmotor",
+	}
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "CUTBOUND", title, spec)
+	processAllPending(t, database, embedder)
+	awaitBackgroundWrites(t, served)
+	safeHorizon(t, served)
+	cut := databaseCut(t, database)
+	fillTextVersionsPast(t, database, cut)
+
+	for _, search := range []struct {
+		name, path, query string
+		meaning, degraded bool
+	}{
+		{"keyword, keywords only", "/api/v1/search/results", "q=quillmotor&keywords_only=true", false, false},
+		{"keyword, keywords only, kind issue", "/api/v1/search/results", "q=quillmotor&keywords_only=true&kind=issue", false, false},
+		{"keyword, keywords only, reading whole for its author", "/api/v1/search/results", "q=quillmotor&keywords_only=true&author=alice", false, false},
+		{"keyword, degraded because no embedder answered", "/api/v1/search", "q=quillmotor", false, true},
+		{"meaning", "/api/v1/search", "q=" + searchAtCutQuery, true, false},
+		{"meaning, kind issue", "/api/v1/search", "q=" + searchAtCutQuery + "&kind=issue", true, false},
+		{"meaning, reading whole for its author", "/api/v1/search/results", "q=" + searchAtCutQuery + "&author=alice", true, false},
+	} {
+		t.Run(search.name, func(t *testing.T) {
+			query := search.query + "&" + url.Values{asOfParameter: {cut.String()}}.Encode()
+			healthy := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), search.path, query))
+			if healthy.Code != http.StatusOK || healthy.Header().Get(contracts.DispatchAsOfHeader) != cut.String() {
+				t.Fatalf("search at the cut before the bound was shortened: status=%d %s=%q body=%s, want 200 at the cut %s",
+					healthy.Code, contracts.DispatchAsOfHeader, healthy.Header().Get(contracts.DispatchAsOfHeader), healthy.Body.String(), cut)
+			}
+			answer := decodeBody[model.SearchResponse](t, healthy)
+			if (answer.Degraded != "") != search.degraded || len(answer.Results) != 1 || answer.Results[0].ID != issue.Key {
+				t.Fatalf("search at the cut before the bound was shortened = %+v, want the issue %s, degraded %v",
+					answer, issue.Key, search.degraded)
+			}
+
+			const bound = time.Millisecond
+			endSearchStatementsAt(t, bound)
+			hold := holdKeywordStatements
+			if search.meaning {
+				hold = holdMeaningStatements
+			}
+			release := hold(t, database)
+			ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), search.path, query))
+			release()
+			requireSearchTimedOut(t, ended, bound, issue.Key)
+		})
+	}
+}
+
+// TestEverySearchStatementAtACutRunsInsideItsBoundedTransaction holds R1 over the statements a
+// search at a cut runs, searchAsOfQuery and searchAsOfMeaningQuery, as
+// TestEverySearchStatementRunsInsideItsBoundedTransaction holds it over search's own: each text,
+// for each of the 32 sets of kinds and for a search that ranks first and one that reads whole,
+// runs inside a transaction that, after its begin, ran both the server's 15 s bound and the 1 s
+// check that the client is still connected. At a cut beginSearchScan sends each setting in an
+// Exec of its own, so the two are read across the setting statements after the begin
+// (unboundedBecause, apart). The store binds each statement at a cut to the cut (asof.Bind), so the
+// text the tracer records is the bound one, which this test makes the same way.
+//
+// For every set it runs four searches at the cut naming the kinds that set ranks: keywords only
+// and meaning, each with no filter, which ranks first, and narrowed by its author, which reads
+// whole. searchNoKind's four run through runSearch with that set and the cut in their parameters
+// and on their context, since no request names that set. Each search is held to the one text it
+// names, run once, and the test ends by requiring that each of the 128 texts ran inside its
+// bounded transaction.
+func TestEverySearchStatementAtACutRunsInsideItsBoundedTransaction(t *testing.T) {
+	t.Parallel()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
+	statements := &backendStatements{}
+	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder, tracer: statements})
+	issue := createInteractionIssue(t, handler, "CUTR1", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
+	searchComment(t, handler, issue.Key, "alice", "The lighthouse keeper logs the tide at dawn.")
+	processAllPending(t, database, embedder)
+	awaitBackgroundWrites(t, served)
+	safeHorizon(t, served)
+	cut := databaseCut(t, database)
+	fillTextVersionsPast(t, database, cut)
+	versions := store.TextVersions{Cut: cut.Time()}
+
+	// The four readings of a set: the keyword or the meaning statement, built for a search that
+	// ranks first or for one that reads whole.
+	type reading struct {
+		name                string
+		meaning, ranksFirst bool
+	}
+	readings := []reading{
+		{"keyword ranking first", false, true},
+		{"keyword reading whole", false, false},
+		{"meaning ranking first", true, true},
+		{"meaning reading whole", true, false},
+	}
+	sets := len(searchStatementsByKinds)
+	textOf := func(set searchKinds, of reading) string {
+		statement := searchAsOfQuery(versions, of.ranksFirst, set.exclusion())
+		if of.meaning {
+			statement = searchAsOfMeaningQuery(versions, of.ranksFirst, set.exclusion())
+		}
+		bound, err := asof.Bind(statement, cut)
+		if err != nil {
+			t.Fatalf("bind set %d %s to the cut: %v", set, of.name, err)
+		}
+		return bound
+	}
+	texts := map[string]string{}
+	for set := range searchKinds(sets) {
+		for _, of := range readings {
+			texts[textOf(set, of)] = fmt.Sprintf("set %d %s", set, of.name)
+		}
+	}
+	if want := sets * len(readings); len(texts) != want {
+		t.Fatalf("the %d sets of kinds build %d distinct texts at the cut, want %d", sets, len(texts), want)
+	}
+
+	over := func(path string, query url.Values) func(*testing.T) model.SearchResponse {
+		return func(t *testing.T) model.SearchResponse {
+			t.Helper()
+			query.Set(asOfParameter, cut.String())
+			return searchResponseOn(t, handler, path, query.Encode())
+		}
+	}
+	direct := func(parameters searchParameters) func(*testing.T) model.SearchResponse {
+		return func(t *testing.T) model.SearchResponse {
+			t.Helper()
+			parameters.versions = &versions
+			response, err := directServer(deps).runSearch(asof.WithCut(context.Background(), cut), parameters)
+			if err != nil {
+				t.Fatalf("run the search %+v at the cut: %v", parameters, err)
+			}
+			return response
+		}
+	}
+	type searchAtACut struct {
+		name   string
+		search func(*testing.T) model.SearchResponse
+		text   string
+	}
+	var searches []searchAtACut
+	for set := range searchKinds(sets) {
+		name := func(of reading) string { return fmt.Sprintf("set %d, %s", set, of.name) }
+		if set == searchNoKind {
+			every := searchParameters{text: "lighthouse", kinds: set, limit: searchDefaultLimit}
+			keywords, keywordsWhole, meaningWhole := every, every, every
+			keywords.keywordsOnly = true
+			keywordsWhole.keywordsOnly, keywordsWhole.author = true, "alice"
+			meaningWhole.author = "alice"
+			for index, parameters := range []searchParameters{keywords, keywordsWhole, every, meaningWhole} {
+				searches = append(searches, searchAtACut{name(readings[index]) + ", which no request names", direct(parameters), textOf(set, readings[index])})
+			}
+			continue
+		}
+		kinds := searchKindsAsked(set)
+		query := func(more url.Values) url.Values {
+			more["q"], more["kind"] = []string{"lighthouse"}, kinds
+			return more
+		}
+		searches = append(searches,
+			searchAtACut{name(readings[0]), over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), textOf(set, readings[0])},
+			searchAtACut{name(readings[1]), over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}, "author": {"alice"}})), textOf(set, readings[1])},
+			searchAtACut{name(readings[2]), over("/api/v1/search", query(url.Values{})), textOf(set, readings[2])},
+			searchAtACut{name(readings[3]), over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), textOf(set, readings[3])},
+		)
+	}
+
+	// covered is every text that ran inside its bounded transaction in one of the searches.
+	covered := map[string]bool{}
+	for _, search := range searches {
+		t.Run(search.name, func(t *testing.T) {
+			mark := len(statements.statements())
+			response := search.search(t)
+			if response.Degraded != "" || response.Query.Broadened {
+				t.Fatalf("the search at the cut answered degraded=%q broadened=%v, want neither: the fixture no longer reaches this shape",
+					response.Degraded, response.Query.Broadened)
+			}
+			seen := statements.statements()
+			ran := map[string]int{}
+			for at := mark; at < len(seen); at++ {
+				name, ok := texts[seen[at].sql]
+				if !ok {
+					continue
+				}
+				ran[name]++
+				if why := unboundedBecause(seen, at, true); why != "" {
+					t.Errorf("%s, run %d of this search: %s", name, ran[name], why)
+				} else {
+					covered[name] = true
+				}
+			}
+			if want := map[string]int{texts[search.text]: 1}; !maps.Equal(ran, want) {
+				t.Fatalf("the search ran %v of the %d texts at the cut, want %v", ran, len(texts), want)
+			}
+		})
+	}
+	for set := range searchKinds(sets) {
+		for _, of := range readings {
+			if name := texts[textOf(set, of)]; !covered[name] {
 				t.Errorf("%s ran inside its bounded transaction in none of this test's searches, so nothing here holds it to its bound", name)
 			}
 		}

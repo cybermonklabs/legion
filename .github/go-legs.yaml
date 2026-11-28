@@ -32,7 +32,8 @@
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
 # 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
 # daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
-# ran under a second or has no test.
+# ran under a second or has no test. internal/ghroute had run in no merge group when it was listed,
+# so its time is one pull-request run's, 45683245721 (daemon-go job 139449902589).
 # Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
@@ -44,8 +45,10 @@ packages/daemon:
   # with three packages that need neither: alone there it took 194.5 s, against 421.1 s beside
   # internal/store (runs 45737777272 and 45731654069). Leg 2 is internal/store, whose Postgres work
   # took 407.4 s beside the other Postgres packages and a median 274 s beside three, with the small
-  # packages and the steps that run no leg's packages (the race-impossible tests, the stamped shape
-  # gate, the forced-order tests and the Stage 1 proof). Leg 3 is the rest, internal/workspace the
+  # packages and the steps that run no leg's packages (the race-impossible tests, the forced-order
+  # tests and the Stage 1 proof), and the step that runs internal/ompsessions' left-setting test by
+  # name, which ci_job_reads.py holds to this leg. Leg 3 is the rest, with the stamped shape gate,
+  # which runs internal/api's two shape tests in the leg that runs that package; internal/workspace the
   # longest, about 874 s of package time over four cores. Its times are not the four groups' above:
   # they are the medians of the last ten green merge groups that ran these legs (2026-11-25
   # 20:27Z-22:55Z: runs 45695186634, 45696132960, 45700055287, 45700222985, 45708557702,
@@ -71,9 +74,11 @@ packages/daemon:
       - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
       - internal/testpg/testdb                  # 2 s
+      - internal/ghroute                        # 2 s
       - internal/testpg                         # 1 s
       - internal/projection                     # 1 s
       - internal/config
+      - internal/ghroute/ghroutetest
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -258,7 +263,7 @@ packages/envoy:
       - internal/holdrecord/holdrecordtest
     # Dispatch's commands and the lighter half of its packages.
     3:
-      - internal/dispatch/legion                # 489 s alone in an issue pod (docs/testing.md)
+      - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)
       - cmd/dispatch                            # 316 s
       - cmd/dispatch-seed                       # 83 s
       - internal/dispatch/duty                  # 31 s
@@ -367,6 +372,7 @@ packages/envoy:
       - internal/stacktest
       - internal/redact
       - natsgrant
+      - awsbody
       - internal/oauthrefusal
       - internal/pgmigrate/pgmigratetest
       - internal/ratelimit

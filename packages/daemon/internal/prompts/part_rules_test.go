@@ -212,3 +212,24 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		}
 	})
 }
+
+func TestTheComposedReviewerPromptAsksToDeleteTextThatRestatesTheCodeOrRecordsHistory(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	const marker = "restates what the code says, records history"
+	rule := []string{
+		"A comment, or a line of a document written for readers of the code, that restates what the code says, records history (what changed, when, why it used to be different), or cites an issue, a pull request, a date or a person is a finding: ask to delete it.",
+		"Never ask to fix or update such text.",
+		"A change that adds such text is a finding too.",
+		"A comment stays only when it says what the code cannot: a constraint from outside the code, or the reason for a choice a reader would otherwise undo. When such a comment also cites an issue, a pull request, a date or a person, ask to delete the citation only.",
+		"Reasons and history belong in the commit message, the pull request and Dispatch.",
+		"The rule does not apply to a record whose purpose is history, such as a changelog entry, a commit message, a pull request body, an API contract entry, or a dated record under docs/plans/ or docs/solutions/. A document for people who use the program, not change its code, is outside the rule too.",
+	}
+	ruleIn(t, "roles/core/reviewer.md", marker, rule...)
+	composedSays(t, composer, claim.RoleReviewer, false, rule...)
+	if got := strings.Count(foldWhitespace(composedText(t, composer, claim.RoleReviewer, false)), marker); got != 1 {
+		t.Errorf("the composed reviewer prompt says %q %d times, want once", marker, got)
+	}
+}

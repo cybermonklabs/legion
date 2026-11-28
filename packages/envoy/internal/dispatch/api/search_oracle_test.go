@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -28,6 +29,14 @@ import (
 // the page tail selects and added the kinds a search can leave out, and #3512 made the comment,
 // ask and message arms' updated_since filters read coalesce(edited_at, created_at).
 //
+// The base was then moved to main's commit 588af9ce, and main's statements of the present did not
+// move with it: each of the 32 sets' four statements and each statement of the related-item check
+// that main builds at 588af9ce is byte for byte the text it built at 497581c7, so the mainAt4975
+// texts are main's at 588af9ce as well and keep their names. By 588af9ce main had added a search at
+// a past time (#4639), whose two statements run at a cut in place of search's own:
+// searchAsOfQuery and searchAsOfMeaningQuery. They are frozen here too, at 588af9ce, with the
+// prefix mainAt588a (mainAt588aAsOfStatement), and this change keeps them as main wrote them.
+//
 // Every piece is written out, including the ones the package builds in Go: refs' visibility
 // predicate (refs.VisibleKind, refs.VisibleEnd) over each statement's own credential parameter,
 // store.CanonicalUUID's and store.CastableUUID's casts, askBlockNodeSQL, searchWindowLimit's
@@ -38,13 +47,15 @@ import (
 // so every statement is still a constant whose every byte is in this file.
 //
 // These are not the main* oracles of document_search_oracle_test.go, which are the release
-// before document_search and keep their names; the mainAt4975 prefix says whose these are. They
-// are frozen: they never follow an edit to the package's statements, since that edit is what
-// they exist to be compared with.
+// before document_search and keep their names; the mainAt4975 and mainAt588a prefixes say whose
+// these are. They are frozen: they never follow an edit to the package's statements, since that
+// edit is what they exist to be compared with.
 //
-// The end of the file is R3's oracle test (TestSearchAnswersMainsRowsOrderTotalAndReachable),
-// which holds search's four statements to main's, for every set of kinds a request can name, over
-// a corpus whose word matches more items of each kind than any arm's limit.
+// The end of the file is R3's two oracle tests. TestSearchAnswersMainsRowsOrderTotalAndReachable
+// holds search's four statements to main's, for every set of kinds a request can name, over a
+// corpus whose word matches more items of each kind than any arm's limit.
+// TestASearchAtACutAnswersMainsRowsOrderTotalAndReachable holds search's two statements at a cut
+// to main's at 588af9ce over a corpus written through the routes, so a cut has events to read.
 
 // mainAt4975VisibilityHead is the opening of refs' visibility predicate as main rendered it, up
 // to its comparison with the acting credential: the read of the node's graph_nodes row and the
@@ -1947,6 +1958,748 @@ const (
 	mainAt4975RelatedMeaningJoinedExcludingQuery = mainAt4975RelatedMeaningOpener + mainAt4975RelatedMeaningExcludingArmsJoined + mainAt4975RelatedMeaningExcludingTail
 )
 
+// The pieces of main's statements at a cut, as main built them at commit 588af9ce: searchAsOfQuery
+// and searchAsOfMeaningQuery, each for a search that ranks each post kind first (ranksFirst true,
+// searchParameters.ranksFirstAtACut) and for one that reads each post kind's matches whole, over
+// every kind. They are written out as the statements above are: every byte is in this file, refs'
+// visibility predicate opens with mainAt4975VisibilityHead, which main renders the same at
+// 588af9ce, and nothing here calls the package's builders. Each piece is one member of the WITH
+// list, or a part of kinds (its issue and document arms, its post arms, the meaning arms' union
+// and its visibility tail), named by the statements that share it: Keyword or Meaning for one of
+// the two statements, RanksFirst or ReadWhole for one reading of the posts, and neither for a piece
+// both share. Two values a statement takes are written as markers: the cut's literal as
+// mainAt588aCutMarker, and the acting credential's parameter, $15 in the keyword statement and $18
+// in the meaning one, as mainAt588aSeenMarker (mainAt588aAsOfStatement).
+const (
+	mainAt588aAsOfOpenerKeyword = `
+with q as (select
+         case when $9 = '' then websearch_to_tsquery('english', $1)
+              when $10 = '' then websearch_to_tsquery('english', $9)
+              else websearch_to_tsquery('english', $9) && websearch_to_tsquery('english', $10)
+         end as tsq,
+         $4::text as term, $11::text[] as own_keys,
+         $12::text as status_filter, $13::text as author_filter, $14::timestamptz as updated_since),
+`
+	mainAt588aAsOfTextVersions = `text_versions as not materialized (select v.kind, v.id, v.issue_key, v.project_key, v.event_id, v.event_seq, v.started_at, v.body,
+        v.spec_artifact_id, v.spec_version, v.search,
+        case v.kind
+          when 'comment' then (select c.deleted_at from public.comments c
+                                where c.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+          when 'message' then (select m.deleted_at from public.messages m
+                                where m.id = case when pg_input_is_valid(v.id, 'uuid') then v.id::uuid end)
+        end as deleted_at
+   from public.search_text_versions v
+  where v.started_at <= '{cut}'::timestamptz
+    and not exists (select from public.search_text_versions l
+                     where l.kind = v.kind and l.id = v.id and l.event_seq > v.event_seq
+                       and l.started_at <= '{cut}'::timestamptz)),
+`
+	mainAt588aAsOfTextMatchedRanksFirst = `text_matched as materialized (select v.kind, v.id, v.project_key, ts_rank_cd(v.search, q.tsq, 32) as r from text_versions v, q where v.search @@ q.tsq),
+`
+	mainAt588aAsOfTextStandingRanksFirst = `text_standing as materialized (
+  select v.kind, v.id, v.r
+    from text_matched v
+   where v.kind = 'comment' and ($2 = '' or v.project_key = $2) and (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end) is not null
+     and not exists (select from public.comments d where d.id = (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end) and d.deleted_at is not null)
+  union all
+  select v.kind, v.id, v.r
+    from text_matched v
+   where v.kind = 'ask' and ($2 = '' or v.project_key = $2) and (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end) is not null
+  union all
+  select v.kind, v.id, v.r
+    from text_matched v
+   where v.kind = 'message' and ($2 = '' or v.project_key = $2) and (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end) is not null
+     and not exists (select from public.messages d where d.id = (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end) and d.deleted_at is not null)
+),
+`
+	mainAt588aAsOfTextBoundsRanksFirst = `text_bounds as materialized (
+  select 'comment' as kind, (
+           select min(top.r) from (
+             select s.r from (select w.id, w.r from text_standing w where w.kind = 'comment' order by w.r desc offset 0) s
+              where /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = s.id), true)
+              order by s.r desc limit $7) top) as r
+  union all
+  select 'ask' as kind, (
+           select min(top.r) from (
+             select s.r from (select w.id, w.r from text_standing w where w.kind = 'ask' order by w.r desc offset 0) s
+              where /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = s.id), true)
+              order by s.r desc limit $7) top) as r
+  union all
+  select 'message' as kind, (
+           select min(top.r) from (
+             select s.r from (select w.id, w.r from text_standing w where w.kind = 'message' order by w.r desc offset 0) s
+              where /* visibility predicate: message */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = s.id), true)
+              order by s.r desc limit $7) top) as r
+),
+`
+	mainAt588aAsOfTextCandidatesRanksFirst = `text_candidates as materialized (
+  select w.kind, w.id::uuid as id, w.r
+    from text_standing w join text_bounds b on b.kind = w.kind and w.r >= b.r
+),
+`
+	mainAt588aAsOfTextPostsRanksFirst = `text_posts as materialized (
+  select w.kind, c.id, c.issue_key, c.artifact_id, c.created_at, w.r
+    from text_candidates w
+    join public.comments c on c.id = w.id
+   where w.kind = 'comment'
+  union all
+  select w.kind, k.id, k.issue_key, k.artifact_id, k.created_at, w.r
+    from text_candidates w
+    join public.asks k on k.id = w.id
+   where w.kind = 'ask'
+  union all
+  select w.kind, m.id, m.issue_key, null::uuid, m.created_at, w.r
+    from text_candidates w
+    join public.messages m on m.id = w.id
+   where w.kind = 'message'
+),
+`
+	mainAt588aAsOfTextIssues = `text_issues as materialized (
+  select i.key, i.project_key, i.title, i.status, i.updated_at
+    from issues i
+   where i.key in (select p.issue_key from text_posts p)
+),
+`
+	mainAt588aAsOfKindsHead = `kinds as (select * from (
+  select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
+         null::text as window_id, null::text[] as covers,
+         i.title as issue_title, i.status as issue_status,
+         null::text as owner_project, null::text as owner_slug, null::text as owner_name, i.updated_at,
+         false as own, v.r as r
+    from text_matched v join issues i on i.key = v.id, q
+   where v.kind = 'issue' and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or i.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or i.updated_at >= q.updated_since)
+  union all
+  select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, i.updated_at,
+         true, ts_rank_cd(v.search, q.tsq, 32)
+    from q, unnest(q.own_keys) as named(key), issues i, text_versions v
+   where i.key = named.key and v.kind = 'issue' and v.id = i.key and ($2 = '' or i.project_key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or i.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or i.updated_at >= q.updated_since)
+  union all
+  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, p.key, a.slug, a.name,
+         coalesce(i.updated_at, v.created_at),
+         false, ts_rank_cd(v.search, q.tsq, 32)
+    from document_search v
+    join artifacts a on a.id = v.artifact_id
+    left join issues i on i.key = a.issue_key
+    join projects p on p.key = a.project_key, q
+   where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2) and v.created_at <= '{cut}'::timestamptz
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or a.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or v.created_at >= q.updated_since)
+  union all
+  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, p.key, a.slug, a.name,
+         coalesce(i.updated_at, v.created_at),
+         false, ts_rank_cd(v.search, q.tsq, 32)
+    from document_search d
+    join artifacts a on a.id = d.artifact_id
+    cross join lateral (select n.number, n.created_at, n.search from artifact_versions n
+                         where n.artifact_id = a.id and n.markdown is not null
+                         order by n.number desc limit 1) v
+    left join issues i on i.key = a.issue_key
+    join projects p on p.key = a.project_key, q
+   where a.kind = 'doc' and d.created_at > '{cut}'::timestamptz and v.search @@ q.tsq and ($2 = '' or p.key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or a.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or v.created_at >= q.updated_since)
+  union all
+`
+	mainAt588aAsOfPostArmsRanksFirst = `  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, p.key, a.slug, a.name,
+         coalesce(i.updated_at, c.created_at),
+         false, c.r
+    from text_posts c
+    left join text_issues i on i.key = c.issue_key
+    left join artifacts a on a.id = c.artifact_id
+    left join projects p on p.key = a.project_key
+   where c.kind = 'comment'
+  union all
+  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, coalesce(i.updated_at, k.created_at),
+         false, k.r
+    from text_posts k
+    left join text_issues i on i.key = k.issue_key
+   where k.kind = 'ask'
+  union all
+  select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, i.updated_at,
+         false, m.r
+    from text_posts m join text_issues i on i.key = m.issue_key
+   where m.kind = 'message'
+  union all
+  select w.kind, 'keyword', null::text, null::uuid, null::uuid, w.id, null::text,
+         null::text, null::text[],
+         null::text, null::text, null::text, null::text, null::text, null::timestamptz,
+         false, w.r
+    from text_standing w join text_bounds b on b.kind = w.kind
+   where w.r < b.r
+`
+	mainAt588aAsOfTail = `) arms where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = case arms.kind when 'document' then 'artifact' else arms.kind end and visible_node.id = case case arms.kind when 'document' then 'artifact' else arms.kind end when 'artifact' then (select store_artifact.ref_key from artifacts store_artifact where store_artifact.id::text = arms.id::text) else arms.id::text end), true)
+),
+`
+	mainAt588aAsOfRankedKeyword = `ranked as (
+  select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
+         count(*) over (partition by kind) as matches
+    from kinds
+),
+`
+	mainAt588aAsOfLegs = `legs as (
+  select * from ranked where pos <= $7
+),
+`
+	mainAt588aAsOfFused = `fused as (
+  select kind, id, bool_or(own) as own_lead,
+         sum(case list when 'keyword' then 1 * r else 0.4 * r end) / ($8 + 1)
+           + case when bool_or(own) then 1 else 0 end as score
+    from legs group by kind, id
+),
+`
+	mainAt588aAsOfTotalsKeyword = `totals as (
+  select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
+         (select count(*) from fused) as reachable
+),
+`
+	mainAt588aAsOfRankedPageKeyword = `ranked_page as (
+  select l.*, f.score, f.own_lead
+    from legs l join fused f using (kind, id)
+   order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
+   limit $3 offset $6
+),
+`
+	mainAt588aAsOfPage = `page as (
+  select r.kind, r.issue_key,
+         case r.kind when 'ask' then shown_ask.owner_artifact_id else r.owner_artifact_id end as owner_artifact_id,
+         case r.kind when 'ask' then shown_ask.artifact_id when 'comment' then shown_comment.artifact_id else r.artifact_id end as artifact_id,
+         r.id, case r.kind when 'ask' then shown_ask.block_id else r.block_id end as block_id, r.covers,
+         r.issue_title, r.issue_status,
+         case r.kind when 'ask' then shown_ask.owner_project else r.owner_project end as owner_project,
+         case r.kind when 'ask' then shown_ask.owner_slug else r.owner_slug end as owner_slug,
+         case r.kind when 'ask' then shown_ask.owner_name else r.owner_name end as owner_name,
+         r.updated_at, r.score, r.own_lead
+    from ranked_page r
+    left join lateral (
+      select case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) end as owner_artifact_id,
+             coalesce(k.artifact_id, k.block_artifact_id, (case when pg_input_is_valid(k.anchor->>'artifact_id', 'uuid') then (k.anchor->>'artifact_id')::uuid end)) as artifact_id,
+             case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end as block_id,
+             p.key as owner_project, a.slug as owner_slug, a.name as owner_name
+        from asks k
+        left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+        left join projects p on p.key = a.project_key
+       where r.kind = 'ask' and k.id = (case when r.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (r.id)::uuid end)
+      offset 0
+    ) shown_ask on true
+    left join lateral (
+      select coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid) as artifact_id
+        from comments c
+       where r.kind = 'comment' and c.id = (case when r.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (r.id)::uuid end)
+      offset 0
+    ) shown_comment on true
+)
+select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 'issue' else 'document' end,
+       r.issue_key, r.issue_title, r.issue_status,
+       r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
+       ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+  from totals t cross join q
+  left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
+  -- At a cut, each hit's text as it stood at the cut: a document's newest version at the cut,
+  -- and every other kind's version in the keyword table, which its arm matched.
+  left join lateral (
+    select case r.kind
+      when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = r.artifact_id order by v.number desc limit 1)
+      else (select tv.body from text_versions tv where tv.kind = r.kind and tv.id = r.id)
+    end as text
+  ) txt on true
+  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+  -- query's first term, or the text's head. It is selected beside the headline as well, so the
+  -- scan has the very text ts_headline read and can set the headline back into it
+  -- (pmdoc.SearchSnippet).
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
+  -- The block of r.covers that matched, if the row carries a window. Each covered block's own
+  -- text comes from the table its indexer writes it to: a document's, a comment's and an ask's
+  -- block texts are kept per version or revision, the latest being the current text. A message
+  -- records no revisions, so it keeps no text table (refs/item_blocks.go's table map) and its
+  -- block is ranked on the excerpt its row holds, the block's head as refs.BlockExcerpt cuts it,
+  -- which an edit of the message rewrites with the block it changed.
+  left join lateral (
+    select covered.block_id
+      from unnest(r.covers) with ordinality as covered(block_id, ord)
+      cross join lateral (
+        select case r.kind
+          when 'document' then (select x.text from document_block_texts x
+                                 where x.artifact_id = r.artifact_id and x.block_id = covered.block_id
+                                 order by x.version desc limit 1)
+          when 'comment' then (select x.text from comment_block_texts x
+                                 where x.comment_id = r.id::uuid and x.block_id = covered.block_id
+                                 order by x.revision desc limit 1)
+          when 'ask' then (select x.text from ask_block_texts x
+                                 where x.ask_id = r.id::uuid and x.block_id = covered.block_id
+                                 order by x.revision desc limit 1)
+          when 'message' then (select x.excerpt from message_blocks x
+                                 where x.message_id = r.id::uuid and x.block_id = covered.block_id)
+        end as text
+      ) block
+     where /* visibility predicate: every kind */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = case r.kind when 'document' then 'block' else r.kind || '_block' end and visible_node.id = case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id), true)
+     order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
+     limit 1
+  ) hit on true
+ order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
+`
+	mainAt588aAsOfTextMatchedReadWhole = `text_matched as materialized (select v.kind, v.id, ts_rank_cd(v.search, q.tsq, 32) as r from text_versions v, q where v.search @@ q.tsq),
+`
+	mainAt588aAsOfTextPostsReadWhole = `text_posts as materialized (
+  select 'comment' as kind, c.id, c.issue_key, c.artifact_id, c.author, c.created_at, v.r
+    from text_matched v join public.comments c on c.id = (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end)
+   where v.kind = 'comment' and c.deleted_at is null
+  union all
+  select 'ask', k.id, k.issue_key, k.artifact_id, k.author, k.created_at, v.r
+    from text_matched v join public.asks k on k.id = (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end)
+   where v.kind = 'ask'
+  union all
+  select 'message', m.id, m.issue_key, null::uuid, m.author, m.created_at, v.r
+    from text_matched v join public.messages m on m.id = (case when v.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (v.id)::uuid end)
+   where v.kind = 'message' and m.deleted_at is null
+),
+`
+	mainAt588aAsOfPostArmsReadWhole = `  select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, null::uuid, c.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, p.key, a.slug, a.name,
+         coalesce(i.updated_at, c.created_at),
+         false, c.r
+    from text_posts c
+    left join text_issues i on i.key = c.issue_key
+    left join artifacts a on a.id = c.artifact_id
+    left join projects p on p.key = a.project_key, q
+   where c.kind = 'comment' and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or c.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce((select x.edited_at from comments x where x.id = c.id), c.created_at) >= q.updated_since)
+  union all
+  select 'ask' as kind, 'keyword', k.issue_key, null::uuid, null::uuid, k.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, coalesce(i.updated_at, k.created_at),
+         false, k.r
+    from text_posts k
+    left join text_issues i on i.key = k.issue_key, q
+   where k.kind = 'ask' and ($2 = '' or coalesce(i.project_key, (
+           select p.key from artifacts a join projects p on p.key = a.project_key
+            where a.id = coalesce(k.artifact_id, (select b.block_artifact_id from asks b where b.id = k.id)))) = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or k.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce((select x.edited_at from asks x where x.id = k.id), k.created_at) >= q.updated_since)
+  union all
+  select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, i.updated_at,
+         false, m.r
+    from text_posts m join text_issues i on i.key = m.issue_key, q
+   where m.kind = 'message' and ($2 = '' or i.project_key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or m.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce((select x.edited_at from messages x where x.id = m.id), m.created_at) >= q.updated_since)
+`
+	mainAt588aAsOfOpenerMeaning = `
+with q as (select
+         case when $12 = '' then websearch_to_tsquery('english', $1)
+              when $13 = '' then websearch_to_tsquery('english', $12)
+              else websearch_to_tsquery('english', $12) && websearch_to_tsquery('english', $13)
+         end as tsq,
+         $4::text as term, $14::text[] as own_keys,
+         $15::text as status_filter, $16::text as author_filter, $17::timestamptz as updated_since),
+`
+	mainAt588aAsOfMeaningIssueCandidates = `meaning_issue_candidates as (
+  select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
+    from (
+      select e.id as window_id, e.covers, e.id as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = 'issue' and x.embedding is not null and x.model = $11 and x.embedded_at <= '{cut}'::timestamptz
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true
+                from issues i
+                join text_versions v on v.kind = 'issue' and v.id = i.key
+                join public.issues present_issue on present_issue.key = i.key
+                left join public.artifacts present_spec on present_spec.issue_key = present_issue.key and present_spec.is_primary, q
+               where i.key = e.id
+                 and v.body = present_issue.title and v.spec_artifact_id is not distinct from present_spec.id
+                 and v.spec_version is not distinct from (select max(n.number) from public.artifact_versions n where n.artifact_id = present_spec.id)
+                 and /* visibility predicate: issue */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'issue' and visible_node.id = i.key), true) and ($2 = '' or i.project_key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or i.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or i.updated_at >= q.updated_since)
+               limit 1)
+       limit $7
+    ) w
+    join issues i on i.key = w.item
+),
+`
+	mainAt588aAsOfMeaningIssue = `meaning_issue as (
+  select 'issue' as kind, 'meaning' as list, issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, id, null::text as block_id,
+         null::text as window_id, null::text[] as covers,
+         issue_title, issue_status, null::text as owner_project, null::text as owner_slug, null::text as owner_name, updated_at,
+         false as own, r
+    from meaning_issue_candidates where r >= $10
+),
+`
+	mainAt588aAsOfMeaningDocumentCandidates = `meaning_document_candidates as (
+  select a.issue_key, a.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
+         coalesce(i.updated_at, v.created_at) as updated_at, w.r
+    from (
+      select e.id as window_id, e.covers, (case when split_part(e.id, '#', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(e.id, '#', 1))::uuid end) as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = 'document_block' and x.embedding is not null and x.model = $11 and x.embedded_at <= '{cut}'::timestamptz
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true
+                from artifacts a
+                left join issues i on i.key = a.issue_key
+                join projects p on p.key = a.project_key
+                join lateral (select v.number, v.created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
+               where a.id = (case when split_part(e.id, '#', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(e.id, '#', 1))::uuid end) and a.kind = 'doc'
+                 and v.number = (select max(n.number) from public.artifact_versions n where n.artifact_id = a.id)
+                 and /* visibility predicate: artifact */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'artifact' and visible_node.id = a.ref_key), true) and ($2 = '' or p.key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or a.created_by->>'id' = q.author_filter)
+     and (q.updated_since is null or v.created_at >= q.updated_since)
+               limit 1)
+       limit 1000
+    ) w
+    join artifacts a on a.id = w.item
+    left join issues i on i.key = a.issue_key
+    join projects p on p.key = a.project_key
+    join lateral (select v.created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true
+),
+`
+	mainAt588aAsOfMeaningDocument = `meaning_document as (
+  select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_document_candidates where r >= $10
+   order by meaning_document_candidates.id, r desc, window_id
+),
+`
+	mainAt588aAsOfMeaningCommentCandidates = `meaning_comment_candidates as (
+  select c.issue_key, c.artifact_id, c.anchor, c.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
+         coalesce(i.updated_at, c.created_at) as updated_at, w.r
+    from (
+      select e.id as window_id, e.covers, (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end) as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = 'comment_block' and x.embedding is not null and x.model = $11 and x.embedded_at <= '{cut}'::timestamptz
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true
+                from comments c
+                join text_versions v on v.kind = 'comment' and v.id = c.id::text
+                join public.comments present_comment on present_comment.id = c.id
+                left join issues i on i.key = c.issue_key
+                left join artifacts a on a.id = c.artifact_id
+                left join projects p on p.key = a.project_key, q
+               where c.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
+                 and v.deleted_at is null and v.body = present_comment.body
+                 and /* visibility predicate: comment */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'comment' and visible_node.id = c.id::text), true) and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or c.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce(c.edited_at, c.created_at) >= q.updated_since)
+               limit 1)
+       limit 1000
+    ) w
+    join comments c on c.id = w.item
+    left join issues i on i.key = c.issue_key
+    left join artifacts a on a.id = c.artifact_id
+    left join projects p on p.key = a.project_key
+),
+`
+	mainAt588aAsOfMeaningComment = `meaning_comment as (
+  select distinct on (meaning_comment_candidates.id) 'comment' as kind, 'meaning' as list, issue_key, artifact_id, coalesce(artifact_id, (anchor->>'artifact_id')::uuid), id::text, null::text,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_comment_candidates where r >= $10
+   order by meaning_comment_candidates.id, r desc, window_id
+),
+`
+	mainAt588aAsOfMeaningAskCandidates = `meaning_ask_candidates as (
+  select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end as block_id, w.window_id, w.covers,
+         i.title as issue_title, i.status as issue_status,
+         p.key as owner_project, a.slug as owner_slug, a.name as owner_name, coalesce(i.updated_at, k.created_at) as updated_at, w.r
+    from (
+      select e.id as window_id, e.covers, (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end) as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = 'ask_part' and x.embedding is not null and x.model = $11 and x.embedded_at <= '{cut}'::timestamptz
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true
+                from asks k
+                join text_versions v on v.kind = 'ask' and v.id = k.id::text
+                join public.asks present_ask on present_ask.id = k.id
+                left join issues i on i.key = k.issue_key
+                left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+                left join projects p on p.key = a.project_key, q
+               where k.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
+                 and v.body = present_ask.question || ' ' || ask_search_suffix(present_ask.options, present_ask.answer)
+                 and /* visibility predicate: ask */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'ask' and visible_node.id = k.id::text), true) and ($2 = '' or coalesce(i.project_key, p.key) = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or k.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce(k.edited_at, k.created_at) >= q.updated_since)
+               limit 1)
+       limit 1000
+    ) w
+    join asks k on k.id = w.item
+    left join issues i on i.key = k.issue_key
+    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join projects p on p.key = a.project_key
+),
+`
+	mainAt588aAsOfMeaningAsk = `meaning_ask as (
+  select distinct on (meaning_ask_candidates.id) 'ask' as kind, 'meaning' as list, issue_key, case when issue_key is null then coalesce(artifact_id, block_artifact_id) else null::uuid end,
+         coalesce(artifact_id, block_artifact_id, (case when pg_input_is_valid(anchor->>'artifact_id', 'uuid') then (anchor->>'artifact_id')::uuid end)), id::text, block_id,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_ask_candidates where r >= $10
+   order by meaning_ask_candidates.id, r desc, window_id
+),
+`
+	mainAt588aAsOfMeaningMessageCandidates = `meaning_message_candidates as (
+  select m.issue_key, m.id, w.window_id, w.covers, i.title as issue_title, i.status as issue_status, i.updated_at, w.r
+    from (
+      select e.id as window_id, e.covers, (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end) as item, 1 - e.distance as r
+        from (
+          select x.id, x.covers, x.embedding <=> $9::vector as distance
+            from embeddings x
+           where x.kind = 'message_block' and x.embedding is not null and x.model = $11 and x.embedded_at <= '{cut}'::timestamptz
+           order by x.embedding <=> $9::vector
+          offset 0
+        ) e
+       where (select true
+                from messages m
+                join text_versions v on v.kind = 'message' and v.id = m.id::text
+                join public.messages present_message on present_message.id = m.id
+                join issues i on i.key = m.issue_key, q
+               where m.id = (case when split_part(split_part(e.id, '#', 1), '/', 2) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (split_part(split_part(e.id, '#', 1), '/', 2))::uuid end)
+                 and v.deleted_at is null and v.body = present_message.body
+                 and /* visibility predicate: message */` + mainAt4975VisibilityHead + `
+	end = jsonb_build_object('kind', ({seen}::jsonb)->>'kind', 'id', case when ({seen}::jsonb)->>'kind' = 'person' then user_threads_login(({seen}::jsonb)->>'id') else ({seen}::jsonb)->>'id' end), false)
+		from graph_nodes visible_node where visible_node.kind = 'message' and visible_node.id = m.id::text), true) and ($2 = '' or i.project_key = $2)
+     and (q.status_filter = '' or i.status = q.status_filter)
+     and (q.author_filter = '' or m.author->>'id' = q.author_filter)
+     and (q.updated_since is null or coalesce(m.edited_at, m.created_at) >= q.updated_since)
+               limit 1)
+       limit 1000
+    ) w
+    join messages m on m.id = w.item
+    join issues i on i.key = m.issue_key
+),
+`
+	mainAt588aAsOfMeaningMessage = `meaning_message as (
+  select distinct on (meaning_message_candidates.id) 'message' as kind, 'meaning' as list, issue_key, null::uuid, null::uuid, id::text, null::text,
+         window_id, covers,
+         issue_title, issue_status, null::text, null::text, null::text, updated_at,
+         false, r
+    from meaning_message_candidates where r >= $10
+   order by meaning_message_candidates.id, r desc, window_id
+),
+`
+	mainAt588aAsOfMeaningUnion = `  union all select * from meaning_issue
+  union all select * from meaning_document
+  union all select * from meaning_comment
+  union all select * from meaning_ask
+  union all select * from meaning_message
+`
+	mainAt588aAsOfRankedMeaning = `ranked as (
+  select *, row_number() over (partition by kind, list order by own desc, r desc, updated_at desc, id) as pos
+    from kinds
+),
+`
+	mainAt588aAsOfLegsUniqueMeaning = `legs_unique as (
+  select distinct on (kind, id) kind, issue_key, owner_artifact_id, artifact_id, id, block_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at
+    from legs
+   order by kind, id, (window_id is null), r desc
+),
+`
+	mainAt588aAsOfTotalsMeaning = `totals as (
+  select (select count(*) from (select distinct kind, id from kinds) u) as total,
+         (select count(*) from fused) as reachable
+),
+`
+	mainAt588aAsOfRankedPageMeaning = `ranked_page as (
+  select l.*, f.score, f.own_lead
+    from legs_unique l join fused f using (kind, id)
+   order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
+   limit $3 offset $6
+),
+`
+)
+
+// mainAt588aAsOfKeywordRanksFirst, mainAt588aAsOfKeywordReadWhole, mainAt588aAsOfMeaningRanksFirst
+// and mainAt588aAsOfMeaningReadWhole are main's searchAsOfQuery and searchAsOfMeaningQuery at
+// 588af9ce for a search that ranks each post kind first and for one that reads them whole, over
+// every kind, each the concatenation of its pieces in the order main's builders join them, with
+// the cut and the acting credential's parameter still written as markers.
+const (
+	mainAt588aAsOfKeywordRanksFirst = mainAt588aAsOfOpenerKeyword +
+		mainAt588aAsOfTextVersions +
+		mainAt588aAsOfTextMatchedRanksFirst +
+		mainAt588aAsOfTextStandingRanksFirst +
+		mainAt588aAsOfTextBoundsRanksFirst +
+		mainAt588aAsOfTextCandidatesRanksFirst +
+		mainAt588aAsOfTextPostsRanksFirst +
+		mainAt588aAsOfTextIssues +
+		mainAt588aAsOfKindsHead +
+		mainAt588aAsOfPostArmsRanksFirst +
+		mainAt588aAsOfTail +
+		mainAt588aAsOfRankedKeyword +
+		mainAt588aAsOfLegs +
+		mainAt588aAsOfFused +
+		mainAt588aAsOfTotalsKeyword +
+		mainAt588aAsOfRankedPageKeyword +
+		mainAt588aAsOfPage
+	mainAt588aAsOfKeywordReadWhole = mainAt588aAsOfOpenerKeyword +
+		mainAt588aAsOfTextVersions +
+		mainAt588aAsOfTextMatchedReadWhole +
+		mainAt588aAsOfTextPostsReadWhole +
+		mainAt588aAsOfTextIssues +
+		mainAt588aAsOfKindsHead +
+		mainAt588aAsOfPostArmsReadWhole +
+		mainAt588aAsOfTail +
+		mainAt588aAsOfRankedKeyword +
+		mainAt588aAsOfLegs +
+		mainAt588aAsOfFused +
+		mainAt588aAsOfTotalsKeyword +
+		mainAt588aAsOfRankedPageKeyword +
+		mainAt588aAsOfPage
+	mainAt588aAsOfMeaningRanksFirst = mainAt588aAsOfOpenerMeaning +
+		mainAt588aAsOfTextVersions +
+		mainAt588aAsOfTextMatchedRanksFirst +
+		mainAt588aAsOfTextStandingRanksFirst +
+		mainAt588aAsOfTextBoundsRanksFirst +
+		mainAt588aAsOfTextCandidatesRanksFirst +
+		mainAt588aAsOfTextPostsRanksFirst +
+		mainAt588aAsOfTextIssues +
+		mainAt588aAsOfMeaningIssueCandidates +
+		mainAt588aAsOfMeaningIssue +
+		mainAt588aAsOfMeaningDocumentCandidates +
+		mainAt588aAsOfMeaningDocument +
+		mainAt588aAsOfMeaningCommentCandidates +
+		mainAt588aAsOfMeaningComment +
+		mainAt588aAsOfMeaningAskCandidates +
+		mainAt588aAsOfMeaningAsk +
+		mainAt588aAsOfMeaningMessageCandidates +
+		mainAt588aAsOfMeaningMessage +
+		mainAt588aAsOfKindsHead +
+		mainAt588aAsOfPostArmsRanksFirst +
+		mainAt588aAsOfMeaningUnion +
+		mainAt588aAsOfTail +
+		mainAt588aAsOfRankedMeaning +
+		mainAt588aAsOfLegs +
+		mainAt588aAsOfFused +
+		mainAt588aAsOfLegsUniqueMeaning +
+		mainAt588aAsOfTotalsMeaning +
+		mainAt588aAsOfRankedPageMeaning +
+		mainAt588aAsOfPage
+	mainAt588aAsOfMeaningReadWhole = mainAt588aAsOfOpenerMeaning +
+		mainAt588aAsOfTextVersions +
+		mainAt588aAsOfTextMatchedReadWhole +
+		mainAt588aAsOfTextPostsReadWhole +
+		mainAt588aAsOfTextIssues +
+		mainAt588aAsOfMeaningIssueCandidates +
+		mainAt588aAsOfMeaningIssue +
+		mainAt588aAsOfMeaningDocumentCandidates +
+		mainAt588aAsOfMeaningDocument +
+		mainAt588aAsOfMeaningCommentCandidates +
+		mainAt588aAsOfMeaningComment +
+		mainAt588aAsOfMeaningAskCandidates +
+		mainAt588aAsOfMeaningAsk +
+		mainAt588aAsOfMeaningMessageCandidates +
+		mainAt588aAsOfMeaningMessage +
+		mainAt588aAsOfKindsHead +
+		mainAt588aAsOfPostArmsReadWhole +
+		mainAt588aAsOfMeaningUnion +
+		mainAt588aAsOfTail +
+		mainAt588aAsOfRankedMeaning +
+		mainAt588aAsOfLegs +
+		mainAt588aAsOfFused +
+		mainAt588aAsOfLegsUniqueMeaning +
+		mainAt588aAsOfTotalsMeaning +
+		mainAt588aAsOfRankedPageMeaning +
+		mainAt588aAsOfPage
+)
+
+// mainAt588aCutMarker and mainAt588aSeenMarker are where the frozen statements at a cut write the
+// two values a statement takes (mainAt588aAsOfStatement): the cut, as the quoted time of its
+// timestamptz literal, and the parameter the acting credential is bound at.
+const (
+	mainAt588aCutMarker  = "'{cut}'"
+	mainAt588aSeenMarker = "{seen}"
+)
+
+// mainAt588aAsOfStatement is main's text at 588af9ce of one of its statements at a cut: base, one
+// of the four mainAt588aAsOf statements, with the cut written at each mainAt588aCutMarker as main
+// writes a cut's literal (its time in UTC to the microsecond, with six fractional digits), the
+// acting credential's parameter at each mainAt588aSeenMarker ($18 for a meaning statement, $15
+// for a keyword one, searchQuery's and searchQueryMeaning's own numbers at 588af9ce), and the
+// kinds the set leaves out where main writes them at the present too (mainAt4975Statement).
+func mainAt588aAsOfStatement(base string, meaning bool, cut time.Time, set uint8) string {
+	if !strings.Contains(base, mainAt588aCutMarker) || !strings.Contains(base, mainAt588aSeenMarker) {
+		panic("mainAt588aAsOfStatement: the statement holds no cut or no credential to write")
+	}
+	seen := "$15"
+	if meaning {
+		seen = "$18"
+	}
+	written := strings.ReplaceAll(base, mainAt588aCutMarker, "'"+cut.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z07:00")+"'")
+	return mainAt4975Statement(strings.ReplaceAll(written, mainAt588aSeenMarker, seen), set)
+}
+
 // searchResultsItems is how many items of each kind hold the kind's word in R3's fixture: more
 // than the 1,000 matches of a kind R3 names, and more than searchWindowCandidates, the windows a
 // meaning arm takes.
@@ -2121,20 +2874,20 @@ func newSearchResultsFixture(t *testing.T) searchResultsFixture {
 	return fixture
 }
 
-// searchAnswer is one statement's answer as R3 reads it: every row as text, in the order the
+// statementAnswer is one statement's answer as R3 reads it: every row as text, in the order the
 // statement answers them, and the total, the reachable and the items of the page, each written
-// "kind/id".
-type searchAnswer struct {
+// "kind/id". It is not search_as_of_test.go's searchAnswer, which is a route's decoded answer.
+type statementAnswer struct {
 	rows             []string
 	total, reachable int64
 	items            []string
 }
 
-// readSearchAnswer runs statement bound to arguments under settings (runSearchStatement) and
+// readStatementAnswer runs statement bound to arguments under settings (runSearchStatement) and
 // reads its answer. A page past the last row is one row of totals and no item.
-func readSearchAnswer(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) searchAnswer {
+func readStatementAnswer(t *testing.T, ctx context.Context, database *store.Store, statement string, arguments []any, settings []string) statementAnswer {
 	t.Helper()
-	answer := searchAnswer{rows: []string{}}
+	answer := statementAnswer{rows: []string{}}
 	runSearchStatement(t, ctx, database, statement, arguments, settings, func(row pgx.CollectableRow) error {
 		values, err := row.Values()
 		if err != nil {
@@ -2221,10 +2974,10 @@ const searchGenericPlanSetting = `set local plan_cache_mode = force_generic_plan
 
 // TestSearchAnswersMainsRowsOrderTotalAndReachable holds R3: each keyword arm ranks and counts
 // every match whatever its age, and a search answers the rows, the order, the total and the
-// reachable main's statements at 497581c7 answer, for every set of kinds it names. The fixture
-// (newSearchResultsFixture) gives each of the five kinds 1,500 items holding the kind's word,
-// the oldest of them the best match by ts_rank_cd and by vector, and each kind's word is a
-// query.
+// reachable main's statements at 497581c7 answer, which are main's statements at 588af9ce byte for
+// byte, for every set of kinds it names. The fixture (newSearchResultsFixture) gives each of the
+// five kinds 1,500 items holding the kind's word, the oldest of them the best match by ts_rank_cd
+// and by vector, and each kind's word is a query.
 //
 // For each query, each of the four statements - searchQuery, and searchQueryMeaning,
 // searchQueryMeaningScoped and searchQueryMeaningJoined over the vector the fake embedder answers
@@ -2313,8 +3066,8 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 								}
 								live := statement.selectText(parameters.kinds.statements())
 								main := statement.selectText(mainAt4975Statements(uint8(parameters.kinds)))
-								want := readSearchAnswer(t, ctx, fixture.database, main, arguments, settings)
-								got := readSearchAnswer(t, ctx, fixture.database, live, arguments, settings)
+								want := readStatementAnswer(t, ctx, fixture.database, main, arguments, settings)
+								got := readStatementAnswer(t, ctx, fixture.database, live, arguments, settings)
 								if !slices.Equal(got.rows, want.rows) {
 									t.Fatalf("this build's statement answered\n%s\nwant main's\n%s",
 										strings.Join(got.rows, "\n"), strings.Join(want.rows, "\n"))
@@ -2343,5 +3096,113 @@ func TestSearchAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestASearchAtACutAnswersMainsRowsOrderTotalAndReachable holds R3 at a cut: each of search's two
+// statements at a cut, searchAsOfQuery and searchAsOfMeaningQuery, built for a search that ranks
+// each post kind first and for one that reads them whole, answers the rows, the order, the total
+// and the reachable main's at 588af9ce answer (mainAt588aAsOfStatement), for each set of kinds a
+// filter row names, over the same arguments, at the same cut and under the settings the route
+// runs them under (searchScanSettings over searchKeywordScan or searchMeaningScan), the 15-second
+// bound among them, each sent in an Exec of its own as beginSearchScan sends them at a cut.
+//
+// The corpus is written through the routes, so each item has the events the keyword table and
+// the shadows read at a cut: an issue whose title and spec hold the word, two comments, a message
+// and an ask that hold it, and a window of each comment and of the message embedded before the
+// cut. After the cut one comment is edited to drop the word and another is written with it, and
+// the keyword table is filled past the cut. A statement that ranks first serves only a search that
+// narrows by no status, author or time, so it runs with no filter, with a project and with each
+// kinds row; one that reads whole runs with every filter row. Each runs for two pages: the first
+// of the default limit, and two rows from the second. The unfiltered first page of each must hold
+// the comment edited after the cut, by the word it held then, and not the comment written after
+// the cut, so each pair compared is of statements that read the cut.
+func TestASearchAtACutAnswersMainsRowsOrderTotalAndReachable(t *testing.T) {
+	t.Parallel()
+	const word, project = "wombat", "ORACUT"
+	w := newSearchAtCutWorld(t, project, "Wombat census", "The wombat count for the season.")
+	w.embedder.vectors[word] = queryVector()
+	kept := w.comment(t, "A wombat sighting at the creek.")
+	edited := w.comment(t, "Two wombat burrows by the fence.")
+	message := w.message(t, "The wombat survey starts at dawn.")
+	createIssueAsk(t, w.handler, w.issue, "Count the wombat burrows again?")
+	w.embedPost(t, "comment", kept, angledVector(0.9, 2))
+	w.embedPost(t, "comment", edited, angledVector(0.85, 3))
+	w.embedPost(t, "message", message, angledVector(0.8, 4))
+	processAllPending(t, w.database, w.embedder)
+	cut := w.cut(t)
+	time.Sleep(5 * time.Millisecond)
+	w.edit(t, "/api/v1/comments/"+edited, "Two burrows by the fence.")
+	late := w.comment(t, "A late wombat sighting.")
+	processAllPending(t, w.database, w.embedder)
+	w.fill(t, cut)
+
+	ctx := asof.WithCut(context.Background(), cut)
+	versions := store.TextVersions{Cut: cut.Time()}
+	vectors, err := w.embedder.Embed(context.Background(), []string{word}, embed.InputQuery)
+	if err != nil {
+		t.Fatalf("embed %q: %v", word, err)
+	}
+	statements := []struct {
+		name                string
+		meaning, ranksFirst bool
+		main                string
+	}{
+		{"searchAsOfQuery ranking first", false, true, mainAt588aAsOfKeywordRanksFirst},
+		{"searchAsOfQuery reading whole", false, false, mainAt588aAsOfKeywordReadWhole},
+		{"searchAsOfMeaningQuery ranking first", true, true, mainAt588aAsOfMeaningRanksFirst},
+		{"searchAsOfMeaningQuery reading whole", true, false, mainAt588aAsOfMeaningReadWhole},
+	}
+	since := cut.Time().Add(-time.Hour)
+	type cutFilter struct {
+		name     string
+		narrow   func(*searchParameters)
+		filtered bool
+	}
+	filters := []cutFilter{
+		{"no filter", nil, false},
+		{"project " + project, func(p *searchParameters) { p.project = project }, false},
+		{"status todo", func(p *searchParameters) { p.status = "todo" }, true},
+		{"author alice", func(p *searchParameters) { p.author = "alice" }, true},
+		{"updated since an hour before the cut", func(p *searchParameters) { p.since = &since }, true},
+		{"kinds comment and message", func(p *searchParameters) { p.kinds = searchNoKind &^ (1<<2 | 1<<4) }, false},
+	}
+	for index, kind := range searchIndexedKinds {
+		filters = append(filters, cutFilter{"kind " + kind, func(p *searchParameters) { p.kinds = searchNoKind &^ (1 << index) }, false})
+	}
+	pages := []struct{ limit, offset int }{{searchDefaultLimit, 0}, {2, 1}}
+	for _, statement := range statements {
+		for _, filter := range filters {
+			if statement.ranksFirst && filter.filtered {
+				continue
+			}
+			for _, page := range pages {
+				t.Run(fmt.Sprintf("%s, %s, limit %d offset %d", statement.name, filter.name, page.limit, page.offset), func(t *testing.T) {
+					parameters := searchParameters{text: word, limit: page.limit, offset: page.offset}
+					if filter.narrow != nil {
+						filter.narrow(&parameters)
+					}
+					arguments, settings := searchQueryArguments(parameters), searchScanSettings(searchKeywordScan)
+					live := searchAsOfQuery(versions, statement.ranksFirst, parameters.kinds.exclusion())
+					if statement.meaning {
+						arguments = searchMeaningQueryArguments(parameters, vectors[0], w.embedder.Identity())
+						settings = searchScanSettings(searchMeaningScan)
+						live = searchAsOfMeaningQuery(versions, statement.ranksFirst, parameters.kinds.exclusion())
+					}
+					main := mainAt588aAsOfStatement(statement.main, statement.meaning, cut.Time(), uint8(parameters.kinds))
+					want := readStatementAnswer(t, ctx, w.database, main, arguments, settings)
+					got := readStatementAnswer(t, ctx, w.database, live, arguments, settings)
+					if !slices.Equal(got.rows, want.rows) {
+						t.Fatalf("this build's statement at the cut answered\n%s\nwant main's\n%s",
+							strings.Join(got.rows, "\n"), strings.Join(want.rows, "\n"))
+					}
+					if filter.narrow == nil && page.offset == 0 &&
+						(!slices.Contains(got.items, "comment/"+edited) || slices.Contains(got.items, "comment/"+late)) {
+						t.Fatalf("the unfiltered first page at the cut holds %v, want the comment %s edited after the cut and not "+
+							"the comment %s written after it", got.items, edited, late)
+					}
+				})
+			}
+		}
 	}
 }

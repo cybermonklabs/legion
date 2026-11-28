@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -204,7 +205,8 @@ var searchKeyShape = regexp.MustCompile(`^[0-9a-f]{16}$`)
 // sendSearch sends a search on path with query as alice, with the display-trees header when
 // trees, and answers the one request line it wrote and the search_key that line names, which
 // must be 16 hex characters. A search that is not answered 200, that writes no line or more than
-// one, or whose line names no key fails the test.
+// one, or whose line names no key fails the test, and so does a search with as_of that is not
+// answered at a cut (Dispatch-As-Of).
 func sendSearch(t *testing.T, handler http.Handler, logged *logBuffer, path string, query url.Values, trees bool) (line, key string) {
 	t.Helper()
 	before := len(accessLines(t, logged))
@@ -216,6 +218,9 @@ func sendSearch(t *testing.T, handler http.Handler, logged *logBuffer, path stri
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("GET %s?%s = %d: %s", path, query.Encode(), response.Code, response.Body.String())
+	}
+	if query.Has(asOfParameter) && response.Header().Get(contracts.DispatchAsOfHeader) == "" {
+		t.Fatalf("GET %s?%s was answered with no %s, so not at a cut", path, query.Encode(), contracts.DispatchAsOfHeader)
 	}
 	lines := accessLines(t, logged)[before:]
 	if len(lines) != 1 {
@@ -236,11 +241,21 @@ func sendSearch(t *testing.T, handler http.Handler, logged *logBuffer, path stri
 // SHA-256 of the normalized request searchRequestKey hashes, and HMAC-SHA256 of that request under
 // the empty key. The normalized request is written here from the parameters as D5 lists them,
 // not by the server's own code, for a search that names no updated_since, kind, limit or offset and
-// asks for no display trees.
-func unkeyedHashes(query url.Values) []string {
+// asks for no display trees; its as_of is the cut, in RFC 3339 UTC to the microsecond as a cut
+// holds it, or empty for a search of the present.
+func unkeyedHashes(t *testing.T, query url.Values) []string {
+	t.Helper()
+	asOf := ""
+	if query.Has(asOfParameter) {
+		cut, err := time.Parse(time.RFC3339Nano, query.Get(asOfParameter))
+		if err != nil {
+			t.Fatalf("read the search's as_of %q: %v", query.Get(asOfParameter), err)
+		}
+		asOf = cut.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
+	}
 	q := strings.TrimSpace(query.Get("q"))
 	normalized, _ := json.Marshal([]any{q, query.Get("project"), query.Get("number_project"), query.Get("status"),
-		query.Get("author"), "", 0, searchDefaultLimit, 0, query.Get("keywords_only") == "true", false})
+		query.Get("author"), "", 0, searchDefaultLimit, 0, query.Get("keywords_only") == "true", false, asOf})
 	textSum := sha256.Sum256([]byte(q))
 	requestSum := sha256.Sum256(normalized)
 	emptyKey := hmac.New(sha256.New, nil)
@@ -302,19 +317,79 @@ func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
 			if got, _ := horizontest.Field(line, "search_shape"); got != shape.want {
 				t.Errorf("the request line names no search_shape=%s: %s", shape.want, line)
 			}
-			q := shape.query.Get("q")
-			forbidden := []string{q, url.QueryEscape(q)}
-			for word := range strings.FieldsSeq(q) {
-				if len(word) > 3 {
-					forbidden = append(forbidden, word)
-				}
+			requireNoQueryOnTheLine(t, line, shape.query)
+		})
+	}
+}
+
+// requireNoQueryOnTheLine fails the test when line, a search's request line, carries the query
+// query names, escaped or not, a word of it longer than three characters, or a hash of it a reader
+// could make without the server's key (unkeyedHashes).
+func requireNoQueryOnTheLine(t *testing.T, line string, query url.Values) {
+	t.Helper()
+	q := query.Get("q")
+	forbidden := []string{q, url.QueryEscape(q)}
+	for word := range strings.FieldsSeq(q) {
+		if len(word) > 3 {
+			forbidden = append(forbidden, word)
+		}
+	}
+	forbidden = append(forbidden, unkeyedHashes(t, query)...)
+	for _, text := range forbidden {
+		if strings.Contains(line, text) {
+			t.Errorf("the request line carries %q, which is the query or a hash of it made without the server's key: %s", text, line)
+		}
+	}
+}
+
+// A search at a cut names its key and its shape on its request line as a search of the present
+// does (TestASearchsRequestLineNamesItsKeyAndShape): keyword and keyword-degraded for the keyword
+// statement at the cut, meaning-as-of for the one meaning statement a search at a cut runs, whatever
+// project or filter it names, and none for a query of stop words alone. The line holds no query
+// text and no hash of it a reader could make without the key, the cut among the request's members
+// (unkeyedHashes). Each search is answered at the cut (sendSearch reads Dispatch-As-Of).
+func TestASearchAtACutNamesItsKeyAndShape(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
+	const degradedQuery = "lighthouse keeper"
+	embedder := refusingQueryEmbedder{fakeEmbedder: &fakeEmbedder{vectors: map[string][]float32{}}, refused: degradedQuery}
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "CUTSHAPE", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
+	searchComment(t, handler, issue.Key, "alice", "The lighthouse keeper logs the tide at dawn.")
+	processAllPending(t, database, embedder)
+	awaitBackgroundWrites(t, served)
+	safeHorizon(t, served)
+	cut := databaseCut(t, database)
+	fillTextVersionsPast(t, database, cut)
+	logged := captureLog(t)
+
+	at := func(query url.Values) url.Values {
+		query.Set(asOfParameter, cut.String())
+		return query
+	}
+	for _, shape := range []struct {
+		name, path string
+		query      url.Values
+		want       string
+	}{
+		{"keywords only at a cut", "/api/v1/search/results",
+			at(url.Values{"q": {"lighthouse"}, "keywords_only": {"true"}}), "keyword"},
+		{"keywords because no embedder answered, at a cut", "/api/v1/search",
+			at(url.Values{"q": {degradedQuery}}), "keyword-degraded"},
+		{"meaning at a cut", "/api/v1/search",
+			at(url.Values{"q": {"lighthouse"}}), "meaning-as-of"},
+		{"meaning at a cut over one project", "/api/v1/search",
+			at(url.Values{"q": {"lighthouse"}, "project": {"CUTSHAPE"}}), "meaning-as-of"},
+		{"meaning at a cut narrowed by an author", "/api/v1/search/results",
+			at(url.Values{"q": {"lighthouse"}, "author": {"alice"}}), "meaning-as-of"},
+		{"stop words alone at a cut", "/api/v1/search",
+			at(url.Values{"q": {"the of"}}), "none"},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			line, _ := sendSearch(t, handler, logged, shape.path, shape.query, false)
+			if got, _ := horizontest.Field(line, "search_shape"); got != shape.want {
+				t.Errorf("the request line names no search_shape=%s: %s", shape.want, line)
 			}
-			forbidden = append(forbidden, unkeyedHashes(shape.query)...)
-			for _, text := range forbidden {
-				if strings.Contains(line, text) {
-					t.Errorf("the request line carries %q, which is the query or a hash of it made without the server's key: %s", text, line)
-				}
-			}
+			requireNoQueryOnTheLine(t, line, shape.query)
 		})
 	}
 }
@@ -322,13 +397,25 @@ func TestASearchsRequestLineNamesItsKeyAndShape(t *testing.T) {
 // Each member of the normalized request moves the key: a search that differs from another in
 // one of them alone is named by another search_key, one row for each member, and the same search
 // sent again is named by the same key, so the difference is the member's and not a key drawn
-// afresh. Two spellings the handler reads as one request - a q with blanks around it, an
-// updated_since in another zone at the same instant, or equivalent kind sets - are named by one
-// key.
+// afresh. as_of has two rows, a cut and an earlier one, so a search at a cut is named apart from
+// the same search of the present and from the same search at another cut. Two spellings the
+// handler reads as one request - a q with blanks around it, an updated_since or an as_of in
+// another zone at the same instant, or equivalent kind sets - are named by one key, and so is
+// one as_of sent twice.
+//
+// A search at a cut is answered only once the keyword table's fill has reached the cut
+// (store.TextVersionsAt), so the test takes its two cuts, the later 5 ms after the earlier, and
+// fills the table past the later before it searches.
 func TestEachSearchParameterMovesTheKey(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
-	handler := newTestHandler(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createInteractionIssue(t, handler, "MOVE", "Lighthouse keeper roster", "The keeper logs the tide at dawn.")
+	awaitBackgroundWrites(t, served)
+	safeHorizon(t, served)
+	earlier := databaseCut(t, database)
+	time.Sleep(5 * time.Millisecond)
+	later := databaseCut(t, database)
+	fillTextVersionsPast(t, database, later)
 	logged := captureLog(t)
 	base := func() url.Values { return url.Values{"q": {"lighthouse"}} }
 	_, baseKey := sendSearch(t, handler, logged, "/api/v1/search", base(), false)
@@ -353,6 +440,8 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 		{member: "offset", set: func(query url.Values) { query.Set("offset", "1") }},
 		{member: "keywords_only", set: func(query url.Values) { query.Set("keywords_only", "true") }},
 		{member: "trees", set: func(url.Values) {}, trees: true},
+		{member: "as_of", set: func(query url.Values) { query.Set(asOfParameter, later.String()) }},
+		{member: "as_of, at an earlier cut", set: func(query url.Values) { query.Set(asOfParameter, earlier.String()) }},
 	} {
 		t.Run(row.member, func(t *testing.T) {
 			query := base()
@@ -379,6 +468,12 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 		{"every kind named explicitly",
 			base(),
 			url.Values{"q": {"lighthouse"}, "kind": searchIndexedKinds[:]}},
+		{"as_of sent twice",
+			url.Values{"q": {"lighthouse"}, asOfParameter: {later.String()}},
+			url.Values{"q": {"lighthouse"}, asOfParameter: {later.String()}}},
+		{"as_of in another zone at the same instant",
+			url.Values{"q": {"lighthouse"}, asOfParameter: {later.String()}},
+			url.Values{"q": {"lighthouse"}, asOfParameter: {later.Time().In(time.FixedZone("", 2*60*60)).Format(time.RFC3339Nano)}}},
 	} {
 		_, first := sendSearch(t, handler, logged, "/api/v1/search", same.first, false)
 		_, second := sendSearch(t, handler, logged, "/api/v1/search", same.second, false)

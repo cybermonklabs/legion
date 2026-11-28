@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -272,16 +273,19 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
 }
 
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
-// normalisation.
-var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
-	// 32 is ts_rank_cd's "divide the rank by itself plus one" normalisation flag: the raw rank
-	// grows with every further matching lexeme a text holds, and dividing it by itself plus one
-	// maps it onto [0, 1), so a long document no longer scores above a short issue merely by
-	// holding more of the query's lexemes, and the one score every kind is now ranked on
-	// (searchFusedSQL) can weigh a rank against a cosine similarity. The related-item check's own
-	// rank already passes it (relatedCoordinationRank).
+// normalisation (searchKeywordRank).
+var searchKeywordLegsSQL = searchKeywordLegs(searchKeywordRank)
+
+// searchKeywordRank is search's rank of a keyword arm's row by its search vector, searchColumn.
+// 32 is ts_rank_cd's "divide the rank by itself plus one" normalisation flag: the raw rank grows
+// with every further matching lexeme a text holds, and dividing it by itself plus one maps it
+// onto [0, 1), so a long document no longer scores above a short issue merely by holding more of
+// the query's lexemes, and the one score every kind is now ranked on (searchFusedSQL) can weigh a
+// rank against a cosine similarity. The related-item check's own rank already passes it
+// (relatedCoordinationRank).
+func searchKeywordRank(searchColumn string) string {
 	return "ts_rank_cd(" + searchColumn + ", q.tsq, 32)"
-})
+}
 
 // askBlockNodeSQL is the block id of ask k's typed block while that block is a node of the
 // reference graph (a document_blocks row of the document holding it), and null otherwise: an id
@@ -373,23 +377,12 @@ var (
 // store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
 // item's (refs.ParseItemBlockNode).
 func searchPageAndTailSQL(legsSource string, seen int) string {
-	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
-		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
-		true, searchParam(seen))
-	return fmt.Sprintf(`page as (
-  select l.*, f.score, f.own_lead
-    from %[1]s l join fused f using (kind, id)
-   order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
-   limit $3 offset $6
-)
-select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 'issue' else 'document' end,
-       r.issue_key, r.issue_title, r.issue_status,
-       r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
-       ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
-       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
-  from totals t cross join q
-  left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
-  -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
+	return searchPageAndTailReading(legsSource, searchPresentTexts, "", seen)
+}
+
+// searchPresentTexts is the page's lateral join that gives each hit the text its snippet is cut
+// from (txt.text): the item's present text.
+const searchPresentTexts = `  -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
   -- column); the two must stay in sync. issue reuses r.issue_title, already carried from the
   -- same issues row by kinds, rather than re-reading it. ask reads the text its search vector is
   -- built from (asks_search: the question, then ask_search_suffix's option labels and
@@ -403,7 +396,38 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
-  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
+`
+
+// searchPageAndTailReading is searchPageAndTailSQL with texts, the lateral join that gives each
+// hit of the page the text its snippet is cut from (txt.text): searchPresentTexts, or at a cut
+// searchAsOfTexts. texts, like legsSource, is always one of this package's own constants.
+//
+// shown is empty for every statement of the present, and the page is the CTE `page`. At a cut it
+// is searchAsOfShown: the ranked page is then searchAsOfRankedPage, and shown, which this text
+// follows with nothing but the select, defines `page` over it, with the columns a hit only shows
+// read for the page's own rows. An empty shown leaves the text as it was before the hook existed.
+func searchPageAndTailReading(legsSource, texts, shown string, seen int) string {
+	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
+		true, searchParam(seen))
+	page := "page"
+	if shown != "" {
+		page = searchAsOfRankedPage
+	}
+	return fmt.Sprintf(`%[4]s as (
+  select l.*, f.score, f.own_lead
+    from %[1]s l join fused f using (kind, id)
+   order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
+   limit $3 offset $6
+)%[5]s
+select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 'issue' else 'document' end,
+       r.issue_key, r.issue_title, r.issue_status,
+       r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
+       ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, hit.block_id, r.score::float8,
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
+  from totals t cross join q
+  left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
+%[2]s  -- The window of the text the headline is cut from: the 4000 characters from 1500 before the
   -- query's first term, or the text's head. It is selected beside the headline as well, so the
   -- scan has the very text ts_headline read and can set the headline back into it
   -- (pmdoc.SearchSnippet).
@@ -436,12 +460,12 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
-     where %[2]s
+     where %[3]s
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource, visibleBlock)
+`, legsSource, texts, visibleBlock, page, shown)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -654,6 +678,12 @@ func searchParam(number int) string {
 // with an exclusion (searchKindsCTE): every CTE it reads q from and the page. seen is the
 // parameter the acting credential is bound at, which every caller numbers after its own.
 func searchQueryBody(keywordLegs, fused, exclude string, seen int) string {
+	return searchQueryBodyReading(keywordLegs, fused, exclude, searchPresentTexts, "", seen)
+}
+
+// searchQueryBodyReading is searchQueryBody with the page's texts and shown
+// (searchPageAndTailReading).
+func searchQueryBodyReading(keywordLegs, fused, exclude, texts, shown string, seen int) string {
 	return searchKindsCTE(keywordLegs, exclude, seen) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
@@ -666,7 +696,7 @@ legs as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs", seen)
+` + searchPageAndTailReading("legs", texts, shown, seen)
 }
 
 // searchWindowLimit is the LIMIT a window arm's candidate CTE takes, searchWindowCandidates as
@@ -830,12 +860,27 @@ func searchScanSettings(scan []string) []string {
 //
 // A setting Postgres refuses fails the whole Exec, and the Go-side error no longer names which
 // of them failed; Postgres's own message still does, since it quotes the parameter it refused.
+//
+// At a cut the store refuses a list of statements, since the simple protocol would run every
+// statement after the first unbound (asof.Bind), so each setting goes in an Exec of its own: a
+// search at a cut, keyword or meaning, runs under the same bound and the same connection check
+// as a search of the present, and pays one round trip for each setting.
 func (s *server) beginSearchScan(ctx context.Context, scan []string) (pgx.Tx, error) {
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, strings.Join(searchScanSettings(scan), "; ")); err != nil {
+	settings := searchScanSettings(scan)
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		for _, setting := range settings {
+			if _, err := tx.Exec(ctx, setting); err != nil {
+				_ = tx.Rollback(context.WithoutCancel(ctx))
+				return nil, err
+			}
+		}
+		return tx, nil
+	}
+	if _, err := tx.Exec(ctx, strings.Join(settings, "; ")); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(ctx))
 		return nil, err
 	}
@@ -1008,14 +1053,7 @@ func searchQueryMeaningBody(keywordLegs, fused, exclude string, seen int, scope 
    order by e.embedding <=> $9::vector
    limit $7
 ),
-meaning_issue as (
-  select 'issue' as kind, 'meaning' as list, issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, id, null::text as block_id,
-         null::text as window_id, null::text[] as covers,
-         issue_title, issue_status, null::text as owner_project, null::text as owner_slug, null::text as owner_name, updated_at,
-         false as own, r
-    from meaning_issue_candidates where r >= $10
-),
-meaning_document_candidates as (
+` + searchMeaningIssueProjection + `meaning_document_candidates as (
   select a.issue_key, a.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, ds.created_at) as updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -1030,15 +1068,7 @@ meaning_document_candidates as (
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
-meaning_document as (
-  select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
-         window_id, covers,
-         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
-         false, r
-    from meaning_document_candidates where r >= $10
-   order by meaning_document_candidates.id, r desc, window_id
-),
-` + searchMeaningCommentArm(scope, seen) + `,
+` + searchMeaningDocumentProjection + searchMeaningCommentArm(scope, seen) + `,
 meaning_ask_candidates as (
   select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
@@ -1055,16 +1085,7 @@ meaning_ask_candidates as (
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
-meaning_ask as (
-  select distinct on (meaning_ask_candidates.id) 'ask' as kind, 'meaning' as list, issue_key, case when issue_key is null then coalesce(artifact_id, block_artifact_id) else null::uuid end,
-         coalesce(artifact_id, block_artifact_id, ` + store.CastableUUID(`anchor->>'artifact_id'`) + `), id::text, block_id,
-         window_id, covers,
-         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
-         false, r
-    from meaning_ask_candidates where r >= $10
-   order by meaning_ask_candidates.id, r desc, window_id
-),
-meaning_message_candidates as (
+` + searchMeaningAskProjection + `meaning_message_candidates as (
   select m.issue_key, m.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
@@ -1076,7 +1097,43 @@ meaning_message_candidates as (
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
-meaning_message as (
+` + searchMeaningMessageProjection + searchMeaningRankedPage(keywordLegs, fused, exclude, searchPresentTexts, "", seen)
+}
+
+// searchMeaningIssueProjection, searchMeaningDocumentProjection, searchMeaningAskProjection and
+// searchMeaningMessageProjection are the meaning arms over their candidate CTEs, each kind's
+// candidates at or above the floor ($10) in the row shape of searchKeywordLegs, a window arm's
+// item at its nearest window. searchQueryMeaningBody and searchAsOfMeaningBody share them, each
+// over candidates of its own.
+var (
+	searchMeaningIssueProjection = `meaning_issue as (
+  select 'issue' as kind, 'meaning' as list, issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, id, null::text as block_id,
+         null::text as window_id, null::text[] as covers,
+         issue_title, issue_status, null::text as owner_project, null::text as owner_slug, null::text as owner_name, updated_at,
+         false as own, r
+    from meaning_issue_candidates where r >= $10
+),
+`
+	searchMeaningDocumentProjection = `meaning_document as (
+  select distinct on (meaning_document_candidates.id) 'document' as kind, 'meaning' as list, issue_key, case when issue_key is null then id else null::uuid end, id, id::text, null::text,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_document_candidates where r >= $10
+   order by meaning_document_candidates.id, r desc, window_id
+),
+`
+	searchMeaningAskProjection = `meaning_ask as (
+  select distinct on (meaning_ask_candidates.id) 'ask' as kind, 'meaning' as list, issue_key, case when issue_key is null then coalesce(artifact_id, block_artifact_id) else null::uuid end,
+         coalesce(artifact_id, block_artifact_id, ` + store.CastableUUID(`anchor->>'artifact_id'`) + `), id::text, block_id,
+         window_id, covers,
+         issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
+         false, r
+    from meaning_ask_candidates where r >= $10
+   order by meaning_ask_candidates.id, r desc, window_id
+),
+`
+	searchMeaningMessageProjection = `meaning_message as (
   select distinct on (meaning_message_candidates.id) 'message' as kind, 'meaning' as list, issue_key, null::uuid, null::uuid, id::text, null::text,
          window_id, covers,
          issue_title, issue_status, null::text, null::text, null::text, updated_at,
@@ -1084,7 +1141,16 @@ meaning_message as (
     from meaning_message_candidates where r >= $10
    order by meaning_message_candidates.id, r desc, window_id
 ),
-` + searchKindsCTE(keywordLegs+`
+`
+)
+
+// searchMeaningRankedPage is a meaning statement after its meaning arms: kinds, the keyword legs
+// unioned with the five meaning arms; each list's ranking and depth; fused, as the caller scores;
+// one row per item; the totals; and the page, its snippets cut from texts and the columns a hit
+// shows read by shown (searchPageAndTailReading). seen is the parameter the acting credential is
+// bound at.
+func searchMeaningRankedPage(keywordLegs, fused, exclude, texts, shown string, seen int) string {
+	return searchKindsCTE(keywordLegs+`
   union all select * from meaning_issue
   union all select * from meaning_document
   union all select * from meaning_comment
@@ -1106,7 +1172,7 @@ totals as (
   select (select count(*) from (select distinct kind, id from kinds) u) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs_unique", seen)
+` + searchPageAndTailReading("legs_unique", texts, shown, seen)
 }
 
 // searchMeaningCommentArm is searchQueryMeaningBody's comment arm. It is two arms, not one,
@@ -1280,7 +1346,13 @@ func searchMeaningCommentArmJoined(seen int) string {
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
-meaning_comment as (
+` + searchMeaningCommentJoinedProjection
+}
+
+// searchMeaningCommentJoinedProjection is the comment arm over the candidates of
+// searchMeaningCommentArmJoined, which carry their comment's columns: each comment at its nearest
+// window, at or above the floor. searchAsOfMeaningBody shares it over candidates of its own.
+const searchMeaningCommentJoinedProjection = `meaning_comment as (
   select distinct on (meaning_comment_candidates.id) 'comment' as kind, 'meaning' as list, issue_key, artifact_id, coalesce(artifact_id, (anchor->>'artifact_id')::uuid), id::text, null::text,
          window_id, covers,
          issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at,
@@ -1288,20 +1360,23 @@ meaning_comment as (
     from meaning_comment_candidates where r >= $10
    order by meaning_comment_candidates.id, r desc, window_id
 )`
-}
 
 // The shapes a search's request line names as search_shape (noteShape): the statement the search
 // chose, noted before it runs, so a line that ends in 503 or 499 names it too: keyword is
 // searchQuery for a request that asked for keywords alone, keyword-degraded is searchQuery because
 // no embedder answered, and the three meaning shapes name meaningStatementFor's three statements.
-// A broadened second run names its shape followed by searchShapeBroadened, and a query of stop
-// words alone, which runs no statement, names searchShapeNone.
+// A search at a cut names the same two keyword shapes for the keyword statement at the cut
+// (searchAsOfQuery), and meaning-as-of for searchAsOfMeaningQuery, the one meaning statement it
+// runs in place of meaningStatementFor's three. A broadened second run names its shape followed
+// by searchShapeBroadened, which a search at a cut never runs, and a query of stop words alone,
+// which runs no statement, names searchShapeNone.
 const (
 	searchShapeKeyword         = "keyword"
 	searchShapeKeywordDegraded = "keyword-degraded"
 	searchShapeMeaningEvery    = "meaning-every"
 	searchShapeMeaningScoped   = "meaning-scoped"
 	searchShapeMeaningJoined   = "meaning-joined"
+	searchShapeMeaningAsOf     = "meaning-as-of"
 	searchShapeNone            = "none"
 	searchShapeBroadened       = "+broadened"
 )
@@ -1314,21 +1389,26 @@ const searchRequestKeyHex = 16
 // searchRequestKeyHex hex characters of HMAC-SHA256 under the server's searchLogKey over the
 // normalized request, one JSON array of q as the handler holds it after trimming, project,
 // number_project, status, author, updated_since in RFC 3339 UTC with nanoseconds or "", kinds
-// (the normalized kind set), limit, offset, keywords_only and trees. Two requests that differ in
-// any of them carry two keys, and one request sent again carries one, so the log counts repeats
-// of a search without holding its text. The caller is not in it: the line names the caller
-// already, and a key that callers share counts the repeats across them. The key is the server's
-// own and is written nowhere, so neither the hash of a guessed query nor any other hash a reader
-// can make matches it.
+// (the normalized kind set), limit, offset, keywords_only, trees, and as_of, the cut of a search
+// at a past time (searchParameters.versions) in RFC 3339 UTC with nanoseconds or "" for a search
+// of the present. Two requests that differ in any of them carry two keys, and one request sent
+// again carries one, so the log counts repeats of a search without holding its text. The caller
+// is not in it: the line names the caller already, and a key that callers share counts the
+// repeats across them. The key is the server's own and is written nowhere, so neither the hash
+// of a guessed query nor any other hash a reader can make matches it.
 func (s *server) searchRequestKey(parameters searchParameters) string {
 	since := ""
 	if parameters.since != nil {
 		since = parameters.since.UTC().Format(time.RFC3339Nano)
 	}
+	asOf := ""
+	if parameters.versions != nil {
+		asOf = parameters.versions.Cut.UTC().Format(time.RFC3339Nano)
+	}
 	// Strings, integers and booleans, which json.Marshal always encodes.
 	normalized, _ := json.Marshal([]any{parameters.text, parameters.project, parameters.numberProject,
 		parameters.status, parameters.author, since, parameters.kinds, parameters.limit,
-		parameters.offset, parameters.keywordsOnly, parameters.trees})
+		parameters.offset, parameters.keywordsOnly, parameters.trees, asOf})
 	mac := hmac.New(sha256.New, s.searchLogKey)
 	mac.Write(normalized)
 	return hex.EncodeToString(mac.Sum(nil)[:searchRequestKeyHex/2])
@@ -1431,6 +1511,26 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	parameters := searchParameters{text: searchText, project: project, numberProject: numberProject,
 		status: status, author: author, since: since, kinds: kinds, limit: limit, offset: offset,
 		keywordsOnly: keywordsOnly, trees: wantsDisplayTrees(r), reading: &reading, who: who}
+	// At a cut the search reads the keyword table at the cut, which the fill must have reached
+	// (decision 7). The reach is read with no cut on the context: the fill's row and the open
+	// transactions decide whether the cut can be answered, and are no content of it. A search at a
+	// cut does not broaden, so the answer leaves query.broadened out (D2).
+	if cut, atCut := asof.CutFrom(r.Context()); atCut {
+		versions, err := s.deps.Store.TextVersionsAt(asof.WithoutCut(r.Context()), cut.Time())
+		var notReached *store.TextVersionsNotReachedError
+		switch {
+		case errors.As(err, &notReached):
+			writeSearchNotFilled(w, cut, notReached)
+			return
+		case err != nil:
+			s.writeHandlerError(w, err)
+			return
+		}
+		parameters.versions = &versions
+		leaveOut(r.Context(), "/query/broadened")
+	}
+	// The key is made once the cut is read, since the cut is a member of the request it hashes
+	// (searchRequestKey): a search at a cut and the same search of the present are two searches.
 	parameters.logKey = s.searchRequestKey(parameters)
 	response, err := s.runSearch(r.Context(), parameters)
 	// A statement its bound ended found nothing, and a later search, or a narrower one, may
@@ -1442,6 +1542,10 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.searchAsksAtTheCut(r.Context(), response.Results, parameters.trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1474,11 +1578,16 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // query names are resolved first and the numnode check runs behind them, both before anything
 // else - including before the one
 // model-service call this function ever makes - so a stopword-only or operator-only query never
-// pays for an embedding it would throw away. A query that names an issue by key answers that
-// issue even when it holds no lexeme any item matches, so numnode cannot refuse it and its round
-// trip is not made: the key forms need no statement at all (searchOwnIssueKeys), and typing a
-// key is what the bar does on every keystroke. It tries meaning search first when an embedder is
-// configured, falling back to keyword-only (runFusedSearchQuery)
+// pays for an embedding it would throw away. At a cut the same round trip also reads whether any
+// plain word of the query gives a lexeme (plainto_tsquery of each word, stopWordsOnly), which a
+// search at a cut chooses its post pipeline by (ranksFirstAtACut); a search of the present reads
+// no such value, so it sends numnode alone. A query that names an issue by key answers
+// that issue even when it holds no lexeme any item matches, so numnode cannot refuse it and its
+// round trip is not made: the key forms need no statement at all (searchOwnIssueKeys), and typing
+// a key is what the bar does on every keystroke. Nor does such a query need the lexeme read: the
+// plain word that holds its key's number gives a lexeme, so its words alone choose rightly. It
+// tries meaning search first when an embedder is configured, falling back to keyword-only
+// (runFusedSearchQuery)
 // only when the query's own embedding could not be had - never when the meaning query itself then
 // fails, which is a real failure of this request the caller should see, not something to paper
 // over as a degraded answer.
@@ -1502,9 +1611,11 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // any kind, which is what the answer's own total says - is run a second time over its rarest
 // words (searchRarestWords, searchBroadenWords), and that second answer alone is stamped
 // broadened. The query's embedding is taken once and both runs share it, so a broadened search
-// still costs one model-service call. The page answered is then stamped with the edit times and
-// the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
-// page's own posts.
+// still costs one model-service call. A search at a cut (parameters.versions) is never broadened:
+// the fallback picks its words by counts of the present text (search_term_stats), which keep no
+// history, so a query that matched nothing at the cut answers no results (D2). The page answered
+// is then stamped with the edit times and the delete marks of its comments and messages
+// (stampSearchPostMarks), one read by id of the page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
@@ -1512,9 +1623,18 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	}
 	parameters.ownKeys = keys
 	if len(keys) == 0 {
+		const nodesSQL = "select numnode(websearch_to_tsquery('english', $1))"
 		var nodes int
-		if err := s.deps.Store.Pool.QueryRow(ctx,
-			"select numnode(websearch_to_tsquery('english', $1))", parameters.text).Scan(&nodes); err != nil {
+		if parameters.versions == nil {
+			err = s.deps.Store.Pool.QueryRow(ctx, nodesSQL, parameters.text).Scan(&nodes)
+		} else {
+			var lexemes bool
+			err = s.deps.Store.Pool.QueryRow(ctx,
+				nodesSQL+", exists (select from unnest($2::text[]) w where numnode(plainto_tsquery('english', w)) > 0)",
+				parameters.text, parameters.queryReading().words).Scan(&nodes, &lexemes)
+			parameters.stopWordsOnly = !lexemes
+		}
+		if err != nil {
 			return model.SearchResponse{}, err
 		}
 		if nodes == 0 {
@@ -1540,7 +1660,7 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	if err != nil {
 		return model.SearchResponse{}, searchFailed(ctx, err)
 	}
-	if response.Total == 0 {
+	if response.Total == 0 && parameters.versions == nil {
 		words, err := s.searchRarestWords(ctx, parameters)
 		if err != nil {
 			return model.SearchResponse{}, err
@@ -1650,17 +1770,19 @@ func (s *server) runKeywordsOnly(ctx context.Context, parameters searchParameter
 }
 
 // runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
-// assuming nodes > 0 or an issue named by key already, which its callers (runKeywordOnlyDegraded,
-// and runKeywordsOnly for a request that asked for keywords only, both after runSearch's checks)
-// must have established first. The text is assumed already validated (length, non-empty after
-// trimming); an empty project searches every project, an empty filter narrows nothing, and the
-// kinds leave at least one kind in.
+// or at a cut searchAsOfQuery for whether this search ranks first
+// (searchParameters.ranksFirstAtACut) over those same kinds, assuming nodes > 0 or an issue named
+// by key already, which its callers (runKeywordOnlyDegraded, and runKeywordsOnly for a request
+// that asked for keywords only, both after runSearch's checks) must have established first. The
+// text is assumed already validated (length, non-empty after trimming); an empty project searches
+// every project, an empty filter narrows nothing, and the kinds leave at least one kind in.
 //
 // It runs in a read transaction of its own (beginKeywordScan), whose settings hold the statement
-// to the server's bound and check that its client is still connected. A statement the server
-// ends at that bound comes back here as the error it is, and runSearch answers it
-// errSearchTimedOut. The rollback runs on a context the caller's cancel does not end, so a
-// caller that leaves once the rows are read still hands its connection back to the pool.
+// to the server's bound and check that its client is still connected, at a cut as at the
+// present. A statement the server ends at that bound comes back here as the error it is, and
+// runSearch answers it errSearchTimedOut. The rollback runs on a context the caller's cancel
+// does not end, so a caller that leaves once the rows are read still hands its connection back
+// to the pool.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
 	tx, err := s.beginKeywordScan(ctx)
@@ -1668,7 +1790,11 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	rows, err := tx.Query(ctx, parameters.kinds.statements().keyword, searchQueryArguments(parameters)...)
+	statement := parameters.kinds.statements().keyword
+	if parameters.versions != nil {
+		statement = searchAsOfQuery(*parameters.versions, parameters.ranksFirstAtACut(), parameters.kinds.exclusion())
+	}
+	rows, err := tx.Query(ctx, statement, searchQueryArguments(parameters)...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1693,7 +1819,9 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 // "$2 is empty, or it matches" predicate the planner would have to serve all three ways. The
 // arguments are the same seventeen whichever it is, $2 among them: the keyword legs read it in
 // all three. Each of the three is held to the kinds this search ranks, so the choice of scope
-// and the kind parameter compose.
+// and the kind parameter compose. A search at a cut runs searchAsOfMeaningQuery, of one shape for
+// each answer of searchParameters.ranksFirstAtACut and held to those same kinds, with the same
+// arguments.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -1708,14 +1836,20 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	// Each flag is read only where it can change the statement: a filtered search runs the
-	// joined one whatever the fill has reached, and a search naming no project runs the unscoped
-	// one, so neither pays for the progress row's savepoint. The choice is made over this
-	// search's own kinds, so a request naming a kind runs the scope it would have run anyway
-	// with that kind's rows left out, rather than one choice overriding the other.
-	filtered := parameters.filtered()
-	filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
-	statement, shape := meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
+	var statement, shape string
+	if parameters.versions != nil {
+		statement = searchAsOfMeaningQuery(*parameters.versions, parameters.ranksFirstAtACut(), parameters.kinds.exclusion())
+		shape = searchShapeMeaningAsOf
+	} else {
+		// Each flag is read only where it can change the statement: a filtered search runs the
+		// joined one whatever the fill has reached, and a search naming no project runs the
+		// unscoped one, so neither pays for the progress row's savepoint. The choice is made over
+		// this search's own kinds, so a request naming a kind runs the scope it would have run
+		// anyway with that kind's rows left out, rather than one choice overriding the other.
+		filtered := parameters.filtered()
+		filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
+		statement, shape = meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
+	}
 	parameters.noteShape(ctx, shape)
 	rows, err := tx.Query(ctx, statement,
 		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)

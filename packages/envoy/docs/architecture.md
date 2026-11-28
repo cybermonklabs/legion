@@ -823,9 +823,11 @@ A claim hands over only between sessions of one principal (`handoverRefusal`). T
 request's credential acts for names the credential's kind and scope beside the person or service
 (`requestPrincipal`; `internal/ciphertoken/principal.go` spells each form): a broker token scoped
 to its person, a broker token an operator's entry gave a person for a project (a worker pod's), a
-broker token naming no person, an identity token, and none for the shared token or an open
-`/v1`. So a person's own session and an agent session acting for that person on a project entry
-are two principals.
+broker token traded from one Dispatch sign-in, which is that sign-in's own principal and no other
+sign-in's of the same person, a broker token naming no person, an identity token, and none for
+the shared token or an open `/v1`. So a person's own session and an agent session acting for that
+person on a project entry are two principals, and so are the sessions of two of that person's
+Dispatch sign-ins.
 Each registration records its credential's principal, none included,
 on the session's known-session record, and marks it recorded (`session.KnownSession.Principal`,
 `PrincipalRecorded`). The record's other writes, an interest change and a clean stop, keep the

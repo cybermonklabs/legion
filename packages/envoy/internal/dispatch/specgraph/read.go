@@ -842,14 +842,20 @@ func IsFile(name string, entryKind notes.Kind) bool {
 // does, and keeps each document of each file with its node and its text, so Layout.Bytes gives
 // each file back byte for byte. Parse is ReadLayout and the tree of its documents, so one reader
 // serves both. Uncounted names each file whose documents the reader cannot say for certain. The
-// problems are sorted by SortProblems.
+// problems are sorted by SortProblems. Each file's read is fileReads', which says what a caller may
+// write into.
 func ReadLayout(files map[string][]byte) (Layout, []Problem) {
+	return readLayout(&fileReads, files)
+}
+
+// readLayout is ReadLayout with the reads of cache.
+func readLayout(cache *fileReadCache, files map[string][]byte) (Layout, []Problem) {
 	l := Layout{Files: make(map[string][]Document, len(files))}
 	var problems []Problem
 	for _, name := range slices.Sorted(maps.Keys(files)) {
-		documents, found, uncounted := readFile(name, files[name])
+		documents, found, uncounted := cache.read(name, files[name])
 		l.Files[name] = documents
-		problems = append(problems, found...)
+		problems = append(problems, found...) // a list of this call's own (fileReads)
 		if uncounted != "" {
 			if l.Uncounted == nil {
 				l.Uncounted = map[string]string{}
@@ -875,7 +881,7 @@ func ReadLayout(files map[string][]byte) (Layout, []Problem) {
 // nothing, so one node has one spelling in git. A node is at the line of its document's "---".
 // Print writes no comment, anchor, tag, flow list, block scalar, other order of keys, other
 // quotes, carriage return or byte order mark, so the reader refuses each of them as not-printed
-// (TestReadRefuses).
+// (TestReadRefuses). What a caller may write into is fileReads' rule.
 func Parse(files map[string][]byte) (Tree, []Problem) {
 	l, problems := ReadLayout(files)
 	return l.tree(), problems

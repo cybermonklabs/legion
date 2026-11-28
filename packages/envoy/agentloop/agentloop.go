@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/url"
 	"time"
 )
@@ -109,7 +110,9 @@ type Bounds struct {
 	Time time.Duration
 	// Calls is the most model calls the run may make, and OutputTokens the most tokens one
 	// call may produce. The last allowed call is sent with the tool choice set to none, so
-	// that call must answer rather than ask for another tool.
+	// that call must answer rather than ask for another tool, and carries Request.LastCall
+	// where the caller set one; so is the call after a reply out of form that the run drops,
+	// which is then the run's last (Request.Final).
 	Calls, OutputTokens int
 }
 
@@ -222,15 +225,17 @@ type Request struct {
 	History []Message
 	Input   []Message
 	// NoCache turns this package's cache marks off. With it unset, anthropic-messages and
-	// azure-anthropic take one ephemeral mark at the end of the history and one on the
+	// azure-anthropic take an ephemeral mark at the end of the history and one on the
 	// newest message, which lands on the last of Input, or on a tool result the run itself
-	// adds, even where History is empty; openai-responses takes an explicit prompt cache
-	// breakpoint at the end of the history; openai-chat takes none, so setting the field
-	// changes nothing there. The marks are not free: a provider prices a cache write above
-	// plain input, so a single call that is never re-sent pays the write premium and reads
-	// nothing back. They pay off on the next call of the run, and on a later run that
-	// re-sends the marked prefix within the cache's life, which reads it at the cache's
-	// price instead of the input price.
+	// adds, even where History is empty, and, where the conversation is long enough for
+	// the provider to cache it, two more at the boundaries the run before this one marked,
+	// so this run reads the entries that one wrote; openai-responses takes an explicit
+	// prompt cache breakpoint at the end of the history; openai-chat takes none, so
+	// setting the field changes nothing there. The marks are not free: a provider prices
+	// a cache write above plain input, so a single call that is never re-sent pays the
+	// write premium and reads nothing back. They pay off on the next call of the run, and
+	// on a later run that re-sends the marked prefix within the cache's life, which reads
+	// it at the cache's price instead of the input price.
 	NoCache bool
 	// Tools are the tools the model may call.
 	Tools []Tool
@@ -240,15 +245,73 @@ type Request struct {
 	// made, so this run's first call is FirstToolIndex + 1. A fresh run leaves it zero.
 	FirstToolIndex int
 	// Final is the JSON schema the last reply must be exactly one object of, which is what
-	// Result.Value holds. A nil Final asks for free text.
+	// Result.Value holds. A nil Final asks for free text. Final reaches the provider with each
+	// of its objects' keys in the order Final writes them, which is the order the model writes
+	// the reply's keys in (doc.go, "The structured reply"), on every call but one that offers
+	// the model a tool on the Messages API (anthropic-messages and azure-anthropic), which
+	// carries no schema. The run reads every reply against Final all the same: a reply on such
+	// a call that is not exactly one object of Final is dropped (Step.Dropped) while the run
+	// has time left, and the run's next call is its last, which offers no tool, carries the
+	// schema and LastCall, and whose reply is final.
 	Final json.RawMessage
+	// Check is a caller's own check of the Final object, for a rule the schema cannot state
+	// inside the strict subset (strict.go), such as a property that must not be empty for one
+	// value of another. It is called in Run's goroutine, once a call's reply would end the run
+	// as its answer, a reply that ended with no fault and is exactly one object of Final, and
+	// while the run can still ask again: it has an ask, a model call and time left. A nil
+	// error accepts the reply, and the run returns it. An error refuses it, and its text is
+	// the sentence the run sends the model, as a user message after that reply, before it
+	// asks for the reply again: the run goes on with its own messages as they stand, the
+	// refused reply as the provider returned it, thinking and signatures included, then that
+	// sentence, and the next call answers it. AskAgain is the most times the run asks again.
+	// Every one of them stays inside the run's Bounds: it is a model call that counts against
+	// Calls, the last allowed call of the whole run still offers no tool, it is made only
+	// while Time is left, and its reply is held to OutputTokens like any other. When AskAgain
+	// is spent, or the bounds are, or the reply is on the call after a dropped reply out of
+	// form, which is the run's last (Final), the check is not called and the run returns the
+	// last reply as it would with no check, its Value set and no fault, so the caller's own
+	// refusal of that value stands. A nil Check, or an AskAgain of zero, asks nothing again
+	// and changes nothing the run sends. A Check without a Final is a request the loop cannot
+	// run.
+	Check    func(value json.RawMessage) error
+	AskAgain int
+	// LastCall is the caller's sentence for the run's last call, the one that offers no
+	// tool: the last Bounds.Calls allows, or the call after a dropped reply out of form
+	// (Final). That call alone carries it, as a user message after every message the call
+	// carries without it, so the model is told it is on its last call rather than left to
+	// find no tool offered. The call is the last whichever ask it falls in: one made after
+	// Check refused a reply carries it after the check's sentence, and with a Calls of 1 the
+	// run's one call carries it after Input. It is the caller's instruction to that call, as
+	// System is, and no part of the conversation: no Step and nothing else in the Result
+	// holds it, so a caller that writes the run's steps back into a conversation writes no
+	// trace of it, and it takes no cache mark, so the marks stay where they would be without
+	// it. An empty LastCall sends nothing, and the run sends exactly what it sent before the
+	// field existed.
+	LastCall string
+	// CallAgainWhenCut is the most times the run makes a model call again whose reply the
+	// provider cut for length (doc.go, "A reply cut for length"). Such a reply is not sent
+	// back to the model: the next call is sent the run's messages as they stood before the
+	// cut call, so neither its request nor the conversation holds any of the cut reply, and
+	// that call's reply answers in its place. A call made again stays inside the run's
+	// Bounds as an ask again does: it counts against Calls, it offers no tool and carries
+	// LastCall where it is the last allowed call, it is made only while Time is left, its
+	// reply is held to OutputTokens, and Check reads that reply like any other. The cut
+	// call stays in Result.Steps, marked Step.Dropped, and its usage in Result.Usage. A cut
+	// past CallAgainWhenCut, or one with no model call or no time left, ends the run with
+	// FaultLength. A zero CallAgainWhenCut makes no call again and changes nothing the run
+	// sends.
+	CallAgainWhenCut int
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
-	// built, and OnStep every step as it finishes. An error from any of them ends the run
-	// at that point and Run returns it with the Result so far. A nil callback is not
-	// called.
+	// built, and OnStep every step as it finishes; a reply the run asked for again, a cut
+	// reply and the call made again after it, and a reply out of form the run drops, stream to
+	// them like any other. An error from any of them ends the run at that point and Run
+	// returns it with the Result so far. A nil callback is not called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
+	// Log takes the run's warnings, such as a call whose Final schema could not be put back in
+	// Final's order (doc.go, "The structured reply"). A nil Log logs to slog.Default().
+	Log *slog.Logger
 }
 
 // Usage is what one model call, or a whole run, consumed and what it cost.
@@ -277,6 +340,20 @@ type Step struct {
 	// word for it: stop, length, content-filter, tool-calls, error or other. A reply the
 	// provider cut at its token limit reads length, whatever the provider called it.
 	Finish string
+	// AskedAgain is the sentence the run sent the model, as a user message, after this
+	// step's reply, when Request.Check refused the value the reply held; the next step is
+	// the reply to it. It is empty on every other step, and on every step OnStep is given,
+	// since the check reads a reply only once the call that made it is over.
+	AskedAgain string
+	// Dropped marks a call none of whose reply the run sends back to the model: a reply the
+	// provider cut for length whose call the run made again (Request.CallAgainWhenCut), the
+	// next step being that call made once more, or a reply out of form on a call that carried
+	// no schema (Request.Final), the next step being the run's last call. Either next step is
+	// sent the messages this call was sent and none of this reply, so a caller that writes the
+	// run's steps back into a conversation writes this one nowhere. Its usage still counts in
+	// Result.Usage. It is false on every other step, and on every step OnStep is given, since
+	// the run decides to drop a call only once that call is over.
+	Dropped bool
 }
 
 // Result is the outcome of a run, and every outcome is one: a run that ends on a fault, on its
@@ -288,7 +365,9 @@ type Result struct {
 	// when Request.Final asked for one.
 	Text  string
 	Value json.RawMessage
-	// Steps are the run's model calls, in order, and Usage is their total.
+	// Steps are the run's model calls, in order, a reply the run asked for again and the
+	// reply after it included, as are a cut call the run made again and a reply out of form
+	// it dropped (Step.Dropped), and Usage is their total.
 	Steps []Step
 	Usage Usage
 	// Fault is why the run ended short of an answer, and is empty on a run that answered.
@@ -305,9 +384,11 @@ type Fault string
 const (
 	// FaultTime is Bounds.Time spent.
 	FaultTime Fault = "time"
-	// FaultCalls is Bounds.Calls spent without an answer.
+	// FaultCalls is the run's model calls spent without an answer: its last call, the last
+	// Bounds.Calls allows or the one after a dropped reply out of form, still called a tool.
 	FaultCalls Fault = "calls"
-	// FaultLength is a reply the provider cut at the output token limit.
+	// FaultLength is a reply the provider cut at the output token limit that the run did
+	// not make again (Request.CallAgainWhenCut).
 	FaultLength Fault = "length"
 	// FaultRefusal is the model refusing to answer.
 	FaultRefusal Fault = "refusal"

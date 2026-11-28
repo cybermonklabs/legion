@@ -1499,8 +1499,8 @@ func TestAFailedMintForTheIssuesOwnOwnerFailsTheBundle(t *testing.T) {
 }
 
 // A bundle's default is the directory its issue's own repository routes to, the one `legion gh`
-// and `legion git-credential` answer that repository from (ghconfig.RouteDir, cmd/legion's
-// ghConfigDirFor), and never the recorded owner's by name alone. With the App installed on both
+// and `legion git-credential` answer that repository from (ghconfig.RouteDir, ghroute.DirFor),
+// and never the recorded owner's by name alone. With the App installed on both
 // accounts of the pair sjawhar/legion -> cybermonklabs/legion, sjawhar's directory holds
 // sjawhar's own lease, which cannot write the repository that moved: an issue recorded on
 // sjawhar/legion defaults to the cybermonklabs directory, whose lease can, and so does one

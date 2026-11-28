@@ -58,10 +58,10 @@ describe("a broker refusal's error code", () => {
     expect(sent).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
     expect(failure).not.toBe("traded");
     expect(failure.toLowerCase()).not.toContain(sent.slice(1, 17));
-  }, 20_000);
+  });
 
   test("still shows a code the clients handle", async () => {
     const { failure } = await refusedWith(() => "invalid_grant");
     expect(failure).toContain("invalid_grant");
-  }, 20_000);
+  });
 });
