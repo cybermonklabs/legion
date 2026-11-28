@@ -1079,7 +1079,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 			delivery = "sent"
 		}
 		seedMentionDelivery(t, database, reply, writer.ID, delivery)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: model.CommentEventPayload{
 				Comment: model.Comment{
@@ -1087,44 +1087,45 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 					Mentions: mentionOf(writer.ID),
 				},
 			},
-		}))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		})
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.resolved", Actor: alice,
 			Payload: map[string]any{"id": root},
-		}))
+		})
 		askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: fmt.Sprintf("asker-%d", index)}, "Ship it?")
 		seedFollower(t, database, askID, fmt.Sprintf("follower-%d", index))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "ask.answered", Actor: alice,
 			Payload: map[string]any{"id": askID, "question": "Ship it?"},
-		}))
+		})
 		message := seedMessage(t, database, "T-1", model.Actor{Kind: "session", ID: fmt.Sprintf("sender-%d", index)}, "Status?", nil)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "Fine", InReplyTo: &message},
-		}))
+		})
 		document := seedDocument(t, database, new("T-1"), fmt.Sprintf("notes-%d", index), model.Actor{Kind: "session", ID: fmt.Sprintf("author-%d", index)})
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: map[string]any{"id": uuid.NewString(), "body": "A note", "anchor": anchorOn(document)},
-		}))
+		})
 		edited := seedDocument(t, database, new("T-1"), fmt.Sprintf("spec-%d", index), model.Actor{Kind: "session", ID: fmt.Sprintf("spec-author-%d", index)})
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
 			Payload: map[string]any{"artifact_id": edited, "name": "spec.md", "from_version": 1, "to_version": 2, "editors": []any{alice.ID}},
-		}))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		})
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-2"), Type: "comment.created", Actor: alice,
 			Payload: map[string]any{"id": uuid.NewString(), "body": "On the second issue"},
-		}))
+		})
 	}
 	// A reply on the second issue to a message there: the message authors are a kind the first
 	// issue's events ask too, so a scan that read the lookups once per owner would run it twice.
 	otherMessage := seedMessage(t, database, "T-2", model.Actor{Kind: "session", ID: "other-sender"}, "Status?", nil)
-	seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+	seeded = append(seeded, model.Event{
 		IssueKey: new("T-2"), Type: "message.created", Actor: alice,
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-2"), Body: "Fine", InReplyTo: &otherMessage},
-	}))
+	})
+	seeded = appendEvents(t, database, broker, seeded...)
 
 	// The batch the scan is about to read, read the same way, with its lookups run through a
 	// queryer that counts them (resolveDestinations): the scan's own statements are many more than
@@ -1232,11 +1233,12 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 		if index == n/3 {
 			breakDocumentCredits(t, database, document)
 		}
-		edits[index] = appendEvent(t, database, broker, model.Event{
+		edits[index] = model.Event{
 			IssueKey: new(issueKey), Type: "artifact.human_edited", Actor: alice,
 			Payload: map[string]any{"artifact_id": document, "name": "spec.md", "from_version": 1, "to_version": 2, "editors": []any{alice.ID}},
-		})
+		}
 	}
+	edits = appendEvents(t, database, broker, edits...)
 
 	tracer := &statementTracer{}
 	deps := Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}}
@@ -1541,12 +1543,17 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("seed the backed-off events and the pending commands: %v", err)
 	}
 	fresh := func() []int64 {
-		ids := make([]int64, 0, 10)
-		for index := range 10 {
-			ids = append(ids, appendEvent(t, database, broker, model.Event{
+		written := make([]model.Event, 10)
+		for index := range written {
+			written[index] = model.Event{
 				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 				Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
-			}).ID)
+			}
+		}
+		appended := appendEvents(t, database, broker, written...)
+		ids := make([]int64, len(appended))
+		for i, event := range appended {
+			ids[i] = event.ID
 		}
 		return ids
 	}
@@ -1659,10 +1666,10 @@ func someIDs(ids []int64) string {
 }
 
 // The statement that chooses a batch reads neither the pending subscription commands, which are
-// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
+// never published, nor the backed-off events of owners that have nothing due: with 1,000 of each
 // in the table it reads three rows of events for each event it returns and nothing else, no node
 // of its plan that reads events removes a row by filter or recheck, none scans events in full,
-// and with 20,000 of each it reads the same number of rows and fetches about as many blocks from
+// and with 16,000 of each it reads the same number of rows and fetches about as many blocks from
 // the indexes of events. Three a row is what it reads today, and the row allows up to eight, so a
 // plan that reads one more of each event still passes.
 //
@@ -1693,12 +1700,14 @@ func someIDs(ids []int64) string {
 // loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
 // that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
-	t.Parallel()
+	// Not parallel: building both backlogs occupies the same Postgres server
+	// as the other tests. Run this fixture before the parallel tests resume.
 	costs := make([]claimCost, 2)
 	t.Run("measure", func(t *testing.T) {
-		for i, rows := range []int{5000, 20000} {
+		// Keep the sizes far enough apart to catch a walk of the retry index
+		// even when the claim reads other indexes for a fixed cost.
+		for i, rows := range []int{1000, 16000} {
 			t.Run(strconv.Itoa(rows), func(t *testing.T) {
-				t.Parallel()
 				costs[i] = measureClaim(t, rows)
 			})
 		}

@@ -884,7 +884,7 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 // backed off.
 func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	t.Parallel()
-	const events, denied = 50, 17
+	const count, denied = 50, 17
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
@@ -900,15 +900,29 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 		t.Fatalf("connect the test's connection: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	rig := newRoleRigOn(t, url, client, conn)
-
-	seeded := make([]model.Event, events)
-	for index := range events {
-		role := fmt.Sprintf("lane-%02d", index)
-		rig.claim(t, role, holderOf(index), session.SessionEntry{SelfSubscribed: true})
-		rig.silent(t, contracts.RoleTopicPrefix+role)
-		seeded[index] = rig.routedEvent(t, fmt.Sprintf("T-%d", index+1), role, model.Actor{Kind: "user", ID: "alice"})
+	rig := &roleRig{url: url, conn: conn, client: client, database: storetest.Open(t), broker: events.NewBroker()}
+	rig.silent(t, contracts.RoleTopicPrefix+">")
+	seedIssue(t, rig.database, "T-1", new("role:lane-00"))
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		select 'T-' || (i + 1), 'TT', i + 1, 'Routed', 'role:lane-' || lpad(i::text, 2, '0'),
+		       '{"kind":"user","id":"alice"}', 'U'
+		from generate_series(1, $1::int - 1) i
+	`, count); err != nil {
+		t.Fatalf("seed role-routed issues: %v", err)
 	}
+	holders := make(map[string]string, count)
+	written := make([]model.Event, count)
+	for i := range count {
+		holders[fmt.Sprintf("lane-%02d", i)] = holderOf(i)
+		key := fmt.Sprintf("T-%d", i+1)
+		written[i] = model.Event{
+			IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-9c1e-%012d", i+1), IssueKey: new(key), Body: "for the role"},
+		}
+	}
+	seedRoleHolders(t, conn, holders)
+	seeded := appendEvents(t, rig.database, rig.broker, written...)
 
 	counter := &sendCounter{}
 	deps := rig.deps()

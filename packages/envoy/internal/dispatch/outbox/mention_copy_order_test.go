@@ -390,10 +390,12 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	// rowOf is each held row, "<comment id> <destination>" as the trigger below writes it, by the
 	// id of its comment's event, which a read of the rule for the row is bound to.
 	rowOf := map[int64]string{}
+	comments := make([]model.Event, 0, rows)
+	commentIDs := make([]string, 0, rows)
 	for index := range rows {
 		body := fmt.Sprintf("@s1 comment %d", index)
 		commentID := seedComment(t, database, "T-1", alice, body, nil)
-		comment := appendEvent(t, database, broker, model.Event{
+		comments = append(comments, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: model.CommentEventPayload{Comment: model.Comment{
 				ID: commentID, IssueKey: new("T-1"), Body: body,
@@ -401,12 +403,18 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 			}},
 		})
 		seedDelivery(t, database, commentID, "session:s1", "s1", "failed")
-		if _, err := database.Pool.Exec(ctx, `
-			insert into comment_fallback_copies (comment_id, destination, event_id, session_id) values ($1, $2, $3, 's1')
-		`, commentID, s1, comment.ID); err != nil {
-			t.Fatalf("hold copy %d: %v", index, err)
-		}
-		rowOf[comment.ID] = fmt.Sprintf("%s %s", commentID, s1)
+		commentIDs = append(commentIDs, commentID)
+	}
+	eventIDs := make([]int64, 0, rows)
+	for i, comment := range appendEvents(t, database, broker, comments...) {
+		eventIDs = append(eventIDs, comment.ID)
+		rowOf[comment.ID] = fmt.Sprintf("%s %s", commentIDs[i], s1)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comment_fallback_copies (comment_id, destination, event_id, session_id)
+		select comment_id::uuid, $3, event_id, 's1' from unnest($1::text[], $2::bigint[]) as copies(comment_id, event_id)
+	`, commentIDs, eventIDs, s1); err != nil {
+		t.Fatalf("hold the fallback copies: %v", err)
 	}
 	for _, statement := range []string{
 		`create table fallback_due_writes (

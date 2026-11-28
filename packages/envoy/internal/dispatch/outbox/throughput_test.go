@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
@@ -36,10 +37,9 @@ import (
 // hundred.
 const busyPoolSize = 8
 
-// busySharedPool opens a second store on database's database whose shared pool holds
-// busyPoolSize connections, and keeps every one of them busy until t ends, with as many callers
-// again queued behind them, the way the API's requests keep the pool the outbox used to share
-// with them. The outbox pool it hands out is derived from it, as production's is.
+// busySharedPool holds every connection in the shared pool until the test ends.
+// The outbox pool derived from it must make progress despite there being no
+// capacity in the pool the API uses.
 func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 	t.Helper()
 	config := database.Pool.Config().Copy()
@@ -52,19 +52,13 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 	t.Cleanup(func() {
 		testwait.Returns(t, "the busy pool's connections to come back and its pool to close", busy.Pool.Close)
 	})
-	ctx, cancel := context.WithCancel(context.Background())
-	var callers sync.WaitGroup
-	for range 2 * busyPoolSize {
-		callers.Go(func() {
-			for ctx.Err() == nil {
-				_, _ = busy.Pool.Exec(ctx, `select pg_sleep(0.01)`)
-			}
-		})
+	for range busyPoolSize {
+		conn, err := busy.Pool.Acquire(testwait.Context(t))
+		if err != nil {
+			t.Fatalf("occupy the shared pool: %v", err)
+		}
+		t.Cleanup(conn.Release)
 	}
-	t.Cleanup(func() {
-		cancel()
-		callers.Wait()
-	})
 	return busy
 }
 
@@ -75,11 +69,11 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 func seedThroughputBacklog(t *testing.T, database *store.Store, broker *events.Broker, issues, count int) []model.Event {
 	t.Helper()
 	keys, parents := seedLoadMessageIssues(t, database, issues)
-	seeded := make([]model.Event, 0, count)
+	written := make([]model.Event, 0, count)
 	for index := range count {
-		seeded = append(seeded, appendLoadMessage(t, database, broker, index, keys[index%issues], parents[index%issues], index%2 == 1))
+		written = append(written, loadMessage(index, keys[index%issues], parents[index%issues], index%2 == 1))
 	}
-	return seeded
+	return appendEvents(t, database, broker, written...)
 }
 
 // seedCommentReplyBacklog appends count events across issues issues. Every second event is a
@@ -129,24 +123,23 @@ func seedCommentReplyBacklog(t *testing.T, database *store.Store, broker *events
 		}
 		seedComment(t, database, commentKeys[index], writer, "Done.", &roots[index])
 	}
-	seeded := make([]model.Event, 0, count)
+	written := make([]model.Event, 0, count)
+	replies := make([]loadComment, count/2)
+	for i := range replies {
+		thread := i % half
+		replies[i] = loadComment{key: commentKeys[thread], root: new(roots[thread])}
+	}
+	commentIDs := seedLoadComments(t, database, personJSON, replies)
 	for index := range count {
 		if index%2 == 1 {
 			message := index / 2
-			seeded = append(seeded, appendLoadMessage(t, database, broker, index, messageKeys[message%half], parents[message%half], message%2 == 1))
+			written = append(written, loadMessage(index, messageKeys[message%half], parents[message%half], message%2 == 1))
 			continue
 		}
-		thread := (index / 2) % half
-		key, root := commentKeys[thread], roots[thread]
-		reply := seedComment(t, database, key, person, "Load", &root)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
-			IssueKey: new(key), Type: "comment.created", Actor: person,
-			Payload: model.CommentEventPayload{
-				Comment: model.Comment{ID: reply, IssueKey: new(key), Author: person, Body: "Load", ReplyTo: new(root)},
-			},
-		}))
+		reply := index / 2
+		written = append(written, commentEvent(replies[reply], commentIDs[reply], person))
 	}
-	return seeded
+	return appendEvents(t, database, broker, written...)
 }
 
 // seedUnclaimedCommentBacklog inserts the project TT and issues issues TT-1 on, with no route and
@@ -196,61 +189,109 @@ func seedUnclaimedCommentBacklog(t *testing.T, database *store.Store, broker *ev
 		}
 		seedComment(t, database, keys[index], model.Actor{Kind: "session", ID: fmt.Sprintf("replier-%d", index)}, "Done.", &roots[index])
 	}
-	seeded := make([]model.Event, 0, count)
-	for index := range count {
+	comments := make([]loadComment, count)
+	for index := range comments {
 		issue := (index / 2) % issues
-		key := keys[issue]
-		var replyTo *string
+		comments[index].key = keys[issue]
 		if index%2 == 1 {
-			replyTo = new(roots[issue])
+			comments[index].root = new(roots[issue])
 		}
-		comment := seedComment(t, database, key, person, "Load", replyTo)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
-			IssueKey: new(key), Type: "comment.created", Actor: person,
-			Payload: model.CommentEventPayload{
-				Comment: model.Comment{ID: comment, IssueKey: new(key), Author: person, Body: "Load", ReplyTo: replyTo},
-			},
-		}))
 	}
-	return seeded
+	commentIDs := seedLoadComments(t, database, personJSON, comments)
+	written := make([]model.Event, count)
+	for index, comment := range comments {
+		written[index] = commentEvent(comment, commentIDs[index], person)
+	}
+	return appendEvents(t, database, broker, written...)
 }
 
-// seedLoadMessageIssues inserts the project TT and issues issues TT-1 on, each routed to
-// role:reviewer and holding a message from a session (agent-N), and returns their keys and those
-// messages' ids.
+type loadComment struct {
+	key  string
+	root *string
+}
+
+// seedLoadComments inserts the load's comments in one round trip, in event order.
+func seedLoadComments(t *testing.T, database *store.Store, author []byte, comments []loadComment) []string {
+	t.Helper()
+	var batch pgx.Batch
+	ids := make([]string, len(comments))
+	for i, comment := range comments {
+		batch.Queue(`
+			insert into comments (issue_key, author, body, reply_to) values ($1, $2, 'Load', $3)
+			returning id::text
+		`, comment.key, author, comment.root).QueryRow(func(row pgx.Row) error { return row.Scan(&ids[i]) })
+	}
+	if err := database.Pool.SendBatch(t.Context(), &batch).Close(); err != nil {
+		t.Fatalf("seed load comments: %v", err)
+	}
+	return ids
+}
+
+func commentEvent(comment loadComment, id string, author model.Actor) model.Event {
+	return model.Event{
+		IssueKey: new(comment.key), Type: "comment.created", Actor: author,
+		Payload: model.CommentEventPayload{
+			Comment: model.Comment{ID: id, IssueKey: new(comment.key), Author: author, Body: "Load", ReplyTo: comment.root},
+		},
+	}
+}
+
+// seedLoadMessageIssues inserts the project TT and its role-routed issues, each
+// with a parent message from a different session.
 func seedLoadMessageIssues(t *testing.T, database *store.Store, issues int) ([]string, []string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
+	ctx := testwait.Context(t)
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	keys := make([]string, issues)
-	parents := make([]string, issues)
-	for index := range issues {
-		number := index + 1
-		keys[index] = fmt.Sprintf("TT-%d", number)
-		if _, err := database.Pool.Exec(context.Background(), `
-			insert into issues (key, project_key, number, title, route, created_by, rank)
-			values ($1, 'TT', $2, 'Load', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U')
-		`, keys[index], number); err != nil {
-			t.Fatalf("create issue %s: %v", keys[index], err)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		select 'TT-' || n, 'TT', n, 'Load', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U'
+		from generate_series(1, $1::int) n
+	`, issues); err != nil {
+		t.Fatalf("create routed issues: %v", err)
+	}
+	rows, err := database.Pool.Query(ctx, `
+		with parents as (
+			insert into messages (issue_key, author, body)
+			select key, jsonb_build_object('kind', 'session', 'id', 'agent-' || (number - 1)), 'Status?'
+			from issues
+			returning issue_key, id
+		)
+		select p.issue_key, p.id::text from parents p join issues i on i.key = p.issue_key order by i.number
+	`)
+	if err != nil {
+		t.Fatalf("insert parent messages: %v", err)
+	}
+	defer rows.Close()
+	keys, parents := make([]string, 0, issues), make([]string, 0, issues)
+	for rows.Next() {
+		var key, parent string
+		if err := rows.Scan(&key, &parent); err != nil {
+			t.Fatalf("read parent message: %v", err)
 		}
-		parents[index] = seedMessage(t, database, keys[index], model.Actor{Kind: "session", ID: fmt.Sprintf("agent-%d", index)}, "Status?", nil)
+		keys, parents = append(keys, key), append(parents, parent)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read parent messages: %v", err)
+	}
+	if len(parents) != issues {
+		t.Fatalf("seeded %d parent messages, want one per issue (%d)", len(parents), issues)
 	}
 	return keys, parents
 }
 
-// appendLoadMessage appends a human message on key's issue, numbered index, and a reply to the
-// session's message parent when reply is set.
-func appendLoadMessage(t *testing.T, database *store.Store, broker *events.Broker, index int, key, parent string, reply bool) model.Event {
-	t.Helper()
+// loadMessage is a human message on key's issue, numbered index, and a reply to
+// the session's message parent when reply is set.
+func loadMessage(index int, key, parent string, reply bool) model.Event {
 	message := model.Message{ID: fmt.Sprintf("message-%d", index), IssueKey: new(key), Body: "Load"}
 	if reply {
 		message.InReplyTo = new(parent)
 	}
-	return appendEvent(t, database, broker, model.Event{
+	return model.Event{
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.MessageEventPayload{Message: message},
-	})
+	}
 }
 
 // unpublishedCount is how many of database's events are not yet marked published.
@@ -276,13 +317,37 @@ func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	var messages []*natsgo.RawStreamMsg
-	for sequence := info.State.FirstSeq; sequence <= info.State.LastSeq && info.State.Msgs > 0; sequence++ {
-		message, err := js.GetMsg(bus.Stream, sequence)
+	if info.State.Msgs == 0 {
+		return nil
+	}
+	// Read the snapshot in one ordered delivery instead of one request per
+	// sequence. Check every sequence; a gap must still fail the read.
+	sub, err := js.SubscribeSync(">", natsgo.BindStream(bus.Stream), natsgo.OrderedConsumer(), natsgo.StartSequence(info.State.FirstSeq))
+	if err != nil {
+		t.Fatalf("subscribe to the stream snapshot: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Errorf("unsubscribe from the stream snapshot: %v", err)
+		}
+	}()
+	ctx := testwait.Context(t)
+	messages := make([]*natsgo.RawStreamMsg, 0, info.State.Msgs)
+	for sequence := info.State.FirstSeq; sequence <= info.State.LastSeq; sequence++ {
+		msg, err := sub.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("read stream message %d: %v", sequence, err)
 		}
-		messages = append(messages, message)
+		meta, err := msg.Metadata()
+		if err != nil {
+			t.Fatalf("read metadata for stream message %d: %v", sequence, err)
+		}
+		if meta.Sequence.Stream != sequence {
+			t.Fatalf("stream sequence = %d, want %d", meta.Sequence.Stream, sequence)
+		}
+		messages = append(messages, &natsgo.RawStreamMsg{
+			Subject: msg.Subject, Sequence: sequence, Header: msg.Header, Data: msg.Data, Time: meta.Timestamp,
+		})
 	}
 	return messages
 }
@@ -510,23 +575,46 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 		t.Fatalf("subscribe the role's holder: %v", err)
 	}
 	flushSubscriber(t, reader)
-	registry, err := envoystore.Open(t.Context(), reader)
-	if err != nil {
-		t.Fatalf("open the role registry: %v", err)
-	}
-	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(t.Context(), reader)
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	t.Cleanup(sessions.StopWatch)
-	if _, err := registry.SetRole(throughputHolder, "test-machine", "reviewer", false); err != nil {
-		t.Fatalf("claim role:reviewer: %v", err)
-	}
-	if err := sessions.Put(throughputHolder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
-		t.Fatalf("register the role's holder: %v", err)
-	}
+	seedRoleHolders(t, reader, map[string]string{"reviewer": throughputHolder})
 	return rig
+}
+
+// seedRoleHolders writes live self-subscribed holders directly to the buckets
+// the outbox reads. It does not start the listener's registry watchers.
+func seedRoleHolders(t *testing.T, conn *natsgo.Conn, holders map[string]string) {
+	t.Helper()
+	js, err := conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open JetStream for the role fixture: %v", err)
+	}
+	ctx := testwait.Context(t)
+	stamp := fixtureTime.UnixMilli()
+	claims, err := bus.EnsureKeyValue(ctx, conn, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("open the role claim bucket: %v", err)
+	}
+	sessions, err := bus.EnsureKeyValue(ctx, conn, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	put := func(kv bus.KeyValue, key string, entry any) {
+		t.Helper()
+		value, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("encode %q: %v", key, err)
+		}
+		if _, err := kv.Put(key, value); err != nil {
+			t.Fatalf("write %q: %v", key, err)
+		}
+	}
+	for role, holder := range holders {
+		put(claims, envoystore.RoleClaimKeyOf(role), envoystore.RoleClaim{
+			HolderSessionID: holder, ClaimedAt: stamp, RenewedAt: stamp,
+		})
+		put(sessions, holder, session.SessionEntry{
+			SessionID: holder, MachineID: "test-machine", UpdatedAt: stamp, SelfSubscribed: true,
+		})
+	}
 }
 
 func (r *throughputRig) roleArrivals() []int64 {
@@ -561,8 +649,9 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 	t.Parallel()
 	const (
 		backlogIssues = 20
-		backlogCount  = 2 * batchSize
-		burstCount    = batchSize
+		// Fill one claim and leave another round of events across the owners.
+		backlogCount = batchSize + backlogIssues
+		burstCount   = batchSize
 		// minOutstanding is the fewest sends a correct drain holds outstanding at its peak, in
 		// the non-burst cases. Measured three ways under 48 busy loops on a 2-CPU box on
 		// 2026-11-09. The product held 50 (messages), 55 (comment replies) and 60 (unclaimed
@@ -597,10 +686,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// replier's.
 		{"unclaimed comments", seedUnclaimedCommentBacklog, func(count int) int { return 2*count + count/2 }, func(int) int { return 0 }, false},
 	} {
-		// Each case drains a backlog on a rig of its own (newThroughputRig: its own database,
-		// NATS server and session registry), and its reading is how many sends one outbox held
-		// outstanding, so the cases run beside each other rather than one 50-150 ms round trip
-		// after another.
+		// Each case has its own database and NATS server. Run them beside
+		// one another so each still has real concurrent work around its drain.
 		t.Run(load.name, func(t *testing.T) {
 			t.Parallel()
 			for _, tc := range []struct {
@@ -645,7 +732,7 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 						sends.floor = 0
 						close(sends.ready)
 					}
-					outbox := wiredOutbox(t, outboxStore, rig.client, sends, rig.broker)
+					outbox := wiredOutboxJudgedBy(t, outboxStore, rig.client, sends, rig.broker, roles.Windows{Now: func() time.Time { return fixtureTime }})
 					stop := runOn(t, outbox)
 					defer stop()
 					defer close(stopRelaying)

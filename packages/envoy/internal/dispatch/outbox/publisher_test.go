@@ -2126,13 +2126,16 @@ func appendEvents(t *testing.T, database *store.Store, broker *events.Broker, wr
 		t.Fatalf("begin event transaction: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	appended := make([]model.Event, 0, len(written))
-	for _, event := range written {
-		event, err = broker.Append(context.Background(), tx, event)
-		if err != nil {
-			t.Fatalf("append event: %v", err)
+	appended := make([]model.Event, len(written))
+	if err := store.RunWrite(context.Background(), tx, func(batch *store.WriteBatch) error {
+		for i, event := range written {
+			if err := broker.QueueAppend(batch, event, func(event model.Event) { appended[i] = event }); err != nil {
+				return err
+			}
 		}
-		appended = append(appended, event)
+		return nil
+	}); err != nil {
+		t.Fatalf("append events: %v", err)
 	}
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit event: %v", err)

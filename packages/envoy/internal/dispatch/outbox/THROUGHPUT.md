@@ -10,18 +10,15 @@ Treat the numbers as order-of-magnitude figures.
 - The test uses real Postgres and JetStream. The outbox sends through a TCP proxy.
 - Each chunk waits for half of the configured 50 ms or 150 ms round trip on the proxy's fake
   clock. The test moves that clock to the next pending proxy deadline.
-- Load: 200 events across 20 issues, each routed to `role:reviewer`, whose holder is a
-  self-subscribed session the stream acknowledges every forward for. Half are human replies to a
-  session's message, which take an author lookup and a third destination. That is 500
-  destinations in all: 200 issue topics, 200 role forwards to the holder and 100 session topics.
-  Before the role forward (#2395, `role.go`) the 200 role routes were core publishes to
-  `notifications.role.reviewer`, confirmed by a flush.
-- The "busy pool" case keeps a full shared pool busy. The table's first two rows ran 32
-  goroutines of `select pg_sleep(0.01)` back to back on the 16-connection shared pool production
-  then had. Since the shared pool holds 64, the test fills a shared pool of 8 of its own with 16
-  such goroutines (`busySharedPool`), so it does not hold 64 server connections while other
-  packages' tests share the server; on 2026-10-27 that read 1,050-1,260 ev/s at 50 ms and 517-566
-  at 150 ms for the one-window design.
+- The backlog spans 20 issues and fills one batch with another round of events left to drain.
+  The historical runs below used two full batches (200 events).
+- In the messages load, each event routes to `role:reviewer`. The stream acknowledges each
+  forward to its self-subscribed holder. Half the events reply to a session's message, which
+  takes an author lookup and sends a third copy. Before #2395, the role routes were core
+  publishes to `notifications.role.reviewer`, confirmed by a flush.
+- The busy-pool case holds all eight connections of a shared pool through the drain. The outbox
+  uses the separate pool derived from it. The historical runs below used concurrent queries
+  with `pg_sleep` to fill the shared pool instead.
 - The single-issue burst: 100 events on one issue, every one of them bound for the same three
   destinations.
 - The test logs the drain time and rate on the proxy clock, not the wall clock. Do not compare
@@ -104,8 +101,8 @@ claimant route is `addClaimantRoute` and the primary document's sessions
 captures on the holder's agent subject. The rows below were measured before #2395 and were not
 repeated on its chains.
 
-Method: the test has three loads. Each has 200 events across 20 issues, so each batch of 100 has
-every kind of event in its load.
+Method of these historical runs: each of the three loads has 200 events across 20 issues,
+so each batch of 100 has every kind of event in its load.
 
 - `messages` (`seedThroughputBacklog`): the load of the Method section above.
 - `comment replies` (`seedCommentReplyBacklog`): half are a person's replies in a comment thread,
