@@ -247,6 +247,43 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 	}
 }
 
+// `legion leak-check pre-push` in a process whose environment names a real gh (LEGION_GH_PATH)
+// but whose PATH's first gh is not the wrapper that runs `legion gh` — a machine's own gh, in a
+// shell outside a pane — reads the destination's visibility with that gh from PATH, as the guard
+// read it before it ran its reads with the real gh itself (ghGuardRead), and the push is cleared.
+// `legion gh` refuses every call in such an environment (ghWrapperPath), since the git gh runs
+// would not authenticate through the wrapper; the hook's read is no such call, and the guard
+// refuses nothing for it. The real gh LEGION_GH_PATH names never runs.
+func TestLeakCheckPrePushWithAnotherGhFirstOnPathReadsTheVisibilityWithThatGh(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := execfile.Write(filepath.Join(bin, "gh"), []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "gh")
+	real := filepath.Join(t.TempDir(), "gh")
+	if err := execfile.Write(real, []byte("#!/bin/sh\necho \"LEGION_GH_PATH ran $*\" >>\"$GH_STANDIN_RECORD\"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	code, printed := legionLeakCheckPrePush(t, dir, map[string]string{
+		"PATH": bin + ":" + os.Getenv("PATH"), "LEGION_GH_PATH": real, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		"GH_STANDIN_RECORD": record, leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+	}, line, "https://github.com/acme/widgets.git")
+	if code != leakguard.StatusClean || printed != "" {
+		t.Errorf("legion leak-check pre-push with another gh first on PATH = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
+	}
+	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; readRecord(t, record) != want {
+		t.Errorf("the gh stand-ins recorded %q, want the guard's REST read by the gh first on PATH alone, %q", readRecord(t, record), want)
+	}
+}
+
 // git runs its pre-push hook, `legion leak-check pre-push`, in the terminal's foreground process
 // group with git, and the guard runs the shared check in a process group of its own, which none
 // of the terminal's signals reach; `legion leak-check text` runs its check the same way. A SIGINT

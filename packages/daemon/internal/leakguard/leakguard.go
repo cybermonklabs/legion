@@ -123,22 +123,19 @@ type Options struct {
 	// write the step a call is in for a caller that asked (its LEGION_GH_STEP_FILE); Push and Text
 	// tell it nothing.
 	OnStep func(Step)
-	// OnTLSTimeout is told the host of gh's REST visibility read, api.github.com, where the read
-	// meets either event R11 of dispatch://INFRA-3562 records (tlstimeout.Event), as the guard
-	// meets it and before the read goes on to curl (Guard.ghVisibility): gh's own line of a TLS
-	// handshake timeout (tlstimeout.HostInLine), or ghReadBound, the guard's own 8 s, stopping gh
-	// before GitHub sent any answer (ghStoppedByItsBound), which comes before the real gh's 10 s
-	// handshake timeout could print that line. A bound the caller's deadline shortened
-	// (ghReadContext) is neither: its stop goes on to curl and tells nothing. Nil is the ordinary
-	// case. cmd/legion's `legion gh` and `legion leak-check pre-push` fill it to note the host and
-	// record the event once the call is over (tlstimeout.Recorder), never in the middle of the
-	// guard's reads, which a record would delay; the shared check's own read, which `legion gh`
-	// answers, fills none.
-	OnTLSTimeout func(host string)
-	// OnTLSEvent is told which of the two events that read met, just before OnTLSTimeout is told
-	// its host, and nothing where OnTLSTimeout is told nothing. Nil is the ordinary case;
-	// cmd/legion fills it beside OnTLSTimeout, so its record line names the event.
-	OnTLSEvent func(tlstimeout.Event)
+	// OnTLSTimeout is told the host of gh's REST visibility read, api.github.com, and the event the
+	// read met, either of the two R11 of dispatch://INFRA-3562 records (tlstimeout.Event), as the
+	// guard meets it and before the read goes on to curl (Guard.ghVisibility): gh's own line of a
+	// TLS handshake timeout (tlstimeout.HandshakeTimeout, the host from tlstimeout.HostInLine), or
+	// ghReadBound, the guard's own 8 s, stopping gh before GitHub sent any answer
+	// (tlstimeout.GuardBound, ghStoppedByItsBound), which comes before the real gh's 10 s handshake
+	// timeout could print that line. The host and the event come in one call, so no caller is told
+	// one without the other. A bound the caller's deadline shortened (ghReadContext) is neither: its
+	// stop goes on to curl and tells nothing. Nil is the ordinary case. cmd/legion's `legion gh`
+	// and `legion leak-check pre-push` fill it to note what it was told and record it once the call
+	// is over (tlstimeout.Recorder), never in the middle of the guard's reads, which a record would
+	// delay; the guard that answers the shared check's own read in `legion gh` fills none.
+	OnTLSTimeout func(host string, event tlstimeout.Event)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)

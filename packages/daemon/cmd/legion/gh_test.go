@@ -394,10 +394,11 @@ func TestLegionGhHandsGhThePrePushHooksVariables(t *testing.T) {
 // guard's own read for a push a real gh makes, whose `legion leak-check pre-push` runs under the
 // variable, is one `legion gh` start deep: the hook's guard runs the read's real gh, the shim,
 // itself (ghGuardRead), under the variable again, and the `legion gh` the shim leads back to
-// refuses. The shared check's own read, which the check makes itself, is three deep: the
-// `legion gh` that answers it (answerVisibilityRead), the one that answer's REST read runs through
-// the wrapper, and the one that read's shim leads back to, which refuses. A refusal that let the
-// guard's reads through under the variable loops under the token until the cap stops it.
+// refuses. The shared check's own read, which the check makes itself, is two deep: the `legion gh`
+// that answers it (answerVisibilityRead), whose guard runs the read's real gh, the shim, itself
+// (ghGuardRead), under the variable again, and the `legion gh` the shim leads back to, which
+// refuses. A refusal that let the guard's reads through under the variable loops under the token
+// until the cap stops it.
 func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -528,8 +529,8 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 				t.Errorf("legion leak-check pre-push = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
 			}
 			want := "the real gh " + shim + " ran `legion gh` again"
-			if status, said, got := readRecord(t, record+".status"), readRecord(t, record), startsOf(t); status != "exit 1\n" || !strings.Contains(said, want) || got != 3 {
-				t.Errorf("the shared check's own read with LEGION_GH_PATH %s = %q, stderr %q, and `legion gh` started %d more times; want exit 1 containing %q and 3 more starts",
+			if status, said, got := readRecord(t, record+".status"), readRecord(t, record), startsOf(t); status != "exit 1\n" || !strings.Contains(said, want) || got != 2 {
+				t.Errorf("the shared check's own read with LEGION_GH_PATH %s = %q, stderr %q, and `legion gh` started %d more times; want exit 1 containing %q and 2 more starts",
 					shim, status, said, got, want)
 			}
 		})
@@ -1274,13 +1275,13 @@ func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerTok
 // `legion gh` answers the shared check's own visibility read itself, by the guard's rule, and
 // prints what `gh api ... --jq .visibility` prints: the word and a newline, exit 0; or, where no
 // read answers, nothing on standard output and exit 1, which the check reads as an unknown
-// visibility and refuses. The guard's reads come back through `legion gh` to the stand-in gh: the
-// REST read, then, with the installation's REST limit spent, the GraphQL read, then a stand-in
-// git's ls-remote, which can answer only public. Where gh's REST read fails on its connection to
-// GitHub, the read through curl comes next, and it is a stand-in curl's (testCurlEnv) that records
-// itself beside them: the system's curl would carry a token of the bundle to api.github.com, and
-// the row's verdict would be the network's. Neither stream carries the shared check's own
-// refusal, which only the check prints.
+// visibility and refuses. The guard runs its reads through gh with the stand-in real gh itself
+// (ghGuardRead): the REST read, then, with the installation's REST limit spent, the GraphQL read,
+// then a stand-in git's ls-remote, which can answer only public. Where gh's REST read fails on its
+// connection to GitHub, the read through curl comes next, and it is a stand-in curl's
+// (testCurlEnv) that records itself beside them: the system's curl would carry a token of the
+// bundle to api.github.com, and the row's verdict would be the network's. Neither stream carries
+// the shared check's own refusal, which only the check prints.
 //
 // The read is fresh: the check reads another remote of a push with it, and counts the commits of
 // one it reads public as held, which it does not scan, so a public the guard kept for a
@@ -2017,15 +2018,16 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 // been sent, and `legion gh` would answer with gh's own status.
 //
 // The window is everything this command does before the child, and here it is held open in the
-// guard's read of the repository's visibility, which this command makes through PATH's gh before
-// it answers: the `gh` first on PATH is a pane's wrapper whose legion is a script that records
+// guard's read of the repository's visibility, which this command makes before it answers: its
+// guard runs that read with the real gh itself (ghGuardRead), and the stand-in real gh records
 // that it is holding and waits for GH_STANDIN_RELEASE, up to ten seconds, and a tick more once
-// that file is there, before it runs `legion gh`. That read reads no gh help of its own
-// (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads), so the hold is in the wrapper rather than
-// in a help the stand-in answers. The signal lands inside the hold rather than in a race. The
-// call is the shared check's own visibility read, the one call the guard never sees, so the
-// whole of the held work is this command's own: the check of these runs refuses everything, and
-// a run that reached it would exit 2 rather than on the signal.
+// that file is there, before it answers the read and records it. That read reads no gh help of
+// its own (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads), so the hold is in the read itself
+// rather than in a help the stand-in answers. The signal lands inside the hold rather than in a
+// race, and stops the read's gh with the guard's other children. The call is the shared check's
+// own visibility read, the one call the guard never sees, so the whole of the held work is this
+// command's own: the check of these runs refuses everything, and a run that reached it would exit
+// 2 rather than on the signal.
 //
 // Each `legion gh` here is this test binary run as `legion`, through main and its cobra command
 // line (run, passThrough), so the context runGh is handed is the one main's signal.NotifyContext
@@ -2052,27 +2054,19 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			records := t.TempDir()
 			ghRecord, release := filepath.Join(records, "gh"), filepath.Join(records, "release")
-			// The stand-in is the prefix alone: it records the visibility read it would answer
-			// if it were ever started as gh.
+			// The stand-in holds its visibility read, which the guard runs, and then answers it as
+			// the prefix does, recording the read: a record of it is a read the signal did not
+			// stop.
 			stub := filepath.Join(t.TempDir(), "gh")
-			if err := execfile.Write(stub, []byte(ghStandInPrefix(help)), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			bin := t.TempDir()
-			hold := filepath.Join(bin, "legion")
-			holding := "#!/bin/sh\nprintf 'legion gh held\\n' >>\"$GH_STANDIN_RECORD\"\nticks=0\n" +
-				"while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
-				"sleep 0.05\nexec '" + legionCopy(t) + "' \"$@\"\n"
-			if err := execfile.Write(hold, []byte(holding), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			wrappers := t.TempDir()
-			if err := execfile.Write(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+hold+"' gh \"$@\"\n"), 0o700); err != nil {
+			holding := "#!/bin/sh\ncase \" $* \" in\n" + ghVisibilityReadArgv + ")\n" +
+				"  printf 'gh held\\n' >>\"$GH_STANDIN_RECORD\"\n  ticks=0\n" +
+				"  while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
+				"  sleep 0.05;;\nesac\n" + strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n")
+			if err := execfile.Write(stub, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			command := legionGhCommand(t, t.TempDir(), map[string]string{
 				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
-				"PATH":                      wrappers + ":" + os.Getenv("PATH"),
 				"PUBLIC_LEAK_CHECK":         leakguardtest.Write(t, t.TempDir(), ghCheckRefuses),
 				leakguard.VisibilityReadVar: "sjawhar/legion",
 				"GH_STANDIN_RECORD":         ghRecord, "GH_STANDIN_RELEASE": release,
@@ -2087,7 +2081,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 				t.Fatal(err)
 			}
 			testwait.Eventually(t, "the guard's visibility read to be holding", func() bool {
-				return strings.Contains(readRecord(t, ghRecord), "legion gh held\n")
+				return strings.Contains(readRecord(t, ghRecord), "gh held\n")
 			})
 			// The signal goes to this one pid, as the forwarding test's does, and the hold is
 			// released after it: the hold waits a tick of its own once the file is there, so
@@ -2106,8 +2100,8 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			if exit.ExitCode() != tc.code {
 				t.Errorf("legion gh under %s exited %d, want %d: %s", tc.name, exit.ExitCode(), tc.code, readRecord(t, printed.Name()))
 			}
-			if want := "legion gh held\n"; readRecord(t, ghRecord) != want {
-				t.Errorf("gh recorded %q, want %q: gh was started for a signal that came before it", readRecord(t, ghRecord), want)
+			if want := "gh held\n"; readRecord(t, ghRecord) != want {
+				t.Errorf("gh recorded %q, want %q: the read went on after a signal that came during it", readRecord(t, ghRecord), want)
 			}
 		})
 	}

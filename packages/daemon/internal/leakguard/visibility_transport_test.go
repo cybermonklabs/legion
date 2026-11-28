@@ -377,12 +377,12 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 	}
 }
 
-// The guard tells its caller the host of a TLS handshake timeout of gh's REST read
-// (Options.OnTLSTimeout), once, from gh's own line: api.github.com, whose read then goes on to
-// curl as it does without the callback, and tells the event, the handshake timeout
-// (Options.OnTLSEvent), once. No other failure of the read is told: another of gh's transport
-// failures, which goes on to curl the same way, the TLS words beside GitHub's status line, which
-// refuse the call, and a read that answers. A guard with no callback reads as before.
+// The guard tells its caller the host of a TLS handshake timeout of gh's REST read and the event,
+// the handshake timeout, in one call (Options.OnTLSTimeout), once, from gh's own line:
+// api.github.com, whose read then goes on to curl as it does without the callback. No other
+// failure of the read is told: another of gh's transport failures, which goes on to curl the same
+// way, the TLS words beside GitHub's status line, which refuse the call, and a read that answers.
+// A guard with no callback reads as before.
 func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
 	for _, tc := range []struct {
 		name, rest string
@@ -403,8 +403,7 @@ func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
 			var told []string
 			var events []tlstimeout.Event
 			rig := newTransportRig(t, tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
-			rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
-			rig.guard.opts.OnTLSEvent = func(event tlstimeout.Event) { events = append(events, event) }
+			rig.guard.opts.OnTLSTimeout = func(host string, event tlstimeout.Event) { told, events = append(told, host), append(events, event) }
 			_, _ = rig.guard.Visibility(bound(t), theRepo)
 			if !slices.Equal(told, tc.told) || !slices.Equal(events, tc.events) {
 				t.Errorf("the guard told the hosts %q and the events %v, want %q and %v", told, events, tc.told, tc.events)
@@ -420,16 +419,16 @@ func TestTheGuardTellsAGhTLSHandshakeTimeoutsHost(t *testing.T) {
 // R11 of dispatch://INFRA-3562, the guard's own bound: where ghReadBound, the product's 8 s, which
 // this package's tests do not stretch, stops gh's REST read before GitHub sent any answer (gh
 // printed no status line, as the real gh prints none while its TLS handshake stalls), the guard
-// tells its caller api.github.com (Options.OnTLSTimeout) and the guard's-bound event
-// (Options.OnTLSEvent), once each, and the read goes on to curl, as for gh's own line of a TLS
-// handshake timeout. No other stop of the read is told. A bound the caller's deadline shortened, a
-// deadline 8 s away less curlReserve's 5 s, stops a gh that printed nothing with the read going on
-// to curl as before, since the stop is the caller's short bound and not the stall the record is
-// for. The rest refuse the call as they did: the guard's bound stopping a gh that printed GitHub's
-// status line and then stalled, since GitHub answered; and the caller's own end, by a deadline of
-// 2 s, which leaves less than curlReserve and so sets no bound of the guard's own, or by its
-// cancel, since neither leaves a bound for another read. Each caller's end comes only once the
-// stand-in gh has started, so it is a running gh the end stops on a loaded machine too.
+// tells its caller api.github.com and the guard's-bound event in one call (Options.OnTLSTimeout),
+// once, and the read goes on to curl, as for gh's own line of a TLS handshake timeout. No other
+// stop of the read is told. A bound the caller's deadline shortened, a deadline 8 s away less
+// curlReserve's 5 s, stops a gh that printed nothing with the read going on to curl as before,
+// since the stop is the caller's short bound and not the stall the record is for. The rest refuse
+// the call as they did: the guard's bound stopping a gh that printed GitHub's status line and then
+// stalled, since GitHub answered; and the caller's own end, by a deadline of 2 s, which leaves less
+// than curlReserve and so sets no bound of the guard's own, or by its cancel, since neither leaves
+// a bound for another read. Each caller's end comes only once the stand-in gh has started, so it
+// is a running gh the end stops on a loaded machine too.
 func TestTheGuardTellsItsOwnBoundStoppingAGhReadThatHeardNothingAndNoOtherStop(t *testing.T) {
 	callersMinute := func(t *testing.T, _ string) context.Context { return bound(t) }
 	for _, tc := range []struct {
@@ -470,8 +469,7 @@ func TestTheGuardTellsItsOwnBoundStoppingAGhReadThatHeardNothingAndNoOtherStop(t
 			rig := newTransportRig(t, ": > "+shQuote(started)+"\n"+tc.rest, noGraphQL, curlAnswers("private"), answersTheRefs)
 			var told []string
 			var events []tlstimeout.Event
-			rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
-			rig.guard.opts.OnTLSEvent = func(event tlstimeout.Event) { events = append(events, event) }
+			rig.guard.opts.OnTLSTimeout = func(host string, event tlstimeout.Event) { told, events = append(told, host), append(events, event) }
 			ctx := tc.caller(t, started)
 			var visibility Visibility
 			var err error

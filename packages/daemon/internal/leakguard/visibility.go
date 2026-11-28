@@ -657,14 +657,11 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	}
 }
 
-// tellTLSTimeout tells the caller event at host, which gh's REST read met: the event
-// (Options.OnTLSEvent) and then the host (Options.OnTLSTimeout), each where the caller set one.
+// tellTLSTimeout tells the caller event at host, which gh's REST read met, in one call
+// (Options.OnTLSTimeout), where the caller set one.
 func (g *Guard) tellTLSTimeout(host string, event tlstimeout.Event) {
-	if g.opts.OnTLSEvent != nil {
-		g.opts.OnTLSEvent(event)
-	}
 	if g.opts.OnTLSTimeout != nil {
-		g.opts.OnTLSTimeout(host)
+		g.opts.OnTLSTimeout(host, event)
 	}
 }
 

@@ -37,19 +37,19 @@ func ghTLSTimeouts(stderr io.Writer, childCPU func() (user, sys time.Duration, o
 	}
 }
 
-// guardTLSTimeout is what the leak guard's own gh read told of a stall of its TLS handshake, which
-// `legion gh` and `legion leak-check pre-push` record once the call is over
-// (recordGuardTLSTimeout): the host (leakguard.Options.OnTLSTimeout, toldHost), "" where the guard
-// told none, and the event (leakguard.Options.OnTLSEvent, toldEvent), gh's own timeout line or the
-// guard's own 8 s bound stopping gh before GitHub sent any answer, which the record line names.
+// guardTLSTimeout is what the leak guard's own gh read told of a stall of its TLS handshake
+// (leakguard.Options.OnTLSTimeout, told), which `legion gh` and `legion leak-check pre-push`
+// record once the call is over (recordGuardTLSTimeout): the host, "" where the guard told none,
+// and the event, gh's own timeout line or the guard's own 8 s bound stopping gh before GitHub sent
+// any answer, which the record line names.
 type guardTLSTimeout struct {
 	host  string
 	event tlstimeout.Event
 }
 
-func (g *guardTLSTimeout) toldHost(host string) { g.host = host }
-
-func (g *guardTLSTimeout) toldEvent(event tlstimeout.Event) { g.event = event }
+func (g *guardTLSTimeout) told(host string, event tlstimeout.Event) {
+	g.host, g.event = host, event
+}
 
 // recordGuardTLSTimeout records, under ctx, what the leak guard's own gh read met (told), where it
 // met one of the two events (its host is not empty) and a signal ended neither ctx nor any of

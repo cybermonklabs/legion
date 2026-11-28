@@ -21,8 +21,9 @@ import (
 )
 
 // Recorder writes the record of a TLS handshake timeout, or of the stall the Legion leak guard's
-// own bound meets before it (Event), at the moment it is met (RecordContext). Client, Stderr and
-// Start are a caller's own; every other field is a seam a test fills and the binaries leave zero.
+// own bound meets before it (Event), at the moment it is met (RecordContext). Client, Stderr, Start
+// and ChildCPU are a caller's own (`legion` sets ChildCPU for the real gh `legion gh` ran); every
+// other field is a seam a test fills and the binaries leave zero.
 type Recorder struct {
 	// Client names what met the timeout, first on the line: `legion-gh` (`legion gh` around the
 	// real gh, and the leak guard's own gh read), `agent-secrets` or `legion` (legion's own HTTP

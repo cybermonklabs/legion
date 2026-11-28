@@ -54,14 +54,15 @@ func visibilityReadRepository(env map[string]string) (ghrepo.Repository, bool) {
 // ghVisibilityReadChild is the real gh that one of the guard's own two visibility reads of repo
 // runs (ghVisibilityRead's REST and GraphQL argv), and the whole environment it runs with: what
 // `legion gh` does for such a read before it runs gh, written once for the two places that run
-// that gh, so they never part. One is runGh's ghVisibilityCall mode, the read of a guard that
-// runs `gh` from PATH, as the shared check's own read's guard does (answerVisibilityRead); the
-// other is the guard of `legion gh` and of `legion leak-check`, which runs the read with the real
-// gh itself (ghGuardRead), so no second `legion gh` starts for it. env is the read's environment
-// by name and environ the same environment whole: for runGh this process's own, for ghGuardRead
-// the one the guard would have started `gh` from PATH with (leakguard.Options.GhRead), which is
-// the environment such a `legion gh` would have had. wrapper is the wrapper first on PATH, and
-// LEGION_GH_PATH the real gh, each refused already where it is no such program (ghRunnable).
+// that gh, so they never part. One is runGh's ghVisibilityCall mode, the read of a guard that runs
+// `gh` from PATH, such as one a `legion` of another build runs; the other is the guard of `legion
+// gh`, the one that answers the shared check's own read among them (answerVisibilityRead), and of
+// `legion leak-check`, which runs the read with the real gh itself (ghGuardRead), so no second
+// `legion gh` starts for it. env is the read's environment by name and environ the same
+// environment whole: for runGh this process's own, for ghGuardRead the one the guard would have
+// started `gh` from PATH with (leakguard.Options.GhRead), which is the environment such a `legion
+// gh` would have had. wrapper is the wrapper first on PATH, and LEGION_GH_PATH the real gh, each
+// refused already where it is no such program (ghRunnable).
 //
 // Its token is that of the repository, routed by the one rule (ghroute.DirFor): a configured
 // rename serves the repository from the `to` owner's directory, and the `from` owner's token
@@ -107,19 +108,28 @@ func ghVisibilityReadChild(env map[string]string, environ []string, wrapper stri
 	return leakguard.GhReadChild{Program: gh, Env: childEnv}, nil
 }
 
-// ghGuardRead is leakguard.Options.GhRead for the guard `legion gh` runs over a call and the one
-// `legion leak-check` runs over a write, in a process whose environment, env, names
-// LEGION_GH_PATH, and nil where it names none: the guard then runs `gh` from PATH, and a `legion
-// gh` that read reaches refuses it as it refuses every call with no real gh named. For the read
-// of slug it answers what a `legion gh` started for that read would have run:
-// ghVisibilityReadChild of the environment the guard hands it, after the refusals runGh makes
-// before it reads anything of a call (ghUnsetRefusal, ghRunnable). It checks no
-// leakguard.RunByRealGhVar: the guard blanks it in the environment it hands, as for every child
-// of its own, and the real gh is given it again. So the guard's read runs one gh process, the
-// read itself, where it ran a `legion gh` first, whose start cost a loaded pod about 0.6 s before
-// its real gh started (dispatch://INFRA-3562/artifact/measurement-md@v3, section 2).
+// ghGuardRead is leakguard.Options.GhRead for the guard `legion gh` runs over a call, the one that
+// answers the shared check's own visibility read (answerVisibilityRead) and the one `legion
+// leak-check` runs over a write, in a process whose environment is env. It is nil where env names
+// no LEGION_GH_PATH, or where PATH's first gh is not the wrapper that runs `legion gh`
+// (ghWrapperPath), and the guard then runs `gh` from PATH, as it did before it ran its reads
+// itself: a `legion gh` that read reaches refuses it as it refuses every call with no real gh
+// named, and a machine's own gh first on PATH answers it, as it answers every other run of gh
+// there. Of the guards that run in such an environment, only `legion leak-check pre-push`'s, run
+// as git's hook, and the one answering the shared check's read come to read so: runGh refuses
+// every other call there before its guard runs (ghRunnable). For the read of slug it answers what
+// a `legion gh` started for that read would have run: ghVisibilityReadChild of the environment the
+// guard hands it, after the refusals runGh makes before it reads anything of a call
+// (ghUnsetRefusal, ghRunnable). It checks no leakguard.RunByRealGhVar: the guard blanks it in the
+// environment it hands, as for every child of its own, and the real gh is given it again. So the
+// guard's read runs one gh process, the read itself, where it ran a `legion gh` first, whose start
+// cost a loaded pod about 0.6 s before its real gh started
+// (dispatch://INFRA-3562/artifact/measurement-md@v3, section 2).
 func ghGuardRead(env map[string]string) func(slug string, environ []string) (leakguard.GhReadChild, error) {
 	if env["LEGION_GH_PATH"] == "" {
+		return nil
+	}
+	if _, err := ghWrapperPath(); err != nil {
 		return nil
 	}
 	return func(slug string, environ []string) (leakguard.GhReadChild, error) {
@@ -147,13 +157,14 @@ func ghGuardRead(env map[string]string) func(slug string, environ []string) (lea
 // REST read, and where GitHub refuses it for a rate limit, GraphQL with the same token or git's
 // ls-remote with no credential, which can answer only public, and where this command refuses the
 // REST read because the bundle holds no directory for the repository's owner, that same
-// ls-remote. Its guard names no GhRead and runs `gh` from PATH, so the guard's reads come back
-// through this command (ghVisibilityRead), which runs each with the repository's token, or with
-// the caller's GH_TOKEN or GITHUB_TOKEN where one is set (ghVisibilityReadChild), in a second
-// `legion gh`. The real gh's read, which the check made before, answers nothing while the
-// installation's REST limit is spent, and the check then refuses the push. So this is how an
-// example-org push gets through in a spent hour: the check reads the visibility of every
-// example-org repository itself, before the guard's own read runs.
+// ls-remote. Its guard runs its reads through gh with the real gh itself (ghGuardRead of env, this
+// process's environment), with the repository's token, or with the caller's GH_TOKEN or
+// GITHUB_TOKEN where one is set (ghVisibilityReadChild), as the guard of a guarded call does, so
+// the read starts no second `legion gh`; only where PATH's first gh is no wrapper does it run that
+// gh. The real gh's read, which the check made before, answers nothing while the installation's
+// REST limit is spent, and the check then refuses the push. So this is how an example-org push
+// gets through in a spent hour: the check reads the visibility of every example-org repository
+// itself, before the guard's own read runs.
 //
 // The read takes no kept answer and keeps none. The check keeps answers of its own, and reads each
 // other remote of a push fresh: a remote it reads public widens the commits it counts as held,
@@ -166,13 +177,13 @@ func ghGuardRead(env map[string]string) func(slug string, environ []string) (lea
 // check prints its own refusal. A signal that reached this command before or during the reads
 // ends it with 128+<signal>, as it ends a call gh was never started for (runGhChild,
 // endedBySignal).
-func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, stderr io.Writer) int {
+func answerVisibilityRead(ctx context.Context, env map[string]string, repo ghrepo.Repository, stdout, stderr io.Writer) int {
 	if status, ok := signalled(ctx); ok {
 		return status
 	}
 	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&visibilityAnswerBound))
 	defer cancel()
-	visibility, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).FreshVisibility(bounded, repo.String())
+	visibility, err := leakguard.New(leakguard.Options{Curl: leakguardCurl, GhRead: ghGuardRead(env)}).FreshVisibility(bounded, repo.String())
 	if status, ok := signalled(ctx); ok {
 		return status
 	}

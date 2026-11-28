@@ -40,9 +40,11 @@ import (
 //   - keeps the rate limit: a stamp, the file <StampDir>/<Client> of mode 0600 in a directory of
 //     mode 0700 that this user owns, neither a link. Where the stamp's time is within a minute of
 //     Now, another record of Client is that recent and this one writes nothing and runs nothing.
-//     Otherwise its time becomes Now, under a lock, so of records made at once one goes on. A
-//     stamp it cannot keep so, a directory another user made among them, writes nothing either: a
-//     record that could not be limited could flood a log in the burst it measures;
+//     Otherwise its time becomes Now, under a lock that waits for nothing: a record that finds
+//     another holding it writes nothing and runs nothing too, so of records made at once one goes
+//     on, and no record waits on another (claim). A stamp it cannot keep so, a directory another
+//     user made among them, writes nothing either: a record that could not be limited could flood
+//     a log in the burst it measures;
 //   - reads the process's own user and system CPU (getrusage RUSAGE_SELF), the child's where
 //     ChildCPU is set, and the cgroup's CPU quota, period and usage and its process count, before
 //     either probe runs, so what they read is the moment of the timeout and not the record's own
@@ -55,10 +57,10 @@ import (
 //   - and writes the line, cutting the Go probe's error, never a key, to keep it at 2048 bytes.
 //
 // It never panics and returns nothing: a part that fails writes `-` for its figures, and a panic
-// of any part is dropped, since the record runs in the path of a call that already failed and must
-// not fail it again. It runs while its caller waits, at most about Bound and a second at a call
-// that failed, and at most once a minute for each Client. A Client that is not a word of letters,
-// digits and `-` alone records nothing, since it names a file in StampDir.
+// of any part is dropped, since the record runs in the path of a call, most often one that already
+// failed, and must not fail it. It runs while its caller waits, at most about Bound and a second,
+// and at most once a minute for each Client. A Client that is not a word of letters, digits and
+// `-` alone records nothing, since it names a file in StampDir.
 //
 // ctx ends the probes where it ends before their bound: a caller whose own end comes while they
 // run, such as `legion gh` on a SIGTERM, is not held to the bound. The line is written all the
@@ -97,13 +99,18 @@ func (r *Recorder) RecordContext(ctx context.Context, host string, event Event) 
 }
 
 // claim is the rate limit (RecordContext): whether a record of r.Client may be made at now, having
-// set its stamp's time to now where it may. A stamp made now is one; an existing stamp is read and
-// set under an exclusive flock, so of records made at once, in one process or in several, the
-// first sets the time and the rest read it. The directory is checked by its path (a directory, no
-// link, this user's, made mode 0700), and the stamp by what was opened and by its path, as
-// cmd/legion's ghOpenedAs checks its keeps: under gVisor an O_NOFOLLOW open is not trusted alone
-// to refuse a link. In a shared temporary directory, the sticky bit keeps another user from
-// putting anything in place of a directory this user made.
+// set its stamp's time to now where it may. A stamp made now is this record's: of records made at
+// once the O_EXCL create lets one alone make it, and every other reads its time as recent. An
+// existing stamp is read and set under an exclusive flock that waits for nothing: where another
+// holder has it, another record is in its claim at that moment, in this process or in another, and
+// of records made at once only one goes on, so this one writes nothing, as for a stamp within the
+// minute. A lock that waited would wait with no bound, and every role of an issue pod shares the
+// stamp (its $TMPDIR is on the issue's volume and every role is one user), so a holder stopped or
+// stuck would hold each other role's record, and the call or the push that runs it. The directory
+// is checked by its path (a directory, no link, this user's, made mode 0700), and the stamp by
+// what was opened and by its path, as cmd/legion's ghOpenedAs checks its keeps: under gVisor an
+// O_NOFOLLOW open is not trusted alone to refuse a link. In a shared temporary directory, the
+// sticky bit keeps another user from putting anything in place of a directory this user made.
 func (r *Recorder) claim(now time.Time) bool {
 	dir := r.stampDir()
 	uid := os.Getuid()
@@ -140,11 +147,11 @@ func (r *Recorder) claim(now time.Time) bool {
 		return false
 	}
 	fd := int(stamp.Fd())
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		return false
-	}
-	defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
 	if !made {
+		if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+			return false
+		}
+		defer func() { _ = unix.Flock(fd, unix.LOCK_UN) }()
 		held, err := stamp.Stat()
 		if err != nil {
 			return false

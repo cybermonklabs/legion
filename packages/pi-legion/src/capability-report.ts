@@ -164,13 +164,18 @@ interface Outcome {
 }
 
 /** What a check is told of its own row beside its signal: when the check's budget ends, in Unix
- * milliseconds, and where it leaves a reading its deadline adds to the row's detail. */
+ * milliseconds, where it leaves a reading its deadline adds to the row's detail, and the row's
+ * miss. */
 interface CheckRow {
   readonly deadline: number;
   /** `read` is called at the check's deadline, before its signal aborts, and a text it answers
    * follows the missed budget in the detail, after `; `. A check that leaves none, and one whose
    * reading answers undefined, reads the missed budget alone. */
   onDeadline(read: () => string | undefined): void;
+  /** The outcome the row reads when its budget runs out, the missed budget and then what the
+   * deadline's reading answers, read now: the one the row's own timer gives a check still running
+   * at its deadline, for a check whose work another party ended at that deadline. */
+  missed(): Outcome;
 }
 
 type Check = (
@@ -479,10 +484,11 @@ function stepAt(file: string): string {
  * which change neither the command nor its argv. LEGION_GH_STEP_FILE names a file in a directory
  * of mode 0700 the row makes, where `legion gh` writes the step it is in as each starts: a call
  * still running at the row's deadline reads `did not finish within 8 s; at <step>, <ms> ms after
- * legion gh started`, or `…; legion gh wrote no step`, so a miss says where its time went. The row
- * removes the directory when the call ends or at its deadline, whichever comes first.
- * LEGION_GH_DEADLINE is the row's own deadline, in Unix milliseconds, so the leak guard in `legion
- * gh` waits for no rate-limit reset the row would not see the end of. */
+ * legion gh started`, or `…; legion gh wrote no step`, so a miss says where its time went, and so
+ * does a call that fails at or after that deadline. The row removes the directory when the call
+ * ends or at its deadline, whichever comes first. LEGION_GH_DEADLINE is the row's own deadline, in
+ * Unix milliseconds, so the leak guard in `legion gh` waits for no rate-limit reset the row would
+ * not see the end of; `legion gh` also stops the guard's children there, and exits 2. */
 const checkGitHub: Check = async (host, input, signal, row) => {
   const stepDirectory = makeStepDirectory();
   const env: Record<string, string> = { LEGION_GH_DEADLINE: String(row.deadline) };
@@ -503,7 +509,13 @@ const checkGitHub: Check = async (host, input, signal, row) => {
       ["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"],
       { cwd: input.cwd, signal, env }
     );
-    if (result.code !== 0) return failed(`gh viewer login failed: ${commandFailure(result)}`);
+    if (result.code !== 0) {
+      // A failure at or after the deadline is the row's miss, though it came before the row's own
+      // timer, which started once the call had been started: `legion gh` ended it there. It reads
+      // as that timer's miss, with the step read now, before the directory is removed below.
+      if (Date.now() >= row.deadline) return row.missed();
+      return failed(`gh viewer login failed: ${commandFailure(result)}`);
+    }
     return ok(`gh viewer login: ${result.stdout.trim()}`);
   } finally {
     if (stepDirectory !== undefined) removeStepDirectory(stepDirectory);
@@ -772,7 +784,8 @@ async function withinBudget<T>(work: Promise<T>, ms: number, onDeadline: () => T
  * is still pending at its deadline, is a failing row with the reason; the function itself never
  * throws. A check is told its own deadline, and may leave a reading that deadline makes before it
  * aborts the check's signal, which follows the missed budget in the detail (`CheckRow`): the
- * `github` row's names the step `legion gh` was in. Every row's detail is cleaned here
+ * `github` row's names the step `legion gh` was in, and that row reads the same miss for a call
+ * `legion gh` ended at the deadline (`CheckRow.missed`). Every row's detail is cleaned here
  * (`cleanDetail`), the one place every check's outcome passes, so no branch of a check quotes a
  * credential into the report. `measuredAt` is when the measuring started, `elapsedMs` how long it
  * took, and the rows are in `LIVE_CAPABILITIES` order.
@@ -795,6 +808,11 @@ export async function measureCapabilities(
       onDeadline: (read) => {
         reading = read;
       },
+      missed: () => {
+        const said = reading?.();
+        const missed = `did not finish within ${budgetLabel(budgets.checkMs)}`;
+        return failed(said === undefined ? missed : `${missed}; ${said}`);
+      },
     };
     const outcome = await withinBudget(
       CHECKS[name](host, input, controller.signal, row).catch((error: unknown) =>
@@ -804,10 +822,9 @@ export async function measureCapabilities(
       () => {
         // Read before the abort, which ends the check's work, so the reading is of the moment
         // the budget ran out.
-        const said = reading?.();
+        const missed = row.missed();
         controller.abort();
-        const missed = `did not finish within ${budgetLabel(budgets.checkMs)}`;
-        return failed(said === undefined ? missed : `${missed}; ${said}`);
+        return missed;
       }
     );
     outcomes.set(name, outcome);

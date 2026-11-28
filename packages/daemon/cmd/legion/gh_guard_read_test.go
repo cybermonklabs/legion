@@ -104,18 +104,56 @@ func TestAGuardedGhCallStartsOneLegionGhAndReadsItsVisibilityWithTheRealGh(t *te
 	}
 }
 
+// The shared check's own visibility read, which the check makes through `gh` on PATH, the pane's
+// wrapper, starts `legion gh` once: the read itself, which `legion gh` answers by the guard's rule
+// (answerVisibilityRead). The guard of that answer runs its REST read with the real gh itself, as
+// the guard of a guarded call does (ghGuardRead), where it used to run `gh` from PATH, the wrapper,
+// and so a second `legion gh`, whose start cost a loaded pod about 0.6 s before its real gh ran
+// (dispatch://INFRA-3562, R12). The stand-in real gh runs that REST read and nothing else, and
+// `legion gh` prints the visibility it answered.
+func TestTheSharedChecksOwnVisibilityReadStartsOneLegionGh(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	stub, log := loggingGh(t)
+	wrappers, starts := loggingGhWrapper(t)
+	const slug = "acme/widgets"
+	args := leakguard.VisibilityReadArgs(slug)
+	cmd := legionGhCommand(t, t.TempDir(), map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PATH": wrappers + ":" + os.Getenv("PATH"), "GH_STANDIN_VISIBILITY": "private", leakguard.VisibilityReadVar: slug,
+		"XDG_STATE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "HOME": t.TempDir(), testRoleStateEnv: t.TempDir(),
+	}, args...)
+	// The read starts at the pane's wrapper, as the check's `gh` does, so that its own start is the
+	// first line of the log.
+	wrapper := filepath.Join(wrappers, "gh")
+	cmd.Path, cmd.Args = wrapper, append([]string{wrapper}, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil || stdout.String() != "private\n" {
+		t.Fatalf("gh %q through the wrapper = %v, stdout %q, stderr %q; want exit 0 and the visibility", args, err, stdout.String(), stderr.String())
+	}
+	if got, want := processes(t, starts), []string{"gh " + strings.Join(args, " ")}; !slices.Equal(got, want) {
+		t.Errorf("the read started `legion gh` %d times:\n%q\nwant once, the read itself:\n%q", len(got), got, want)
+	}
+	if got, want := processes(t, log), []string{strings.Join(leakguard.VisibilityReadWithHeadersArgs(slug), " ")}; !slices.Equal(got, want) {
+		t.Errorf("the real gh ran as\n%q\nwant the guard's REST read alone:\n%q", got, want)
+	}
+}
+
 // The real gh the guard of `legion gh` runs its own visibility read with is handed the whole
-// environment the `legion gh` it used to run the read through handed it. The shared check's own
-// visibility read still goes that way: `legion gh` answers it with a guard that runs `gh` from
-// PATH (answerVisibilityRead), so a second `legion gh` runs the real gh for it. The stand-in real
-// gh writes its whole environment for the guard's REST read of the repository, and a guarded call
-// on that repository, whose guard runs the read itself, gives it the same environment, under one
-// environment of the two calls and in one working directory. Read off the code, that is the gh
-// directory the repository routes to (ghroute.DirFor), the `to` owner's for a repository a
-// configured rename moved and the owner's own for its sibling; the wrapper as GH_PATH; the real
-// gh as LEGION_GH_RUN_BY_REAL_GH; cat as GH_PAGER; the names the guard gives each read of its own
-// that gh's allowlist keeps (leakguard's ghReadEnv and promptsNothing): NO_COLOR=1,
-// CLICOLOR_FORCE=0 and GIT_TERMINAL_PROMPT=0; and no PUBLIC_LEAK_CHECK_VISIBILITY_READ.
+// environment the `legion gh` it used to run the read through handed it: both run
+// ghVisibilityReadChild, the guard through ghGuardRead and runGh's ghVisibilityCall mode for a
+// guard that runs `gh` from PATH. The stand-in real gh writes its whole environment for the
+// guard's REST read of the repository, and the two guards of `legion gh` that make that read, the
+// one over a guarded call on that repository and the one that answers the shared check's own
+// visibility read of it (answerVisibilityRead), whose call names PUBLIC_LEAK_CHECK_VISIBILITY_READ,
+// give it the same environment, under one environment of the two calls and in one working
+// directory. Read off the code, that is the gh directory the repository routes to
+// (ghroute.DirFor), the `to` owner's for a repository a configured rename moved and the owner's
+// own for its sibling; the wrapper as GH_PATH; the real gh as LEGION_GH_RUN_BY_REAL_GH; cat as
+// GH_PAGER; the names the guard gives each read of its own that gh's allowlist keeps (leakguard's
+// ghReadEnv and promptsNothing): NO_COLOR=1, CLICOLOR_FORCE=0 and GIT_TERMINAL_PROMPT=0; and no
+// PUBLIC_LEAK_CHECK_VISIBILITY_READ.
 func TestTheGuardsOwnVisibilityReadHandsTheRealGhWhatTheInnerLegionGhDid(t *testing.T) {
 	t.Parallel()
 	root := pairRoutedBundle(t)
@@ -166,7 +204,7 @@ func TestTheGuardsOwnVisibilityReadHandsTheRealGhWhatTheInnerLegionGhDid(t *test
 			maps.Copy(shared, env)
 			inner := readBy(shared, "private\n", leakguard.VisibilityReadArgs(tc.slug)...)
 			if !slices.Equal(direct, inner) {
-				t.Errorf("the guard's own read handed the real gh\n%s\nthe read through `legion gh` handed it\n%s", strings.Join(direct, "\n"), strings.Join(inner, "\n"))
+				t.Errorf("the guard's own read handed the real gh\n%s\nthe read answering the shared check's handed it\n%s", strings.Join(direct, "\n"), strings.Join(inner, "\n"))
 			}
 			for _, want := range []string{
 				"GH_CONFIG_DIR=" + ghconfig.Dir(root, tc.owner), "GH_PATH=" + filepath.Join(wrappers, "gh"),

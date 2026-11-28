@@ -78,13 +78,13 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // repository's visibility and no private-name pass. Three calls pass unchecked: `legion gh auth
 // git-credential`, which answers above before any of this, the exact `gh api rate_limit`
 // (ghRateLimitRead), and the guard's own visibility reads (ghVisibilityRead). This command's own
-// guard runs those reads with the real gh itself, routed as this command routes them and handed
-// what it would hand gh (ghGuardRead, ghVisibilityReadChild), so a guarded call starts one
-// `legion gh`, not two; a guard that runs `gh` from PATH, the one of the shared check's own read
-// among them, reaches this command with them. The shared check's visibility read this command
-// answers itself (sharedCheckVisibilityRead), before it reads anything else of the call. gh runs
-// the rate-limit read, the guard's own visibility reads and each call the shared check alone read
-// with no pager.
+// guards, over a call and over the shared check's own visibility read, which this command answers
+// itself (sharedCheckVisibilityRead) before it reads anything else of the call, run those reads
+// with the real gh itself, routed as this command routes them and handed what it would hand gh
+// (ghGuardRead, ghVisibilityReadChild), so a guarded call and that read each start one `legion
+// gh`, not two; only a guard that runs `gh` from PATH, such as one a `legion` of another build
+// runs, reaches this command with them. gh runs the rate-limit read, the guard's own visibility
+// reads and each call the shared check alone read with no pager.
 //
 // gh runs with an environment built from an allowlist (ghChildEnviron), never the caller's whole:
 // the proxy variables are kept, less the secrets broker's airlock proxy and ALL_PROXY where gh
@@ -149,13 +149,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // command's standard error (ghTLSTimeouts, tlstimeout.Recorder): the host, the event, the phases of
 // a fresh Go handshake and of one curl handshake to it, this process's CPU and the cgroup's CPU and
 // process count, bounded and at most once a minute. The real gh's own, where its output is the
-// caller's, is read off gh's standard error as gh exits (runGhChild); the guard's own gh read's is
-// told by the guard (leakguard.Options.OnTLSTimeout and OnTLSEvent), on gh's own timeout line and
-// where the guard's own 8 s bound, not one LEGION_GH_DEADLINE shortened, stopped that read before
-// GitHub sent any answer, and recorded once the call is over (guardTLSTimeout). Neither changes
-// the status the call exits with or what the guard allows or refuses, but a record's probes end
-// with this command's context: a SIGINT or a SIGTERM that comes while they run ends them, and the
-// command with 128+<signal> (endedBySignal), as a signal before gh runs does.
+// caller's, is read off gh's standard error as gh exits (runGhChild), with that gh's CPU; the
+// guard's own gh read's is told by the guard (leakguard.Options.OnTLSTimeout), on gh's own timeout
+// line and where the guard's own 8 s bound, not one LEGION_GH_DEADLINE shortened, stopped that read
+// before GitHub sent any answer, and recorded once the call is over (guardTLSTimeout), with no gh's
+// CPU: that read goes on to curl, so the call it is recorded after may have failed or succeeded.
+// Neither changes the status the call exits with or what the guard allows or refuses, but a
+// record's probes end with this command's context: a SIGINT or a SIGTERM that comes while they run
+// ends them, and the command with 128+<signal> (endedBySignal), as a signal before gh runs does.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	started := time.Now()
 	env := processEnvironment()
@@ -197,13 +198,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	beforeGh, stopHangup := hangupCancels(ctx)
 	defer stopHangup()
 	// guardTLS is what the guard's own gh read told of a stall of its TLS handshake
-	// (leakguard.Options.OnTLSTimeout and OnTLSEvent, below). It is recorded once, when the call
-	// is over, after the real gh's own run, and never in the middle of the guard's work: the
-	// record's probes take up to their bound, and the guard's curl and ls-remote reads would wait
-	// for them. It is recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal
-	// during the record is the status the command ends with, whatever the call's was. beforeGh,
-	// which stopHangup has ended where gh ran, is read only for a signal that came before the
-	// record.
+	// (leakguard.Options.OnTLSTimeout, below). It is recorded once, when the call is over, after
+	// the real gh's own run, and never in the middle of the guard's work: the record's probes take
+	// up to their bound, and the guard's curl and ls-remote reads would wait for them. It is
+	// recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal during the record is
+	// the status the command ends with, whatever the call's was. beforeGh, which stopHangup has
+	// ended where gh ran, is read only for a signal that came before the record.
 	var guardTLS guardTLSTimeout
 	defer func() {
 		if signal, ok := recordGuardTLSTimeout(ctx, guardTLS, stderr, beforeGh); ok {
@@ -211,10 +211,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
-		// The shared check's own read, which this command answers by the guard's rule. Like the
-		// guard's own reads, it is not logged as a wrapped call.
+		// The shared check's own read, which this command answers by the guard's rule, with a
+		// guard that runs its reads with the real gh (ghGuardRead of env). Like the guard's own
+		// reads, it is not logged as a wrapped call.
 		logCall = false
-		return answerVisibilityRead(beforeGh, read, stdout, stderr)
+		return answerVisibilityRead(beforeGh, env, read, stdout, stderr)
 	}
 	if real := env[leakguard.RunByRealGhVar]; real != "" {
 		ghroute.PrintRefusal(stderr, ghroute.ReentryRefusal(real))
@@ -358,8 +359,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 				visibilitySource = string(source)
 			},
 			OnStep:       steps.write,
-			OnTLSTimeout: guardTLS.toldHost,
-			OnTLSEvent:   guardTLS.toldEvent,
+			OnTLSTimeout: guardTLS.told,
 			Curl:         leakguardCurl,
 			RoleState:    ghRoleStateBase,
 			GhRead:       ghGuardRead(env),
@@ -472,9 +472,10 @@ const (
 	// ghRateLimitCall is the exact `gh api rate_limit` (ghRateLimitRead), which runs no guard.
 	ghRateLimitCall
 	// ghVisibilityCall is one of the guard's own visibility reads, REST or GraphQL
-	// (ghVisibilityRead), made by a guard that runs `gh` from PATH, which runs no guard, writes no
-	// line of the call log and takes the token of the repository it reads, or the caller's
-	// GH_TOKEN or GITHUB_TOKEN where one is set (ghVisibilityReadChild).
+	// (ghVisibilityRead), made by a guard that runs `gh` from PATH, such as one a `legion` of
+	// another build runs, which runs no guard, writes no line of the call log and takes the token
+	// of the repository it reads, or the caller's GH_TOKEN or GITHUB_TOKEN where one is set
+	// (ghVisibilityReadChild).
 	ghVisibilityCall
 )
 
@@ -571,10 +572,11 @@ func trimGhCallLog(path string) {
 
 // ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
 // visibility reads, made by a guard that runs `gh` from PATH: in a pod that gh is `legion gh`, so
-// checking either would recurse, since they are the guard's own visibility lookup. The guard of
-// `legion gh` and of `legion leak-check` runs them with the real gh itself (ghGuardRead), and
-// only a guard built elsewhere, the one that answers the shared check's own read among them
-// (answerVisibilityRead), sends them here. The REST read is:
+// checking either would recurse, since they are the guard's own visibility lookup. The guards of
+// `legion gh`, the one that answers the shared check's own read among them
+// (answerVisibilityRead), and of `legion leak-check` run them with the real gh itself
+// (ghGuardRead), and only a guard built elsewhere, such as one a `legion` of another build runs,
+// sends them here. The REST read is:
 //
 //	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //

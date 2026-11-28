@@ -3,8 +3,9 @@ body: |-
     The capability report's `github` row gives `legion gh` its own 8 s deadline, so the leak guard
     no longer waits past the row for a rate-limit reset, and a call still running at the deadline
     names the step it was in: `did not finish within 8 s; at <step>, <ms> ms after legion gh
-    started`, or `did not finish within 8 s; legion gh wrote no step`. The row's call and its
-    bound do not change.
+    started`, or `did not finish within 8 s; legion gh wrote no step`. A call that fails at or after
+    the deadline, as one `legion gh` stops there does, reads the same. The row's call and its bound
+    do not change.
 time: 2026-11-27T21:15:03Z
 custom:
     Issue: INFRA-3562

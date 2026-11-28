@@ -1,4 +1,13 @@
-import { afterAll, afterEach, beforeAll, describe, expect, jest, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  jest,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -976,6 +985,36 @@ describe("github", () => {
     expect(rows.github).toEqual({
       ok: false,
       detail: "gh viewer login failed: gh: HTTP 502: Bad Gateway",
+    });
+    expect(existsSync(path.dirname(file))).toBe(false);
+  });
+
+  // `legion gh` runs the leak guard under the row's own deadline (LEGION_GH_DEADLINE) and stops
+  // the guard's children there, so a call can end with legion gh's own failure, exit 2, at that
+  // deadline, before the row's own timer fires: that timer started once the call had been started,
+  // which on a loaded machine is longer after the deadline's start than legion gh takes to exit. It
+  // is the row's miss all the same, and reads as one, with the step its step file holds, so the
+  // production check counts it with every other miss.
+  test("a call that fails at its deadline reads the missed budget and its step, as a call still running there does", async () => {
+    let file = "";
+    const rows = await measure(
+      ghHost((options) => {
+        file = stepFile(options);
+        writeFileSync(file, "visibility 7990\n");
+        // The call ends at the row's deadline on the clock the row reads its end by; the row's
+        // timer, on the event loop's own clock, is still 8 s away.
+        setSystemTime(new Date(Number(options.env?.LEGION_GH_DEADLINE)));
+        return {
+          code: 2,
+          stdout: "",
+          stderr:
+            "legion gh: LEAK CHECK SETUP ERROR: the gh call: the visibility of invented-org/invented-repo could not be read: gh api exited -1: signal: terminated\n",
+        };
+      })
+    ).finally(() => setSystemTime());
+    expect(rows.github).toEqual({
+      ok: false,
+      detail: "did not finish within 8 s; at visibility, 7990 ms after legion gh started",
     });
     expect(existsSync(path.dirname(file))).toBe(false);
   });

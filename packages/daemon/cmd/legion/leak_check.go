@@ -72,13 +72,14 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 // lines it computed, and the repository it runs the hook in is the working directory, which is
 // the repository the guard reads the push's commits from. A stall of the TLS handshake the guard's
 // own gh read met, gh's own timeout line or the guard's own 8 s bound stopping that read before
-// GitHub sent any answer (leakguard.Options.OnTLSTimeout and OnTLSEvent, guardTLSTimeout), is
-// recorded after the guard's answer is reported, as `legion gh` records one once its call is over
+// GitHub sent any answer (leakguard.Options.OnTLSTimeout, guardTLSTimeout), is recorded after the
+// guard's answer is reported, as `legion gh` records one once its call is over
 // (recordGuardTLSTimeout): the push is cleared or refused as it is without the record, and a
 // signal that ends ctx during the record ends its probes and the command, with 128+<signal>, as
-// one that came during the guard does. In a pane or a pod, which names LEGION_GH_PATH, the guard
-// reads the destination's visibility with the real gh itself, as `legion gh` routes that read
-// (ghGuardRead), and starts no `legion gh` for it.
+// one that came during the guard does. In a pane or a pod, which names LEGION_GH_PATH and puts the
+// wrapper that runs `legion gh` first on PATH, the guard reads the destination's visibility with
+// the real gh itself, as `legion gh` routes that read (ghGuardRead), and starts no `legion gh` for
+// it; elsewhere it runs `gh` from PATH.
 func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
 	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)
@@ -93,7 +94,7 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	var guardTLS guardTLSTimeout
 	guard := leakguard.New(leakguard.Options{
 		Curl: leakguardCurl, RoleState: ghRoleStateBase, GhRead: ghGuardRead(processEnvironment()),
-		OnTLSTimeout: guardTLS.toldHost, OnTLSEvent: guardTLS.toldEvent,
+		OnTLSTimeout: guardTLS.told,
 	})
 	status := leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+
+	"github.com/sjawhar/envoy/tlstimeout"
 )
 
 // R11 of dispatch://INFRA-3562, at the real gh's own timing: gh prints `net/http: TLS handshake
@@ -20,8 +22,9 @@ func TestTheGuardTellsTheHostOfAGhReadThatRunsToGhsOwnHandshakeTimeout(t *testin
 	handshake := http.DefaultTransport.(*http.Transport).TLSHandshakeTimeout
 	stalls := "sleep " + strconv.Itoa(int(handshake.Seconds())) + "\n" + ghTLSTimeout
 	var told []string
+	var events []tlstimeout.Event
 	rig := newTransportRig(t, stalls, noGraphQL, curlAnswers("private"), answersTheRefs)
-	rig.guard.opts.OnTLSTimeout = func(host string) { told = append(told, host) }
+	rig.guard.opts.OnTLSTimeout = func(host string, event tlstimeout.Event) { told, events = append(told, host), append(events, event) }
 	visibility, err := rig.guard.Visibility(bound(t), theRepo)
 	if err != nil || visibility != Private {
 		t.Fatalf("read %q, %v; want curl's private", visibility, err)
@@ -29,5 +32,9 @@ func TestTheGuardTellsTheHostOfAGhReadThatRunsToGhsOwnHandshakeTimeout(t *testin
 	if want := []string{"api.github.com"}; !slices.Equal(told, want) {
 		t.Errorf("the guard told the hosts %q of a gh read whose TLS handshake ran to gh's own %s timeout (ghReadBound %s), want %q",
 			told, handshake, ghReadBound, want)
+	}
+	if want := []tlstimeout.Event{tlstimeout.GuardBound}; !slices.Equal(events, want) {
+		t.Errorf("the guard told the events %v of a gh read its own %s bound stopped before gh's %s timeout line, want %v, the guard's bound and not the timeout line",
+			events, ghReadBound, handshake, want)
 	}
 }
