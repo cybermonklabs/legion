@@ -595,8 +595,9 @@ function step(
  * insets) and the 1328 px it has at 1440 px hold on one line. Below 1280 px the one control's
  * widest name and room, Decisions', take 230 px of the 362 px it has at 390 px; the menu is at
  * least 260 px wide (`pageMenu`), and its widest item, Decisions with its room, takes 214 px of
- * the 246 px inside its padding and rule, so no item widens it when the signals arrive. Threads,
- * the last control of the row, holds no room (`Signal`), so these widths leave it out.
+ * the 246 px inside its padding and rule, so no item widens it when the signals arrive. The last
+ * two controls of the row hold no room: Threads, whose count `Signal` draws with none, and
+ * Documents, which draws no signal (`drawnSignal`); so these widths leave them out.
  */
 const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
   decisions: "min-w-[14.5ch]",

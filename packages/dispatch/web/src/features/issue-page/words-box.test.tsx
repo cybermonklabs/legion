@@ -467,8 +467,10 @@ function viewRow(view: RenderResult): HTMLElement {
 }
 
 // ST-1's new rows (part N's R4): Dashboard, Threads and Documents draw no outline and no Outline
-// sheet (root R14), so no Filter. Of the three, `main` holds Documents alone; it is on while its
-// list is drawn and while a document opened from the list is, with words in `?q=` or none.
+// sheet (root R14), so no Filter. `main` holds all three. This case reads Documents' three states:
+// on while its list is drawn and while a document opened from the list is, with words in `?q=` or
+// none. `IssuePresets.test.tsx`'s "Dashboard, Threads and Documents draw no Filter" reads
+// Dashboard and Threads.
 test("Dashboard, Threads or Documents drawn, no Filter control is drawn in the row", async () => {
   for (const [address, state] of [
     [DOCUMENTS, undefined],
@@ -494,16 +496,31 @@ test("Dashboard, Threads or Documents drawn, no Filter control is drawn in the r
 test("Dashboard, Threads or Documents drawn, t f turns Conversation on and opens the box with the caret in it, the words kept", async () => {
   const user = userEvent.setup();
   // From 1024 px the box opens in the row; below it, in the Outline sheet Conversation draws.
-  for (const [address, width, words] of [
-    [`${DOCUMENTS}?q=ab`, DESKTOP_WIDTH, "ab"],
-    [DOCUMENTS, DESKTOP_WIDTH, ""],
-    [`${DOCUMENTS}?q=ab`, PHONE_WIDTH, "ab"],
+  // Documents draws its list, and Dashboard and Threads the stand-in view the stage draws there
+  // (`drawn`).
+  for (const [address, width, words, drawn] of [
+    [`${DOCUMENTS}?q=ab`, DESKTOP_WIDTH, "ab", "documents"],
+    [DOCUMENTS, DESKTOP_WIDTH, "", "documents"],
+    [`${DOCUMENTS}?q=ab`, PHONE_WIDTH, "ab", "documents"],
+    ["/issues/CORE-1/dashboard?q=ab", DESKTOP_WIDTH, "ab", "dashboard"],
+    ["/issues/CORE-1/threads?q=ab", DESKTOP_WIDTH, "ab", "threads"],
+    ["/issues/CORE-1/dashboard", PHONE_WIDTH, "", "dashboard"],
+    ["/issues/CORE-1/threads", PHONE_WIDTH, "", "threads"],
   ] as const) {
     // The chord lands on Conversation, at its own address (`/conversation`,
     // dispatch://INFRA-5702/spec#b-r-new-page), whose stage is the outline.
     const view = drawPage(address, { outline: true, width });
     try {
-      await screen.findByRole("searchbox", { name: "Filter files and documents" });
+      if (drawn === "documents") {
+        await screen.findByRole("searchbox", { name: "Filter files and documents" });
+      } else {
+        await waitFor(() =>
+          expect(
+            view.container.querySelector(`[data-stand-in-view="${drawn}"]`),
+            address
+          ).not.toBeNull()
+        );
+      }
       await user.keyboard("tf");
       await waitFor(() =>
         expect(where().textContent).toBe(

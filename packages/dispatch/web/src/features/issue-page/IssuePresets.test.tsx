@@ -741,8 +741,8 @@ test("the arrows move along the row across Documents", async () => {
 
 // Part N's R4 and ST-1: a control that draws no outline draws no filter by words - neither its
 // Filter in the row nor the box, nor an Outline sheet to hold them - on its own address and, for
-// Documents, on a document opened from its list. Of the three, Threads alone is not yet held: it
-// joins the list below as its part adds its control, which is no filter.
+// Documents, on a document opened from its list. `main` holds all three controls, which the list
+// below takes from the row's order: every control but Conversation and the four filters.
 test("Dashboard, Threads and Documents draw no Filter", async () => {
   const outlineless = PRESET_ORDER.filter(
     (preset) => preset !== "conversation" && !isFilter(preset)

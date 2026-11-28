@@ -254,9 +254,9 @@ export function useIssueKeymap(issueKey: string): void {
       keys: "t f",
       label: "Filter by words",
       run: () => {
-        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents and on
-        // Dashboard, which draw no outline - the chord turns Conversation on with the words kept,
-        // and opens its box there (part N's R4, ST-1).
+        // Where the row draws no Filter, in the row or in its Outline sheet - on Documents, on
+        // Dashboard and on Threads, which draw no outline - the chord turns Conversation on with
+        // the words kept, and opens its box there (part N's R4, ST-1).
         if (
           document.querySelector(PARTS.filter) === null &&
           document.querySelector(OUTLINE_CONTROL) === null

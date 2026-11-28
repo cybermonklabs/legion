@@ -281,11 +281,11 @@ export function sentenceCase(name: string): string {
   return name === "" ? name : `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
 }
 
-/** The six controls of the filter row in the order the row draws them (R2): Dashboard, which the
+/** The eight controls of the filter row in the order the row draws them (R2): Dashboard, which the
  *  page opens on (dispatch://INFRA-5702/spec#b-r-new-page), then Conversation, which is the page
  *  with no filter on, then the four filters in the order of his answer of 2026-11-11 20:57Z, "the
  *  spec, the verification, the plan, the decisions"
- *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). */
+ *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b), then Threads and Documents. */
 export const PRESET_ORDER = freeze([
   "dashboard",
   "conversation",
@@ -298,8 +298,8 @@ export const PRESET_ORDER = freeze([
 ] as const);
 
 /** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
- *  every filter off, or one of the four filters. Each has an address of its own
- *  (`issue-address.ts`). */
+ *  every filter off, one of the four filters, `threads` or `documents`. Each has an address of
+ *  its own (`issue-address.ts`). */
 export type Preset = (typeof PRESET_ORDER)[number];
 
 /** The name of each control of the filter row. Verification is his word for the filter that
@@ -1051,8 +1051,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** What a row's byline, a parent line and a chip say after an edited post's time or words:
    *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
   post_edited: POST_MARK_WORDS.edited,
-  /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
-   *  named (R2). */
+  /** The row of eight controls, Dashboard, Conversation, the four filters, Threads and Documents,
+   *  as a reader hears it named (R2). */
   presets: "Filters",
   /** What the priority says before the key of the issue it is inherited from, after the level:
    *  "P0 · from ACME-1" (`PrioritySource`), in the header's priority and in Details' row. */
