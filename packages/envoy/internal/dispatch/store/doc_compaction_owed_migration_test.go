@@ -47,7 +47,7 @@ func TestTheCompactionOwedMigrationNamesEveryDocumentOfMoreThanOneRow(t *testing
 	}
 
 	nameADefaultAssigneeOnEveryProject(t, store)
-	if err := store.Migrate(ctx); err != nil {
+	if err := migrateSeededThrough(t, store, 20261028195714, "projects", "issues", "artifacts", "doc_updates", "people", "doc_compaction_owed"); err != nil {
 		t.Fatalf("migrate through doc_compaction_owed: %v", err)
 	}
 
