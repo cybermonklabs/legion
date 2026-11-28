@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
@@ -59,9 +61,18 @@ type settingsResponse struct {
 	Fields map[string]string `json:"-" refgen:"store-settings"`
 }
 
-// fixedSettingsFields are the JSON names of settingsResponse's own fields, which no store's field
-// may take (Register refuses one that does).
-var fixedSettingsFields = []string{"store", "secrets_prefix", "judge_keys", "google_exchange_audience", "secret_type_tag", "approver_fields"}
+// fixedSettingsFields are the JSON names of settingsResponse's own fields, read from its tags as
+// encoding/json reads them, which no store's field may take (Register refuses one that does).
+var fixedSettingsFields = func() []string {
+	t := reflect.TypeFor[settingsResponse]()
+	var names []string
+	for i := range t.NumField() {
+		if name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ","); name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
+}()
 
 // MarshalJSON writes r's fields, and then the store's own Fields, as one object.
 func (r settingsResponse) MarshalJSON() ([]byte, error) {
