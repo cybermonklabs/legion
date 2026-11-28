@@ -17,7 +17,7 @@ import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { keepLogged, LoggedEvals, UnnamedEvals } from "./EveryEval";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
-import { releaseFirstPaint } from "./firstPaint";
+import { releaseFirstPaint, releaseJobLists } from "./firstPaint";
 import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
@@ -241,10 +241,11 @@ function drawSection(
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
  *
- * The route that draws it opened its first render's views as the route matched
+ * The route that draws it opened its first paint's views as the route matched
  * (`EvalsTabRoute`, `holdFirstPaint`); once it has mounted, its own views hold those it opened, and
- * it lets go of the route's hold (`releaseFirstPaint`), from an effect, which runs after its
- * sections' own.
+ * it lets go of the route's hold of them (`releaseFirstPaint`), from an effect, which runs after
+ * its sections' own. The CI section's job lists let go of their own views' hold once they draw;
+ * while the tab draws no CI section, it lets go of those too (`releaseJobLists`).
  */
 export function EvalsTab({ project }: { project: string }): ReactNode {
   const queryClient = useQueryClient();
@@ -266,6 +267,10 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   );
   const days = useMemo(() => brushDays(state.brush), [state.brush]);
   const sections = everySourceMissing ? LOGGED_ALONE : sectionsOf(legion, delivery);
+  const ci = sections.some((section) => section.id === "ci");
+  useEffect(() => {
+    if (!ci) releaseJobLists(queryClient);
+  }, [ci, queryClient]);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
   const unserved = useUnservedViews(scope, kinds, legion);
   return (

@@ -1,8 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo } from "react";
 
-import { type ItemsViewParams, itemsViewQuery } from "../../api/queries";
+import { itemsViewQuery } from "../../api/queries";
 import type {
   EvalItemRow,
   EvalItemsResponse,
@@ -26,6 +26,8 @@ import { type ChartModel, type ChartStatistic, dayChartModel } from "./chart-mod
 import { Timing } from "./chart-renderers";
 import { EvalChart } from "./EvalChart";
 import { EvalTable } from "./EvalTable";
+import { releaseJobList } from "./firstPaint";
+import { type JobListId, jobListView, SLOWEST_JOBS } from "./jobLists";
 import { useDrawnMark } from "./useDrawnMark";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
@@ -49,14 +51,6 @@ export const CI_CHARTS: readonly { readonly slug: string; readonly title: string
   { slug: "staging-deploy", title: "Deploy to staging" },
   { slug: "production-deploy", title: "Deploy to production" },
 ];
-
-/** The eval whose job rows the two job lists read. */
-const PR_CI = "pr-ci";
-/** How many of the slowest jobs the list holds, as the Pipeline page's did
- *  (measures.SlowestJobs). */
-export const SLOWEST_JOBS = 5;
-/** As many jobs as one items page holds: every job that failed in the 24 hours. */
-const FAILED_JOBS_LIMIT = 200;
 
 /** The floor the slowest-jobs answer ranked by, as the list names it ("30 timed results"): the
  *  fewest timed results a job needs in the window to be ranked (`min_n`: pr-ci's job series'
@@ -273,7 +267,10 @@ function CiChart({
  *  its table, or what it says while the view is out, refused, or answers no job. Its words and
  *  its empty line are read from its answer (`note`, `empty`), which names the floor a list ranked
  *  by. The commit in which it first draws its answer or its refusal is marked
- *  `dispatch:evals-job-list:<id>` on the page's performance timeline (`useDrawnMark`). */
+ *  `dispatch:evals-job-list:<id>` on the page's performance timeline (`useDrawnMark`). The Evals
+ *  tab's route opened its view as it matched (`holdFirstPaint`); once the list's own observer
+ *  holds it, the list lets go of the route's hold (`releaseJobList`), from an effect, which runs
+ *  after the query's own. */
 function JobList({
   columns,
   empty,
@@ -281,26 +278,17 @@ function JobList({
   note,
   scope,
   title,
-  view,
 }: {
   columns: ColumnDef<EvalItemRow>[];
   empty: (answer: EvalItemsResponse) => string;
-  id: string;
+  id: JobListId;
   note: (answer: EvalItemsResponse | undefined) => string;
   scope: EvalsScope;
   title: string;
-  view: Pick<ItemsViewParams, "sort" | "limit">;
 }): ReactNode {
-  const items = useQuery(
-    itemsViewQuery({
-      compare: null,
-      project: scope.project,
-      repos: scope.repos,
-      slug: PR_CI,
-      window: scope.window,
-      ...view,
-    })
-  );
+  const queryClient = useQueryClient();
+  const items = useQuery(itemsViewQuery(jobListView(id, scope.project, scope.window, scope.repos)));
+  useEffect(() => releaseJobList(queryClient, id), [queryClient, id]);
   const rows = useMemo(() => items.data?.items ?? [], [items.data]);
   useDrawnMark(`dispatch:evals-job-list:${id}`, items.data !== undefined || items.isError);
   return (
@@ -379,7 +367,6 @@ export function CiHealth({
         note={slowestNote}
         scope={scope}
         title="PR CI: slowest jobs"
-        view={{ limit: SLOWEST_JOBS, sort: "median" }}
       />
       <JobList
         columns={failed}
@@ -388,7 +375,6 @@ export function CiHealth({
         note={() => failedNote}
         scope={scope}
         title="PR CI: jobs that failed in the last 24 hours"
-        view={{ limit: FAILED_JOBS_LIMIT, sort: "failures" }}
       />
     </div>
   );
