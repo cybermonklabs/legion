@@ -4,8 +4,8 @@ body: |-
     `lane:<output>` label. A pull request adds a suite's lane label only for a need its body names,
     and takes it off when no check of the issue names that suite's job. The merge queue runs a slow
     suite when the queue's own generator selects it against the queue's base, and the skills point
-    to ci-ok's `not run at this head:` line, which names each held-back suite a pull request did not
-    run.
+    to ci-ok's `not run at this head:` line, which names each held-back suite that a pull request's
+    paths select and that it did not run.
 time: 2026-11-27T07:03:04.751259503Z
 custom:
     Issue: pr5808

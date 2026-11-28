@@ -37,7 +37,7 @@ whole suite is the CI job that runs it.
    its label (`lane:<output>`, never `full-ci`) reruns it on every push, and without the label the
    check reads `absent` or `skipped`. The merge queue runs a slow suite when the queue's own
    generator selects it against the queue's base, and ci-ok's `not run at this head:` line names a
-   held-back job a pull request did not run.
+   held-back job that a pull request's paths select and that it did not run.
 4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
