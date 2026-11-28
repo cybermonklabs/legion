@@ -1590,7 +1590,7 @@ func TestSecretShowOfADeletedSecretNamesTheEarliestPurge(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 	}
-	for _, want := range []string{"deleted: 2026-10-01T12:00:00Z\n", "earliest_purge: 2026-10-08T12:00:00Z (", "at least"} {
+	for _, want := range []string{"deleted: 2026-10-01T12:00:00Z\n", "earliest_purge: 2026-10-08T12:00:00Z (the deletion plus Secrets Manager's 7-day minimum recovery window", "at least"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout %q must contain %q", stdout, want)
 		}
@@ -1786,7 +1786,7 @@ func TestSecretDeleteThenRestoreRereads(t *testing.T) {
 	// delete prints DeleteSecret's own UTC DeletionDate, the exact end of the 30-day duration it
 	// scheduled. DescribeSecret can only answer its DeletedDate, which is the UTC instant delete ran.
 	deadline := aws.ToTime(sent.outputs[0].DeletionDate)
-	if want := aws.ToTime(held.DeletedDate).Add(recoveryWindowDays * 24 * time.Hour); !deadline.Equal(want) {
+	if want := aws.ToTime(held.DeletedDate).Add(30 * 24 * time.Hour); !deadline.Equal(want) {
 		t.Fatalf("DeletionDate = %s, want DeletedDate plus 30*24h = %s", deadline, want)
 	}
 	want := "broker: DOOMED_KEY is deleted in "

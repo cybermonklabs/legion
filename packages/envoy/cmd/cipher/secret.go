@@ -86,10 +86,6 @@ func secretFormNames() string {
 	return names.String()
 }
 
-// recoveryWindowDays is the recovery window delete schedules every deletion with, 30 days: the
-// longest Secrets Manager allows, during which restore brings the secret back.
-const recoveryWindowDays = 30
-
 // sharedRetagRefused is what a refused retag of a shared secret, or of one the person asked to make
 // shared, adds to AWS's own refusal: IAM lets only an administrator set a shared secret's owner or
 // tier.
@@ -582,9 +578,11 @@ func withArticle(secretType string) string {
 	return "a " + secretType
 }
 
-// minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days,
-// which the AWS store adds to a deletion for a listing's EarliestPurge and the lines here name.
-const minRecoveryWindowDays = 7
+// purgeWindowDays is the days from v's deletion to its EarliestPurge: the minimum recovery window
+// the store added to the deletion (secretstore.Listing.EarliestPurge), which the lines here name.
+func purgeWindowDays(v secretView) int {
+	return int(v.EarliestPurge.Sub(*v.Deleted) / (24 * time.Hour))
+}
 
 // formatTime is t in UTC as RFC 3339, or "-" when Secrets Manager answered none.
 func formatTime(t *time.Time) string {
@@ -1261,8 +1259,8 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	// The legend names Secrets Manager's own recovery window, so it is printed only for a row
 	// that has one (EarliestPurge, AWS-only: GCP's expire_time is the exact purge moment, with
 	// no separate recovery window to explain).
-	if slices.ContainsFunc(views, func(v secretView) bool { return v.EarliestPurge != nil }) {
-		fmt.Fprintf(stderr, "EARLIEST_PURGE is the deletion plus Secrets Manager's %d-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.\n", minRecoveryWindowDays)
+	if i := slices.IndexFunc(views, func(v secretView) bool { return v.EarliestPurge != nil }); i >= 0 {
+		fmt.Fprintf(stderr, "EARLIEST_PURGE is the deletion plus Secrets Manager's %d-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.\n", purgeWindowDays(views[i]))
 	}
 	return 0
 }
@@ -1315,7 +1313,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
-			formatTime(view.Deleted), formatTime(view.EarliestPurge), minRecoveryWindowDays)
+			formatTime(view.Deleted), formatTime(view.EarliestPurge), purgeWindowDays(view))
 	case view.Deleted != nil:
 		fmt.Fprintf(stdout, "deleted: %s\n", formatTime(view.Deleted))
 	}
@@ -1512,8 +1510,8 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 // delete, restore
 // ---------------------------------------------------------------------------
 
-// cmdSecretDelete schedules a secret's deletion with the longest recovery window (AWS) or at
-// recoveryWindowDays from now (GCP's expire_time), never forcing it, so restore can bring the
+// cmdSecretDelete schedules a secret's deletion with its store's recovery window (30 days on AWS,
+// as RecoveryWindowInDays, and on GCP, as expire_time), never forcing it, so restore can bring the
 // secret back until the window ends.
 func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	const form = "secret delete"
