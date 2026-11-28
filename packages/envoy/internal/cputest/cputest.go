@@ -3,10 +3,10 @@
 // machine stretches it on either side of a comparison without the call doing more work; CPU time
 // leaves that out. It is not immune to load: a busy machine still slows the process's own CPU time
 // through shared caches and clock frequency, so a comparison still samples each side more than
-// once. pmdoc's linear-time tests, the api's save ladders and the work table of the form of The
-// Spec time calls this way, so it lives here once; it is an ordinary package rather than a _test.go
-// file because Go cannot share test-only code across packages (see internal/stacktest's identical
-// reasoning).
+// once. pmdoc's linear-time tests, the api's save ladders, the api's bounds on the judgment of the
+// form of The Spec and specgraph's linear-time rows time calls this way, so it lives here once; it
+// is an ordinary package rather than a _test.go file because Go cannot share test-only code across
+// packages (see internal/stacktest's identical reasoning).
 //
 // It reads two clocks. Process is the whole process's, every goroutine's and the garbage
 // collector's. OnThread is the clock of the one OS thread a call runs on, which counts that call's
