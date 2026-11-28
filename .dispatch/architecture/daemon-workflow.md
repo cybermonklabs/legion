@@ -47,3 +47,9 @@ Every phase start and every news-only start carries the news, which `workflow.Re
 The opening is decided for each holder in one function, `openingDelivery`, which `tellGateMoved` calls: a holder owed news is sent no role message, its `opening_owed` is set, and the news task leads with the opened sentence;
 every other holder is sent the opened role message, with the clause that nothing its issue holds changed where its told row shows it.
 The closed message goes to every holder as before.
+
+An issue that a project's experiment drew into a group that sets how it is done takes no plan from its owner: `internal/workflow`'s `takesNoPlan` is true for the groups `default` and `owner-alone`, the word of the issue's own `experiment_assignments` row (`groupOf`), never of the file.
+Its first step (`planFirstStep`) passes over every plan its owner or an earlier owner gave (`passOverOwners`, `passOverEarlierOwners`), tells them in one `plan-not-taken` notice (`tellNotTaken`), and writes the plan `defaultRows` chooses for the group: version 0 of the source `default`, with no document and no giver, and one task `default`.
+That task runs the project's default steps for `default`, and for `owner-alone` it runs `plan.OwnerAloneSteps`, the one step `implementer:owner`, which the issue's owner does.
+`register_plan` (`planGiven`, through `versionRefusal`) and `stop_task` (`taskStopped`) of such an issue are refused `409 PLAN_NOT_TAKEN`, and the refusal starts with `intake.GroupClause`'s sentence, which names the variant, the experiment and how its issues are done.
+The one version `versionRefusal` takes is a later version that changes nothing but the text of the running task `default` (`retextsAlone`), stored with the source `default`, since the issue still runs the steps Legion chose.

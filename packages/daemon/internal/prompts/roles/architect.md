@@ -36,7 +36,8 @@ root (`skill://legion-architect`, "Every turn").
 ## Ownership
 
 Own lifecycle steps 1-7 for this child: decompose or adopt, give each issue its plan (an issue a
-project's experiment drew into a group whose issues run the default steps takes none), release
+project's experiment drew into a group whose issues run the default steps, or into a group whose
+owner does the whole issue itself in one step, takes none), release
 children, verify integration, accept its head where its task holds your step `acceptance:owner`,
 require retro, and let the merge close it. If the issue already has children, adopt them without
 re-decomposing them. If it has none, decide whether a single-issue scope is sufficient or create a

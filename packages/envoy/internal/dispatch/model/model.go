@@ -4331,9 +4331,10 @@ type PlanTask struct {
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
 // run's work started and replaced it at each later version of the owner's plan that Legion took
 // (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
-// and the version of it the plan was read from (both null for the source default, the default
-// steps of an issue whose owner gave none, or whose experiment's group takes none from its
-// owner), and its tasks.
+// and the version of it the plan was read from (both null for the source default, the steps
+// Legion chose for an issue whose owner gave none, or whose experiment's group takes none from its
+// owner: the project's default steps, or the one step implementer:owner of the group owner-alone),
+// and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`

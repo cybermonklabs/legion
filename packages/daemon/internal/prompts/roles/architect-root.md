@@ -99,8 +99,9 @@ plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_ga
 child its plan before `release_children` releases it
 (`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
 step, and a child's first step can start in the admission pass that releases it. An issue that a
-project's experiment drew into a group whose issues run the default steps takes no plan
-(`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Once the spec's ask
+project's experiment drew into a group whose issues run the default steps, or into a group whose
+owner does the whole issue itself in one step, takes no plan (`PLAN_NOT_TAKEN`), and
+`read_record` shows a recorded issue's group. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
 with `dispatch request-approval --include-verification`. A view on an approved ancestor
 holds no `requirement` block and registers on its approval instead

@@ -923,9 +923,12 @@ export function createLegionTool(deps: {
         "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
         "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
         "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
-        "An issue whose experiment's group runs the project's default steps takes only a version that changes just the text of its " +
-        "running task default. Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and " +
-        "the same plan given again gets the same answer. " +
+        "An issue whose experiment's group is default, whose issues run the project's default steps, or owner-alone, whose owner " +
+        "does the whole issue itself in one step, takes only a version that changes just the text of its running task default. " +
+        "Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and the same plan given " +
+        "again gets the same answer. An issue of owner-alone runs one task, default, of one step, implementer:owner: you, its " +
+        "owner, do the whole issue yourself in that step, in your own session, and then you do its retro; Legion starts no " +
+        "planner, implementer, tester or reviewer for it. " +
         "stop_task (issue, task) stops one task of the plan Legion runs for a recorded issue: its running step stops, and the issue is " +
         "held, `holdReason` task-stopped, until a later version of the plan, given with register_plan, changes or replaces that task, " +
         "or, on a root, a person sets the root todo; the task then starts at its first step (a task that never started waits for its " +
@@ -933,7 +936,7 @@ export function createLegionTool(deps: {
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
         "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since its owner " +
+        "workflow (TREE_LINGERING), every task of an issue whose experiment's group is default or owner-alone, since its owner " +
         "stops none of its tasks (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
         "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered) and a stop " +
         "of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also " +

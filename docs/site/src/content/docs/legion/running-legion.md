@@ -689,20 +689,55 @@ What each part is for:
   ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
   "Operator configuration").
   Before you turn one on, write its [pre-registration](#pre-registering-an-experiment).
-- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner`, `default` or
+  `owner-alone`.
   An issue of `owner` takes the plan its owner gives with `register_plan`.
   An issue of `default` runs the project's `default_steps`.
-  Legion takes from its owner only a version that changes nothing but the text of its running
-  task `default`.
+  An issue of `owner-alone` runs one task, `default`, of one step, `implementer:owner`: the
+  issue's owner, the architect that owns it, does the whole issue itself in that step, in its own
+  session, and then does the issue's retro.
+  Legion starts no planner, implementer, tester or reviewer for it; Legion's merger merges it, and
+  the production check after the merge runs, as for every issue.
+  From the owner of an issue of `default` or `owner-alone`, Legion takes only a version that
+  changes nothing but the text of its running task `default`.
   Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
-  owner are answered `409 PLAN_NOT_TAKEN`.
-  A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
-  notice.
+  owner are answered `409 PLAN_NOT_TAKEN`, with a sentence that names the issue's variant, its
+  experiment and how its issues are done.
+  A plan its owner or an earlier owner gave before is passed over at its first step and told in
+  one `plan-not-taken` notice.
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life,
   whatever the file says later.
-  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
-  most one experiment of a project sets it; `owner-alone`, the owner doing the whole issue itself
-  in one step, is refused, since this release does not carry it out.
+  An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, at most
+  one experiment of a project sets it, and `experiments.memory` sets none.
+  `mode: random` draws the groups by the weights of their arms, so this experiment puts half of
+  the project's new issues in the group whose owner gives the plan, a quarter in the default steps
+  and a quarter in `owner-alone`:
+
+  ```yaml
+  projects:
+    WIDGETS:
+      experiments:
+        planning:
+          mode: random
+          unit: issue
+          variants:
+            - {name: owner, plan: owner, weight: 2}
+            - {name: default, plan: default, weight: 1}
+            - {name: owner-alone, plan: owner-alone, weight: 1}
+  ```
+
+  The loader refuses a word that is none of the three
+  (`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner, default or owner-alone (got "…")`),
+  an arm that names no `plan` beside one that does, such an experiment at `unit: tree`, a second
+  experiment of the project that sets `plan`, and an `experiments.memory` whose arms name it;
+  `legion config check` makes each of these refusals, and
+  [Troubleshooting](/legion/legion/troubleshooting/#the-daemon-will-not-start) gives each one's
+  text and what to change.
+  A release before the one that takes `owner-alone` refuses that word at load and does not start:
+  before you pin one, take out the arm whose `plan` is `owner-alone`, or change its word to `owner`
+  or `default`, and keep `plan` in the other arms
+  ([Running Legion on Kubernetes](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md),
+  "Rolling back the release whose owner does a whole issue itself in one step").
 - **`projects.<KEY>.commit_issue_trailer_repos`** (optional) names the repositories whose commits
   carry their issue key:
 

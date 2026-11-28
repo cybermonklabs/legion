@@ -8,7 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
-An issue whose experiment's group runs the project's default steps is the exception ("What Legion refuses", below).
+An issue whose experiment's group is `default` or `owner-alone` is the exception ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -52,10 +52,13 @@ Give each task block an id of lowercase letters, digits and hyphens, starting wi
 Fix each reason and give a new version; the next refusal names what is left.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
-An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
-Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+An issue whose experiment's group is `default` or `owner-alone` takes no plan: give it none.
+An issue of `default` runs the project's default steps.
+An issue of `owner-alone` runs one task, `default`, of one step, `implementer:owner`: you, its owner, do the whole issue yourself in that step, in your own session, and then you do its retro.
+Legion starts no planner, implementer, tester or reviewer for it; its merger merges it, as for any issue.
+Once the daemon records such an issue, `register_plan` and `stop_task` on it answer `409 PLAN_NOT_TAKEN`, which is no fault of the plan, and name the group.
 The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
-`read_record` shows such an issue: one of its `assignments` has `plan` `default`.
+`read_record` shows such an issue: one of its `assignments` has `plan` `default` or `owner-alone`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
@@ -67,7 +70,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`, and `running` for a task that runs.
   A project's experiment draws the child when the daemon records it.
-  If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
+  If the child's group is `default` or `owner-alone`, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 

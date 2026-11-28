@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  A project's experiment can draw an issue into a third group: an arm's `plan`
+  (`projects.<KEY>.experiments.<name>.variants[].plan`) may now be `owner-alone`. Such an issue
+  runs one task, `default`, of one step, `implementer:owner`: the architect that owns the issue
+  does the whole issue itself in that step, in its own session, and then does the issue's retro.
+  Legion starts no planner, implementer, tester or reviewer for it; Legion's merger merges it, and
+  the production check after the merge runs, as for every issue. As for an issue of `default`,
+  Legion takes from its owner only a version that changes nothing but the text of its running task
+  `default`, answers every other `register_plan` and every `stop_task` with
+  `409 PLAN_NOT_TAKEN`, naming the group, and passes over a plan given before the issue's first
+  step, told in one `plan-not-taken` notice. The log line of each plan passed over is now
+  `workflow: a plan is not taken: the issue's group sets how it is done`. The loader refuses a
+  word that is none of the three with `<arm>.plan must be owner, default or owner-alone
+  (got "<word>")`.
+
+  No migration and no daemon API contract change. A release before this one refuses
+  `plan: owner-alone` at load and does not start: before you pin one, take out the arm whose
+  `plan` is `owner-alone`, or change its word to `owner` or `default`, and keep `plan` in the
+  other arms. Each issue keeps its row, and that release runs an issue of `owner-alone` as an
+  issue of no experiment. The Kubernetes guide says what the rollback costs.
+time: 2026-11-28T19:06:14Z
+custom:
+    Issue: INFRA-4360

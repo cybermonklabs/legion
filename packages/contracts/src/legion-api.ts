@@ -2569,8 +2569,8 @@ const legionAnsweredPause = z.object({
  * decision about the act that runs now. A plan whose content the daemon does not take is answered
  * `409 PLAN_REFUSED`, whose `error` holds its reasons in order, the first reasons of each kind of
  * cause and one more that counts the rest of that kind; the body's `reasons` lists the same reasons
- * by task, which `LegionErrorResponse` strips. An issue whose experiment's group runs the project's
- * default steps takes only a version that changes nothing but the text of its running task
+ * by task, which `LegionErrorResponse` strips. An issue whose experiment's group is `default` or
+ * `owner-alone` takes only a version that changes nothing but the text of its running task
  * `default`. Every other plan of it is answered `409 PLAN_NOT_TAKEN` (contract 220), a sentence
  * naming the group and no reasons. The reader takes every field as optional, since no plugin code
  * reads one: the `legion` tool hands the answer to its agent whole, so a field this schema leaves
@@ -3043,8 +3043,8 @@ export const LegionPlanRegisterRequest = z.strictObject({
  * (`ISSUE_OUTSIDE_TREE`), a stop of a run of the issue that ended before the daemon applied it
  * (`TASK_STALE_GENERATION`), a stop of a root that waits on a person before its first step
  * (`TASK_AWAITING_PERSON`), which a later version of the plan changes, or which stops once the
- * person has answered, every task of an issue whose experiment's group runs the project's
- * default steps, since its owner stops none of its tasks (`PLAN_NOT_TAKEN`, contract 220), and,
+ * person has answered, every task of an issue whose experiment's group is `default` or
+ * `owner-alone`, since its owner stops none of its tasks (`PLAN_NOT_TAKEN`, contract 220), and,
  * since entry 20261125161152 (gate-basis), a stop of a parent that waits in `awaiting_children` on its open Dispatch
  * children (`WAITING_ON_CHILDREN`, naming them and what the architect can do about each). A stop
  * on an issue that meets both is answered `PLAN_NOT_TAKEN`, since the daemon reads the issue's

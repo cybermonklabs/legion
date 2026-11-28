@@ -3203,6 +3203,32 @@ Each other later version of the plan and each `stop_task` on the issue is answer
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release whose owner does a whole issue itself in one step
+
+This release takes a third word for an arm's `plan` (`projects.<KEY>.experiments.<name>.variants[].plan`), `owner-alone`: an issue drawn into it runs one task, `default`, of one step, `implementer:owner`, in which the architect that owns the issue does the whole issue itself, in its own session, and then does the issue's retro.
+It adds no migration, since `experiment_assignments.plan` already takes the word, and it changes no daemon API contract, so the rollback runs no statement and has no contract to undo.
+
+**Take `owner-alone` out of `legion.yaml` before the earlier image is pinned.**
+The earlier release's loader refuses the word, naming the arm (`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.`), so that daemon does not start while one arm names it.
+Take out the arm whose `plan` is `owner-alone`, or change its word to `owner` or `default`.
+Keep `plan` in the other arms: the earlier release takes `owner` and `default`, and refuses an experiment that names `plan` in one arm and not in another.
+Where taking the arm out would leave the experiment one arm under a mode other than `off`, which the loader refuses, change the word instead.
+`legion config check` on the earlier image then reads the file clean.
+A rollback below the release whose experiment sets how each issue is done takes that release's step instead, which takes `plan` out of every arm ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
+
+Each issue keeps its row of `experiment_assignments`: no statement deletes or rewrites it.
+What the rollback costs: the earlier release reads no group from a row whose `plan` is `owner-alone`, so it runs such an issue as an issue of no experiment.
+It takes each later plan the issue's owner gives with `register_plan`, and each `stop_task` of its owner.
+A run whose first step already ran keeps its one step, `implementer:owner`, since its first step does not run again, until its owner stops that task and gives a plan that replaces it.
+A run whose first step has not run takes the newest plan its owner gave, or the project's default steps where its owner gave none.
+The earlier release draws each new issue from the file it reads, so it draws no issue into `owner-alone`.
+
+Rolling forward again does not undo what the earlier release took.
+An issue's row reads `owner-alone` again, so Legion again takes from its owner no `stop_task` and no plan but a version that changes nothing but the text of a running task; each other version and each stop is answered `409 PLAN_NOT_TAKEN`.
+A plan its owner gave while the earlier release ran, and that a run took, goes on with that run, since its first step does not run again, and so does a run that release started on the project's default steps.
+That lasts until the issue's next run, whose first step passes the owner's plans over and runs the one step `implementer:owner`, or until the issue leaves the workflow, which ends the run.
+Put the `owner-alone` arm back in `legion.yaml` to draw new issues into it again.
+
 #### Rolling back the release that names the variant on each step record
 
 This release adds no outbox kind and no migration.
@@ -11239,12 +11265,14 @@ each issue's pod (every role of it alike) and the image probe's.
   (beside the block's other volumes and mounts).
 
 - **An arm's `plan`: how the issues drawn into it are done.**
-  `owner`'s issues take the plan their owner gives with `register_plan`, and `default`'s issues run the project's `default_steps`.
-  Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`.
-  Once the daemon records an issue drawn into `default`, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`.
+  `owner`'s issues take the plan their owner gives with `register_plan`, `default`'s issues run the project's `default_steps`, and `owner-alone`'s issues each run one task, `default`, of one step, `implementer:owner`.
+  In that step the issue's owner, the architect that owns it, does the whole issue itself, in its own session, and then does the issue's retro: Legion starts no planner, implementer, tester or reviewer for it, and Legion's merger merges it and the production check after the merge runs as for every issue.
+  Legion takes from the owner of a `default` or an `owner-alone` issue only a version that changes nothing but the text of its running task `default`.
+  Once the daemon records an issue drawn into `default` or `owner-alone`, every other `register_plan` and every `stop_task` of its owner are answered `409 PLAN_NOT_TAKEN`, with a sentence that names the group.
   A plan its owner gave before is passed over at the issue's first step and told in a `plan-not-taken` notice.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at most one experiment of a project sets it;
-  the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, a word other than those two, and `owner-alone`, the owner doing the whole issue itself in one step, which this release does not carry out.
+  the loader refuses an arm that names none beside one that does, such an experiment at `unit: tree`, a second experiment of the project that sets it, and a word other than those three (`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner, default or owner-alone (got "…")`).
+  A release before the one that takes `owner-alone` refuses that word, so a rollback to one changes the file first ([Rolling back the release whose owner does a whole issue itself in one step](#rolling-back-the-release-whose-owner-does-a-whole-issue-itself-in-one-step)).
   The draw records the arm's `plan` beside the arm, and the issue keeps it for its whole life, whatever the file says later.
 
 - **Which arm each model call ran in.**

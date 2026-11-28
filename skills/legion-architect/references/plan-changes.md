@@ -27,8 +27,8 @@ Follow them there. This reference does not repeat them.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: for a child under your own issue, your own status write in Dispatch, by the rules for ending a child in your role prompt; `dispatch ask` on the root for a root.
   When the stopped task is your own issue's, as a child's architect, send the end of that work to the architect above you with `envoy_publish`: the daemon sets back your status write on your own issue.
-  On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`).
-  To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the default steps at their first step.
+  On an issue whose experiment's group is `default` or `owner-alone`, no later version starts the stopped task (`PLAN_NOT_TAKEN`): Legion takes from you only a version that changes nothing but the text of a running task `default`.
+  To run such a child under your own issue again, restart it (`backlog`, then `rerun_child`): it starts the steps of its group at their first step, the project's default steps or the one step `implementer:owner`.
 
 - **`retro-held`:** a parent's task passed its last step, which is not your `acceptance:owner` step, while issues beneath it are still in the workflow.
   Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.
@@ -40,5 +40,5 @@ Follow them there. This reference does not repeat them.
   In the first, an earlier owner of the issue gave the plan.
   Its reason names the version, who gave it, and the plan the first step runs: yours or the default steps.
   To run the earlier plan, `stop_task` the task that runs now, then give the earlier plan again with `register_plan` as your own.
-  In the second, the reason names the issue's group, whose issues run the project's default steps.
+  In the second, the reason names the issue's group, whose issues run the project's default steps or whose owner does the whole issue itself in one step.
   Start nothing for it: that issue takes no plan (`skill://legion-architect/references/plan.md`, "What Legion refuses").

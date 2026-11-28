@@ -134,8 +134,9 @@ const (
 	AttributeTasks      = "tasks"
 )
 
-// The two sources of a plan: the owner's document, or the default steps of an issue whose owner
-// gave none, or whose experiment's group takes none from its owner.
+// The two sources of a plan: the owner's document, or the steps Legion chose for an issue whose
+// owner gave none, or whose experiment's group takes none from its owner: the project's default
+// steps, or the one step implementer:owner of an issue of the group owner-alone.
 const (
 	PlanSourceDefault = "default"
 	PlanSourceOwner   = "owner"
