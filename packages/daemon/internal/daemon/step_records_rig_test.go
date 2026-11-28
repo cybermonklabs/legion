@@ -1140,7 +1140,7 @@ func (c *stepClaimant) reconnect() {
 func (c *stepClaimant) attach(launch runtime.SpawnSpec) {
 	t := c.r.t
 	t.Helper()
-	if launch.ResumeSessionFile != "/sessions/"+c.session+".jsonl" {
+	if launch.ResumeSessionFile != c.sessionFile() {
 		c.session = "ses_" + string(c.role) + "_" + randomSuffix(t)[:6]
 	}
 	c.r.built.mu.Lock()
@@ -1504,7 +1504,7 @@ func (c *stepClaimant) register(bootToken string) string {
 	t := c.r.t
 	t.Helper()
 	status, body := c.r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: bootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
+		BootToken: bootToken, SessionID: c.session, OmpSessionFile: c.sessionFile(),
 		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
@@ -1516,6 +1516,9 @@ func (c *stepClaimant) register(bootToken string) string {
 	}
 	return registered.Secret
 }
+
+// sessionFile is the session file of c's session, which its agent registers.
+func (c *stepClaimant) sessionFile() string { return "/sessions/" + c.session + ".jsonl" }
 
 // ready is the claimant's agent saying it is ready at generation, its launch's.
 func (c *stepClaimant) ready(generation uint64) {
@@ -1599,26 +1602,13 @@ func (c *stepClaimant) exit(final bool) {
 	})
 }
 
-// relaunched is the pane of the launch exit waited for. A counting shim connects with the new
-// launch's boot token. The agent registers in the same session and says ready at the new
-// generation. The new launch counts from zero, its read number too. The daemon then sends the task
-// the claim held again, which take takes.
+// relaunched is the pane of the launch exit waited for, the claim's latest, coming up in it as
+// attach says: it counts from zero, its read number too, and its agent registers in the session
+// the launch resumes and says ready at the new generation. The daemon then sends the task the
+// claim held again, which take takes.
 func (c *stepClaimant) relaunched() {
-	t := c.r.t
-	t.Helper()
-	launch := lastLaunch(t, c.r.rt, c.token)
-	c.r.built.mu.Lock()
-	address := c.r.built.address
-	c.r.built.mu.Unlock()
-	sh := dialCountingShim(t, address, launch.BootToken)
-	c.bootToken, c.secret = launch.BootToken, c.register(launch.BootToken)
-	c.mu.Lock()
-	c.sh, c.open, c.inTurn = sh, nil, false
-	c.counts, c.outsideForm, c.overflowed, c.read = nil, 0, false, 0
-	c.mu.Unlock()
-	d := c.r.d
-	sh.serve(func() { c.serve(sh, d) })
-	c.ready(launch.Generation)
+	c.r.t.Helper()
+	c.attach(lastLaunch(c.r.t, c.r.rt, c.token))
 }
 
 // disconnect closes the shim's connection while its process lives on. No probe is scripted, so

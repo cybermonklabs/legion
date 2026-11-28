@@ -80,10 +80,10 @@ func (r *ownerStepsRig) checkOpened() bool {
 }
 
 // lookOpens waits for the merge of the walk's issue to open its production check, the first look
-// open for the tester while the issue is done, and for c, the tester's claimant, to be told that
-// look, which its turn then takes up. A launch of c's claim after the one its pane came up in is the
-// look's start resuming the claim, which the close had suspended: that launch must resume c's own
-// session, and its pane comes up in it (reattach).
+// open for the tester while the issue stands in verifying, its close waiting for the check, and
+// for c, the tester's claimant, to be told that look, which its turn then takes up. A launch of c's
+// claim after the one its pane came up in is the look's start resuming the claim, which the close
+// had suspended: that launch must resume c's own session, and its pane comes up in it (reattach).
 func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	t := r.t
 	t.Helper()
