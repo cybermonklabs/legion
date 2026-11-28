@@ -965,7 +965,7 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, r *http.Request
 		WriteJSON(w, status, statusChangeConflict{Code: body.Code, Error: body.Error, Issues: body.Issues, Changed: changed})
 		return
 	}
-	refused := &errorAnswer{header: http.Header{}, status: http.StatusOK}
+	refused := &errorAnswer{outer: w, header: http.Header{}, status: http.StatusOK}
 	s.writeAuthenticationError(refused, r, err)
 	var body errorBody
 	if decodeErr := json.Unmarshal(refused.body.Bytes(), &body); decodeErr != nil {

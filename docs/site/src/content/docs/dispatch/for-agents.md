@@ -60,7 +60,7 @@ A broker that predates sign-ins knows no such refusal, and the command prints it
 The command prints a code.
 The person opens Dispatch's **Machine login** page (`/credentials/machine`), types the code, reads what the session or tool asks for, and approves the scopes they tick.
 Whatever is ticked, the session writes in Dispatch and works on Envoy as its own session within its person's projects; `person` adds acting as the person.
-A session that must set an issue's priority to P0 asks for `p0` too (`--scope person,p0`); the page shows **Set P0** unticked, and the sign-in holds `p0` only where the person ticks it.
+A session that must make work P0 asks for `p0` too (`--scope person,p0`): to set P0, to move work under a P0 issue, to clear the priority of work under one, or to file work under one whose architect it is not; the page shows **Set P0** unticked, and the sign-in holds `p0` only where the person ticks it.
 `--scope none` asks for no scope: the session reaches no route that needs `person`.
 A sign-in never holds `approve`, enrolls no session at the secrets broker and reads no secret.
 Each session of the machine then sets `AGENT_SECRETS_MACHINE_IDENTITY=device-login` beside `AGENT_SECRETS_URL`, and reads no token.

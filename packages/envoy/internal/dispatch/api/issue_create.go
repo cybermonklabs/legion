@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -235,6 +236,17 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	// A create with no priority of its own under a parent that reads P0 makes its new issue P0 by
+	// the priority it takes from that parent, which needs the p0 scope unless the writer's session
+	// is the parent's architect (refuseNewChildP0WithoutScope). It is asked here first, on the
+	// pool, after the scoped caller's read of its parent above and before the near-copy gate, so a
+	// refused create writes no near_copy_checks row; the check in the transaction below decides.
+	if parentKey != "" && priority == nil {
+		if err := refuseNewChildP0WithoutScope(r.Context(), s.deps.Store.Pool, caller, parentKey); err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+	}
 	// A create names a person or nobody: no assignee key and a JSON null both leave assignee nil,
 	// and defaultAssignee below fills it in, so a new issue always has somebody on it. Only the
 	// PATCH clears an issue's assignee.
@@ -350,7 +362,18 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 			s.writeHandlerError(w, r, err)
 			return
 		}
-
+		// The p0 check of a new issue with no priority under a P0 parent again, under the
+		// dependency lock that every write of a priority or a parent takes, so the chain above
+		// the parent is the one this create commits under: this is the check that decides. Like
+		// the first check, on the pool, it comes before the check of who writes an issue Legion
+		// runs (refuseSpecWriter), so a session that is no architect of the parent meets the p0
+		// refusal.
+		if priority == nil {
+			if err := refuseNewChildP0WithoutScope(r.Context(), tx, caller, parentKey); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
 		// components or legion label: the chain's parent step (defaultAssignee) reads only a
 		// parent of the new issue's own project, so such an issue falls to its own project's
@@ -450,10 +473,10 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 	ledger.WroteVersionText(artifactID, markdown)
 	// documentReadBack is the rendering the seed stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
-	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
+	// the same markdown again (docs.RecordWrittenTaskProgress, documentBlocksFor).
 	documentReadBack := ledger.ReadBackOf(artifactID, markdown)
 	// The count is queued after the version's insert, so it names that version (LEGION-542).
-	if err := recordDocumentTaskProgress(documentCtx, tx, artifactID, documentReadBack, markdown); err != nil {
+	if err := docs.RecordWrittenTaskProgress(documentCtx, tx, artifactID, documentReadBack, markdown); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

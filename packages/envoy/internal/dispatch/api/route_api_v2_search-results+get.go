@@ -15,6 +15,6 @@ var _ = declareRow(func(s *server) routeRow {
 		Shape: routeShape{Status: http.StatusOK, Response: searchResultsV2{}},
 		List:  listBounds{Default: searchDefaultLimit, Max: searchMaxLimit},
 		Refusals: listRefusals(queryProjectMalformedRefusal, numberProjectMalformedRefusal, issueStatusInvalidRefusal,
-			searchAuthorInvalidRefusal, valuePastBoundRefusal),
+			searchAuthorInvalidRefusal, valuePastBoundRefusal, searchTimedOutRefusal),
 	}
 })

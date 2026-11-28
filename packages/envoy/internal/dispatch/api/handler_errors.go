@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -115,6 +117,27 @@ type editLostError struct {
 	Suggestion   *string       `json:"suggestion,omitempty"`
 }
 
+// closedByClient reports whether err failed the request w answers because the request's own
+// client closed it before the answer (a page that navigated away, a search the bar replaced), and
+// when it did, gives the request's line status 499 (accesslog.MarkClosedByClient) and logs the
+// one debug line that stands in for the ERROR line a server fault writes. The caller still
+// answers the request as it answers any other failure, so a client that only half-closed its side
+// and still reads gets the error rather than an empty 200 that would read as success (net/http
+// ends the request's context on that half-close too). The debug line carries no part of the
+// error: its chain carries whatever the request wrapped it in, the caller's own identity among
+// it, and the request line already names the route and the caller (CodeQL
+// go/clear-text-logging). A cancel the client did not cause - a handler's own context, the
+// server's lifetime - leaves the request's context live and reports false, as does a keyed
+// write, whose handler runs on in a context of its own and answers a writer that hides the
+// request's.
+func closedByClient(w http.ResponseWriter, err error) bool {
+	if !errors.Is(err, context.Canceled) || !accesslog.MarkClosedByClient(w) {
+		return false
+	}
+	slog.Debug("dispatch: API request closed by its client")
+	return true
+}
+
 // deletedPostError is the 409 every write that would put text on a post its author withdrew
 // answers, and the one place that names that refusal's code and its words: a reply under the
 // post, an edit or a delete of it, an accept or a reject of its suggestion, a send or a reply
@@ -126,6 +149,9 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
+	// Only what the operator reads changes for a request its own client closed: its line says
+	// 499 and no ERROR line calls it a server fault (closedByClient).
+	closed := closedByClient(w, err)
 	// A refusal of the form of The Spec carries every finding beside its words, so it is written
 	// whole, at 409 SPEC_FORM (spec_form.go), under the name and the status r's version answers it
 	// with.
@@ -150,7 +176,7 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 		}
 		writeError(w, r, apiErr.code, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if name, status, _ := codePair(requestAPIVersion(r), apiErr.code); status == http.StatusInternalServerError {
+		if name, status, _ := codePair(requestAPIVersion(r), apiErr.code); status == http.StatusInternalServerError && !closed {
 			slog.Error("dispatch: API handler failed", "code", name, "error", err)
 		}
 		return
@@ -316,14 +342,19 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 	writeError(w, r, apicode.InternalError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
+	if !closed {
+		slog.Error("dispatch: API handler failed", "error", err)
+	}
 }
 
 // errorAnswer records what an error writer (writeHandlerError, writeAuthenticationError) writes:
 // its status, its headers and its body, for a caller that answers it in a form of its own. A test
 // hook sends it as a process's acknowledgement (runTestHook), and the status-change route answers
-// it with the entries of the steps that committed (writeStatusChangeRefusal).
+// it with the entries of the steps that committed (writeStatusChangeRefusal). outer is the writer
+// of the request it answers for, where there is one: Unwrap hands it to closedByClient's walk, so
+// a request its client closed is logged 499 with no ERROR line through this writer too.
 type errorAnswer struct {
+	outer  http.ResponseWriter
 	header http.Header
 	status int
 	body   bytes.Buffer
@@ -332,6 +363,9 @@ type errorAnswer struct {
 func (a *errorAnswer) Header() http.Header         { return a.header }
 func (a *errorAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
 func (a *errorAnswer) WriteHeader(status int)      { a.status = status }
+
+// Unwrap is the request's writer (outer), nil where errorAnswer answers for no request.
+func (a *errorAnswer) Unwrap() http.ResponseWriter { return a.outer }
 
 // ambiguousTargetError is the 409 TARGET_AMBIGUOUS body a write answers a quote or heading
 // anchor that resolved in several places.

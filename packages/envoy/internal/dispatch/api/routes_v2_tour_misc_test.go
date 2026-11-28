@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -102,8 +104,17 @@ func miscTourSteps() []tourStep {
 			},
 		},
 		{
+			// The coverage route answers 503 SEARCH_COVERAGE_NOT_FILLED until a fill of its counts
+			// has ended, and no test server runs the counts loop: the step fills them once for the
+			// tour's database (fillCoverageCounts), as the read-class drive does, and the triggers
+			// of every write after it keep them.
 			Method: http.MethodGet, Pattern: "/search-coverage", Status: http.StatusOK,
-			Setup: asAlice(nil),
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				if _, err := embedqueue.Coverage(t.Context(), tour.database, ""); errors.Is(err, embedqueue.ErrCoverageNotFilled) {
+					fillCoverageCounts(t, tour.database)
+				}
+				return tourRequest{As: alice}
+			},
 		},
 		{
 			Method: http.MethodGet, Pattern: "/going-actions", Status: http.StatusOK,

@@ -70,7 +70,7 @@ People sign in through a Cognito sign-in pool or with Google directly by default
 names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
 assertion Google Cloud's Identity-Aware Proxy signs instead
 ([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
-`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
+`DISPATCH_IDENTITY=header:X-Dispatch-User` names people by the `X-Dispatch-User` header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.
@@ -864,7 +864,8 @@ read adds among them), and from that release on each answer, but dev sign-in's `
 and the redirect of a path that is not clean (`/api/v1//issues`), carries a `Deprecation` header and a
 `Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it, or
 `GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
-route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release), for an unknown
+route lands (`GET` and `POST /api/v1/projects/{key}/results` and
+`GET /api/v1/artifacts/{id}/spec-form` at that release), for an unknown
 path, for the cookie-origin guard's refusal and for the `410` after the end below. At that
 release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the
 Legion daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and

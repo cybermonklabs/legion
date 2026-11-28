@@ -1431,7 +1431,8 @@ variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
 this input says, every `/api/v1` answer of such a release carries a `Deprecation` header and a
 `Link` header: a route's own answer names the `/api/v2` route that answers for it, or
 `GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
-route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release), and an unknown
+route lands (`GET` and `POST /api/v1/projects/{key}/results` and
+`GET /api/v1/artifacts/{id}/spec-form` at that release), and an unknown
 path's answer, the cookie-origin guard's refusal and, once the end has passed, the `410` name
 `GET /api/v2`. Arm the end only once no client the deployment runs still calls `/api/v1`: at that
 release the web app, the `dispatch` command, the Oh My Pi, Claude Code and Codex plugins, the

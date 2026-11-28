@@ -117,6 +117,9 @@ var (
 	// ApprovalWaitsOnPerson is a renewed approval request that would rewrite the card of a request
 	// that waits on its person.
 	ApprovalWaitsOnPerson = Condition{"approval request rewritten while it waits on its person"}
+	// SpecFormBroken is an approval request, or an approval, of a document a root of The Spec
+	// covers whose text breaks the form of The Spec (refuseSpecForm).
+	SpecFormBroken = Condition{"text breaks the form of The Spec"}
 	// DocumentOpenInRoom is the rebuild of a document a room holds open.
 	DocumentOpenInRoom = Condition{"document open in a room"}
 	// DocumentHistoryLoads is the rebuild of a document whose history loads.
@@ -486,6 +489,14 @@ var (
 	NumberProjectMalformed = Condition{"number project malformed"}
 	// SearchCoverageTimedOut is a search coverage whose one statement ran past its bound.
 	SearchCoverageTimedOut = Condition{"search coverage timed out"}
+	// SearchCoverageCountsUnfilled is a search coverage asked before the server's first fill of
+	// the counts it reads has ended.
+	SearchCoverageCountsUnfilled = Condition{"search coverage counts unfilled"}
+	// SearchCoverageCountsBehind is a search coverage asked while more writes wait to be folded
+	// into the counts it reads than the read reads.
+	SearchCoverageCountsBehind = Condition{"search coverage counts behind"}
+	// SearchTimedOut is a search whose keyword or meaning statement ran past its bound.
+	SearchTimedOut = Condition{"search timed out"}
 	// CredentialNamesNobody is a going request from a credential that names nobody, whose run
 	// no reader would be served.
 	CredentialNamesNobody = Condition{"going credential names nobody"}

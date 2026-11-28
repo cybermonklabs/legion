@@ -52,6 +52,7 @@ import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
 import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import {
@@ -804,12 +805,12 @@ const MOUNTS: readonly Mount[] = [
     name: "PriorityControl and PriorityEditor, both variants, set and not",
     node: () => (
       <>
-        <PriorityControl issueKey="CORE-1" priority={0} />
-        <PriorityControl issueKey="CORE-2" priority={null} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 0 })} />
+        <PriorityControl issueKey="CORE-2" priority={issuePriority({ priority: null })} />
         <PriorityEditor
           issueKey="CORE-3"
           variant="header"
-          write={{ ...idlePriorityWrite, shown: 1 }}
+          write={{ ...idlePriorityWrite, shown: issuePriority({ priority: 1 }) }}
         />
         <PriorityEditor issueKey="CORE-4" variant="header" write={idlePriorityWrite} />
       </>

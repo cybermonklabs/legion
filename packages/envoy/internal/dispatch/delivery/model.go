@@ -238,28 +238,35 @@ type DeliveryRunJobView struct {
 
 // DeliveryPRView is one population pull request on `GET /api/v1/delivery/timeline` and
 // `GET /api/v2/delivery/timeline` -- LEGION-294's facts plus what the server derives at read time
-// from the stored facts: DeployedStatus, the linked issue's title, priority and effective
-// components (the nearest ancestor's attachment in its own project, as the issue read resolves
-// it), and (on DeliveryRunView) RootFailingJob. Mirrors packages/contracts/src/dispatch-api.ts's
-// DeliveryPR exactly. ParentAgent is the Parent agent of the first of Sessions: its session
-// group's `group:<id>`, else that session's title or id (ParentAgents, parent_agent.go).
+// from the stored facts: DeployedStatus, the linked issue's title, the priority it resolves to and
+// its effective components (the nearest ancestor's attachment in its own project), each as the
+// issue read resolves it, and (on DeliveryRunView) RootFailingJob. Mirrors
+// packages/contracts/src/dispatch-api.ts's DeliveryPR exactly. ParentAgent is the Parent agent of
+// the first of Sessions: its session group's `group:<id>`, else that session's title or id
+// (ParentAgents, parent_agent.go).
 type DeliveryPRView struct {
-	ID                string         `json:"id"`
-	Repo              string         `json:"repo"`
-	Number            int            `json:"number"`
-	Title             string         `json:"title"`
-	URL               string         `json:"url"`
-	Author            string         `json:"author"`
-	CreatedAt         *time.Time     `json:"created_at"`
-	MergedAt          *time.Time     `json:"merged_at"`
-	FirstCommitAt     *time.Time     `json:"first_commit_at"`
-	Additions         *int           `json:"additions"`
-	Deletions         *int           `json:"deletions"`
-	Partial           bool           `json:"partial"`
-	Rework            bool           `json:"rework"`
-	Issue             *string        `json:"issue"`
-	IssueTitle        *string        `json:"issue_title"`
+	ID            string     `json:"id"`
+	Repo          string     `json:"repo"`
+	Number        int        `json:"number"`
+	Title         string     `json:"title"`
+	URL           string     `json:"url"`
+	Author        string     `json:"author"`
+	CreatedAt     *time.Time `json:"created_at"`
+	MergedAt      *time.Time `json:"merged_at"`
+	FirstCommitAt *time.Time `json:"first_commit_at"`
+	Additions     *int       `json:"additions"`
+	Deletions     *int       `json:"deletions"`
+	Partial       bool       `json:"partial"`
+	Rework        bool       `json:"rework"`
+	Issue         *string    `json:"issue"`
+	IssueTitle    *string    `json:"issue_title"`
+	// Priority is the label ("P0" to "P3") of the priority the linked issue resolves to: its own,
+	// else that of the nearest issue above it that has one (model.Issue's ResolvedPriority), which
+	// is what the priority facet selects and counts by. PriorityFrom is the key of the issue it
+	// comes from (model.Issue's PriorityFrom), null where it is the issue's own, or there is no
+	// issue or no priority.
 	Priority          *string        `json:"priority"`
+	PriorityFrom      *string        `json:"priority_from"`
 	Components        []string       `json:"components"`
 	Sessions          []string       `json:"sessions"`
 	ParentAgent       *string        `json:"parent_agent"`

@@ -62,7 +62,11 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 		}
 	}
 	if err := s.deps.Files.Put(r.Context(), sha, input.contentType, input.content); err != nil {
-		slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
+		// A request its client closed while the store wrote is no fault of the store's: its line
+		// says 499 and logs no ERROR line (closedByClient), and it is answered as any other.
+		if !closedByClient(w, err) {
+			slog.Error("dispatch: store an uploaded file", "sha256", sha, "size", len(input.content), "error", err)
+		}
 		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not accept the upload")
 		return false
 	}
@@ -214,7 +218,10 @@ func (s *server) serveFileVersion(w http.ResponseWriter, r *http.Request, artifa
 			writeError(w, r, apicode.FileMissing, "this file's bytes cannot be found")
 			return
 		}
-		slog.Error("dispatch: read a file version from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
+		// A request its client closed while the store opened the object, as putUploadedFile's.
+		if !closedByClient(w, err) {
+			slog.Error("dispatch: read a file version from the file store", "artifact", artifactID, "version", number, "sha256", *sha, "error", err)
+		}
 		writeError(w, r, apicode.FileStoreUnavailable, "the file store did not return this file")
 		return
 	}

@@ -29,7 +29,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"position, as the global event log is, rather than counted; as_of the database time of the one read-only " +
 			"repeatable-read snapshot " +
 			"every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its " +
-			"owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the " +
+			"owner, its issue's own priority (priority, left out where it sets none), the priority that issue resolves " +
+			"to (resolved_priority: its own, else that of the nearest issue above it that has one) and the key of the " +
+			"issue that comes from (priority_from, null where it is the issue's own), those two always present and null " +
+			"on a row with no issue, its project, the thread's subject, its root's deep link (an agent row's is the " +
 			"session's live view), root_author, the actor who wrote the thread's root in the shape of the reply's author " +
 			"(the ask's asker, the root comment's author or the root message's author, as stored, so a root the Legion " +
 			"daemon wrote reads as its session legion-daemon:<PROJECT>; an agent row carries none), the newest reply's " +

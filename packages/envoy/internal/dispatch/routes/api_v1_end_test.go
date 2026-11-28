@@ -21,7 +21,7 @@ func apiV1EndRouter(t *testing.T, end time.Time, now *time.Time) http.Handler {
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
-		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:         identity.HeaderIdentity{People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
 		APIV1End:         end,

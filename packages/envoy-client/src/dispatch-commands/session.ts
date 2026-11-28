@@ -18,6 +18,7 @@ import {
 import { LEFT_OUT, leftOutAt, leftOutWords, type ReadTime, readTime } from "./as-of";
 import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
+import { priorityText } from "./render-issue";
 
 /**
  * `dispatch answers`: the answers this session's asks have been given since it last read them;
@@ -247,9 +248,12 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
+/** One ask of the Inbox: its owner, the priority its issue works at with the issue it takes it
+ *  from where that is another (`priorityText`), or `P-` for none, its kind, the head of its
+ *  question and its `dispatch://` address. */
 function inboxAskLine(row: InboxRow, asOf: string | undefined): string {
   const { label, ref } = inboxAskOwner(row);
-  const priority = row.priority === null ? "P-" : `P${row.priority}`;
+  const priority = priorityText(row) ?? "P-";
   // A read at a cut leaves out an ask's question where a restore changed its wording with no event.
   const question: string | undefined = row.question;
   const text =

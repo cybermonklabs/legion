@@ -23,10 +23,15 @@ import (
 const (
 	ScopePerson  = "person"
 	ScopeApprove = "approve"
-	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
-	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
-	// personal token holds it only where its maker gave it, and a Dispatch sign-in's broker token
-	// only where its person ticked it.
+	// ScopeP0 is the right to make work P0. A write that names a priority of 0 on an issue whose
+	// own priority is not 0 needs it. A move under another parent, and a clear of an issue's own
+	// priority, need it where they make the issue, or an issue under it that takes its priority
+	// from it, go to P0 by the priority it takes from an issue above it (api's
+	// refuseResolvedP0WithoutScope). A new issue with no priority of its own under a parent that
+	// reads P0 needs it too, unless the writer's session is that parent's architect (api's
+	// refuseNewChildP0WithoutScope). A move that sets no parent needs none, since a detach makes
+	// no issue P0. A person's own sign-in holds it. A personal token holds it only where its maker
+	// gave it, and a Dispatch sign-in's broker token only where its person ticked it.
 	ScopeP0 = "p0"
 )
 
@@ -965,16 +970,24 @@ type IssueAdvance struct {
 
 // Issue is the complete native issue record.
 type Issue struct {
-	Key       string   `json:"key"`
-	Project   string   `json:"project"`
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
-	BlockedBy []string `json:"blocked_by"`
+	Key      string `json:"key"`
+	Project  string `json:"project"`
+	Number   int    `json:"number"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority is the priority the issue works at, resolved on read: its own Priority,
+	// else the priority of the nearest issue above it on its parent chain that has one, in any
+	// project, within 32 links (refs.IssueDepthCap), else nil. PriorityFrom is the key of the
+	// issue it comes from, nil where it is the issue's own or there is none. Both are always
+	// written, null included, and never left out: the Legion daemon reads an absent
+	// resolved_priority as a Dispatch that resolves none.
+	ResolvedPriority *int     `json:"resolved_priority"`
+	PriorityFrom     *string  `json:"priority_from"`
+	Rank             string   `json:"rank"`
+	Labels           []string `json:"labels"`
+	Parent           *string  `json:"parent"`
+	BlockedBy        []string `json:"blocked_by"`
 	// Advances is the priorities this issue advances, its own relations and the ones it
 	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
 	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
@@ -1074,14 +1087,17 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key       string   `json:"key"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
-	BlockedBy []string `json:"blocked_by"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are Issue's.
+	ResolvedPriority *int     `json:"resolved_priority"`
+	PriorityFrom     *string  `json:"priority_from"`
+	Rank             string   `json:"rank"`
+	Labels           []string `json:"labels"`
+	Parent           *string  `json:"parent"`
+	BlockedBy        []string `json:"blocked_by"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1600,15 +1616,18 @@ type ArchitectureTreeComponent struct {
 // a component this one contains; Via is that component). When several apply
 // the strongest wins.
 type ArchitectureTreeIssue struct {
-	Key           string         `json:"key"`
-	Title         string         `json:"title"`
-	Status        string         `json:"status"`
-	Priority      *int           `json:"priority"`
-	Parent        *string        `json:"parent"`
-	ExternalLinks []ExternalLink `json:"external_links"`
-	UpdatedAt     time.Time      `json:"updated_at"`
-	Attached      string         `json:"attached"`
-	Via           *string        `json:"via,omitempty"`
+	Key      string `json:"key"`
+	Title    string `json:"title"`
+	Status   string `json:"status"`
+	Priority *int   `json:"priority"`
+	// ResolvedPriority and PriorityFrom are Issue's.
+	ResolvedPriority *int           `json:"resolved_priority"`
+	PriorityFrom     *string        `json:"priority_from"`
+	Parent           *string        `json:"parent"`
+	ExternalLinks    []ExternalLink `json:"external_links"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	Attached         string         `json:"attached"`
+	Via              *string        `json:"via,omitempty"`
 }
 
 // ArchitectureTreeIssueRef is an issue in the unassigned list.
@@ -2788,9 +2807,9 @@ type AskAnsweredEventPayload struct {
 //
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
-// for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
-// Ancestors the issue's parent chain,
+// for a close or a reopen, rank, priority, resolved_priority, priority_from, assignee, parent,
+// labels, route, repo, components, blocked_by, external_links; for issue.created every field the
+// new issue holds a value in), Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
 // or a reopen every login with a Replies row on one of the issue's open asks, read by the
@@ -2798,6 +2817,12 @@ type AskAnsweredEventPayload struct {
 // (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
+//
+// An issue.updated whose Changed names only resolved_priority, priority_from or both is the quiet
+// event of J3 (dispatch://INFRA-5793): a write of an issue's own priority or of its parent that
+// moves what the issue passes down appends one on each issue under it that takes its priority
+// from it (api's queueInheritedPriorityEvents). events.Quiet answers true for it, and no other
+// issue.updated names only those two fields.
 //
 // Forced is on an `issue.created` alone, and only when the create went in with `force` and the
 // near-copy refusal would have stopped it: Past names the issues that refusal named, and is the
@@ -3047,6 +3072,10 @@ type MyReplyRow struct {
 	Document *OpenAskDocument `json:"document,omitempty"`
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
+	// ResolvedPriority and PriorityFrom are the owning issue's (Issue's), null on a row with no
+	// issue and on an issue that resolves none; unlike Priority they are never left out.
+	ResolvedPriority *int    `json:"resolved_priority"`
+	PriorityFrom     *string `json:"priority_from"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
 	// Subject is the thread root's first line, cut by refs.FirstLine: the line the

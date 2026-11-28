@@ -7,7 +7,8 @@ body: |-
   is not clean (`/api/v1//issues`), carries a `Deprecation` header (RFC 9745) and a `Link` header with
   `rel="successor-version"` naming the `/api/v2` route that answers for it, or `GET /api/v2` for a
   `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2` route lands (`GET`
-  and `POST /api/v1/projects/{key}/results` at this release), for an unknown path, for the
+  and `POST /api/v1/projects/{key}/results` and `GET /api/v1/artifacts/{id}/spec-form` at this
+  release), for an unknown path, for the
   cookie-origin guard's refusal and for the `410` after the end. The deprecation date marks this
   change, not the configured sunset.
   `DISPATCH_API_V1_END`, an RFC 3339 instant, ends `/api/v1`, and `envoy-infra`'s

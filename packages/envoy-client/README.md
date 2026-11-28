@@ -1318,9 +1318,12 @@ sends only a review with (`dispatch review`, below). Dispatch gives `p0` to one 
 token only: a Dispatch sign-in's whose person ticked `p0` (`dispatch login --device --scope`,
 below), never this trade's. So an answer to an approval request, a machine login's decision and a
 personal token's mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person
-gave `approve`, and a write that makes an issue's own priority `0` (P0) needs the person's
-browser, a personal token the person gave `p0`, or a Dispatch sign-in the person ticked `p0` for.
-A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
+gave `approve`, and a write that makes work P0 needs the person's browser, a personal token the
+person gave `p0`, or a Dispatch sign-in the person ticked `p0` for: one that makes an issue's own
+priority `0`, and a move, a clear or a new issue with no priority that makes an issue P0 by the
+priority it takes from an issue above it, though the session of a P0 parent's own architect files
+a new issue under it without `p0` (`dispatch issue-update` and `dispatch issue`, below). A read
+trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
@@ -1745,9 +1748,10 @@ sign-in may ask for, or a reason over `BROKER_REQUEST_REASON_MAX` (400) characte
 error before any request (`startDeviceLogin`'s `RangeError`). The person ticks some or all of the
 scopes on Dispatch's machine-login page, which starts `person` ticked and `p0` unticked; whatever
 is ticked, the session writes in Dispatch and works on Envoy as its own session within its
-person's projects, `person` adds acting as the person, and `p0` adds making an issue's own
-priority 0. A broker whose `BROKER_DISPATCH_SIGNIN` is off answers the request
-`400 invalid_scope` in its own words, which the command prints as it got them:
+person's projects, `person` adds acting as the person, and `p0` adds making work P0: setting P0,
+or moving, clearing or filing work under a P0 issue. A broker whose `BROKER_DISPATCH_SIGNIN` is
+off answers the request `400 invalid_scope` in its own words, which the command prints as it got
+them:
 "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off". A
 broker that predates sign-ins answers `400 invalid_scope` in its OAuth library's words, which
 this client does not know, and the command prints its own sentence in their place: "this broker
@@ -2193,8 +2197,12 @@ holds the proxy's parser and help, and `dispatch-login-command.ts` holds the log
 session actor: `status` (a Legion lifecycle status), `title`, `labels` (`--label`, replacing the
 set), `labels_add` (`--labels-add`, repeated, adding to the labels the issue holds inside
 Dispatch's write and keeping the others; never beside `labels`, which is refused before any
-request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it; a write that makes the
-issue's own priority `0` needs the `p0` scope, as `dispatch issue --priority 0` does), `route`,
+request), `priority` (`0` for P0 down to `3` for P3, or `null` to clear it, `--clear-priority`; a
+write that makes the issue's own priority `0` needs the `p0` scope, as `dispatch issue --priority 0`
+does, and so does a clear where the issue's own priority is `1` to `3` and the issue would then take
+P0 from an issue above it), `parent` (an issue key of any project, or an empty string for none: a
+move under a parent needs the `p0` scope where it makes the issue, or an issue under it that takes
+its priority from it, P0 when it was not, and a move that sets no parent needs none), `route`,
 and `external_links`: a non-empty list merges into the issue's existing links by URL rather than
 replacing them, and an explicit empty list (`--clear-external-links`) clears every link instead;
 `before` and `after` (`--before <KEY>` / `--after <KEY>`) move the issue on its project's board —
@@ -2208,6 +2216,18 @@ a PATCH that fails after the post names the posted message. The result is one li
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
+`dispatch issue` with no `--priority` under a `--parent` that reads P0 needs the `p0` scope unless
+the session is that parent's own architect, since the new issue takes the priority its parent
+reads. Dispatch refuses a move, a clear or a new child that needs `p0` from a credential without it
+with `403 OAUTH_SCOPE_REQUIRED` and writes nothing of the request; the command prints
+`OAUTH_SCOPE_REQUIRED: <Dispatch's words>` and exits 1. Each flag's help, from the specs, says
+when the write needs `p0`.
+`dispatch read --issue <KEY>` prints on its `Priority:` line the priority the issue works at:
+`Priority: P2` for its own, `Priority: P0 (from ACME-1)` where it has none of its own and takes it
+from ACME-1, the nearest issue above it that has one, and no line where it resolves none
+(`priorityText`). The rows of `dispatch issues`, `dispatch open-asks` and `dispatch inbox` print it
+in the same words. From a Dispatch release that sends no `resolved_priority`, each line prints the
+issue's own priority, as before.
 With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
 sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
 the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is
@@ -2227,8 +2247,9 @@ A build older than the route answers no route: the
 write asks again as every write does, then the command refuses naming the route and sends no
 PATCH, since a PATCH would write the status without the option. The CLI's `--dry-run` prints the
 arguments and asks Dispatch nothing.
-`dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
-parent and labels, as one JSON object and nothing else.
+`dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status, its
+own `priority`, `resolved_priority` and `priority_from` (neither of the two from a Dispatch older
+than that walk), parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
 name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown

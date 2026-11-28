@@ -20,14 +20,17 @@ var _ = declareRow(func(s *server) routeRow {
 			"request, 200 when it stood as asked, a follow it added included (ask null when nothing is asked); coverage, " +
 			"on a request for the issue's spec, is one line per requirement with no check, or `the spec marks no " +
 			"requirements`, empty for any other document and where coverage_unread says its read failed, and refuses " +
-			"nothing. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, " +
+			"nothing. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec " +
+			"(DISPATCH_SPEC_ROOTS), its body naming each text and its rule {code, error, refusal, next_step, findings, " +
+			"findings_total}. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, " +
 			"400 SUMMARY_INPUT for a blank summary, 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
 		Handler:  s.requestArtifactApprovalV2,
 		Resource: "approval-requests", Kind: kindCollection, Key: "{id}",
 		Body: requestBody{Kind: bodyJSON, Type: approvalRequestInput{}, Optional: true},
 		Shape: routeShape{
 			Status: http.StatusCreated, Response: approvalRequestV2{},
-			Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestV2{}}},
+			Also:     []routeAnswer{{Status: http.StatusOK, Body: approvalRequestV2{}}},
+			Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
 		},
 		Scope: scopeProject, ProjectOf: projectPathArtifact,
 		IDs: v2DocumentIDs(),
@@ -39,6 +42,7 @@ var _ = declareRow(func(s *server) routeRow {
 			{Condition: apicode.VerificationDocumentMissing, Code: apicode.NoVerificationDocument},
 			{Condition: apicode.ApprovalOfPlan, Code: apicode.PlanApprovedByReview},
 			{Condition: apicode.SummaryBlank, Code: apicode.SummaryInput},
+			specFormBrokenRefusal,
 		},
 	}
 })

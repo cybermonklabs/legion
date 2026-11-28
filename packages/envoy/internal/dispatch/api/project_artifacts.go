@@ -2,6 +2,8 @@ package api
 
 import (
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
@@ -15,7 +17,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	unlinked := r.URL.Query().Get("unlinked") == "true"
 	query := `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts
 		where project_key = $1 and not is_primary`
 	if unlinked {

@@ -319,7 +319,10 @@ RESULTS_ONLY_TOKEN 403 # #4184, a CI run's token writes its project's results an
 RESULTS_SCOPE_REQUIRED 403 # #4184, a CI run's token writes its project's results and nothing else
 ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of each role of an issue
 ROLE_HOLDER_NOT_PROVEN 403 # #4725, a project's proven-sessions setting takes a role-holder publication only on a credential that proves the daemon's session
+SEARCH_COVERAGE_FOLD_BEHIND 503 # #5293, the coverage route reads kept counts
+SEARCH_COVERAGE_NOT_FILLED 503 # #5293, the coverage route reads kept counts
 SEARCH_COVERAGE_TIMEOUT 503 # #4378, the search coverage route reads two indexes under a 10 s bound
+SEARCH_TIMEOUT 503 # #5293, search bounds each statement at 15 s
 SPEC_FILES_REFUSED 409 # #4184, a CI run's token writes its project's results and nothing else
 SPEC_FORM 409 # #4179, refuse an approval request that breaks the form of The Spec
 STATUS_CHANGE_INPUT 400 # #4631, an invalid status-change request

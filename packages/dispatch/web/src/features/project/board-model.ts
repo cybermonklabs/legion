@@ -231,7 +231,8 @@ export function moveIssue(
   };
 }
 
-/** A swimlane: one of the four priorities, or `null` for an issue with none set. */
+/** A swimlane: one of the four priorities, or `null` for an issue with none. A card sits in the
+ *  lane of the priority its issue works at, its own or the one it inherits (`issuePriority`). */
 export type PriorityLane = IssuePriority | null;
 
 /** Lane order: P0 through P3, then issues with no priority. */
@@ -263,14 +264,15 @@ export interface BoardLane {
 /**
  * Splits the project list into swimlanes by priority - rows across the nine status columns, one
  * band per priority (P0-P3, then no priority) - each lane itself split into the nine lifecycle
- * columns. Rank still orders cards within a lane+column cell, as it orders them within a plain
- * column. One pass over `issues` buckets every lane+status pair at once, rather than filtering
- * the whole list once per lane.
+ * columns. A card's lane is the priority its issue works at, inherited or its own. Rank still
+ * orders cards within a lane+column cell, as it orders them within a plain column. One pass over
+ * `issues` buckets every lane+status pair at once, rather than filtering the whole list once per
+ * lane.
  */
 export function groupIssuesByLane(issues: readonly IssueSummary[]): BoardLane[] {
   const cells: Record<string, IssueSummary[]> = {};
   for (const issue of issues) {
-    const key = `${laneKey(issuePriority(issue.priority))}|${issue.status}`;
+    const key = `${laneKey(issuePriority(issue).level)}|${issue.status}`;
     const bucket = cells[key];
     if (bucket === undefined) {
       cells[key] = [issue];
@@ -314,10 +316,10 @@ export interface LaneDropTarget {
 
 /**
  * The lane-aware `dropTarget`: `overId` is a card key or a `lane:<l>|status:<s>` cell id (full
- * or collapsed). A drop onto a card takes that card's own status and priority as the target
- * cell; a drop onto a cell takes the cell's. Dragging a card into a different lane reassigns its
- * priority - the same gesture that reassigns status when a card crosses a column, now
- * reassigning the lane's own dimension.
+ * or collapsed). A drop onto a card takes that card's own status and the lane it is drawn in as
+ * the target cell; a drop onto a cell takes the cell's. Dragging a card into a different lane
+ * reassigns its priority - the same gesture that reassigns status when a card crosses a column,
+ * now reassigning the lane's own dimension.
  */
 export function laneDropTarget(
   issues: readonly IssueSummary[],
@@ -328,7 +330,7 @@ export function laneDropTarget(
     issues,
     activeKey,
     overId,
-    (issue) => ({ status: issue.status as IssueStatus, lane: issuePriority(issue.priority) }),
+    (issue) => ({ status: issue.status as IssueStatus, lane: issuePriority(issue).level }),
     (cell) => laneColumnId(cell.status, cell.lane),
     parseLaneColumnId
   );
@@ -344,7 +346,14 @@ export function laneDropTarget(
 /**
  * `moveIssue`'s lane-aware twin: places `key` at `insertionIndex` of the `targetLane`+
  * `targetStatus` cell, naming the cell's visible neighbours for `rank` and setting `status`
- * and/or `priority` in the same PATCH when either changes.
+ * and/or `priority` in the same PATCH when either changes. A card's lane is the priority its
+ * issue works at, so a drag within the lane of an inherited priority writes none, and the card
+ * keeps inheriting it. A drag to another lane makes that lane's priority the issue's own, which
+ * is also the one it works at, from nowhere else; a drag to No priority clears the own priority. A
+ * root inherits nothing, so a root's card moves to No priority at once; a child's keeps the level
+ * it drew and leaves what it inherits to Dispatch's answer, as a pick of none does. A card that
+ * inherits its priority has no own priority to clear, so a drag of it to No priority is
+ * undefined: the card would stay in its inherited lane, at a rank taken from another lane.
  */
 export function moveIssueToLane(
   issues: readonly IssueSummary[],
@@ -358,14 +367,32 @@ export function moveIssueToLane(
   if (active === undefined) {
     return undefined;
   }
+  const { level, own } = issuePriority(active);
+  if (targetLane === null && own === null && level !== null) {
+    return undefined;
+  }
+  const inLane = (issue: IssueSummary) => issuePriority(issue).level === targetLane;
+  const relaned = level !== targetLane;
   const placed = placeInColumn(
     issues,
     active,
     targetStatus,
     insertionIndex,
-    (issue) => issue.priority === targetLane,
-    (issue) => ({ ...issue, status: targetStatus, priority: targetLane }),
-    (candidate) => candidate.status === targetStatus && candidate.priority === targetLane,
+    inLane,
+    (issue) => {
+      if (!relaned) return { ...issue, status: targetStatus };
+      if (targetLane === null && issue.parent !== null) {
+        return { ...issue, status: targetStatus, priority: null };
+      }
+      return {
+        ...issue,
+        status: targetStatus,
+        priority: targetLane,
+        priority_from: null,
+        resolved_priority: targetLane,
+      };
+    },
+    (candidate) => candidate.status === targetStatus && inLane(candidate),
     isVisible
   );
   if (placed === undefined) {
@@ -375,7 +402,7 @@ export function moveIssueToLane(
     issues: placed.issues,
     input: {
       ...(active.status === targetStatus ? {} : { status: targetStatus }),
-      ...(active.priority === targetLane ? {} : { priority: targetLane }),
+      ...(relaned ? { priority: targetLane } : {}),
       rank: placed.rank,
     },
   };

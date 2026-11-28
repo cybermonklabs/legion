@@ -79,11 +79,24 @@ var _ = declareRow(func(s *server) routeRow {
 			"0 needs the p0 scope when the write makes the issue's own priority 0, from none or from another value: "+
 			"from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a "+
 			"WWW-Authenticate challenge for p0, before every refusal that reads the issue (409 ISSUE_CHANGED and 409 "+
-			"ISSUE_CLOSED among them), and writes no field of the issue and no event of it. For a close that names "+
-			"priority 0 from a credential without p0, the write reads the issue's own priority first, and where it "+
-			"is not 0 it refuses the close before it settles the issue's documents; a close whose own priority moves "+
-			"away from 0 between that read and the owner's lock can settle the documents and is then refused. "+
-			"Keeping P0, lowering it, clearing it and a priority of 1 to 3 need no scope. "+
+			"ISSUE_CLOSED among them), and writes no field of the issue and no event of it. An issue with no "+
+			"priority of its own takes the priority of the nearest issue above it that has one (resolved_priority), "+
+			"and so does each issue under it that has none, so a move under a parent needs p0 where it makes the "+
+			"issue, or an issue under it that takes its priority from it, go from a resolved priority of 1 to 3, or "+
+			"none, to P0. A clear of the issue's own priority (priority null) needs p0 in the same way, where the "+
+			"issue would then take P0 from an issue above it. From a credential that does not hold p0, such a move "+
+			"or clear is 403 OAUTH_SCOPE_REQUIRED naming p0 at the same step as a priority of 0, and writes nothing; "+
+			"the check reads the whole chain above the issue as the write leaves it, its issues of projects the "+
+			"credential cannot see included. A move that leaves each resolved priority as it was needs no scope, as "+
+			"a move of an issue that keeps a priority of its own does, and a move that sets no parent (parent null) "+
+			"needs no p0 either, since a detach only turns a priority that the issue took from above into none; nor "+
+			"does unlink_children, since a child it makes a root keeps its own priority and a child with none then "+
+			"takes none. For a close that names priority 0, clears the issue's own priority or names a parent, from "+
+			"a credential without p0, the write reads the issue's priorities first, and where the write would make "+
+			"work P0 it refuses the close before it settles the issue's documents; a close whose priorities move "+
+			"between that read and the owner's lock can settle the documents and is then refused. A write that keeps "+
+			"priority 0 on an issue that holds it, lowers it or sets 1 to 3 needs no scope; a priority that an issue "+
+			"above the issue has is none of its own. "+
 			"404 ISSUE_NOT_FOUND.", contracts.IssueTitleMax),
 		Handler:  s.patchIssueV2,
 		Resource: "issues", Kind: kindItem, Key: "{key}",

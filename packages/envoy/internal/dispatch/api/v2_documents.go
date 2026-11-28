@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -49,6 +50,12 @@ var (
 	reviewInvalidRefusal        = apicode.Refusal{Condition: apicode.ReviewInvalid, Code: apicode.InvalidReview}
 	fileStoreDownRefusal        = apicode.Refusal{Condition: apicode.FileStoreDown, Code: apicode.FileStoreUnavailable}
 	documentPreconditionRefusal = apicode.Refusal{Condition: apicode.DocumentPreconditionUnmet, Code: apicode.PreconditionFailed}
+	// specFormBrokenRefusal is the 409 SPEC_FORM of an approval request or an approval whose
+	// covered document breaks the form of The Spec, which the three /api/v2 routes that run the
+	// shared judgment answer (requestApproval, queueApprovalReviews): POST
+	// /api/v2/artifacts/{id}/approval-requests, POST /api/v2/artifacts/{id}/reviews and the
+	// answered state of PUT /api/v2/asks/{id}/state. Its body carries the findings (specFormError).
+	specFormBrokenRefusal = apicode.Refusal{Condition: apicode.SpecFormBroken, Code: apicode.SpecForm}
 )
 
 // artifactRowText is what the descriptions of GET /api/v2/artifacts/{id} and of the issue's, the
@@ -388,7 +395,7 @@ func (s *server) answerArtifactList(w http.ResponseWriter, r *http.Request, list
 	}
 	limit, offset := list.argument(query.Limit), list.argument(query.Offset)
 	rows, err := pool.Query(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where `+clause+`
 		order by created_at, id limit `+limit+` offset `+offset, list.arguments...)
 	if err != nil {

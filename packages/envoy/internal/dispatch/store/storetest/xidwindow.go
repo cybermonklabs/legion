@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The xid window rig (INFRA-636) measures how long a write transaction holds its transaction id
@@ -38,14 +40,18 @@ import (
 // poller never saw - a write phase that is one batch can hold its xid for less than a poll
 // interval - is judged from its statements alone; one that wrote nothing by either source holds
 // no xid to judge, and an operation none of whose transactions held one is a rig problem. Inside
-// the window the rig checks two things. Its shape, in every build: the window holds at most the
-// statements the measurement declared (XidShape), and nothing else. And, where the build judges
-// a window's time at all (XidJudgesGaps), D6 of the INFRA-636 plan: every statement-free gap is at
-// most its bound (XidGap.Bound), and the gaps together take no longer than the statements do and
-// the time their CPUs' device softirqs may hold. A gap's bound is XidMaxGap, widened, on a kernel
-// that charges interrupt time to the thread it lands on, by the time the device softirqs its CPU
-// ran may have put on its thread (XidGap.SoftirqHold); a window's gaps hold at most
-// XidSoftirqGapHold together for rule 2. Both widenings come from one measurement
+// the window the rig checks three things. Two of them read no clock and hold in every build. Its
+// shape: the window holds at most the statements the measurement declared (XidShape), and nothing
+// else. And its collaborators: none is called inside it (storetest/collabtest). For that one the
+// tracer opens the window on the transaction's own context the moment a statement's result says
+// it wrote, inline or in a batch (store.OpenXidWindow, until the transaction ends), which a
+// collaborator's decorator reads off the context of the call. The third holds where the build
+// judges a window's time at all (XidJudgesGaps), D6 of the INFRA-636 plan: every statement-free
+// gap is at most its bound (XidGap.Bound), and the gaps together take no longer than the
+// statements do and the time their CPUs' device softirqs may hold. A gap's bound is XidMaxGap,
+// widened, on a kernel that charges interrupt time to the thread it lands on, by the time the
+// device softirqs its CPU ran may have put on its thread (XidGap.SoftirqHold); a window's gaps
+// hold at most XidSoftirqGapHold together for rule 2. Both widenings come from one measurement
 // (xidwindow_softirq.go).
 //
 // A gap is judged by the time the code made in it (XidGap.Made), not by the time it took on the
@@ -74,6 +80,24 @@ import (
 // not; on a kernel that charges interrupt time to the thread it lands on, up to
 // XidSoftirqGapHold of a gap's CPU time beside a counted device softirq is not counted against
 // the code (XidGap.SoftirqHold).
+//
+// What the two clock-free checks cannot see is Go work inside a window that runs no statement and
+// calls no collaborator, and the work after a write whose own result does not say it wrote. Where
+// the build judges gaps, D6 holds each of these to a gap's bound, as it holds any time of the
+// code's in the window; the race build sees none of them:
+//   - Go work of the transaction's own goroutine or of one it hands work to and waits for: document
+//     work, a sort, a diff, a JSON encode of a large value, a hash, or a wait on a lock or channel
+//     of this process, between two statements of the window;
+//   - a write whose command tag is SELECT - a writing CTE that ends in a select (refs/blocks.go's
+//     writeWindows), a writing function called through select - opens no window for the
+//     collaborator check (xidAssigned reads the tag), so a call after it, before the
+//     transaction's next tagged write or its COMMIT, is not reported. Such a write is not always
+//     its transaction's last statement: api/ask_snooze.go's snooze, a writing CTE that ends in a
+//     select, reads the ask and appends the snooze's event after it, and
+//     docs/conditional_edit_queue.go's admission, a deleting CTE that ends in a count, writes its
+//     own row after it. What runs in those spans today is their statements and the Go that builds
+//     them, no collaborator call, so no report is missed there; a call a later change put into
+//     such a span would go unreported.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -143,9 +167,12 @@ type xidMarkKey struct{}
 type xidSpanKey struct{}
 
 // MarkXid marks ctx as the operation an XidTracer.Measure judges: every statement run under it,
-// or under a context derived from it, is the operation's.
+// or under a context derived from it, is the operation's. It also gives ctx the pool's hold mark
+// (store.WithTransactionTracking, a no-op on a context that has one, as every request and every
+// background entry point of production does), which is where the tracer opens a transaction's
+// xid window for its collaborator check.
 func MarkXid(ctx context.Context) context.Context {
-	return context.WithValue(ctx, xidMarkKey{}, true)
+	return context.WithValue(store.WithTransactionTracking(ctx), xidMarkKey{}, true)
 }
 
 func markedXid(ctx context.Context) bool {
@@ -199,7 +226,10 @@ func (c xidThreadClock) stamp() time.Time {
 }
 
 // XidTracer is a pgx QueryTracer, BatchTracer and CopyFromTracer that records the statements each
-// backend runs while Measure runs. Install it on a pool with Traced.
+// backend runs while Measure runs. Install it on a pool with Traced. Whether Measure runs or not,
+// it opens each transaction's xid window on that transaction's context at the first statement
+// whose own result says it wrote (store.OpenXidWindow), which the collaborator check reads
+// (storetest/collabtest).
 type XidTracer struct {
 	mu sync.Mutex
 	// recording is read at the start of every statement, before the statement's Start, so it is
@@ -249,9 +279,13 @@ func (x *XidTracer) BlindPoller(d time.Duration) {
 	x.blind = d
 }
 
+// xidSpan is one statement on its way through the tracer. recorded is whether Measure was
+// recording when it began: only a recorded span is a statement of a measurement, and one begun
+// outside a measurement is kept only so its end can open its transaction's window (openWindow).
 type xidSpan struct {
 	statement XidStatement
 	sql       []string
+	recorded  bool
 	// ends is true for a COMMIT or a ROLLBACK, whose end lets its transaction's goroutine go
 	// (unlockTransaction).
 	ends bool
@@ -268,10 +302,13 @@ type xidSpan struct {
 // which the gap's clocks read as the code's.
 func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) context.Context {
 	if !x.recording.Load() {
+		pid := conn.PgConn().PID()
 		if verb := xidVerb(sql); verb == "commit" || verb == "rollback" {
-			x.unlockTransaction(conn.PgConn().PID())
+			x.unlockTransaction(pid)
 		}
-		return ctx
+		// A statement outside a measurement is no statement of one, and its span is kept only so
+		// its end can open its transaction's window (openWindow).
+		return context.WithValue(ctx, xidSpanKey{}, &xidSpan{statement: XidStatement{PID: pid, SQL: sql}})
 	}
 	started := readXidThreadClock()
 	start := started.stamp()
@@ -283,7 +320,7 @@ func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) conte
 	if verb == "begin" && marked {
 		unheldMemory = x.lockTransaction(pid)
 	}
-	span := &xidSpan{ends: verb == "commit" || verb == "rollback", statement: XidStatement{
+	span := &xidSpan{recorded: true, ends: verb == "commit" || verb == "rollback", statement: XidStatement{
 		PID: pid, Start: start, SQL: sql, Marked: marked, started: started, startedIRQ: startedIRQ,
 		unheldMemory: unheldMemory,
 	}}
@@ -295,10 +332,12 @@ func (x *XidTracer) begin(ctx context.Context, conn *pgx.Conn, sql string) conte
 }
 
 // end closes the span ctx carries with tag, the command tag the statement answered - the zero tag
-// for a batch, whose queries report their own (TraceBatchQuery). What the rig works out about the
-// statement - its batch's text, whether it wrote - is worked out before its End, inside it, as
+// for a batch, whose queries report their own (TraceBatchQuery) - and opens the transaction's
+// window when the statement wrote. What the rig works out about the statement - its batch's
+// text, whether it wrote, the window it opens - is worked out before its End, inside it, as
 // begin's work is after its Start; after End the rig only reads the thread's clocks and marks the
-// span done, so the gap that follows holds the code's work and not the rig's.
+// span done, so the gap that follows holds the code's work and not the rig's. A span begun outside
+// a measurement (recorded false) ends at its window.
 func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 	span, ok := ctx.Value(xidSpanKey{}).(*xidSpan)
 	if !ok {
@@ -308,6 +347,12 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 		span.statement.SQL = strings.Join(span.sql, "; ")
 	}
 	span.statement.Wrote = span.statement.Wrote || xidAssigned(span.statement.SQL, tag)
+	if span.statement.Wrote {
+		x.openWindow(ctx)
+	}
+	if !span.recorded {
+		return
+	}
 	span.statement.endedIRQ = readXidSoftirqs()
 	span.statement.ended = readXidThreadClock()
 	span.statement.End = span.statement.ended.stamp()
@@ -383,6 +428,15 @@ func (x *XidTracer) unlockTransaction(pid uint32) {
 	}
 }
 
+// openWindow opens the xid window of the transaction ctx's statement wrote in, the first time one
+// of its statements writes (store.OpenXidWindow). A context the pool cannot see opens nothing
+// (MarkXid gives every measured operation's context the pool's mark).
+func (x *XidTracer) openWindow(ctx context.Context) {
+	if !store.InXidWindow(ctx) {
+		store.OpenXidWindow(ctx)
+	}
+}
+
 // TraceQueryStart implements pgx.QueryTracer.
 func (x *XidTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
 	return x.begin(ctx, conn, data.SQL)
@@ -406,10 +460,12 @@ func (x *XidTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pg
 
 // TraceBatchQuery implements pgx.BatchTracer. A batch is one statement of the trace, and it wrote
 // when any query of it did: the first of them to write is what gave the transaction its xid, and
-// the batch's own start is when that query was sent.
+// the batch's own start is when that query was sent. The window opens as that query's result is
+// read, before any callback of the batch's later statements runs.
 func (x *XidTracer) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
 	if span, ok := ctx.Value(xidSpanKey{}).(*xidSpan); ok && xidAssigned(data.SQL, data.CommandTag) {
 		span.statement.Wrote = true
+		x.openWindow(ctx)
 	}
 }
 
@@ -923,6 +979,7 @@ func (r *XidReport) problems() []string {
 // problem comes first, worded so a red run cannot be mistaken for a finding - unless a window
 // broke D6 too: then the violations follow the problems, and the run is not called free of a
 // finding about the code.
+// The window's shape is AssertXidWindows' to judge, against the shape the measurement declares.
 func (r *XidReport) Err() error {
 	var b strings.Builder
 	for _, window := range r.Windows {
@@ -991,7 +1048,7 @@ func AssertXidWindows(t testing.TB, report *XidReport, shape XidShape) {
 	}
 	for _, window := range report.Windows {
 		if len(window.Statements) > shape.Statements {
-			t.Errorf("XID WINDOW VIOLATION (INFRA-636 D6) %s\n  the transaction ran %d statements inside its xid window, want at most %d, %s: a read it runs there holds back every reader's snapshot\n%s",
+			t.Errorf("XID WINDOW VIOLATION (INFRA-636 window shape) %s\n  the transaction ran %d statements inside its xid window, want at most %d, %s: a read it runs there holds back every reader's snapshot\n%s",
 				window.Summary(), len(window.Statements), shape.Statements, shape.Want, window.Detail())
 		}
 	}

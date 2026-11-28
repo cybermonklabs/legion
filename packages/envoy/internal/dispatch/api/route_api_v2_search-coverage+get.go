@@ -17,12 +17,15 @@ var _ = declareRow(func(s *server) routeRow {
 			"many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null " +
 			"when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, " +
 			"session, document_version, result and handoff - each {kind, items}, items being how many of it the " +
-			"database holds. Every number is read in one statement, so they all read one snapshot, under a 10 s " +
-			"statement_timeout: a statement that runs past it counts nothing and answers 503 " +
-			"SEARCH_COVERAGE_TIMEOUT, to be asked again later.",
+			"database holds. Every number comes from counts the writes keep, read in one statement, so they all read " +
+			"one snapshot, under a 10 s statement_timeout. A statement that runs past it counts nothing and answers " +
+			"503 SEARCH_COVERAGE_TIMEOUT; until the server's first fill of the counts since they were made has ended, " +
+			"the route answers 503 SEARCH_COVERAGE_NOT_FILLED; and with more than 100,000 rows of writes not yet " +
+			"folded into the counts it answers 503 SEARCH_COVERAGE_FOLD_BEHIND. Each is to be asked again later.",
 		Handler:  s.searchCoverage,
 		Resource: "search-coverage", Kind: kindReport,
-		Shape:    routeShape{Status: http.StatusOK, Response: model.SearchCoverage{}},
-		Refusals: []apicode.Refusal{undeclaredKeyRefusal, searchCoverageTimedOutRefusal},
+		Shape: routeShape{Status: http.StatusOK, Response: model.SearchCoverage{}},
+		Refusals: []apicode.Refusal{undeclaredKeyRefusal, searchCoverageTimedOutRefusal,
+			searchCoverageNotFilledRefusal, searchCoverageFoldBehindRefusal},
 	}
 })

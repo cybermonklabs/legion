@@ -10,7 +10,8 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodGet, Pattern: "/issues/{key}", Auth: authAny, Versions: onlyV2,
 		Description: "Read one issue: its own fields, and artifacts, each of its documents, files and images in " +
-			"creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its " +
+			"creation order as GET /api/v2/issues/{key}/artifacts lists them. It carries " + issuePriorityFields +
+			". include= adds, each as a member of its " +
 			"name: blocks, the keys of the issues whose blocked_by names it, sorted, [] when none, which no row of GET " +
 			"/api/v2/issues carries; comment_count, how many comments GET /api/v2/issues/{key}/comments lists with no " +
 			"artifact=, 0 when it holds none; progress {tasks, children}, its spec's task-list items and its direct " +

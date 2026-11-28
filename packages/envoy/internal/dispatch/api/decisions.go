@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -146,7 +147,7 @@ func artifactReference(document model.Artifact) string {
 // an issue with no spec simply holds no decision link.
 func (s *server) issueSpecDocument(ctx context.Context, key string) (model.Artifact, bool, error) {
 	artifact, err := s.loadArtifactRow(ctx, s.deps.Store.Pool, s.deps.Store.Pool.QueryRow(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where issue_key = $1 and is_primary and kind = 'doc'
 	`, key))
 	if err != nil {

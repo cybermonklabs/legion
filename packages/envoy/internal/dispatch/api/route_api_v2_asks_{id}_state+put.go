@@ -25,7 +25,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"state: its answer of any other ask, a saved answer under an Idempotency-Key and a repeat of the person's " +
 			"own answer included, and each other state this route declares (resolved, retracted, declined) are 403 " +
 			"APPROVE_ONLY_TOKEN. " +
-			"Answers the ask as GET /api/v2/asks/{id} reads it; " +
+			"Answers the ask as GET /api/v2/asks/{id} reads it; an Approve of an approval request is 409 SPEC_FORM when " +
+			"a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS), its body naming each text " +
+			"and its rule {code, error, refusal, next_step, changes_reason, findings, findings_total}; " +
 			"400 STATE_INVALID for a state it does not declare, 400 INVALID_ANSWER, REASON_REQUIRED (an approval's Request " +
 			"changes with no text), INVALID_RESOLUTION or CAP_EXCEEDED for a body its " +
 			"state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. " +
@@ -39,7 +41,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"retracted": resolveAskStateInput{},
 			"declined":  declineAskStateInput{},
 		}},
-		Shape:       routeShape{Status: http.StatusOK, Response: askWriteV2{}},
+		Shape: routeShape{
+			Status: http.StatusOK, Response: askWriteV2{},
+			Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
+		},
 		Authorities: []authorityRule{askAnsweredAuthority, askDeclinedAuthority},
 		Scope:       scopeProject, ProjectOf: projectPathAsk,
 		IDs: v2AskIDs(),
@@ -59,6 +64,7 @@ var _ = declareRow(func(s *server) routeRow {
 			apicode.Refusal{Condition: apicode.NotTheAnswerer, Code: apicode.NotAnswerer},
 			reasonMissingRefusal,
 			specWriterNotArchitectRefusal,
+			specFormBrokenRefusal,
 		),
 	}
 })

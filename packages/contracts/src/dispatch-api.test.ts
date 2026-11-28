@@ -634,6 +634,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/comments/comment-1",
         issue: { key: "CORE-1", title: "Release" },
         priority: 1,
+        resolved_priority: 1,
+        priority_from: null,
         project: "CORE",
         subject: "Ship it on Friday?",
         reply: {
@@ -654,6 +656,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/issues/CORE-1/asks/ask-1",
         issue: { key: "CORE-1", title: "Release" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Which region?",
         reply: {
           id: "ask-1",
@@ -673,6 +677,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         ref: "/projects/CORE/documents/runbook?comment=comment-3",
         document: { project: "CORE", slug: "runbook", name: "Runbook" },
         project: "CORE",
+        resolved_priority: null,
+        priority_from: null,
         subject: "Is step one current?",
         reply: {
           id: "comment-4",
@@ -699,6 +705,8 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
         kind: "agent",
         ref: "/agents/session-1/live",
         subject: "Where is the dashboard?",
+        resolved_priority: null,
+        priority_from: null,
         reply: {
           id: "message-2",
           kind: "reply",

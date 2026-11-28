@@ -49,16 +49,19 @@ var (
 
 // The refusals of what a search, a going request and a session group write name.
 var (
-	searchAuthorInvalidRefusal    = apicode.Refusal{Condition: apicode.SearchAuthorInvalid, Code: apicode.InvalidAuthor}
-	numberProjectMalformedRefusal = apicode.Refusal{Condition: apicode.NumberProjectMalformed, Code: apicode.InvalidNumberProject}
-	searchCoverageTimedOutRefusal = apicode.Refusal{Condition: apicode.SearchCoverageTimedOut, Code: apicode.SearchCoverageTimeout}
-	goingAskerNamesNobodyRefusal  = apicode.Refusal{Condition: apicode.CredentialNamesNobody, Code: apicode.GoingAskerNamesNobody}
-	goingWordsBlankRefusal        = apicode.Refusal{Condition: apicode.GoingWordsBlank, Code: apicode.GoingInput}
-	bodyProjectMalformedRefusal   = apicode.Refusal{Condition: apicode.BodyProjectMalformed, Code: apicode.InvalidProject}
-	sessionGroupInvalidRefusal    = apicode.Refusal{Condition: apicode.SessionGroupInvalid, Code: apicode.SessionGroupInput}
-	sessionAlreadyGroupedRefusal  = apicode.Refusal{Condition: apicode.SessionAlreadyGrouped, Code: apicode.SessionInGroup}
-	sessionGroupNameHeldRefusal   = apicode.Refusal{Condition: apicode.SessionGroupNameHeld, Code: apicode.SessionGroupNameTaken}
-	sessionGroupNameTitledRefusal = apicode.Refusal{Condition: apicode.SessionGroupNameTitled, Code: apicode.SessionGroupNameIsSessionTitle}
+	searchAuthorInvalidRefusal      = apicode.Refusal{Condition: apicode.SearchAuthorInvalid, Code: apicode.InvalidAuthor}
+	numberProjectMalformedRefusal   = apicode.Refusal{Condition: apicode.NumberProjectMalformed, Code: apicode.InvalidNumberProject}
+	searchCoverageTimedOutRefusal   = apicode.Refusal{Condition: apicode.SearchCoverageTimedOut, Code: apicode.SearchCoverageTimeout}
+	searchCoverageNotFilledRefusal  = apicode.Refusal{Condition: apicode.SearchCoverageCountsUnfilled, Code: apicode.SearchCoverageNotFilled}
+	searchCoverageFoldBehindRefusal = apicode.Refusal{Condition: apicode.SearchCoverageCountsBehind, Code: apicode.SearchCoverageFoldBehind}
+	searchTimedOutRefusal           = apicode.Refusal{Condition: apicode.SearchTimedOut, Code: apicode.SearchTimeout}
+	goingAskerNamesNobodyRefusal    = apicode.Refusal{Condition: apicode.CredentialNamesNobody, Code: apicode.GoingAskerNamesNobody}
+	goingWordsBlankRefusal          = apicode.Refusal{Condition: apicode.GoingWordsBlank, Code: apicode.GoingInput}
+	bodyProjectMalformedRefusal     = apicode.Refusal{Condition: apicode.BodyProjectMalformed, Code: apicode.InvalidProject}
+	sessionGroupInvalidRefusal      = apicode.Refusal{Condition: apicode.SessionGroupInvalid, Code: apicode.SessionGroupInput}
+	sessionAlreadyGroupedRefusal    = apicode.Refusal{Condition: apicode.SessionAlreadyGrouped, Code: apicode.SessionInGroup}
+	sessionGroupNameHeldRefusal     = apicode.Refusal{Condition: apicode.SessionGroupNameHeld, Code: apicode.SessionGroupNameTaken}
+	sessionGroupNameTitledRefusal   = apicode.Refusal{Condition: apicode.SessionGroupNameTitled, Code: apicode.SessionGroupNameIsSessionTitle}
 )
 
 // sessionGroupWriteRefusals are the refusals of a session group's create and of its edit, which
@@ -259,9 +262,13 @@ var searchResultsV2Description = fmt.Sprintf("Full-text search q= across issues,
 	"recency, then id. limit 1 to %d (default %d) and offset; {items, total, limit, offset, reachable, took_ms, "+
 	"degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over "+
 	"%d characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or "+
-	"INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR.",
+	"INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. Each "+
+	"keyword and meaning statement of a search runs under a %s statement_timeout, the second search for the rarest "+
+	"words under its own; a statement that runs past it finds nothing and answers 503 SEARCH_TIMEOUT, with a message "+
+	"naming the bound, so a client tries again later or narrows the query rather than sending the same request "+
+	"again at once.",
 	contracts.SearchKindDepth, searchBroadenWords, searchMaxLimit,
-	searchDefaultLimit, contracts.SearchQueryMax)
+	searchDefaultLimit, contracts.SearchQueryMax, searchStatementBound)
 
 // searchResultsV2Query is GET /api/v2/search-results's query.
 type searchResultsV2Query struct {

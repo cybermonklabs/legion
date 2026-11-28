@@ -35,6 +35,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
@@ -173,7 +174,9 @@ const (
 var issueListText = fmt.Sprintf("status=, repeatable, keeps the issues standing in any of those statuses (a "+
 	"blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no "+
 	"issue); parent=<key> an issue's children; label=, repeatable, the issues carrying every label named; priority=, "+
-	"repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no "+
+	"repeatable, 0 to 3 or none, a value matching the priority each issue resolves to, its resolved_priority, so a "+
+	"child with no priority of its own under a P0 issue is listed under 0, and none listing the issues that resolve "+
+	"none; advances=, repeatable, a priority id, none for the work that advances no "+
 	"live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the "+
 	"issues the advances values answer, those whose own row names a priority a value matches and no issue above them "+
 	"carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and "+
@@ -186,11 +189,11 @@ var issueListText = fmt.Sprintf("status=, repeatable, keeps the issues standing 
 	"ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs "+
 	"the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was "+
 	"moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. "+
-	"Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), "+
-	"closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, "+
-	"tasks and children each null when it has none. limit 1 to %d (default %d) and "+
+	"Each is one row: its own fields (%s), its route's reach (route_status, route_holder, "+
+	"route_status_reason), closed_at, null while it is open, open_asks, how many open asks it has, and progress "+
+	"{tasks, children}, tasks and children each null when it has none. limit 1 to %d (default %d) and "+
 	"offset; {items, total, limit, offset}, total counting every issue the filters match.",
-	contracts.MaxIssuePageLimit, contracts.DefaultIssuePageLimit)
+	issuePriorityFields, contracts.MaxIssuePageLimit, contracts.DefaultIssuePageLimit)
 
 // issueClaimText is what both claim routes' descriptions say of their answer.
 const issueClaimText = "The status does not move. Answers the issue with legion_managed_status beside it: true when " +
@@ -211,9 +214,11 @@ var (
 // `<field>_to` (R1.5; the route map's D6).
 type issueFiltersV2 struct {
 	pageQuery
-	Status   []string `query:"status"`
-	Parent   string   `query:"parent"`
-	Label    []string `query:"label"`
+	Status []string `query:"status"`
+	Parent string   `query:"parent"`
+	Label  []string `query:"label"`
+	// Priority lists issues whose resolved priority is one of these, 0-3: their own, else that of
+	// the nearest issue above them that has one. `none` lists the issues that resolve none.
 	Priority []string `query:"priority"`
 	Advances []string `query:"advances"`
 	// Own keeps, of the issues the Advances values answer, those whose own row names a matched
@@ -438,7 +443,7 @@ type referenceRowV2 struct {
 // (artifact_id, number) index of artifact_versions. A document with no version is absent, as it is
 // from GET /api/v1/issues/{key}/references (loadArtifactsByRefKey).
 const referenceRowsV2Statement = `
-	select ` + artifactColumns + `, latest.number, latest.written_at, latest.size, counted.versions
+	select ` + docs.ArtifactColumns + `, latest.number, latest.written_at, latest.size, counted.versions
 	from artifacts
 	join lateral (
 		select v.number, v.created_at as written_at, ` + model.VersionSize + ` as size
@@ -462,7 +467,7 @@ func loadReferenceRowsV2(ctx context.Context, q queryer, ids []string) (map[stri
 		var number, count int
 		var writtenAt time.Time
 		var size *int
-		artifact, err := scanArtifact(rows, &number, &writtenAt, &size, &count)
+		artifact, err := docs.ScanArtifact(rows, &number, &writtenAt, &size, &count)
 		if err != nil {
 			return nil, err
 		}

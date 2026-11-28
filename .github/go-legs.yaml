@@ -292,6 +292,8 @@ packages/envoy:
       - dispatchblocks
       - internal/dispatch/legion/legiontest
       - internal/dispatch/legionfacts/independent
+      - internal/dispatch/evals/independent
+      - internal/dispatch/evals/independent/cmd
       - internal/dispatch/specform/ste
     # Dispatch's heavier packages.
     4:
@@ -348,6 +350,7 @@ packages/envoy:
       - internal/cistore                        # 25 s
       - clitest                                 # 16 s
       - internal/pglisten                       # 14 s
+      - internal/dispatch/asof                  # 10 s (run 46107251772)
       - cmd/dev-oidc-issuer                     # 5 s
       - internal/roles                          # 5 s
       - internal/legionagents                   # 4 s
@@ -438,6 +441,14 @@ packages/envoy:
       - internal/clock/clocktest
       - internal/shapetest
       - testpool
+      - fileerr
+      - githubrate
+      - httpoutage
+      - natsconn
+      - natsurl
+      - pgdsn
+      - internal/dispatch/answerswindow
+      - internal/dpopproof/dpopprooftest
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:
@@ -468,9 +479,11 @@ packages/envoy:
       - internal/oidc                           # 44 s
       - internal/dispatch/delivery/measures     # 6 s
       - internal/dispatch/delivery/citebody     # 1 s
+      - internal/dispatch/delivery/deliveryseed
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest
+      - internal/dispatch/store/storetest/collabtest
       - internal/dispatch/store/storetest/lockstep
     # The Dispatch store, in two legs, a group of its tests each
     # (.github/go-legs/packages/envoy/internal/dispatch/store.yaml, modelled 295 s a group): whole,

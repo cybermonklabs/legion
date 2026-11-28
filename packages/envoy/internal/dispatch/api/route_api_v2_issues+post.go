@@ -40,9 +40,20 @@ var _ = declareRow(func(s *server) routeRow {
 			"priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under "+
 			"a WWW-Authenticate challenge for p0, and writes nothing. A person at a browser holds p0, a personal token "+
 			"holds it only where its maker gave it, a Dispatch sign-in's token only where its person ticked it, and a "+
-			"create that names a priority of 1 to 3, or none, needs no "+
-			"scope; a priority that an issue above the new issue has is none of its own. A create from a ref that "+
-			"Dispatch already imported answers that issue and sets no priority.", contracts.IssueTitleMax),
+			"create that names a priority of 1 to 3 needs no scope; a priority that an issue above the new issue has "+
+			"is none of its own. A new issue with no priority of its own takes the priority its parent reads "+
+			"(resolved_priority: the parent's own, else that of the nearest issue above it that has one, in any "+
+			"project), so a create with no priority under a parent that reads P0 needs p0 unless the writer's session "+
+			"is the parent's architect: the session of the parent's own architect row of issue_role_holders (PUT "+
+			"/api/v2/issues/{key}/role-holder-set), in whatever project the parent is, and, while the parent's "+
+			"project's proven-sessions setting is on, only on a credential that proves that session. The architect of "+
+			"an issue further above, a session that holds another role of the parent and the holder of the parent's "+
+			"claim do not count: from them, and from every other credential that does not hold p0, such a create is "+
+			"403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, before the near-copy "+
+			"check, and writes nothing, while a parent that does not exist, or one of a private project that the "+
+			"credential does not name, gets the answer it got before. A create with no priority under no parent, or "+
+			"under a parent that does not read P0, needs no scope. A create from a ref that Dispatch already imported "+
+			"answers that issue and sets no priority.", contracts.IssueTitleMax),
 		// A new child is checked against its parent's status under the same lock as /api/v1.
 		Handler:  s.createIssueV2,
 		Resource: "issues", Kind: kindCollection, Key: "{key}",

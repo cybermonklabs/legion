@@ -179,7 +179,9 @@ type deliveryWindowQuery struct {
 	ParentAgent []string `query:"parent_agent"`
 	// Issue selects pull requests of these issues; __no_issue__ selects those naming none.
 	Issue []string `query:"issue"`
-	// Priority selects P0-P3; __no_priority__ selects an issue with none.
+	// Priority selects P0-P3, matched against the priority the pull request's issue resolves to:
+	// its own, else that of the nearest issue above it that has one; __no_priority__ selects an
+	// issue that resolves none.
 	Priority []string `query:"priority"`
 	// Component selects these components, a parent including its children;
 	// __no_component__ selects an issue with none.
@@ -233,7 +235,8 @@ type issueListQuery struct {
 	ClosedSince string `query:"closed_since"`
 	// ClosedBefore lists issues closed before this RFC3339 time.
 	ClosedBefore string `query:"closed_before"`
-	// Priority lists issues at these priorities, 0-3, or `none` for unset.
+	// Priority lists issues whose resolved priority is one of these, 0-3: their own, else that of
+	// the nearest issue above them that has one. `none` lists the issues that resolve none.
 	Priority []string `query:"priority"`
 	// Advances lists issues that advance these priorities, by their own relation or by one an
 	// issue above them states, over every project; `none` lists those that advance no live

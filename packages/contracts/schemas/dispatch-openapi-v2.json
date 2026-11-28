@@ -1946,7 +1946,7 @@
     },
     "/api/v2/artifacts/{id}/approval-requests": {
       "post": {
-        "description": "Open an approval ask for a document's latest version {summary?, include_verification?, actor?}, any authenticated caller: include_verification puts the issue's Verification document beside the spec, each at its own current version (409 NO_VERIFICATION_DOCUMENT when it has none, 409 NOT_SPEC_DOCUMENT on any document but the issue's spec). A document a person approved before carries that approval on the ask. An open request over a document it names is renewed or handed back to its person rather than a second one opened, but one that waits on the person is 409 APPROVAL_WAITS_ON_HUMAN when this request gives another summary or another document; a document approved throughout at its current version needs none. Answers {ask, artifact_id, version, approval, coverage, coverage_unread?}: 201 when the request opened, reworded or handed back the request, 200 when it stood as asked, a follow it added included (ask null when nothing is asked); coverage, on a request for the issue's spec, is one line per requirement with no check, or `the spec marks no requirements`, empty for any other document and where coverage_unread says its read failed, and refuses nothing. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, 400 SUMMARY_INPUT for a blank summary, 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
+        "description": "Open an approval ask for a document's latest version {summary?, include_verification?, actor?}, any authenticated caller: include_verification puts the issue's Verification document beside the spec, each at its own current version (409 NO_VERIFICATION_DOCUMENT when it has none, 409 NOT_SPEC_DOCUMENT on any document but the issue's spec). A document a person approved before carries that approval on the ask. An open request over a document it names is renewed or handed back to its person rather than a second one opened, but one that waits on the person is 409 APPROVAL_WAITS_ON_HUMAN when this request gives another summary or another document; a document approved throughout at its current version needs none. Answers {ask, artifact_id, version, approval, coverage, coverage_unread?}: 201 when the request opened, reworded or handed back the request, 200 when it stood as asked, a follow it added included (ask null when nothing is asked); coverage, on a request for the issue's spec, is one line per requirement with no check, or `the spec marks no requirements`, empty for any other document and where coverage_unread says its read failed, and refuses nothing. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS), its body naming each text and its rule {code, error, refusal, next_step, findings, findings_total}. 409 PLAN_APPROVED_BY_REVIEW for a plan, 409 NO_VERSION, 409 ISSUE_CLOSED, 400 SUMMARY_INPUT for a blank summary, 400 NOT_DOCUMENT, 404 ARTIFACT_NOT_FOUND.",
         "operationId": "postApiV2ArtifactsByIdApprovalRequests",
         "parameters": [
           {
@@ -2022,6 +2022,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2069,6 +2086,7 @@
           "RESULTS_ONLY_TOKEN": 403,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "SPEC_FORM": 409,
           "SUMMARY_INPUT": 400,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
@@ -3660,7 +3678,7 @@
         }
       },
       "post": {
-        "description": "Approve or request changes on a document {state: approved or changes_requested, reason?, version?} (the person and approve scopes); changes_requested needs a reason (400 REASON_REQUIRED), and any other state, or a version that is an integer below 1, is 400 INVALID_REVIEW (a version that is no integer 400 INVALID_JSON). The review records the document's latest settled version, or, with an approval ask open, the version that ask names for it, and then answers that ask, preserving its thread, and reviews every document it named, each at the version it names. version is the version the caller read, a guard: a review that would record another is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing written. Answers 201 the review of this document. 409 NO_VERSION, 409 ISSUE_CLOSED, 400 NOT_DOCUMENT, 400 CAP_EXCEEDED for a reason past the bound, 404 ARTIFACT_NOT_FOUND.",
+        "description": "Approve or request changes on a document {state: approved or changes_requested, reason?, version?} (the person and approve scopes); changes_requested needs a reason (400 REASON_REQUIRED), and any other state, or a version that is an integer below 1, is 400 INVALID_REVIEW (a version that is no integer 400 INVALID_JSON). The review records the document's latest settled version, or, with an approval ask open, the version that ask names for it, and then answers that ask, preserving its thread, and reviews every document it named, each at the version it names. version is the version the caller read, a guard: a review that would record another is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing written. Answers 201 the review of this document. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec (DISPATCH_SPEC_ROOTS), its body naming each text and its rule {code, error, refusal, next_step, changes_reason, findings, findings_total}, changes_reason the text that a request for changes sends to the author; the form check does not refuse a request for changes. 409 NO_VERSION, 409 ISSUE_CLOSED, 400 NOT_DOCUMENT, 400 CAP_EXCEEDED for a reason past the bound, 404 ARTIFACT_NOT_FOUND.",
         "operationId": "postApiV2ArtifactsByIdReviews",
         "parameters": [
           {
@@ -3727,6 +3745,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3776,6 +3811,7 @@
           "REVIEW_VERSION_MOVED": 409,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "SPEC_FORM": 409,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
         },
@@ -5112,7 +5148,7 @@
     },
     "/api/v2/asks/{id}/state": {
       "put": {
-        "description": "Move an ask to a state, its body by state. {state: answered, selected?, text?, expected_edited_at, expected_answer_at?, actor?} answers it, which needs the person scope, and the approve scope for an approval request: expected_edited_at is the edited_at of the wording answered, null for one never edited (absent is 400 ASK_REVISION_REQUIRED, one the ask has moved past 409 ASK_EDITED), and a change of the current answer by the person who gave it names that answer's at in expected_answer_at (another person's change is 403 NOT_ANSWERER, one the answer has moved past 409 ASK_ANSWER_CHANGED, an approval's 409 ASK_APPROVAL_REVIEW). {state: resolved or retracted, reason} closes it without an answer, for any caller, a bearer naming its session in actor. {state: declined, reason?, actor?} declines it, which needs the person scope: the reason stands beside the words Dispatch writes for the asking agent, and an approval request is 409 ASK_NOT_DECLINABLE. A block ask's block records the state too. A body equal to the ask's present state and fields, from the caller who set them, answers 200 and writes nothing; any other first answer to an answered ask, and a resolve, a retraction or a decline of one, is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. An approve-only token (the secrets broker's proxy for a person's approvals) may send state answered of an approval request and no other declared state: its answer of any other ask, a saved answer under an Idempotency-Key and a repeat of the person's own answer included, and each other state this route declares (resolved, retracted, declined) are 403 APPROVE_ONLY_TOKEN. Answers the ask as GET /api/v2/asks/{id} reads it; 400 STATE_INVALID for a state it does not declare, 400 INVALID_ANSWER, REASON_REQUIRED (an approval's Request changes with no text), INVALID_RESOLUTION or CAP_EXCEEDED for a body its state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. On an issue Legion runs, a retraction or a resolution of a block ask whose block, or a copy of it, is in its spec or Verification document, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT.",
+        "description": "Move an ask to a state, its body by state. {state: answered, selected?, text?, expected_edited_at, expected_answer_at?, actor?} answers it, which needs the person scope, and the approve scope for an approval request: expected_edited_at is the edited_at of the wording answered, null for one never edited (absent is 400 ASK_REVISION_REQUIRED, one the ask has moved past 409 ASK_EDITED), and a change of the current answer by the person who gave it names that answer's at in expected_answer_at (another person's change is 403 NOT_ANSWERER, one the answer has moved past 409 ASK_ANSWER_CHANGED, an approval's 409 ASK_APPROVAL_REVIEW). {state: resolved or retracted, reason} closes it without an answer, for any caller, a bearer naming its session in actor. {state: declined, reason?, actor?} declines it, which needs the person scope: the reason stands beside the words Dispatch writes for the asking agent, and an approval request is 409 ASK_NOT_DECLINABLE. A block ask's block records the state too. A body equal to the ask's present state and fields, from the caller who set them, answers 200 and writes nothing; any other first answer to an answered ask, and a resolve, a retraction or a decline of one, is 409 ASK_ANSWERED, and a resolved ask 409 ASK_RESOLVED. An approve-only token (the secrets broker's proxy for a person's approvals) may send state answered of an approval request and no other declared state: its answer of any other ask, a saved answer under an Idempotency-Key and a repeat of the person's own answer included, and each other state this route declares (resolved, retracted, declined) are 403 APPROVE_ONLY_TOKEN. Answers the ask as GET /api/v2/asks/{id} reads it; an Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS), its body naming each text and its rule {code, error, refusal, next_step, changes_reason, findings, findings_total}; 400 STATE_INVALID for a state it does not declare, 400 INVALID_ANSWER, REASON_REQUIRED (an approval's Request changes with no text), INVALID_RESOLUTION or CAP_EXCEEDED for a body its state refuses, 409 ISSUE_CLOSED on a closed issue, 404 ASK_NOT_FOUND. On an issue Legion runs, a retraction or a resolution of a block ask whose block, or a copy of it, is in its spec or Verification document, by a session that is no person and no architect of the issue or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT.",
         "operationId": "putApiV2AsksByIdState",
         "parameters": [
           {
@@ -5250,6 +5286,23 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SpecFormError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -5326,6 +5379,7 @@
           "RESULTS_ONLY_TOKEN": 403,
           "SIGNIN_UNAVAILABLE": 503,
           "SIGN_IN_REQUIRED": 403,
+          "SPEC_FORM": 409,
           "STATE_INVALID": 400,
           "TARGET_NOT_FOUND": 404,
           "TOKEN_REVOKED": 401,
@@ -8099,7 +8153,7 @@
     },
     "/api/v2/delivery/timeline": {
       "get": {
-        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too.",
+        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3, the priority the PR's issue resolves to: its own, else that of the nearest issue above it that has one), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority (that resolved priority's label) with priority_from (the key of the issue it comes from, null where it is the issue's own) and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too.",
         "operationId": "getApiV2DeliveryTimeline",
         "parameters": [
           {
@@ -9072,7 +9126,7 @@
     },
     "/api/v2/issues": {
       "get": {
-        "description": "List the issues of every project, filtered. project=\u003ckey\u003e, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=\u003cKEY or owner/repo#n\u003e keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=\u003ckey\u003e an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, tasks and children each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match.",
+        "description": "List the issues of every project, filtered. project=\u003ckey\u003e, repeatable, keeps those projects' issues, with no default project; GET /api/v2/projects/{key}/issues lists one project's. ref=\u003cKEY or owner/repo#n\u003e keeps the issue a key names, or every issue linked to that GitHub issue or pull request (an issue imported from it, or one a link names), none where nothing is; any other ref is 400 INVALID_ISSUE_REF. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=\u003ckey\u003e an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none, a value matching the priority each issue resolves to, its resolved_priority, so a child with no priority of its own under a P0 issue is listed under 0, and none listing the issues that resolve none; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields (priority, the issue's own, null where it sets none; resolved_priority, the priority it works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within 32 links, else null; and priority_from, the key of the issue resolved_priority comes from, null where it is the issue's own or there is none. resolved_priority and priority_from are always present, null included), its route's reach (route_status, route_holder, route_status_reason), closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, tasks and children each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match.",
         "operationId": "getApiV2Issues",
         "parameters": [
           {
@@ -9335,7 +9389,7 @@
         ]
       },
       "post": {
-        "description": "Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every create names its project, an import included: external with no project, or an empty one, is 400 INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 EXTERNAL_PROJECT_MISMATCH. A credential that names one project creates in another project as a credential that names none may, but a project that does not exist and a private project the credential does not name are alike 404 NOT_FOUND, with nothing created. assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create, not an import, whose title is a near copy of an issue of the same project that is not done and is not its ancestor is 409 POSSIBLE_DUPLICATE with the candidates; a near-copy read that does not answer in time lets the create in. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. When Legion runs the new issue, because it or an issue of its own project above it carries the label legion, and once a role-holder publication has marked the project, a create under a parent by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so, while the project's proven_sessions is on, is one by such an architect on a credential that does not prove its session. A create under a parent of another project is judged as a root of the new issue's own project, which this check does not judge. A priority of 0 needs the p0 scope: a create that names priority 0 makes the new issue's own priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, and writes nothing. A person at a browser holds p0, a personal token holds it only where its maker gave it, a Dispatch sign-in's token only where its person ticked it, and a create that names a priority of 1 to 3, or none, needs no scope; a priority that an issue above the new issue has is none of its own. A create from a ref that Dispatch already imported answers that issue and sets no priority.",
+        "description": "Create an issue {project, title, parent?, blocked_by?, advances?, external?, force?, spec?, labels?, priority?, assignee?, components?, repo?}, a bearer naming its session in actor: a native issue in project, or one imported from a GitHub owner/repo#n named in external into project. Every create names its project, an import included: external with no project, or an empty one, is 400 INVALID_ISSUE, and an external ref already linked to an issue of another project is 400 EXTERNAL_PROJECT_MISMATCH. A credential that names one project creates in another project as a credential that names none may, but a project that does not exist and a private project the credential does not name are alike 404 NOT_FOUND, with nothing created. assignee defaults to the creating person, the personal token's owner, the parent's assignee when the parent is of the issue's own project, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. An unforced create, not an import, whose title is a near copy of an issue of the same project that is not done and is not its ancestor is 409 POSSIBLE_DUPLICATE with the candidates; a near-copy read that does not answer in time lets the create in. Answers 201 the issue with advice beside it, and 200 the issue an external ref already imported. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the advice's suggestions say whether it found related items (outcome found, none or not_made with the reason in missing), how it searched, the three items most like the new issue with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches). A blocked_by that would make the new issue wait on itself through its parent is 409 ISSUE_CYCLE. When Legion runs the new issue, because it or an issue of its own project above it carries the label legion, and once a role-holder publication has marked the project, a create under a parent by a session that is no person and no architect of the parent or of an issue above it is 403 DOCUMENT_WRITER_NOT_ARCHITECT, and so, while the project's proven_sessions is on, is one by such an architect on a credential that does not prove its session. A create under a parent of another project is judged as a root of the new issue's own project, which this check does not judge. A priority of 0 needs the p0 scope: a create that names priority 0 makes the new issue's own priority P0, and from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, and writes nothing. A person at a browser holds p0, a personal token holds it only where its maker gave it, a Dispatch sign-in's token only where its person ticked it, and a create that names a priority of 1 to 3 needs no scope; a priority that an issue above the new issue has is none of its own. A new issue with no priority of its own takes the priority its parent reads (resolved_priority: the parent's own, else that of the nearest issue above it that has one, in any project), so a create with no priority under a parent that reads P0 needs p0 unless the writer's session is the parent's architect: the session of the parent's own architect row of issue_role_holders (PUT /api/v2/issues/{key}/role-holder-set), in whatever project the parent is, and, while the parent's project's proven-sessions setting is on, only on a credential that proves that session. The architect of an issue further above, a session that holds another role of the parent and the holder of the parent's claim do not count: from them, and from every other credential that does not hold p0, such a create is 403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, before the near-copy check, and writes nothing, while a parent that does not exist, or one of a private project that the credential does not name, gets the answer it got before. A create with no priority under no parent, or under a parent that does not read P0, needs no scope. A create from a ref that Dispatch already imported answers that issue and sets no priority.",
         "operationId": "postApiV2Issues",
         "parameters": [
           {
@@ -9490,7 +9544,7 @@
     },
     "/api/v2/issues/{key}": {
       "get": {
-        "description": "Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. include= adds, each as a member of its name: blocks, the keys of the issues whose blocked_by names it, sorted, [] when none, which no row of GET /api/v2/issues carries; comment_count, how many comments GET /api/v2/issues/{key}/comments lists with no artifact=, 0 when it holds none; progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none; where the listener did not answer, a route's route_status is unknown with route_status_reason unreachable or refilling, a session holder's holder_state is unknown, and route_holder, last_seen and takeable_at are null; referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, runs_revision}, its Legion state from what the Legion intake recorded of the daemon of its project, the body a /ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on in the shape GET /api/v1/issues/{key}/legion answers it, read is the newest read of the daemon {at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no run, and grows with each write of a run that stores something new. A project that names no daemon is not refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "Read one issue: its own fields, and artifacts, each of its documents, files and images in creation order as GET /api/v2/issues/{key}/artifacts lists them. It carries priority, the issue's own, null where it sets none; resolved_priority, the priority it works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within 32 links, else null; and priority_from, the key of the issue resolved_priority comes from, null where it is the issue's own or there is none. resolved_priority and priority_from are always present, null included. include= adds, each as a member of its name: blocks, the keys of the issues whose blocked_by names it, sorted, [] when none, which no row of GET /api/v2/issues carries; comment_count, how many comments GET /api/v2/issues/{key}/comments lists with no artifact=, 0 when it holds none; progress {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none; open_asks, its open asks, oldest first, each as GET /api/v2/asks answers it; children, its direct children, each with a rollup of its subtree; design_gates, the document each design-gate step records and whether the deployment's gate holds the issue's tree on it, null where the daemon said nothing, [{step, artifact_id, holds}] in step order; reach {route_status, route_holder, route_status_reason, holder_state, last_seen, takeable_at}, where its route reaches now and what state the session holding its claim is in, read from the Envoy listener, each null where there is none; where the listener did not answer, a route's route_status is unknown with route_status_reason unreachable or refilling, a session holder's holder_state is unknown, and route_holder, last_seen and takeable_at are null; referenced_by_count, how many references to it stand; and legion {issue, project, configured, state, read, runs_revision}, its Legion state from what the Legion intake recorded of the daemon of its project, the body a /ws/live legion_issue view of it carries. In legion, configured is whether that project names a Legion daemon, state is null where the daemon does not record the issue and otherwise {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}, waiting_on in the shape GET /api/v1/issues/{key}/legion answers it, read is the newest read of the daemon {at, ok, error} or null where none was recorded, and runs_revision counts the tuples of its runs, 0 with no run, and grows with each write of a run that stores something new. A project that names no daemon is not refused: its issue answers configured false, state null and read null. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "getApiV2IssuesByKey",
         "parameters": [
           {
@@ -9598,7 +9652,7 @@
         }
       },
       "patch": {
-        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none; a design_gates write of any set appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming in issues [{key, project, status}], in key order, each such child but one of a private project that the request's credential, naming one project, does not name, so issues can be empty. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal of the status change carries the changes that committed before it, but a 404 ISSUE_NOT_FOUND, a 500 where the issue cannot be read and, to a request with no Idempotency-Key, the 401, 429, 500 or 503 of a credential that does not resolve are answered before the options are read and carry no changed. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. Each of these checks holds only once a role-holder publication has marked the issue's project, and while the project's proven_sessions is on it also refuses an architect's or the daemon's session on a credential that does not prove it. With DISPATCH_LEGION_STATUS_SCOPE on, three writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own project that does) need a credential that holds the person scope or legion-status, in both forms: a status write (the status the issue holds included) where the issue is a Legion issue before the call or after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge naming legion-status, decided before PARENT_STATUS_CONFLICT and before the write's first field or event (in the status-change form, before its first step), though in the plain form a refused close can still have settled the issue's documents. The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above, of the issue's own project, before the call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor include_parent and not done with include_children. When the request's credential names one project, the status-change form leaves out each issue of a private project that the credential does not name, and each issue that it reaches only through such an issue (a descendant below it, or an ancestor above it): it does not move or unlink those issues, and neither its answer nor its dry run names them, and the issues of a 409 PARENT_STATUS_CONFLICT leave out such an issue, so they can be empty. A priority of 0 needs the p0 scope when the write makes the issue's own priority 0, from none or from another value: from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, before every refusal that reads the issue (409 ISSUE_CHANGED and 409 ISSUE_CLOSED among them), and writes no field of the issue and no event of it. For a close that names priority 0 from a credential without p0, the write reads the issue's own priority first, and where it is not 0 it refuses the close before it settles the issue's documents; a close whose own priority moves away from 0 between that read and the owner's lock can settle the documents and is then refused. Keeping P0, lowering it, clearing it and a priority of 1 to 3 need no scope. 404 ISSUE_NOT_FOUND.",
+        "description": "Change an issue, a bearer naming its session in actor: title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, blocked_by, advances (with advances_revision, the revision the read gave, for a whole-set write), rank, assignee (the email of a person who has signed in, or null; anyone may reassign), external_links, repo or components ({mode: inherit|explicit|none, ids, reason}); design_gates, the whole set of documents its design-gate steps record [{step, artifact_id, holds}], step one of decisions, criteria and spec, artifact_id the document that step's gate recorded and holds whether the deployment's gate holds the issue's tree on that step (left out or null, stored as null, which the superseded_approval advice answers by the project's gated_steps), or [] for none; a design_gates write of any set appends no event and notifies nobody; and refuse_open_foreign_children, true beside a status of retro or done, which the Legion daemon's acceptance writes send: while a child of another project is open (any status but done and icebox), the write changes nothing and is 409 FOREIGN_CHILD_OPEN, naming in issues [{key, project, status}], in key order, each such child but one of a private project that the request's credential, naming one project, does not name, so issues can be empty. A design_gates step named twice, one that is none of the three, or an empty artifact_id, and refuse_open_foreign_children beside any other status, are 400 INVALID_ISSUE. A closed issue takes rank, components, design_gates, an external_links write adding no URL and a reopening status, and is 409 ISSUE_CLOSED for anything else. Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer, and releases its claim; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. A parent that would make the issue its own ancestor, and a parent or blocked_by that would make it wait on itself, are 409 ISSUE_CYCLE. With the parent-status rule on, a change that breaks it is 409 PARENT_STATUS_CONFLICT. Without status-change options, answers the issue with advice; a patch that changes nothing appends no event. With include_children, unlink_children, include_parent or dry_run true, send status and optionally expected_sequence and actor, with no other issue fields; an option sent as false asks for nothing and is taken as absent. The server checks the plan, then changes each affected issue in a separate transaction, keeping the sequence fence and the progress of a keyed attempt. A dry run returns the plan without writing. This form answers {issue, changed}; a refusal of the status change carries the changes that committed before it, but a 404 ISSUE_NOT_FOUND, a 500 where the issue cannot be read and, to a request with no Idempotency-Key, the 401, 429, 500 or 503 of a credential that does not resolve are answered before the options are read and carry no changed. Closing with include_children requires a browser sign-in. On an issue Legion runs, a close, a reopen and a labels or parent write that takes the issue out of Legion (unlink_children among them) are 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon. A move under a parent, after which Legion runs the issue, is 403 DOCUMENT_WRITER_NOT_ARCHITECT from a session that is no person and no architect of the new parent or of an issue above it; a move under a parent of another project is judged as a root of the issue's own project, which this check does not judge. When Legion runs the issue, or an issue under it, before the move, the move is 403 DOCUMENT_WRITER_NOT_ARCHITECT too, wherever the new parent is, from a session that is no person and no architect of each such issue or of an issue above it where it stands. Neither check of a move passes the session of the project's Legion daemon. Each of these checks holds only once a role-holder publication has marked the issue's project, and while the project's proven_sessions is on it also refuses an architect's or the daemon's session on a credential that does not prove it. With DISPATCH_LEGION_STATUS_SCOPE on, three writes of a Legion issue (one that carries the legion label in any case, or is under an issue of its own project that does) need a credential that holds the person scope or legion-status, in both forms: a status write (the status the issue holds included) where the issue is a Legion issue before the call or after it, the removal of its legion label, and a move after which it is no longer a Legion issue. A credential that holds neither is 403 LEGION_STATUS_SCOPE_REQUIRED, with an insufficient_scope challenge naming legion-status, decided before PARENT_STATUS_CONFLICT and before the write's first field or event (in the status-change form, before its first step), though in the plain form a refused close can still have settled the issue's documents. The one exception is the owning architect's status write: a broker-issued token whose session the Legion daemon's own token published as the architect of an issue above, of the issue's own project, before the call and after it, writes done, backlog, icebox or triage, with neither unlink_children nor include_parent and not done with include_children. When the request's credential names one project, the status-change form leaves out each issue of a private project that the credential does not name, and each issue that it reaches only through such an issue (a descendant below it, or an ancestor above it): it does not move or unlink those issues, and neither its answer nor its dry run names them, and the issues of a 409 PARENT_STATUS_CONFLICT leave out such an issue, so they can be empty. A priority of 0 needs the p0 scope when the write makes the issue's own priority 0, from none or from another value: from a credential that does not hold p0 it is 403 OAUTH_SCOPE_REQUIRED naming p0, under a WWW-Authenticate challenge for p0, before every refusal that reads the issue (409 ISSUE_CHANGED and 409 ISSUE_CLOSED among them), and writes no field of the issue and no event of it. An issue with no priority of its own takes the priority of the nearest issue above it that has one (resolved_priority), and so does each issue under it that has none, so a move under a parent needs p0 where it makes the issue, or an issue under it that takes its priority from it, go from a resolved priority of 1 to 3, or none, to P0. A clear of the issue's own priority (priority null) needs p0 in the same way, where the issue would then take P0 from an issue above it. From a credential that does not hold p0, such a move or clear is 403 OAUTH_SCOPE_REQUIRED naming p0 at the same step as a priority of 0, and writes nothing; the check reads the whole chain above the issue as the write leaves it, its issues of projects the credential cannot see included. A move that leaves each resolved priority as it was needs no scope, as a move of an issue that keeps a priority of its own does, and a move that sets no parent (parent null) needs no p0 either, since a detach only turns a priority that the issue took from above into none; nor does unlink_children, since a child it makes a root keeps its own priority and a child with none then takes none. For a close that names priority 0, clears the issue's own priority or names a parent, from a credential without p0, the write reads the issue's priorities first, and where the write would make work P0 it refuses the close before it settles the issue's documents; a close whose priorities move between that read and the owner's lock can settle the documents and is then refused. A write that keeps priority 0 on an issue that holds it, lowers it or sets 1 to 3 needs no scope; a priority that an issue above the issue has is none of its own. 404 ISSUE_NOT_FOUND.",
         "operationId": "patchApiV2IssuesByKey",
         "parameters": [
           {
@@ -14830,7 +14884,7 @@
     },
     "/api/v2/me": {
       "get": {
-        "description": "Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, project_scope, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token, a service-account token and a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project is the project key the credential's token names, null where it names none, a job's token whose entry names public among them; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted. project_scope is the project scope of an access token the secrets broker issued, null for every other credential: named for a token an operator's or a job's entry mapped to its project, for a restricted member's machine login, which names its person and its one project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project, person for a person's own token and for a machine's token that names no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, approve settles what a person settles, and p0 makes an issue's own priority 0 (a person at a browser holds all three, a personal token holds p0 only where its maker gave it, a Dispatch sign-in's broker-issued token holds it only where its person ticked it, and no other broker-issued token, shared token or service-account token holds it). Read-only credentials list read after those scopes. cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v2/issues/{key} refuses to every other credential, in both its forms, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, including a job's token, an exchange entry's token naming its account and every read-only credential.",
+        "description": "Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, project_scope, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token, a service-account token and a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project is the project key the credential's token names, null where it names none, a job's token whose entry names public among them; a token that names a project writes other projects' objects as a credential that names none does, a private project it does not name excepted. project_scope is the project scope of an access token the secrets broker issued, null for every other credential: named for a token an operator's or a job's entry mapped to its project, for a restricted member's machine login, which names its person and its one project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project, person for a person's own token and for a machine's token that names no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, approve settles what a person settles, and p0 makes work P0: it sets an issue's own priority 0, and it lets a move under a parent, a clear of an issue's own priority and a new issue with no priority make an issue P0 by the priority it takes from an issue above it, though the parent's architect files such a new issue without it (a person at a browser holds all three, a personal token holds p0 only where its maker gave it, a Dispatch sign-in's broker-issued token holds it only where its person ticked it, and no other broker-issued token, shared token or service-account token holds it). Read-only credentials list read after those scopes. cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v2/issues/{key} refuses to every other credential, in both its forms, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, including a job's token, an exchange entry's token naming its account and every read-only credential.",
         "operationId": "getApiV2Me",
         "parameters": [
           {
@@ -15579,7 +15633,7 @@
         }
       },
       "patch": {
-        "description": "Write several of the caller's marks at once, answering {updated}, how many marks it wrote: an issue item counts 1 and appends user_state.updated even where it moves no field, and any other write that changes nothing counts 0 and appends no event. The body is either {items}, a named set, each item {kind, id, ...fields} of one mark written as PATCH /api/v2/me/marks/{kind}/{id} writes it, every target held to exist before anything is written, a kind that is none of the six 400 INVALID_KIND, and every item written in one transaction, so a refusal of any item writes none of them; or {filter?, set}, the Inbox's own narrowing of its threads (GET /api/v2/me/threads itself narrows only by kind, issue and artifact) - filter {kind (reply, agent; both by default), priority (P0, P1, P2, P3, none), urgency (low, med, high, blocking, none), project (a key, none), issue or artifact}, each absent list meaning every value - with set {read_through}, marking read every unread thread it narrows to whose newest reply is at or before read_through, an agent reply marked read by id; {dismissed_through}, taking out of the Inbox every thread it narrows to whose newest reply is at or before it; or {dismissed: false, dismissed_through?}, putting back every dismissed thread it narrows to, dismissed at or before dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server. Both forms at once, neither, a malformed filter, and items naming one mark twice are 400 INVALID_QUERY. issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq from 0 to 2147483647, the largest event position the store holds), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version number the store holds). thread {read_through?, dismissed?, version?}, at least one of read_through and dismissed: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, but an issue mark's actor naming a session other than the one the credential proved 403 ACTOR_SESSION_MISMATCH, and a snooze that is missing, malformed or not in the future 400 SNOOZE_INPUT. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes through items the agent marks of that session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written. The filter form names no session, so with kind agent it marks the agent replies of every session, as POST /api/v1/me/inbox/read does.",
+        "description": "Write several of the caller's marks at once, answering {updated}, how many marks it wrote: an issue item counts 1 and appends user_state.updated even where it moves no field, and any other write that changes nothing counts 0 and appends no event. The body is either {items}, a named set, each item {kind, id, ...fields} of one mark written as PATCH /api/v2/me/marks/{kind}/{id} writes it, every target held to exist before anything is written, a kind that is none of the six 400 INVALID_KIND, and every item written in one transaction, so a refusal of any item writes none of them; or {filter?, set}, the Inbox's own narrowing of its threads (GET /api/v2/me/threads itself narrows only by kind, issue and artifact) - filter {kind (reply, agent; both by default), priority (P0, P1, P2, P3, none, each matched against the priority the thread's issue resolves to: its own, else that of the nearest issue above it that has one, as the row's resolved_priority says), urgency (low, med, high, blocking, none), project (a key, none), issue or artifact}, each absent list meaning every value - with set {read_through}, marking read every unread thread it narrows to whose newest reply is at or before read_through, an agent reply marked read by id; {dismissed_through}, taking out of the Inbox every thread it narrows to whose newest reply is at or before it; or {dismissed: false, dismissed_through?}, putting back every dismissed thread it narrows to, dismissed at or before dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server. Both forms at once, neither, a malformed filter, and items naming one mark twice are 400 INVALID_QUERY. issue {pinned?, last_read_seq?, pinned_items?, seq?, actor?}: each field replaces the stored one (last_read_seq from 0 to 2147483647, the largest event position the store holds), and a seq not above the stored one is 409 STATE_STALE with the stored mark as state; every write appends user_state.updated. agent {cleared_before?, read_through?, read_replies?, pinned?}, at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version number the store holds). thread {read_through?, dismissed?, version?}, at least one of read_through and dismissed: read_through moves forward only, and dismissed true, which takes the version GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, but an issue mark's actor naming a session other than the one the credential proved 403 ACTOR_SESSION_MISMATCH, and a snooze that is missing, malformed or not in the future 400 SNOOZE_INPUT. Needs the person scope, which a project-scoped session's token does not hold. A credential that proved a session, a token the secrets broker issued, writes through items the agent marks of that session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written. The filter form names no session, so with kind agent it marks the agent replies of every session, as POST /api/v1/me/inbox/read does.",
         "operationId": "patchApiV2MeMarks",
         "parameters": [
           {
@@ -16344,7 +16398,7 @@
     },
     "/api/v2/me/threads": {
       "get": {
-        "description": "The caller's Inbox threads (the person scope), of the kinds kind=\u003ckind\u003e,\u003ckind\u003e names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in (under state=dismissed, also a thread they dismissed that nobody else has written in), less an open ask on an open issue or a project document that waits on them, which GET /api/v2/asks?waiting_on=me lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. state is unread (the default), the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: dismissed_at,thread_id, each bound \u003cRFC3339 time\u003e,\u003cthread id\u003e, the position of a row a page answered: after keeps the rows dismissed after that row, oldest dismissal first, and before the rows dismissed before it, newest first where no after is given (an after or a before that is no time and thread id, and an after above the newest dismissal, are 400 POSITION_INVALID naming the parameter and dismissed_at,thread_id). issue=\u003ckey\u003e or artifact=\u003cdocument id\u003e narrows to one owner, and an agent row, which has neither, is then in no answer; both, and an after or a before under a state other than dismissed, are 400 INVALID_QUERY. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact count of both kinds the filters keep, and null under state=dismissed, which is read a page at a time from a position, as the global event log is, rather than counted; as_of the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), root_author, the actor who wrote the thread's root in the shape of the reply's author (the ask's asker, the root comment's author or the root message's author, as stored, so a root the Legion daemon wrote reads as its session legion-daemon:\u003cPROJECT\u003e; an agent row carries none), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies.",
+        "description": "The caller's Inbox threads (the person scope), of the kinds kind=\u003ckind\u003e,\u003ckind\u003e names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in (under state=dismissed, also a thread they dismissed that nobody else has written in), less an open ask on an open issue or a project document that waits on them, which GET /api/v2/asks?waiting_on=me lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. state is unread (the default), the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first. Position, of state=dismissed alone: dismissed_at,thread_id, each bound \u003cRFC3339 time\u003e,\u003cthread id\u003e, the position of a row a page answered: after keeps the rows dismissed after that row, oldest dismissal first, and before the rows dismissed before it, newest first where no after is given (an after or a before that is no time and thread id, and an after above the newest dismissal, are 400 POSITION_INVALID naming the parameter and dismissed_at,thread_id). issue=\u003ckey\u003e or artifact=\u003cdocument id\u003e narrows to one owner, and an agent row, which has neither, is then in no answer; both, and an after or a before under a state other than dismissed, are 400 INVALID_QUERY. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact count of both kinds the filters keep, and null under state=dismissed, which is read a page at a time from a position, as the global event log is, rather than counted; as_of the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its owner, its issue's own priority (priority, left out where it sets none), the priority that issue resolves to (resolved_priority: its own, else that of the nearest issue above it that has one) and the key of the issue that comes from (priority_from, null where it is the issue's own), those two always present and null on a row with no issue, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), root_author, the actor who wrote the thread's root in the shape of the reply's author (the ask's asker, the root comment's author or the root message's author, as stored, so a root the Legion daemon wrote reads as its session legion-daemon:\u003cPROJECT\u003e; an agent row carries none), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies.",
         "operationId": "getApiV2MeThreads",
         "parameters": [
           {
@@ -19472,7 +19526,7 @@
     },
     "/api/v2/projects/{key}/issues": {
       "get": {
-        "description": "List one project's issues, filtered: the rows GET /api/v2/issues?project={key} answers for the same filters. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=\u003ckey\u003e an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none for unset; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, tasks and children each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "List one project's issues, filtered: the rows GET /api/v2/issues?project={key} answers for the same filters. status=, repeatable, keeps the issues standing in any of those statuses (a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue); parent=\u003ckey\u003e an issue's children; label=, repeatable, the issues carrying every label named; priority=, repeatable, 0 to 3 or none, a value matching the priority each issue resolves to, its resolved_priority, so a child with no priority of its own under a P0 issue is listed under 0, and none listing the issues that resolve none; advances=, repeatable, a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited, several a union; own=true keeps, of the issues the advances values answer, those whose own row names a priority a value matches and no issue above them carries it, so a child that only inherits a priority or restates one an issue above it carries is left out and none keeps nothing, and without an advances value it filters nothing (advances=any\u0026own=true over backlog and icebox is the second fault of GET /api/v2/priorities); open=true the open issues; updated_from and updated_to window updated_at, and closed_from and closed_to closed_at, RFC3339, each from inclusive and to exclusive, so an open issue matches no closed window (a closed_to at or before closed_from is 400 INVALID_CLOSED_WINDOW, an updated_to at or before updated_from 400 INVALID_QUERY); route_status=live, holder_unresponsive, no_holder or unknown keeps the open issues whose route stands so (503 ENVOY_UNAVAILABLE or ENVOY_REFILLING where the listener cannot judge a route); pinned=true the issues the caller pinned, which needs the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. Each is one row: its own fields (priority, the issue's own, null where it sets none; resolved_priority, the priority it works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within 32 links, else null; and priority_from, the key of the issue resolved_priority comes from, null where it is the issue's own or there is none. resolved_priority and priority_from are always present, null included), its route's reach (route_status, route_holder, route_status_reason), closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, tasks and children each null when it has none. limit 1 to 250 (default 50) and offset; {items, total, limit, offset}, total counting every issue the filters match. 404 PROJECT_NOT_FOUND for a project that does not exist.",
         "operationId": "getApiV2ProjectsByKeyIssues",
         "parameters": [
           {
@@ -19728,7 +19782,7 @@
     },
     "/api/v2/projects/{key}/legion/board": {
       "get": {
-        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in awaiting_children, the open children the daemon lists it as blocked on), what it waits on from a person, its tree root and how many issues of its tree that have not started, on no card of their own, have it as the nearest card above them (children); and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, own priority, the priority it resolves to (resolved_priority: its own, else that of the nearest issue above it that has one) with the key of the issue that comes from (priority_from, null where it is the issue's own), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in awaiting_children, the open children the daemon lists it as blocked on), what it waits on from a person, its tree root and how many issues of its tree that have not started, on no card of their own, have it as the nearest card above them (children); and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2ProjectsByKeyLegionBoard",
         "parameters": [
           {
@@ -21081,7 +21135,7 @@
     },
     "/api/v2/search-coverage": {
       "get": {
-        "description": "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number is read in one statement, so they all read one snapshot, under a 10 s statement_timeout: a statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT, to be asked again later.",
+        "description": "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds. Every number comes from counts the writes keep, read in one statement, so they all read one snapshot, under a 10 s statement_timeout. A statement that runs past it counts nothing and answers 503 SEARCH_COVERAGE_TIMEOUT; until the server's first fill of the counts since they were made has ended, the route answers 503 SEARCH_COVERAGE_NOT_FILLED; and with more than 100,000 rows of writes not yet folded into the counts it answers 503 SEARCH_COVERAGE_FOLD_BEHIND. Each is to be asked again later.",
         "operationId": "getApiV2SearchCoverage",
         "parameters": [
           {
@@ -21152,6 +21206,8 @@
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
           "RESULTS_ONLY_TOKEN": 403,
+          "SEARCH_COVERAGE_FOLD_BEHIND": 503,
+          "SEARCH_COVERAGE_NOT_FILLED": 503,
           "SEARCH_COVERAGE_TIMEOUT": 503,
           "SIGNIN_UNAVAILABLE": 503,
           "TOKEN_REVOKED": 401,
@@ -21161,7 +21217,7 @@
     },
     "/api/v2/search-results": {
       "get": {
-        "description": "Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one; where it names several, it names that number's issue of each of them; and otherwise it is read in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=\u003ckey\u003e, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. kind=, repeatable, one of issue, document, comment, ask and message, keeps the rows of the kinds named alone, before anything is ranked, counted or paged, and none is every kind, as GET /api/v1/search/results reads it. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR.",
+        "description": "Full-text search q= across issues, documents, asks, comments and messages: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, with total, every match, and reachable, how many the pages can reach (each leg's best 100). A comment's, a message's and an ask's hit carries author, the actor that wrote it. A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in the project the search is narrowed to where it names one; where it names several, it names that number's issue of each of them; and otherwise it is read in number_project, the project of the page the search was made from, which narrows nothing. A q is searched as typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether that second search answered. project=\u003ckey\u003e, repeatable, narrows every leg to those projects, with no default project; status= the status of the issue a row belongs to (a row with no issue matches none); author= the actor id that wrote the item a row names; from and to, RFC3339, from inclusive and to exclusive, when that item was last written. filters echoes {project, status, author, from, to}, project [] for none. kind=, repeatable, one of issue, document, comment, ask and message, keeps the rows of the kinds named alone, before anything is ranked, counted or paged, and none is every kind, as GET /api/v1/search/results reads it. keywords_only=true runs the keyword leg alone and makes no embedding call, and its answer is not stamped degraded; degraded names why a search that wanted meaning answered by keywords alone. Ordered by score, then recency, then id. limit 1 to 50 (default 20) and offset; {items, total, limit, offset, reachable, took_ms, degraded?, query, filters}. A q under 2 characters and a from not before to are 400 INVALID_QUERY, and a q over 1000 characters 400 CAP_EXCEEDED; a project or number_project that is not a project key is 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, and a status or an author that is none is 400 INVALID_STATUS or INVALID_AUTHOR. Each keyword and meaning statement of a search runs under a 15s statement_timeout, the second search for the rarest words under its own; a statement that runs past it finds nothing and answers 503 SEARCH_TIMEOUT, with a message naming the bound, so a client tries again later or narrows the query rather than sending the same request again at once.",
         "operationId": "getApiV2SearchResults",
         "parameters": [
           {
@@ -21341,6 +21397,7 @@
           "OIDC_TOKEN_INVALID": 401,
           "QUERY_KEY_UNKNOWN": 400,
           "RESULTS_ONLY_TOKEN": 403,
+          "SEARCH_TIMEOUT": 503,
           "SIGNIN_UNAVAILABLE": 503,
           "TOKEN_REVOKED": 401,
           "UNAUTHORIZED": 401
@@ -23449,6 +23506,18 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "status": {
             "type": "string"
           },
@@ -23468,6 +23537,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "parent",
           "external_links",
           "updated_at",
@@ -26889,6 +26960,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -26899,6 +26976,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -26934,6 +27017,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -29756,6 +29841,12 @@
               "string"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "repo": {
             "type": "string"
           },
@@ -29801,6 +29892,7 @@
           "issue",
           "issue_title",
           "priority",
+          "priority_from",
           "components",
           "sessions",
           "parent_agent",
@@ -32462,6 +32554,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -32472,6 +32570,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -32507,6 +32611,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -33302,6 +33408,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/IssueProgress"
           },
@@ -33321,6 +33433,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -33356,6 +33474,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -33588,6 +33708,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "progress": {
             "$ref": "#/components/schemas/IssueProgress"
           },
@@ -33598,6 +33724,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -33646,6 +33778,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -33788,6 +33922,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -33798,6 +33938,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -33833,6 +33979,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -33981,6 +34129,12 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -33991,6 +34145,12 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
             ]
           },
           "resolved_repo": {
@@ -34026,6 +34186,8 @@
           "title",
           "status",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "rank",
           "labels",
           "parent",
@@ -34326,6 +34488,18 @@
               "integer"
             ]
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
           "roles": {
             "items": {
               "type": "string"
@@ -34362,6 +34536,8 @@
           "key",
           "title",
           "priority",
+          "resolved_priority",
+          "priority_from",
           "phase",
           "phase_since",
           "slot",
@@ -36336,6 +36512,12 @@
           "priority": {
             "type": "integer"
           },
+          "priority_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "project": {
             "type": "string"
           },
@@ -36348,6 +36530,12 @@
           },
           "reply": {
             "$ref": "#/components/schemas/MyReplyReply"
+          },
+          "resolved_priority": {
+            "type": [
+              "null",
+              "integer"
+            ]
           },
           "root_author": {
             "$ref": "#/components/schemas/Actor"
@@ -36394,6 +36582,8 @@
           "thread_id",
           "kind",
           "ref",
+          "resolved_priority",
+          "priority_from",
           "subject",
           "reply",
           "unread",
@@ -40835,6 +41025,91 @@
         ],
         "type": "object"
       },
+      "SpecFormError": {
+        "additionalProperties": false,
+        "properties": {
+          "changes_reason": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/SpecFormFinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "findings_total": {
+            "type": "integer"
+          },
+          "next_step": {
+            "type": "string"
+          },
+          "refusal": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "refusal",
+          "next_step",
+          "findings",
+          "findings_total"
+        ],
+        "type": "object"
+      },
+      "SpecFormFinding": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          },
+          "excerpt": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "where": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "document",
+          "artifact_id",
+          "version",
+          "node",
+          "kind",
+          "where",
+          "rule",
+          "detail",
+          "excerpt"
+        ],
+        "type": "object"
+      },
       "StandingReview": {
         "additionalProperties": false,
         "properties": {
@@ -42463,7 +42738,10 @@
       "SCOPES_REQUIRED": 400,
       "SCOPE_NOT_ASKED": 400,
       "SCOPE_NOT_CONSENTABLE": 400,
+      "SEARCH_COVERAGE_FOLD_BEHIND": 503,
+      "SEARCH_COVERAGE_NOT_FILLED": 503,
       "SEARCH_COVERAGE_TIMEOUT": 503,
+      "SEARCH_TIMEOUT": 503,
       "SERVICE_LOGS_IN_WITH_TOKEN": 400,
       "SESSION_GROUP_ID_INPUT": 400,
       "SESSION_GROUP_INPUT": 400,
