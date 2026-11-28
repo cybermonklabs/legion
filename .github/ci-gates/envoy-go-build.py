@@ -107,6 +107,8 @@ GATE = gate("envoy_go_build", "envoy-go-build", runs=[
      f"{at('envoy-go-build', './.github/actions/spec-check')}: "
      "`.github/actions/architecture-check/check.sh#build()` and `.github/actions/spec-check/check.sh#build()` run it"),
     (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-build', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
+    (".github/scripts/fetch-depth-if-shallow.sh",
+     f"{at('envoy-go-build', EDITED_MIGRATIONS_STEP)}: edited-migrations-base.sh fetches the base through it"),
     # The step judges the action's default path, .dispatch/spec, which holds no file on main;
     # the read names .dispatch whole because a read that matches no file is refused, and the
     # envoy_go_build filter names .dispatch whole too.

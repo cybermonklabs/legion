@@ -942,9 +942,15 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 	return jobs, nil
 }
 
-// runJobsNamedForRunsQuery is ListRunJobsForRuns' read. Every one of its three conditions is a
-// key of delivery_run_jobs' primary key (repo, run_id, name), so the read is a descent of that
-// key for each run and name it asks for, and never a run's other jobs.
+// runJobsNamedForRunsQuery is ListRunJobsForRuns' read: an Index Only Scan of
+// delivery_run_jobs_named (repo, name, run_id; migration 20261117100023), whose index condition
+// holds all three of its conditions and which includes every other column of JobColumns. The index
+// holds a repository's jobs of one name together, so the read of a few names over many runs reads a
+// few leaf pages for each name and never a run's other jobs, and it reads no heap page the
+// visibility map marks all-visible. Through the primary key (repo, run_id, name) the read fetched
+// each run's named jobs from a heap page of their own: on the farm at ten times the stated run
+// rate, a cold settings change's 80 such reads read 54,677 blocks from disk in 1,123 ms
+// (dispatch://INFRA-2916, R14).
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
@@ -1230,6 +1236,32 @@ func listRunsStartedIn(ctx context.Context, q Querier, repo string, kind Deliver
 	return collectRuns(rows)
 }
 
+// deployRunsOnMain is the deploy runs on main of a repository ($1), whatever their event: the
+// measures' deploy population (listRunsStartedIn's ("main", "")) over the whole history, which
+// HistoryRows reads.
+const deployRunsOnMain = `from delivery_runs where repo = $1 and kind = 'deploy' and head_branch = 'main'`
+
+// listDeployRunsOnMain lists every deploy run on main of repo, in listRunsStartedIn's order and
+// with no limit: HistoryRows' runs.
+func listDeployRunsOnMain(ctx context.Context, pool *store.Pool, repo string) ([]DeliveryRun, error) {
+	rows, err := pool.Query(ctx, `select `+RunColumns+` `+deployRunsOnMain+` order by started_at, run_id`, repo)
+	if err != nil {
+		return nil, err
+	}
+	return collectRuns(rows)
+}
+
+// listDeployRunJobsOnMain lists the jobs named names of every deploy run on main of repo, keyed by
+// run id, each run's in ListRunJobs' order: HistoryRows' jobs. It names the runs by the read that
+// lists them rather than by their ids, so it waits on no read of them.
+func listDeployRunJobsOnMain(ctx context.Context, pool *store.Pool, repo string, names []string) (map[int64][]DeliveryRunJob, error) {
+	if len(names) == 0 {
+		return make(map[int64][]DeliveryRunJob), nil
+	}
+	return collectJobsByRun(ctx, pool, 0, `select `+JobColumns+` from delivery_run_jobs
+		where repo = $1 and name = any($2) and run_id in (select run_id `+deployRunsOnMain+`)`, repo, names)
+}
+
 // collectRuns reads rows of RunColumns, in their order, and closes them.
 func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	defer rows.Close()
@@ -1334,6 +1366,26 @@ func scanPullRequests(rows pgx.Rows, err error) ([]DeliveryPullRequest, error) {
 	if err != nil {
 		return nil, err
 	}
+	return collectPullRequests(rows)
+}
+
+// listPullRequestsMergedBefore lists every population pull request merged before to, in
+// ListPullRequestsInWindow's order and with no limit: HistoryRows' pull requests.
+func listPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := pool.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where merged_at < $1
+		order by merged_at, (repo || '#' || number) collate "C"
+	`, to)
+	if err != nil {
+		return nil, err
+	}
+	return collectPullRequests(rows)
+}
+
+// collectPullRequests reads rows of PullRequestColumns, in their order, and closes them.
+func collectPullRequests(rows pgx.Rows) ([]DeliveryPullRequest, error) {
 	defer rows.Close()
 	prs := []DeliveryPullRequest{}
 	for rows.Next() {

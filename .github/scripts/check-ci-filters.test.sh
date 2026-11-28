@@ -56,7 +56,8 @@
 # root package.json with one workspace, and a ci_job_reads.py that loads them - and symlinks the
 # real script, its engine (ci_filter_coverage.py), the loader of the gates and the //ci: lines
 # (ci_filter_sources.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model they
-# import (workflow_paths.py) and the generation's fail-open wrapper (ci-filters-generate.sh) into it,
+# import (workflow_paths.py), the generation's fail-open wrapper (ci-filters-generate.sh) and the
+# fetch it takes a base it lacks through (fetch-depth-if-shallow.sh) into it,
 # so the code under test is the code CI runs. It needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
@@ -232,7 +233,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
   for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh ci_ts_listing.py audited_scripts.py; do
+    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py audited_scripts.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
@@ -607,6 +608,8 @@ commit_all() {
   git -C "$1" add -A >/dev/null && git -C "$1" -c user.name=fixture -c user.email=fixture@example.invalid \
     commit -q -m "$2" && git -C "$1" rev-parse HEAD
 }
+# holds <repository> <sha>: true when the commit is in the repository, for the check to read.
+holds() { git -C "$1" cat-file -e "$2^{commit}" 2>/dev/null && echo true || echo false; }
 # shared_read <root>: the app gate takes its read of docs/** from a helper of the read table.
 shared_read() {
   replace "$1/.github/scripts/ci_job_reads.py" 'READ_SETS = {}' $'READ_SETS = {}\nSHARED = [Read("docs/**", "the shared helper reads the docs")]'
@@ -720,9 +723,13 @@ check "generates the base tree" "$(contains "$out" "^the base tree's filter gene
 check "whose failure makes every filter every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 
-# What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
-# `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
-# bunx prints the program's `listed` file, which stands for tsc's new answer to the new tsconfig.
+# What the compiler and bun resolve with is a file the filters are computed with too: a tsconfig
+# edit (a `paths` map, an `extends`) can move a listed block while no file of the block changes. The
+# stand-in bunx prints the program's `listed` file, which stands for the compiler's new answer to
+# the new tsconfig. The generation lists a program with `bunx --no-install tsgo` (ci_ts_listing.BUNX
+# and ci_ts_listing.COMPILER), so each stand-in bunx here answers `--no-install tsgo -p` alone and
+# refuses any other argv: a generation that listed with tsc, or without --no-install, would fail
+# these cases.
 echo "case: a tsconfig edit that moves a listed block selects every path through that filter"
 root=$(fixture base-tsconfig)
 mkdir -p "$root/pkg/app" "$root/pkg/lib" "$root/bin"
@@ -734,8 +741,8 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
-sed "s|^|$PWD/|" "$3/listed"
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+sed "s|^|$PWD/|" "$4/listed"
 SH
 chmod +x "$root/bin/bunx"
 printf 'PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]\nBUNDLES = []\nLISTED = [("app", "pkg/lib", ("app",), "app loads what its program compiles")]\n' \
@@ -820,6 +827,51 @@ run_generate "$root" PATH="$root/bin:$PATH" CI_FILTERS_BASE="$base_commit"
 check "the wrapper exits 0" "$(is "$status" 0)"
 check "names the old tsconfig as touched" "$(contains "$out" '^  pkg/lib/tsconfig.json$')"
 check "the paths-filter step reads app as every path" "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+
+# CI's checkout is one commit deep, so the generation fetches a base it does not hold, through
+# fetch-depth-if-shallow.sh: one commit deep in a shallow checkout, and with no depth in a whole
+# clone, which a depth would make shallow. Here the base is a commit of the origin that the tree
+# under test lacks: a sibling of the head, on the commit the head grew from, so no fetch of the
+# head brings it. The base keeps the shared read the head drops, as in the first base case.
+echo "case: a base a whole clone does not hold is fetched with no depth, and the clone stays whole"
+root=$(fixture base-fetched-whole)
+shared_read "$root"
+commit_all "$root" start >/dev/null
+git clone -q --bare "$root" "$root.origin.git"
+git -C "$root.origin.git" config uploadpack.allowReachableSHA1InWant true
+git -C "$root" remote add origin "file://$root.origin.git"
+git clone -q "file://$root.origin.git" "$work/base-fetched-sibling"
+echo 'changed' > "$work/base-fetched-sibling/docs/readme.md"
+base_commit=$(commit_all "$work/base-fetched-sibling" base)
+git -C "$work/base-fetched-sibling" push -q origin HEAD:refs/heads/base
+replace "$root/.github/scripts/ci_job_reads.py" 'SHARED = [Read("docs/**", "the shared helper reads the docs")]' 'SHARED = []'
+head_commit=$(commit_all "$root" head)
+git -C "$root" push -q origin HEAD:refs/heads/main
+check "the clone does not hold the base before the run" "$(is "$(holds "$root" "$base_commit")" false)"
+run_generate "$root" CI_FILTERS_BASE="$base_commit"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "the base tree's filters are computed: the paths-filter step reads app as every path" \
+  "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "  and the pattern only the base tree has is printed" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the clone is still not shallow" "$(is "$(git -C "$root" rev-parse --is-shallow-repository)" false)"
+check "  the head's whole history still reads: 2 commits" "$(is "$(git -C "$root" rev-list --count "$head_commit")" 2)"
+check "  and so does the base's, fetched with its parent: 2 commits" "$(is "$(git -C "$root" rev-list --count "$base_commit")" 2)"
+
+echo "case: a base a shallow checkout does not hold is fetched one commit deep, as in CI's checkout"
+shallow="$work/base-fetched-shallow"
+git clone -q --depth=1 --branch main "file://$root.origin.git" "$shallow"
+check "the checkout is shallow before the run" "$(is "$(git -C "$shallow" rev-parse --is-shallow-repository)" true)"
+check "  and does not hold the base" "$(is "$(holds "$shallow" "$base_commit")" false)"
+run_generate "$shallow" CI_FILTERS_BASE="$base_commit"
+check "the wrapper exits 0" "$(is "$status" 0)"
+check "the base tree's filters are computed: the paths-filter step reads app as every path" \
+  "$(is "$(filter_of app | tr '\n' ' ')" '** ')"
+check "  and the pattern only the base tree has is printed" \
+  "$(contains "$out" '^app: 1 pattern(s) only in the base tree, 0 only in this one$')"
+check "the checkout is still shallow" "$(is "$(git -C "$shallow" rev-parse --is-shallow-repository)" true)"
+check "  and the base came one commit deep: its history reads 1 commit" \
+  "$(is "$(git -C "$shallow" rev-list --count "$base_commit")" 1)"
 
 # The go commands run in a pool (CI_FILTERS_JOBS); each answer is keyed by what it asks, so the
 # filters are one text whatever the pool's size, and a command that fails in the pool fails the
@@ -1148,7 +1200,7 @@ check "in a merge, judged against the filters MERGE_HEAD computes, not HEAD's" \
   "$(contains "$out" "^added 1 read(s) to .github/ci-gates/app.py, 1 file(s) the branch's patterns docs/\*\* selected (docs/\*\* kept")"
 # Main's filters are computed after a frozen install in main's own checkout: a listed block resolves
 # a workspace package through node_modules, and another tree's node_modules would resolve it into
-# that tree, whose files the listing leaves out. The stand-in tsc lists the package by the path its
+# that tree, whose files the listing leaves out. The stand-in bunx lists the package by the path its
 # link resolves to; the stand-in bun install links it, as bun does.
 root=$(fixture convert-kept-workspace)
 table_with_reads "$root"
@@ -1159,7 +1211,7 @@ printf '{}\n' > "$root/pkg/app/tsconfig.json"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
 echo "$(cd node_modules/@x/lib && pwd -P)/index.ts"
 SH
 cat > "$root/bin/bun" <<'SH'
@@ -1218,8 +1270,8 @@ printf 'pkg/lib/one.ts\n' > "$root/pkg/app/listed"
 cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$1 $2" = "tsc -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
-sed "s|^|$PWD/|" "$3/listed"
+[ "$1 $2 $3" = "--no-install tsgo -p" ] || { echo "stand-in bunx: unexpected argv: $*" >&2; exit 64; }
+sed "s|^|$PWD/|" "$4/listed"
 SH
 printf '#!/bin/sh\nexit 0\n' > "$root/bin/bun"
 chmod +x "$root/bin/bunx" "$root/bin/bun"
@@ -3150,8 +3202,8 @@ check "with the tag step's files covered" \
 # The tag step's filter can hold a listed block: the contracts modules that the dispatch command
 # the two-build Go step runs loads, in the real repository. Those files are no declared read of
 # the step's gate, so rule 15 puts them in the untagged job's filter from the block itself. The
-# fixture's tsc program is a `bunx` on PATH that lists docs/readme.md, which is how the listing
-# reads a real one (`bunx tsc -p <project> --noEmit --listFilesOnly`).
+# fixture's program is a `bunx` on PATH that lists docs/readme.md, which is how the listing reads
+# a real one (`bunx --no-install tsgo -p <project> --noEmit --listFilesOnly`).
 # listed_tag_run <root>: a tagged job, gated on the filter tagged, whose step runs ./lib under the
 # live tag with -run, pinned whole, whose filter's listed block lists docs/ from the program
 # PROGRAMS pairs it with, and TAG_RUNS pairing the step with the app job.

@@ -32,7 +32,8 @@
 # safety off (#5515, 2026-11-25 14:32Z-16:27Z: runs 45634905903, 45640650357, 45646796488 and
 # 45651378097, daemon-go jobs 139278625735, 139299288707, 139321421329, 139337574002 and
 # daemon-go-race jobs 139278625746, 139299288812, 139321421627, 139337574008); a package with none
-# ran under a second or has no test.
+# ran under a second or has no test. internal/ghroute had run in no merge group when it was listed,
+# so its time is one pull-request run's, 45683245721 (daemon-go job 139449902589).
 # Rebalance from the times the legs' own runs print, `ok <package> <seconds>s`.
 # why: .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
 packages/daemon:
@@ -73,9 +74,11 @@ packages/daemon:
       - internal/blockers                       # 2 s
       - internal/rolefile                       # 2 s
       - internal/testpg/testdb                  # 2 s
+      - internal/ghroute                        # 2 s
       - internal/testpg                         # 1 s
       - internal/projection                     # 1 s
       - internal/config
+      - internal/ghroute/ghroutetest
       - internal/ghconfig
       - internal/dispatch
       - internal/prompts
@@ -294,7 +297,9 @@ packages/envoy:
     # migrations both stores apply, the Postgres helpers, the load test and the small packages.
     # Each time is the package's longest `Elapsed` over the legs 3-5 of the same three runs (jobs
     # 140647302877, 140647302738 and 140647302865; 140647425996, 140647426132 and 140647426423;
-    # 140646999931, 140646999777 and 140646999843): 1,876 s in all, 469 s over four cores.
+    # 140646999931, 140646999777 and 140646999843): 1,876 s in all, 469 s over four cores. Two
+    # packages added since, internal/dispatch/specform and internal/dispatch/asof, carry the time
+    # beside each, measured elsewhere, and add 94 s.
     6:
       - cmd/dispatch                            # 326 s
       - internal/dispatch/pmdoc                 # 264 s
@@ -302,6 +307,7 @@ packages/envoy:
       - internal/testnats                       # 142 s
       - internal/pgmigrate                      # 88 s
       - internal/dispatch/outbox                # 85 s
+      - internal/dispatch/specform              # 84 s (a dev box's run, not CI's)
       - cmd/dispatch-seed                       # 81 s
       - internal/dispatch/embedqueue            # 73 s
       - internal/dispatch/textversions          # 70 s
@@ -324,6 +330,7 @@ packages/envoy:
       - internal/dispatch/sessionanswers        # 11 s
       - internal/dispatch/workflowstore         # 10 s
       - internal/dispatch/events                # 10 s
+      - internal/dispatch/asof                  # 10 s (run 46107251772)
       - internal/dispatch/access                # 8 s
       - internal/dispatch/pmdoc/schemanodes     # 8 s
       - internal/pglisten                       # 8 s
@@ -356,6 +363,9 @@ packages/envoy:
       - internal/dispatch/auth
       - internal/dispatch/specgraph/specgraphtest
       - dispatchblocks
+      - internal/dispatch/evals/independent
+      - internal/dispatch/evals/independent/cmd
+      - internal/dispatch/specform/ste
       - internal/dispatch/routefile
       - internal/dispatch/agentstream
       - internal/dispatch/envoy
@@ -463,14 +473,13 @@ packages/envoy:
       - internal/clock/clocktest
       - internal/shapetest
       - testpool
-      - githubrate
-      - internal/dispatch/answerswindow
       - fileerr
+      - githubrate
       - httpoutage
       - natsconn
       - natsurl
       - pgdsn
-      - internal/dispatch/asof
+      - internal/dispatch/answerswindow
   # envoy-go-race (.github/workflows/ci-job-envoy-go-race.yaml, job envoy-go-race-legs): under the
   # race detector, the packages of ci_job_reads.py's ENVOY_RACE_LANE entry for envoy-go-race.
   envoy-go-race:
@@ -501,6 +510,7 @@ packages/envoy:
       - internal/oidc                           # 44 s
       - internal/dispatch/delivery/measures     # 6 s
       - internal/dispatch/delivery/citebody     # 1 s
+      - internal/dispatch/delivery/deliveryseed
       - internal/dispatch/delivery/deliverytest
       - internal/dispatch/store/cmd/connections
       - internal/dispatch/store/searchtest

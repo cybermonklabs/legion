@@ -8,13 +8,20 @@
 #
 # This check derives the TypeScript half of them. For each pair of a changes filter and the tsc
 # project the job that filter gates typechecks (.github/scripts/ci_ts_programs.py, PROGRAMS), it
-# runs `bunx tsc -p <project> --noEmit --listFilesOnly`, keeps the files inside the repository
-# and outside node_modules, makes each path relative to the repository root, and holds every one
-# of them to that filter, failing with the filter, the file and the program it came from. The
-# pairs are hand-kept and few; the file list is derived, which is the point: an import that
-# reaches a new package fails this check on the pull request that writes it, with nobody
+# runs `bunx --no-install tsc -p <project> --noEmit --listFilesOnly`, keeps the files inside the
+# repository and outside node_modules, makes each path relative to the repository root, and holds
+# every one of them to that filter, failing with the filter, the file and the program it came
+# from. The pairs are hand-kept and few; the file list is derived, which is the point: an import
+# that reaches a new package fails this check on the pull request that writes it, with nobody
 # remembering to widen a list. --listFilesOnly lists the program and stops without checking a
 # type, so this is no second typecheck: the job's own step is what compiles it.
+#
+# This check lists with tsc, the compiler every typecheck job runs, where the changes job's
+# generation lists with tsgo, so it also cross-checks the generation's listing: a listed block the
+# generation wrote from tsgo's answer that is not exactly the files tsc lists fails here, on the
+# pull request whose tree makes the two differ, naming the file.
+# .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs says why the generation
+# lists with tsgo, with the numbers.
 #
 # The pairs cover every gate whose job runs a typecheck, each read from that job's own steps:
 # contracts, envoy_client (packages/envoy-client and packages/cipher-client), pi_shared,
