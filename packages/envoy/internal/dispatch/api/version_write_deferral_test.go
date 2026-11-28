@@ -98,6 +98,8 @@ func newDeferralDocument(t *testing.T, path deferralPath, above bool) *deferralD
 	spec := deferralSpec(above)
 	if !above {
 		requireRoomForTheWrites(t, spec)
+	} else if blocks := renderedBlocks(t, spec); blocks <= deferralBound {
+		t.Fatalf("the spec above the bound holds %d blocks as the render records them, want more than the %d a write indexes in its own request", blocks, deferralBound)
 	}
 	d := &deferralDocument{above: above}
 	d.handler, d.database, d.deps = newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true,

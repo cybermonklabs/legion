@@ -147,7 +147,10 @@ func renderStepDeferred(t *testing.T, rig *renderRig, service *Service) {
 	seedMismatchIssues(t, database)
 	spec, refKey := createSpecOf(t, database, "MISS-4")
 	baseline := rig.readRenderCensus(t)
-	writeFirstVersion(t, database, service, spec, refKey, itemList(deferredItems), func(seeded string) string { return seeded })
+	// The 2,001 list items follow a requirement, a node the spec query takes, so the record whose
+	// digest the pass records and the carry pins holds a node (requireRecordOfNodes).
+	writeFirstVersion(t, database, service, spec, refKey, renderAtVersionRequirement("rd", "The deferred version's own requirement.")+"\n"+itemList(deferredItems),
+		func(seeded string) string { return seeded })
 	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle %s: %v", refKey, err)
 	}
@@ -183,6 +186,7 @@ func renderStepDeferred(t *testing.T, rig *renderRig, service *Service) {
 		t.Fatalf("version 1 of %s still holds no time after the reconciliation: its row holds %v, %v and %v, tree_mismatch %t", refKey, row.at, row.digest, row.readSeq, row.mismatch)
 	}
 	requireStatedRow(t, database, "MISS-4", graphstore.QuerySpec, spec, 1)
+	requireRecordOfNodes(t, database, "MISS-4", graphstore.QuerySpec, spec, refKey, 1)
 	var latest time.Time
 	if err := database.Pool.QueryRow(ctx, `
 		select coalesce(max(t.at), 'epoch'::timestamptz) from graph_tuples t
@@ -385,11 +389,14 @@ func renderStepRaceOfADocument(t *testing.T, rig *renderRig, service *Service, s
 		t.Errorf("the tick stated version 2 of %s while its room held an update not yet stored", refKey)
 	}
 	releaseRoom()
+	requireDurableAppendsLanded(t, service, spec, refKey)
 	if err := service.settleOwedNow(ctx, spec, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle %s: %v", refKey, err)
 	}
 	if number := savedVersion(t, database, spec); number != 3 {
 		t.Errorf("the settlement of %s wrote version %d, want version 3 with the browser's paragraph", refKey, number)
+	} else if third := storedVersionMarkdown(t, database, spec, 3); !strings.Contains(third, "The browser's words.") {
+		t.Errorf("the settlement of %s wrote version 3 storing %q, want version 3 with the browser's paragraph", refKey, third)
 	}
 	drainOwed(t, database, service)
 	rig.requireTheRaceLeftTheCensusAlone(t, before, refKey, 2)
@@ -429,8 +436,12 @@ func renderStepRaceOfARoom(t *testing.T, rig *renderRig, service *Service, serve
 	if pending, err := settlementPending(ctx, database.Pool, room.tree); err != nil || pending {
 		t.Fatalf("the room of the race case holds a pending row before the race (%v)", err)
 	}
-	if owedCount(t, database) == 0 {
-		t.Fatalf("the room of the race case owes no index before the race")
+	layout, err := readRoomLayout(ctx, database.Pool, room.tree)
+	if err != nil {
+		t.Fatalf("read the layout of the room of %s: %v", room.issue, err)
+	}
+	if owed, indexed := roomOwed(t, database, room.tree, layout); len(owed) == 0 || len(indexed) > 0 {
+		t.Fatalf("the room of the race case owes no index before the race: of its documents %v owe their block index and %v do not, want every one owed", owed, indexed)
 	}
 	if row := readRenderRow(t, database, room.spec, 3); row.at != nil {
 		t.Fatalf("version 3 of %s holds a time before its pass", refKey)
@@ -445,11 +456,14 @@ func renderStepRaceOfARoom(t *testing.T, rig *renderRig, service *Service, serve
 		t.Errorf("the tick stated version 3 of %s while its room held an update not yet stored", refKey)
 	}
 	releaseRoom()
+	requireDurableAppendsLanded(t, service, room.tree, "the room of "+room.issue)
 	if err := service.settleOwedNow(ctx, room.tree, time.Now().Add(roomWait(t))); err != nil {
 		t.Fatalf("settle the room of %s: %v", room.issue, err)
 	}
 	if number := savedVersion(t, database, room.spec); number != 4 {
 		t.Errorf("the settlement of the room of %s wrote version %d of its spec, want version 4 with the browser's paragraph", room.issue, number)
+	} else if fourth := storedVersionMarkdown(t, database, room.spec, 4); !strings.Contains(fourth, "The browser's words.") {
+		t.Errorf("the settlement of the room of %s wrote version 4 of its spec storing %d bytes without the browser's paragraph, want version 4 with the browser's paragraph", room.issue, len(fourth))
 	}
 	drainOwed(t, database, service)
 	rig.requireTheRaceLeftTheCensusAlone(t, before, refKey, 3)

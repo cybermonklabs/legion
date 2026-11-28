@@ -200,7 +200,9 @@ func TestADocumentNoQueryRecordCoversRecordsNoDigest(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	const project = "NODIGEST"
 	createRoomProject(t, handler, project)
-	issue, tree := createRoomIssue(t, handler, database, project, "A document no record covers", "The spec of the issue.\n", "")
+	// The spec holds a criterion, so the spec record a misfill could write on a row of a version no
+	// record covers is a record of a node, not the digest of an empty record.
+	issue, tree := createRoomIssue(t, handler, database, project, "A document no record covers", ":::criterion{#k1}\nThe spec of the issue.\n:::\n", "")
 	if tree == "" {
 		t.Fatalf("issue %s holds no tree, want it born converted", issue.Key)
 	}
@@ -374,7 +376,10 @@ func requireRenderAtVersionDecisionsVersion(t *testing.T, database *store.Store,
 // the index of a version of the decisions query indexes no reference; the same read from the spec
 // answers the mention of the second issue, written from the paragraph inside the first decision.
 // The census of the rendered versions reads no difference at any version of the decisions query
-// and counts none of them as deferred.
+// and counts none of them as deferred. Last, on an issue of its own, a PATCH that moves a
+// requirement under another criterion changes the head render and no byte of the version before
+// it, and one that moves a room paragraph under another paragraph moves the tree alone
+// (renderAtVersionPatchCase).
 func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -490,4 +495,8 @@ func TestTheDecisionsQueryVersionsRenderTheirAnswerAsOfTheirRow(t *testing.T) {
 		}
 	}
 	t.Logf("the decisions query %s stands at version %d: the answer's from version %d, the move's from version %d", decisions.refKey, movedTo, unanswered+1, answered+1)
+
+	t.Run("a PATCH changes the head render and no byte of an earlier version", func(t *testing.T) {
+		renderAtVersionPatchCase(t, handler, database, project)
+	})
 }

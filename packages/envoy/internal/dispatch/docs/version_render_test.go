@@ -365,7 +365,11 @@ func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
 // the census refuses on it, until a quiet tick restates it or closes its mark
 // (renderStepTreeMismatch), and the reconciliation's pass that states an uploaded version first
 // carries the upload's carry to it, naming the version the person approved
-// (renderStepCarryOfACarry). A render leaves out the blocks its reader may not see, at their own
+// (renderStepCarryOfACarry), on a document of an issue that has not converted; on a converted query
+// document an unchanged upload of the approved text carries nothing, and neither does the pass that
+// states it, whose artifact.digest reads the approval of the earlier version current
+// (renderStepUnchangedUploadCarriesNothing). Each record digest those steps compare is of a record
+// that takes a node (requireRecordOfNodes). A render leaves out the blocks its reader may not see, at their own
 // offsets (renderStepHidden), and a stored version the blocks it held that its reader may not see,
 // placed by what it held of them (renderStepHiddenHistory). A version of 2,001 list items,
 // deferred to the reconciliation, renders its stored bytes and is deferred until its pass gives it
@@ -393,10 +397,22 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	writeRoomQueryNodes(t, database, rig.settled)
 	peer := connectPeer(t, server.URL, rig.settled.spec, "alice")
 	stored := storedUpdateCount(t, database, rig.settled.tree)
-	if _, err := peer.Send(writeParagraph(peer.Doc, rig.settled.spec, "Spec words.")); err != nil {
-		t.Fatalf("write into DOC-1's spec: %v", err)
+	// The spec holds a paragraph and a requirement, a node the spec query takes, so the digest the
+	// room pass records is a real record's (requireRecordOfNodes).
+	settledTree, err := pmdoc.Parse(renderAtVersionSettledSpec)
+	if err != nil {
+		t.Fatalf("parse DOC-1's spec: %v", err)
 	}
-	if err := peer.WaitForText(fragmentMarkdown(rig.settled.spec), "Spec words.\n", roomWait(t)); err != nil {
+	// The fragment is taken before the transaction: GetXmlFragment takes the document's lock, which
+	// the transaction holds.
+	settledFragment := peer.Doc.GetXmlFragment(rig.settled.spec)
+	var updated error
+	if _, err := peer.Send(func(txn *crdt.Transaction) {
+		updated = pmdoc.Update(txn, settledFragment, settledTree)
+	}); err != nil || updated != nil {
+		t.Fatalf("write into DOC-1's spec: %v, %v", err, updated)
+	}
+	if err := peer.WaitForText(fragmentMarkdown(rig.settled.spec), renderAtVersionSettledSpec, roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of DOC-1's room: %v", err)
 	}
 	settleLandedWrite(t, ctx, database, service, rig.settled, stored)
@@ -404,6 +420,7 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	// documents, the spec's among them, and the census reads each as its stored bytes.
 	settledSpec := savedVersion(t, database, rig.settled.spec)
 	requireStatedRow(t, database, rig.settled.issue, graphstore.QuerySpec, rig.settled.spec, settledSpec)
+	requireRecordOfNodes(t, database, rig.settled.issue, graphstore.QuerySpec, rig.settled.spec, refKeyOf(t, database, rig.settled.spec), settledSpec)
 	settledRenders := rig.readRenderCensus(t)
 	if settledRenders.Versions == 0 || settledRenders.Differences != 0 {
 		t.Fatalf("after DOC-1's settlement the census of the rendered versions compares %d and reads %d differences (%+v), want DOC-1's versions and none",
@@ -475,6 +492,9 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		{"the pass that states an uploaded version first carries the carry to it, naming the version the person approved", func(t *testing.T, rig *renderRig) {
 			renderStepCarryOfACarry(t, rig, service)
 		}},
+		{"an unchanged upload of the approved text over a deferred version of a converted query document carries nothing, and the approval stands by its record's digest", func(t *testing.T, rig *renderRig) {
+			renderStepUnchangedUploadCarriesNothing(t, rig, service)
+		}},
 		{"a deferred version renders its stored bytes until the reconciliation states it, which gives it its time and its digest and carries the approval taken before", func(t *testing.T, rig *renderRig) {
 			renderStepDeferred(t, rig, service)
 		}},
@@ -527,6 +547,9 @@ func renderStepVersionRow(t *testing.T, rig *renderRig) {
 		t.Errorf("version 3's row holds %s at %s and seq %d, want the record's %s at %s and seq %d",
 			digest, at, readSeq, record.Digest, record.Cut.At, record.Cut.ReadSeq)
 	}
+	// The row's time is no earlier than every text value, text_parent and text_rank the version's
+	// tree holds, the ones the write rendered it from.
+	requireRowNoEarlierThanItsTexts(t, rig.database, rig.tree, rig.spec+"@v3", at)
 	if reviewTextHash(renderFirst) == record.Digest {
 		t.Errorf("the record's digest is the sha256 of the version's markdown, %s", record.Digest)
 	}
@@ -993,8 +1016,8 @@ func renderStepTwoTimes(t *testing.T, rig *renderRig) {
 	}
 	// The head of DOC-1's spec, which a real settlement indexed, is that version's markdown.
 	_, settled := newestStoredVersion(t, rig.database, rig.settled.spec)
-	if settled != "Spec words.\n" {
-		t.Fatalf("DOC-1's newest spec version holds %q, want the settlement's \"Spec words.\\n\"", settled)
+	if settled != renderAtVersionSettledSpec {
+		t.Fatalf("DOC-1's newest spec version holds %q, want the settlement's %q", settled, renderAtVersionSettledSpec)
 	}
 	if head := rig.renderAt(t, rig.settled.spec, rig.now(t)); head.Source != RenderedFromTree || head.Markdown != settled {
 		t.Errorf("the head of DOC-1's spec renders %q from %q, want its settled version's %q from the tree", head.Markdown, head.Source, settled)
@@ -1248,6 +1271,7 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 	if parent := currentPartOf(t, database, address("r1")); parent.ToID != address("k1") {
 		t.Fatalf("the requirement of version 1 is part of %s, want the criterion %s, before the paragraph in the tree", parent.ToID, address("k1"))
 	}
+	requireWalkedBefore(t, database, "CORE-1", refKey, address("r1"), orderParagraph)
 	rendered := rig.requireRenderedAsStored(t, spec, refKey, one)
 	requireOnceInPlace(t, refKey, one, rendered, first, orderK1, orderParagraph, orderR1)
 	renders := rig.readRenderCensus(t)
@@ -1343,9 +1367,14 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 	documents := []struct {
 		id, query, text string
 	}{
-		{room.verification, graphstore.QueryVerification, "A proof of the list.\n\n- the first proof\n- the second proof\n"},
-		{room.plan, graphstore.QueryPlan, "- the first step\n- the second step\n\nThe plan's closing words.\n"},
-		{room.spec, graphstore.QuerySpec, "***\n\nThe spec's words.\n\n***\n\nThe spec's last words.\n"},
+		// Each document holds a node its own query takes - the Verification document a check before
+		// the list it ends with, the plan a plan task after the list it opens with, the spec a
+		// requirement between its two rules - so the digest each room pass records is a real
+		// record's (requireRecordOfNodes), and each keeps the edge the case turns on.
+		{room.verification, graphstore.QueryVerification, "A proof of the list.\n\n" +
+			":::check{#cf surface=\"api\" run=\"go test ./x\"}\nThe fragment's own check.\n:::\n\n- the first proof\n- the second proof\n"},
+		{room.plan, graphstore.QueryPlan, "- the first step\n- the second step\n\n:::plan_task{#tf}\nThe fragment's own task.\n:::\n\nThe plan's closing words.\n"},
+		{room.spec, graphstore.QuerySpec, "***\n\nThe spec's words.\n\n" + renderAtVersionRequirement("rf", "The fragment's own requirement.") + "\n***\n\nThe spec's last words.\n"},
 	}
 	peer := connectPeer(t, serverURL, room.spec, "alice")
 	// The peer writes over the plan's fragment only once its copy holds the room's stored seed,
@@ -1373,6 +1402,10 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 		}
 	}
 	settleLandedWrite(t, ctx, database, service, room, stored)
+	// The case's premise, read: the room's joined rendering writes the plan's list with `*` and the
+	// spec's opening rule `---`, where the versions, each its own fragment's rendering, store `-` and
+	// `***`, and the Verification document alike in both.
+	requireJoinedRenderingOfFragments(t, service, database, room)
 	for _, document := range documents {
 		var refKey string
 		var number int
@@ -1382,6 +1415,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 			t.Fatalf("read the newest version of %s: %v", document.id, err)
 		}
 		requireStatedRow(t, database, room.issue, document.query, document.id, number)
+		requireRecordOfNodes(t, database, room.issue, document.query, document.id, refKey, number)
 		rig.requireRenderedAsStored(t, document.id, refKey, number)
 		if document.id == room.verification {
 			continue

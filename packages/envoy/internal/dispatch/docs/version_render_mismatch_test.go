@@ -83,12 +83,14 @@ func seedMismatchIssues(t *testing.T, database *store.Store) {
 	}
 }
 
-// mismatchedMarkdown is the renderer's own rendering of a document that holds one paragraph,
-// "Other words." (documentMarkdownWithOffsets): the markdown the mismatched version stores, which
-// the repair restates only because it reads back and renders as its own bytes.
+// mismatchedMarkdown is the renderer's own rendering of a document that holds one requirement whose
+// one paragraph reads "Other words." (documentMarkdownWithOffsets): the markdown the mismatched
+// version stores, which the repair restates only because it reads back and renders as its own
+// bytes. The requirement is a node the spec query takes (renderAtVersionRequirement), so the record
+// the repair's pass reads holds it and its digest is that of a real record, not of an empty one.
 func mismatchedMarkdown(t *testing.T) string {
 	t.Helper()
-	tree, err := pmdoc.Parse("Other words.\n")
+	tree, err := pmdoc.Parse(renderAtVersionRequirement("ro", "Other words."))
 	if err != nil {
 		t.Fatalf("parse the mismatched paragraph: %v", err)
 	}
@@ -278,6 +280,11 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 			refKey, row.at, row.digest, row.readSeq, row.mismatch, row.repairedAt)
 	}
 	requireStatedRow(t, database, "MISS-1", graphstore.QuerySpec, spec, 1)
+	// The digest is a real record's: the repair restated the stored markdown's requirement, which
+	// the spec query takes, so the record holds a node; and the row's time is no earlier than every
+	// text value the repair's pass wrote of the version.
+	requireRecordOfNodes(t, database, "MISS-1", graphstore.QuerySpec, spec, refKey, 1)
+	requireRowNoEarlierThanItsTexts(t, database, refKey, refKey+"@v1", *row.at)
 	if got := rig.renderVersion(t, spec, 1); got.Source != RenderedFromTree || got.Markdown != other {
 		t.Errorf("version 1 of %s renders %d bytes from %s, want its %d stored bytes from %s", refKey, len(got.Markdown), got.Source, len(other), RenderedFromTree)
 	}
@@ -285,6 +292,10 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 	if repaired.TreeMismatch != marked.TreeMismatch-1 || repaired.TreeMismatchRepaired != marked.TreeMismatchRepaired+1 {
 		t.Errorf("the census reads tree_mismatch=%d tree_mismatch_repaired=%d after the repair, want %d and %d",
 			repaired.TreeMismatch, repaired.TreeMismatchRepaired, marked.TreeMismatch-1, marked.TreeMismatchRepaired+1)
+	}
+	if repaired.Versions != marked.Versions+1 {
+		t.Errorf("the census reads rendered_from_tree=%d after the repair, want %d: the %d it read before and version 1 of %s, which the repair restated from its stored bytes",
+			repaired.Versions, marked.Versions+1, marked.Versions, refKey)
 	}
 	if cause := differenceAt(repaired, address); cause != "" {
 		t.Errorf("the census reads a difference at %s after the repair: %s", address, cause)
@@ -300,6 +311,13 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 		*carried.Reason != restoredReason(1, 1) || carried.ContentSHA256 == nil || *carried.ContentSHA256 != *row.digest:
 		t.Errorf("the approval of %s at version 1 reads stale after the repair restated it: the newest review is %+v, want a carry to version 1 reading %q and pinning the record's %s",
 			refKey, carried, restoredReason(1, 1), *row.digest)
+	}
+	// The repair appends one artifact.digest for version 1, approval_current true over the record's
+	// digest the carry pins.
+	if event := readDigestEvents(t, database, spec, 1); event.count != 1 || event.current == nil || !*event.current || event.digest == nil || *event.digest != *row.digest {
+		current, digest, _ := event.words()
+		t.Errorf("no artifact.digest for %s@v1 after its repair with approval_current true and digest %s: got %d events, approval_current %s, content_sha256 %s",
+			refKey, *row.digest, event.count, current, digest)
 	}
 
 	closed, closedRef := writeMismatchedSpec(t, database, service, "MISS-2", other)
@@ -346,13 +364,16 @@ func renderStepTreeMismatch(t *testing.T, rig *renderRig, service *Service) {
 // markdown's digest. The reconciliation's pass then states version 2, whose render is its stored
 // bytes, records its time and its record's digest, and carries again, to version 2, since the
 // newest review approves version 2: its reason names the version alice approved and the version
-// whose text it holds (restoreCarriedReason), and it pins the record's digest.
+// whose text it holds (restoreCarriedReason), and it pins the record's digest. The text is a
+// requirement, a node the spec query takes, so that digest is a real record's (requireRecordOfNodes).
+// MISS-3 has not converted, so its upload carries by its text (textCarries); the upload of a
+// converted query document carries nothing (renderStepUnchangedUploadCarriesNothing).
 func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 	ctx := context.Background()
 	database := rig.database
 	seedMismatchIssues(t, database)
 	spec, refKey := createSpecOf(t, database, "MISS-3")
-	seedServiceText(t, service, spec, "The words the person approved.\n")
+	seedServiceText(t, service, spec, renderAtVersionRequirement("r1", "The words the person approved."))
 	writeVersionThroughTheRealPath(t, service, spec, "The first version")
 	settle(t, database, spec)
 	first := storedVersionMarkdown(t, database, spec, 1)
@@ -376,6 +397,7 @@ func renderStepCarryOfACarry(t *testing.T, rig *renderRig, service *Service) {
 	if row.at == nil || row.digest == nil {
 		t.Fatalf("the pass left version 2 of %s with its row holding %v and %v, want its time and its record's digest", refKey, row.at, row.digest)
 	}
+	requireRecordOfNodes(t, database, "MISS-3", graphstore.QuerySpec, spec, refKey, 2)
 	carried, err := NewestReview(ctx, database.Pool, spec)
 	want := fmt.Sprintf(restoreCarriedReason, 1, 2)
 	switch {
