@@ -109,8 +109,8 @@ const deleteContended = "DELETE_CONTENDED"
 // deleteContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
 // caller waits for is a sender's write already committing - the statement that moved the attempt,
 // which held its row while the delete waited on it - and no budget this caller has spent, so the
-// wait is the shortest whole second HTTP can ask for, as the results write's checkContendedRetryAfter
-// is for the same reason.
+// wait is the shortest whole second HTTP can ask for, as the Retry-After of a keyed write whose
+// first request is still running is (409 KEY_IN_FLIGHT, request_keys.go) for the same reason.
 const deleteContendedRetryAfter = 1
 
 // errDeleteContended is that refusal: 409 DELETE_CONTENDED with Retry-After: 1. Both deletes

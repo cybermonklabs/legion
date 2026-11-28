@@ -29,9 +29,10 @@ import (
 // Attributor.HeadsAttributedTo): a link of a pull request's own URL gives it to the issue in any
 // repository (attributionHeldFor), but not a pull request whose head is in a fork, which anyone
 // may open at any commit (headAttribution), and only once its row is judged by that rule, which a
-// change of the links does at once from the facts stored on the row (Attributor.LinksChanged). The
-// terms name the repository of such a head (AttributedHead.LinkedRepo) and the merge
-// Attributor.MergeIn walks, which is why they are read beside the attribution there. A
+// change of the links does at once from the facts stored on a row this rule judged last, and the
+// reconcile does for any other row (Attributor.LinksChanged). The terms name the repository of
+// such a head (AttributedHead.LinkedRepo) and the merge Attributor.MergeIn walks, which is why
+// they are read beside the attribution there. A
 // link to a pull request of the repository the issue resolves to names nothing here, since that
 // repository is asked about the commit before any link is read. The terms hold the issue to a
 // repository by the attribution's own rule, over the same rename pairs, so the two cannot disagree
@@ -147,19 +148,21 @@ func (head HeadOfChangedLink) AttributionEvents() []model.Event {
 
 // linksChangedRowsQuery is LinksChanged's read of the rows a change of the links of the issue $1
 // names, $2 the lowercased URLs of the links it added or removed, each under every name a rename
-// pair gives its repository (refs.Renames.URLSpellings), and $3 whether it removed a link to a
-// GitHub issue (githubIssueLink): each row whose own URL is one of those links, each row whose
-// stored citations (attribution_cited_issues) name one, and, where a GitHub-issue link went, each
-// row the issue holds by a citation that stores none, since such a row cannot say which citation
-// that was. A row the build before this one wrote during a roll can store a URL under the name its
-// repository was renamed away from until the boot's pass rewrites it, so the spellings find it as
-// the attribution's link sources do (attributionCandidates). Each row is locked before it is
-// read, so a writer of the same row waits for this transaction rather than having its issue read
-// before its write and overwritten after it. No index serves `lower(url)` or the citations: a
+// pair gives its repository (refs.Renames.URLSpellings), $3 whether it removed a link to a
+// GitHub issue (githubIssueLink), and $4 AttributionRuleVersion: each row whose own URL is one of
+// those links, each row whose stored citations (attribution_cited_issues) name one, and, where a
+// GitHub-issue link went, each row the issue holds by a citation whose stored citations cannot say
+// which citation that was: a row that stores none, and a row another rule judged last, whose
+// stored citations are an earlier read's and not the ones its issue was judged from
+// (LinksChanged). A row the build before this one wrote during a roll can store a URL under the
+// name its repository was renamed away from until the boot's pass rewrites it, so the spellings
+// find it as the attribution's link sources do (attributionCandidates). Each row is locked before
+// it is read, so a writer of the same row waits for this transaction rather than having its issue
+// read before its write and overwritten after it. No index serves `lower(url)` or the citations: a
 // change of an issue's links is a person's edit, rare beside the reads of the table, and one scan
 // of a row per pull request Dispatch has seen costs that edit a few milliseconds.
 var linksChangedRowsQuery = `
-	select p.repo, p.number, p.url, p.issue_key, p.attribution_source,
+	select p.repo, p.number, p.url, p.issue_key, p.attribution_source, p.attribution_rule,
 		p.attribution_title_keys, p.attribution_cited_issues, p.attribution_branch_keys,
 		p.attribution_commit_keys, p.head_in_repo
 	from pull_request_heads p
@@ -168,7 +171,7 @@ var linksChangedRowsQuery = `
 			select 1 from unnest(p.attribution_cited_issues) c(url) where lower(c.url) = any($2::text[])
 		)
 		or ($3::boolean and p.issue_key = $1 and p.attribution_source = '` + string(sourceGitHubIssueLink) + `'
-			and p.attribution_cited_issues is null)
+			and (p.attribution_cited_issues is null or p.attribution_rule <> $4))
 	order by p.repo, p.number
 	for no key update`
 
@@ -194,12 +197,14 @@ type linkChangeQuerier interface {
 }
 
 // changedLinkRow is one row linksChangedRowsQuery read: its key, its URL, its issue and source,
-// and the facts a writer stored with them (PullRequestHead.Inputs), each nil where none did.
+// the rule that last judged it, and the facts a writer stored with them (PullRequestHead.Inputs),
+// each nil where none did.
 type changedLinkRow struct {
 	repo, url                                  string
 	number                                     int
 	issue                                      *string
 	source                                     string
+	rule                                       int
 	titleKeys, citedIssues, branchKeys, commit []string
 	headInRepo                                 *bool
 }
@@ -230,10 +235,17 @@ type changedLinkRow struct {
 // tried within the bound that function gives. One is a row with stored inputs whose commit
 // messages no writer read (they are read only when no earlier source names an issue) and no other
 // source of which holds it now: it is nobody's until that read, since the link that gave it is
-// gone. The other is a row written before the inputs were stored: a link of
+// gone. The other is a row whose stored inputs are not the facts its issue was judged from: a row
+// written before the inputs were stored, which holds none, and a row whose attribution_rule is not
+// this build's. A writer of the release before this one rewrites a row during a roll, its issue,
+// its title and its rule, and leaves the inputs an earlier write of this release stored, so a
+// merged row judged from them and stamped with this rule would leave the merged arm's reach with
+// an issue no read gave it. A row this build gave rule 0 (this judgement, or a first record of a
+// pull request its stored citations name, citingRowsRejudged) is judged so too until the reconcile
+// reads it again. Such a row is judged as a row with no inputs: a link of
 // its own URL removed, or a GitHub-issue link removed where it was the issue's by a citation,
 // takes it from the issue, and a link added leaves it as it is. Rule 4 has the reconcile store
-// the inputs of every such row once (AttributionRuleVersion).
+// the inputs of every row stored before them once (AttributionRuleVersion).
 //
 // The rows are locked in key order while this transaction holds the issue's owner lock; a head
 // writer locks the row and then the owners it appends to (UpsertPullRequestHead), so the two can
@@ -262,13 +274,13 @@ func (a *Attributor) LinksChanged(ctx context.Context, q linkChangeQuerier, issu
 	removedIssueLink := slices.ContainsFunc(lowered, func(url string) bool {
 		return githubIssueLink.MatchString(url) && !slices.Contains(linked, url)
 	})
-	read, err := q.Query(ctx, linksChangedRowsQuery, issueKey, spellings, removedIssueLink)
+	read, err := q.Query(ctx, linksChangedRowsQuery, issueKey, spellings, removedIssueLink, AttributionRuleVersion)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull requests whose links of %s changed: %w", issueKey, err)
 	}
 	rows, err := pgx.CollectRows(read, func(row pgx.CollectableRow) (changedLinkRow, error) {
 		var r changedLinkRow
-		err := row.Scan(&r.repo, &r.number, &r.url, &r.issue, &r.source,
+		err := row.Scan(&r.repo, &r.number, &r.url, &r.issue, &r.source, &r.rule,
 			&r.titleKeys, &r.citedIssues, &r.branchKeys, &r.commit, &r.headInRepo)
 		return r, err
 	})
@@ -293,14 +305,16 @@ func (a *Attributor) LinksChanged(ctx context.Context, q linkChangeQuerier, issu
 
 // judgeChangedLinkRow is the issue, the source and the rule LinksChanged writes for one row
 // (LinksChanged's doc comment): headAttribution's judgement over the row's stored inputs, read
-// through q so the candidates read the links this transaction wrote, and rule 0 for a row those
-// inputs cannot judge whole. A link of the row's own URL counts under any name a rename pair gives
-// its repository (refs.Renames.URLSpellings), as the attribution compares it.
+// through q so the candidates read the links this transaction wrote, where this build's rule
+// judged the row last and its writer stored them, and rule 0 for a row those inputs cannot judge
+// whole. A link of the row's own URL counts under any name a rename pair gives its repository
+// (refs.Renames.URLSpellings), as the attribution compares it.
 func (a *Attributor) judgeChangedLinkRow(
 	ctx context.Context, q refs.Queryer, issueKey string, row changedLinkRow, linked []string, removedIssueLink bool,
 ) (*string, string, int, error) {
 	none := string(sourceNone)
-	if row.titleKeys == nil || row.citedIssues == nil || row.branchKeys == nil || row.headInRepo == nil {
+	if row.rule != AttributionRuleVersion ||
+		row.titleKeys == nil || row.citedIssues == nil || row.branchKeys == nil || row.headInRepo == nil {
 		ownLinked := slices.ContainsFunc(a.renames.URLSpellings(row.url), func(spelling string) bool {
 			return slices.Contains(linked, strings.ToLower(spelling))
 		})

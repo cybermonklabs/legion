@@ -170,9 +170,9 @@ type comparisonReader struct {
 	// by repository and branch (branchHeadOf).
 	changeBranches map[string][]string
 	branchHeads    map[[2]string]branchHeadAnswer
-	// branchIssues is, by issue and branch, whether the branch belongs to the issue
-	// (delivery.BranchOfIssue), and whether that read answered (branchOfIssue).
-	branchIssues map[[2]string][2]bool
+	// branchIssues is, by issue, repository and branch, whether the branch belongs to the issue
+	// (delivery.Attributor.BranchOfIssue), and whether that read answered (branchOfIssue).
+	branchIssues map[[3]string][2]bool
 	// headCI is the read of each check CI proves at each head it was read at, by the check's block
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
@@ -320,7 +320,7 @@ func newComparisonReader(ctx context.Context, s *server, at string) *comparisonR
 		commits:        map[[3]string]delivery.BranchAnswer{},
 		changeBranches: map[string][]string{},
 		branchHeads:    map[[2]string]branchHeadAnswer{},
-		branchIssues:   map[[2]string][2]bool{},
+		branchIssues:   map[[3]string][2]bool{},
 		fills:          &mergeTimeFills{},
 		askedPulls:     map[[2]string]struct{}{},
 	}

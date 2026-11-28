@@ -424,11 +424,16 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
   );
 }
 
+/** The id a result the server derives from a check's CI run begins with (`ciResultIDPrefix` in
+ *  packages/envoy/internal/dispatch/api/results_ci.go). */
+const CI_RESULT_ID_PREFIX = "ci-run:";
+
 /** A check's results, newest first. A check CI proves holds the one the server derives from the
  *  CI run it names and each one its CI job recorded, and a role's result of it counts for nothing,
- *  drawn as a recorded one is with the server's reason (`not_counted`); where that run proved
- *  nothing, the server's sentence saying why stands in place of the derived one. The tab reads
- *  that run as of its own load and asks GitHub nothing more. */
+ *  drawn as a recorded one is with the server's reason (`not_counted`); where that run derived no
+ *  result, the server's sentence saying why comes first, above any result the job recorded, as
+ *  `dispatch results --issue` prints it. The tab reads that run as of its own load and asks GitHub
+ *  nothing more. */
 function CheckResults({
   check,
   results,
@@ -436,27 +441,35 @@ function CheckResults({
   check: CheckBlock;
   results: readonly CheckResult[];
 }): ReactNode {
-  if (results.length === 0) {
-    return check.ci === undefined ? (
-      <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-no-results">
-        No result recorded against this check.
-      </p>
-    ) : (
+  const derived = results.some((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
+  const unproved =
+    check.ci === undefined || derived ? null : (
       <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-ci-unproved">
         {check.ci.detail}
       </p>
     );
+  if (results.length === 0) {
+    return (
+      unproved ?? (
+        <p className={`text-sm ${textMutedOnSurface}`} data-testid="verification-check-no-results">
+          No result recorded against this check.
+        </p>
+      )
+    );
   }
   return (
-    <ul
-      aria-label={`Results of ${check.block_id}`}
-      className="space-y-3"
-      data-testid="verification-check-results"
-    >
-      {results.map((result) => (
-        <Result checkVersion={check.version} key={result.id} result={result} />
-      ))}
-    </ul>
+    <>
+      {unproved}
+      <ul
+        aria-label={`Results of ${check.block_id}`}
+        className="space-y-3"
+        data-testid="verification-check-results"
+      >
+        {results.map((result) => (
+          <Result checkVersion={check.version} key={result.id} result={result} />
+        ))}
+      </ul>
+    </>
   );
 }
 

@@ -9866,6 +9866,50 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // Catches: a head line that reads every result but the derived ones as the CI job's, so a
+  // role's result, which counts for nothing on a check CI proves, or a job's result that counts
+  // for nothing, printed "its CI job's results below" above no result of the job.
+  test("dispatch_results reads a CI check with a role's result and no job result of its own as no result", async () => {
+    const branchHead = "3333333333333333333333333333333333333333";
+    const basis = { kind: "branch_head", branch: "legion/DSP-42", commit: branchHead } as const;
+    const read = await readCICheck(
+      ciCheckRead(
+        {
+          run: "contracts",
+          state: "no_result",
+          case: "no_head",
+          detail: "Dispatch holds no open or merged pull request head of DSP-42.",
+          line: "- Check k5 (before_merge): CI run contracts has no result (no_head)",
+        },
+        [
+          {
+            ...jobResult(
+              "role-1",
+              branchHead,
+              { answer: "at_basis", basis },
+              "2026-11-10T10:00:00Z"
+            ),
+            role: "tester",
+            not_counted: "a role's result of a check CI proves counts for nothing",
+          },
+          {
+            ...jobResult(
+              "job-9",
+              branchHead,
+              { answer: "at_basis", basis },
+              "2026-11-10T09:00:00Z"
+            ),
+            not_counted: "its run is not the run the check's ci_check names",
+          },
+        ]
+      )
+    );
+
+    expect(read.text.split("\n")[2]).toBe(
+      "- k5 (before_merge): no result: Dispatch holds no open or merged pull request head of DSP-42. The contracts job passes at the head."
+    );
+  });
+
   // A role's result of a check CI proves counts for nothing, and the route says why in
   // not_counted: one more line of that result prints the reason as the route served it. The
   // result the CI job recorded carries no not_counted and prints no such line (the control).

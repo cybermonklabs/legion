@@ -646,15 +646,17 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
-// when a later edit deletes the rule; it does not show that an agent follows it, which each
-// issue's session runs measure. Each INFRA-332 sentence sits in the core its role composes, so the
-// rule reaches that role and no other: the simplify pass is the implementer's, the procedure and
-// can-fail rules the tester's, the open-decision rule the planner's, and the planner's WAITING line
-// is phase mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose
-// names core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of
-// that rule in the prompt tree, which a later core would copy from.
+// dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth,
+// dispatch://INFRA-3204's check CI proves, dispatch://INFRA-4303's R15 on a pass and a fail at one
+// head and dispatch://INFRA-4930's R11 on the pass of a head's own maker, each pinned by the
+// sentence that carries it. A pin fails when a later edit deletes the rule; it does not show that
+// an agent follows it, which each issue's session runs measure. Each INFRA-332 sentence sits in the
+// core its role composes, so the rule reaches that role and no other: the simplify pass is the
+// implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
+// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
+// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
+// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
+// would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every part below carries for that rule. Outside these parts,
 	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
@@ -696,9 +698,23 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"architect.md", "takes no `run`"},
 		{"architect-root.md", "takes no `run`"},
 		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
-		// unread is waited for, and a name no run answers goes to the architect, rather than sending
-		// the work back to an implementer who cannot cure it. The final gate points at that rule.
+		// unread is waited for, unless a pass and a fail at the head already make it not known, and a
+		// name no run answers goes to the architect, rather than sending the work back to an
+		// implementer who cannot cure it. The final gate points at that rule.
+		{"reviewer.md", "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once."},
+		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// A pass and a fail at one head, from any role, make the check not known, and no later
+		// result there ends it, so the reviewer requests changes at once rather than wait
+		// (dispatch://INFRA-4303, R15).
+		{"core/reviewer.md", "A pass and a fail at one required head, from any role, read not known, and a later pass there does not end it: refuse the approval at once, naming the check, and do not wait for a later result, for a CI run still going or for GitHub."},
+		{"reviewer.md", "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass there does not end it: refuse the approval, naming the check, with no wait for a later result."},
+		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		// The maker of a head proves nothing at it: a pass the session that made the head recorded
+		// there counts for nothing in the reviewer's decision, so it records its own pass there or
+		// sends the issue to testing (dispatch://INFRA-4930, R11).
+		{"core/reviewer.md", "A pass that the session that made the head recorded at that head counts for nothing in your decision."},
+		{"core/reviewer.md", "A run you do not record with `dispatch result` is no pass of yours: the line still shows only the maker's pass, and your approval needs your own recorded pass."},
 		// A held-back job without its label has no run of the name a check gives it: a job of a
 		// called workflow whose caller is skipped never starts. That is the implementer's to cure
 		// with the label, so the reviewer requests changes for it rather than send it on as a
