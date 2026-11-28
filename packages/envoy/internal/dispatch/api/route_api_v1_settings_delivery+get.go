@@ -12,7 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "The delivery timeline's one configuration record of the release before this one (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. This release reads it nowhere else: each project's settings, GET /api/v1/projects/{key}/settings/delivery, replace it, and the next release removes this route.",
 	Handler:     (*server).getDeliverySettings,
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},
 		// A deployment that has not set them answers 200 and the JSON literal `null`

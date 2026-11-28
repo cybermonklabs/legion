@@ -471,7 +471,7 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 	if !bytes.Equal(during, before) {
 		was, _ := reached(during)
 		t.Errorf("the answer the commit landed in differs from the answer before it at byte %d of %d: run %d reached production %t in it",
-			firstDifference(during, before), len(before), runID, was)
+			firstDifferingByte(during, before), len(before), runID, was)
 	}
 
 	after := getBody(t, handler, target)

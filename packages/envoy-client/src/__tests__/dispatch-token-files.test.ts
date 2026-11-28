@@ -32,6 +32,7 @@ import { resetAdviceMemory } from "../dispatch-execute";
 import { DispatchClient } from "../dispatch-http";
 import { sessionDispatchSettings, sessionSettings } from "../session-settings";
 import { brokerStandIns } from "./broker-stand-ins";
+import { WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 const { servers, tempDir, stubBroker } = brokerStandIns("dispatch-token-files");
 
@@ -95,6 +96,8 @@ const READS: Readonly<Record<string, unknown>> = {
     { key: "CORE", name: "Core", open_asks: 0, created_at: "2026-09-01T00:00:00Z" },
   ],
   "/api/v1/issues/DSP-1": issue,
+  // Every read command reads whoami first (`whoami-stand-in.ts`).
+  "/api/v1/whoami": WHOAMI_NO_CUT,
   "/api/v1/issues/DSP-1/events": [],
   "/api/v1/issues/DSP-1/references": { members: [], truncated: false },
   "/api/v1/issues/DSP-1/coverage": {

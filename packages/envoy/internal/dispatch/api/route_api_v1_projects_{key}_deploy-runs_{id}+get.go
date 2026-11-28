@@ -13,7 +13,7 @@ var _ = declareRoute(routeDecl{
 	ID: &idRoute{
 		Reason: "a run id of the repository the query's repo names, a positive integer and no uuid at all",
 	},
-	Read: readEntry{Writes: readWritesNothing},
+	Read: readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: projectDeployRunView{}, Params: projectDeployRunQuery{},
 	},

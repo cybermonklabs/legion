@@ -308,7 +308,7 @@ func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T
 	r.exec(t, `delete from eval_figures_built`)
 	for _, shape := range shapes {
 		if _, body := r.read(t, shape); !bytes.Equal(body, stored[shape.name]) {
-			t.Errorf("%s: the day rows answer otherwise than the stored figures, at byte %d", shape.name, firstDifference(body, stored[shape.name]))
+			t.Errorf("%s: the day rows answer otherwise than the stored figures, at byte %d", shape.name, firstDifferingByte(body, stored[shape.name]))
 		}
 	}
 	t.Logf("%s's history begins %s, its first deploy %s; a pull request merged %s reads its lead time", other, day(since), day(first), day(shipped))
@@ -366,7 +366,7 @@ func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing
 	r.moveTo(t, r.fixture.DeployRepo)
 	for _, shape := range shapes {
 		if _, body := r.read(t, shape); !bytes.Equal(body, before[shape.name]) {
-			t.Errorf("%s: the read after the move back differs from the read before the move at byte %d", shape.name, firstDifference(body, before[shape.name]))
+			t.Errorf("%s: the read after the move back differs from the read before the move at byte %d", shape.name, firstDifferingByte(body, before[shape.name]))
 		}
 	}
 	t.Logf("%d shapes read alike before the move and after the move back; %d read otherwise in between, %d of them moved by the pull request's first commit", len(shapes), differs, changed)

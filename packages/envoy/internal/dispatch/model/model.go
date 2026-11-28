@@ -1724,6 +1724,11 @@ type ArtifactApproval struct {
 	// is the request's own list (AskApprovalDocument), carried to the reader of a document
 	// rather than copied into a shape of its own.
 	Documents []AskApprovalDocument `json:"documents,omitempty"`
+	// DocumentsUnknown is set by a read of the approval at a past time, where the open request
+	// was written before requests held their documents: a migration filled them with no event,
+	// so no record at that time gives them, and the read leaves Documents out and names it
+	// absent. It is never sent.
+	DocumentsUnknown bool `json:"-"`
 }
 
 // ArtifactReviewEventPayload is the payload of artifact.approved and
@@ -2759,6 +2764,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 // (events.Broker.QueueAppend) and no writer counts the events queued before its own.
 func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
 	p.LastSeq = seq
+	return p
+}
+
+// WithOwnerClosedAt is the payload carrying closedAt as the issue's closed_at. A close stamps the
+// row's closed_at again after it read the row back (api/issue_patch.go), so the append of its
+// issue.closed takes closed_at from the row, as it takes last_seq (events.Broker.QueueAppend), and
+// the payload records the stamp that the row keeps.
+func (p IssueEventPayload) WithOwnerClosedAt(closedAt *time.Time) any {
+	p.ClosedAt = closedAt
 	return p
 }
 

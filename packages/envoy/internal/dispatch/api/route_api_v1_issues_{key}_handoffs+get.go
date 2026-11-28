@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List an issue's handoffs, newest first, each {id, issue_key, phase, version, author, created_at} without its body; a closed issue's read too.",
 	Handler:     (*server).listHandoffs,
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.HandoffSummary{}},
 })

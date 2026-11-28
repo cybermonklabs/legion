@@ -1,0 +1,70 @@
+kind: Added
+body: |-
+  Dispatch's read routes answer as of a past time. A route that answers `as_of`, an RFC 3339 time,
+  answers what existed at that time, the cut, from the records that Dispatch keeps: the events,
+  the append-only tables, and the present rows that existed at the cut. These routes are an issue,
+  the issue listing and the resolution of an `owner/repo#n` reference, the comments, messages,
+  asks, documents, document versions and blocks, and check results, the three event logs, an
+  agent's answers, the open asks, the inbox, a post's history, and search. Each answer at a cut
+  carries `Dispatch-As-Of`, the cut. An answer that leaves out members, because the records at the
+  cut cannot give them, also carries `Dispatch-As-Of-Absent`, which names each of them. Every other
+  route of the route table refuses `as_of` with `400 AS_OF_NOT_SERVED`. An `as_of` that Dispatch
+  cannot read, one later than the database's present time and a second one are
+  `400 INVALID_AS_OF`. `GET /api/v1` and the OpenAPI document say, for each GET route, how it
+  answers `as_of`.
+
+  A search at a past time reads the text that each item had at that time, from the keyword table
+  of past text. It is `409 AS_OF_SEARCH_NOT_FILLED` until the fill of that table reaches the cut.
+
+  Check results at a cut leave out each check's `version` and `sha256`, and whether the words of
+  each of its results moved (`check_words_moved`), and name them in `Dispatch-As-Of-Absent`: the
+  block index of a version can be written after the version is saved, and no record gives the
+  time of that write.
+
+  The backfill of anchor blocks (`backfill-anchor-blocks`) writes a block id into the anchor of a
+  comment or an ask with no event. Where the anchor of an item's newest event at a cut names no
+  block, the item's next event after the cut, or its row where none follows, decides: where that
+  names a block, an answer at the cut leaves out the anchor's `block_id`, and the read of one
+  comment or one ask its `anchor_block` too, and names them in `Dispatch-As-Of-Absent`; where it
+  names none, the answer keeps the unpinned anchor from the event at the cut.
+
+  The boot fill of review hashes writes a review's `content_sha256`, with `content_sha256_source`
+  `backfill`, with no event, and no record gives when it ran. So where a document's latest review
+  has the source `backfill`, every answer at a cut leaves both out of the document's `approval`
+  and names them in `Dispatch-As-Of-Absent`. A review that its insert pinned keeps both.
+
+  At a cut, a reply to a comment or a message leaves out the `text` and `removed` of the block it
+  names, and its `text_tree` under `Dispatch-Trees: 1`, and names them in
+  `Dispatch-As-Of-Absent`, whether or not the post changed after the cut: the block index keeps
+  no record of a post's blocks at the cut, and its reconciliation rewrites them with no event. A
+  reply to a post deleted at any time still reads the block removed with no text. No writer
+  stores an ask's `revision`, or the `id` of its options and of its answer, in the ask's events,
+  so at every cut every answer that gives an ask, and an event log's ask events, leave them out
+  and name them in `Dispatch-As-Of-Absent`. So a reply to a part of an ask leaves out the part's
+  `text` and `removed` too, as a reply to a post does.
+
+  An agent's answers at a cut count an event that a person wrote in the window the request asks
+  for, and that the outbox published to the session's topic, only where the event's
+  `published_at` is at or before the cut: the outbox records when it settled an event, not when
+  it published the event to each topic. Where the window holds an event whose publication by the
+  cut that record does not confirm, the answer leaves out both `items` and `total`, and names
+  `/items` and `/total` in `Dispatch-As-Of-Absent`.
+
+  Dispatch now serves reads at a past time to a read-only token that carries a cut, which #4557's
+  entry "Dispatch puts every GET route of its route table in a read class" says it refuses until
+  then. Each route that answers `as_of` answers such a token as of its cut, whatever `as_of` the
+  request sends, and `GET /api/v1/whoami` names the cut. Every other read, and `GET /ws/live`,
+  refuse the token with `403 AS_OF_TOKEN_NOT_SERVED`.
+
+  Dispatch dates a write by the start of its transaction, so a write that began before the cut and
+  committed after it reads as made at its start. In a sample of production's access log, the write
+  requests of 2026-11-16 to 2026-11-19, the longest took 47 s. A read at a cut costs more than the
+  same read of the present: on a copy of production's events, the listing of every issue at a cut
+  took 3.9 s to 8.5 s.
+
+  Eleven migrations add indexes on `events` for the reads at a cut. Each is one
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, which no ordinary read or write of `events` waits on.
+  Dispatch applies them at boot before it serves, and each build reads all of `events` two times.
+time: 2026-11-20T19:00:01Z
+custom:
+  Issue: pr4639

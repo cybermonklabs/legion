@@ -246,7 +246,7 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 		_, sample[shape.name] = r.read(t, shape)
 		if !bytes.Equal(stored[shape.name], sample[shape.name]) {
 			t.Errorf("%s: the stored figures answer %d bytes that differ from the day rows' %d bytes at byte %d", shape.name,
-				len(stored[shape.name]), len(sample[shape.name]), firstDifference(stored[shape.name], sample[shape.name]))
+				len(stored[shape.name]), len(sample[shape.name]), firstDifferingByte(stored[shape.name], sample[shape.name]))
 		}
 	}
 	t.Logf("%d shapes over %d projects, %d series in all (%d values of the Legion evals), %d days of compare ranges among the stored figures' answers, answered alike by the stored figures and the day rows",
@@ -267,8 +267,8 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 	}
 }
 
-// firstDifference is the first index at which a and b differ.
-func firstDifference(a, b []byte) int {
+// firstDifferingByte is the first index at which a and b differ.
+func firstDifferingByte(a, b []byte) int {
 	for index := range min(len(a), len(b)) {
 		if a[index] != b[index] {
 			return index
@@ -525,7 +525,7 @@ func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing
 		window, days := deploys(during)
 		beforeWindow, beforeDays := deploys(before)
 		t.Errorf("the answer the commit landed in differs from the answer before it at byte %d of %d: deploy-frequency's window holds %v deploys and its days %v, where before it they held %v and %v",
-			firstDifference(duringBody, beforeBody), len(beforeBody), window, days, beforeWindow, beforeDays)
+			firstDifferingByte(duringBody, beforeBody), len(beforeBody), window, days, beforeWindow, beforeDays)
 	}
 
 	after, _ := read()
