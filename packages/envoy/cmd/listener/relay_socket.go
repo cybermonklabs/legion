@@ -235,11 +235,23 @@ type relaySockets struct {
 	// closeGrace is how long a socket the server closed waits for its close frame to be written
 	// and its client's answer before it drops the connection: relaySocketCloseGrace, which only a
 	// test raises, so a row can read the order of a close and a data frame on the wire with no
-	// deadline deciding it.
+	// deadline deciding it, or shortens, so a close frame blocked behind a data write fails sooner.
 	closeGrace time.Duration
+	// writeControl, when set, stands in for the connection's WriteControl at the close frame's
+	// write (end; the ping's write stays the connection's own), and is given the arguments the
+	// close passes - its message type, its payload and its deadline - and the wall-clock moment
+	// the close read to build that deadline. It is nil, which only a test changes, so a row reads
+	// the deadline a close frame is written by and has the write take time on the sockets' clock.
+	writeControl func(conn *websocket.Conn, messageType int, data []byte, deadline, origin time.Time) error
 	// writeWait bounds one data frame's write and one ping's: relaySocketWriteWait, which only a
-	// test raises, so a row that holds its client's reads decides nothing by this deadline.
+	// test raises, so a row that holds its client's reads decides nothing by this deadline, or
+	// shortens, so a write blocked on a client that reads nothing fails sooner.
 	writeWait time.Duration
+	// writeDeadline, when set, stands in for the connection's SetWriteDeadline in a data frame's
+	// write (write), and is given the deadline write passes and the wall-clock moment write read
+	// to build it. It is nil, which only a test changes, so a row reads the deadline a data write
+	// sets.
+	writeDeadline func(conn *websocket.Conn, deadline, origin time.Time) error
 	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
 	// pendingMsgs and pendingBytes what one socket holds for its client
 	// (relaySocketPendingMsgs, relaySocketPendingBytes), budget what all of them hold together
@@ -845,16 +857,25 @@ func (socket *relaySocket) forwarded(subject string) bool {
 // errRelaySocketEnded is a write to a socket that has ended.
 var errRelaySocketEnded = errors.New("the relay socket has ended")
 
-// write writes one data frame to the client (writeFragments). A write that ends because the
-// socket ended under it (end wrote its close frame first, or dropped the connection) is
-// errRelaySocketEnded too.
+// write writes one data frame to the client (writeFragments), by a deadline relaySocketWriteWait
+// (writeWait) past the moment it begins, set on the connection through the sockets' writeDeadline
+// when a test set it. A write that ends because the socket ended under it (end wrote its close
+// frame first, or dropped the connection) is errRelaySocketEnded too.
 func (socket *relaySocket) write(frame any) error {
 	socket.writeMu.Lock()
 	defer socket.writeMu.Unlock()
 	if socket.ended.Load() {
 		return errRelaySocketEnded
 	}
-	if err := socket.conn.SetWriteDeadline(time.Now().Add(socket.sockets.writeWait)); err != nil {
+	origin := time.Now()
+	deadline := origin.Add(socket.sockets.writeWait)
+	var err error
+	if set := socket.sockets.writeDeadline; set != nil {
+		err = set(socket.conn, deadline, origin)
+	} else {
+		err = socket.conn.SetWriteDeadline(deadline)
+	}
+	if err != nil {
 		return err
 	}
 	if err := writeFragments(socket.conn, frame); err != nil {
@@ -948,11 +969,21 @@ func (socket *relaySocket) end(code int, reason string) {
 		// frame, behind one fragment rather than the whole frame. A close frame it could not
 		// write by the deadline (the client read too little of the fragment, or of the close
 		// itself, in the grace) is not sent, and the connection is dropped at once. The grace runs
-		// from end's start on the sockets' clock; the close frame's own write deadline is the
-		// connection's, on the real clock.
+		// from end's start on the sockets' clock, so its callback is armed for only what the
+		// close frame's write left of it; the close frame's own write deadline is the
+		// connection's, on the real clock. The write goes through the sockets' writeControl when a
+		// test set it.
 		began := socket.sockets.clock.Now()
-		deadline := time.Now().Add(socket.sockets.closeGrace)
-		if err := socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), deadline); err != nil {
+		origin := time.Now()
+		deadline := origin.Add(socket.sockets.closeGrace)
+		data := websocket.FormatCloseMessage(code, reason)
+		var err error
+		if write := socket.sockets.writeControl; write != nil {
+			err = write(socket.conn, websocket.CloseMessage, data, deadline, origin)
+		} else {
+			err = socket.conn.WriteControl(websocket.CloseMessage, data, deadline)
+		}
+		if err != nil {
 			_ = socket.conn.Close()
 			return
 		}

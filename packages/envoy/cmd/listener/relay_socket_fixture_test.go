@@ -111,8 +111,13 @@ type relaySocketRigConfig struct {
 	// closeGrace is how long a closed socket waits for its close frame to be written,
 	// relaySocketCloseGrace by default.
 	closeGrace time.Duration
+	// closes, when set, is where every close frame the sockets write goes (withCloseWrites).
+	closes *closeWrites
 	// writeWait bounds one data frame's write and one ping's, relaySocketWriteWait by default.
 	writeWait time.Duration
+	// writeDeadlines, when set, records the deadline of every data frame's write the sockets make
+	// (withWriteDeadlines).
+	writeDeadlines *dataWriteDeadlines
 	// held, when set, is the gate every connection the replica's server accepts writes through
 	// (heldWrites), which a row holds to hold a socket's writer inside a write.
 	held *heldWrites
@@ -155,18 +160,34 @@ func withCallerBudget(bytes int64) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.callerBudget = bytes }
 }
 
-// withCloseGrace raises how long a closed socket waits for its close frame to be written
-// (relaySockets.closeGrace, relaySocketCloseGrace by default), so a row reads the order of a close
-// and a data frame on the wire with no deadline deciding it.
+// withCloseGrace sets how long a closed socket waits for its close frame to be written and its
+// client's answer (relaySockets.closeGrace, relaySocketCloseGrace by default): a row raises it to
+// read the order of a close and a data frame on the wire with no deadline deciding it, or shortens
+// it so a close frame blocked behind a data write fails soon, which no verdict reads.
 func withCloseGrace(grace time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.closeGrace = grace }
 }
 
-// withWriteWait raises how long one data frame's write and one ping's may take
-// (relaySockets.writeWait, relaySocketWriteWait by default), so a row that holds its client's
-// reads decides nothing by that deadline.
+// withCloseWrites has every close frame the socket replica's sockets write go through closes
+// (relaySockets.writeControl), which writes it with the connection's own WriteControl, as the
+// close would, and hands the row the arguments the close passed (closeWrites.next).
+func withCloseWrites(closes *closeWrites) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.closes = closes }
+}
+
+// withWriteWait sets how long one data frame's write and one ping's may take
+// (relaySockets.writeWait, relaySocketWriteWait by default): a row that holds its client's reads
+// raises it so it decides nothing by that deadline, or shortens it so a write blocked on a client
+// that reads nothing fails soon, which no verdict reads.
 func withWriteWait(wait time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.writeWait = wait }
+}
+
+// withWriteDeadlines has every data frame's write of the socket replica's sockets set its deadline
+// through deadlines (relaySockets.writeDeadline), which records it and sets it on the connection,
+// as the write would.
+func withWriteDeadlines(deadlines *dataWriteDeadlines) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.writeDeadlines = deadlines }
 }
 
 // withHeldWrites has every connection the socket's replica accepts write through held's gate, so a
@@ -255,6 +276,12 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		sockets.pongFloor = config.pongFloor
 	}
 	sockets.clock = clock
+	if config.writeDeadlines != nil {
+		sockets.writeDeadline = config.writeDeadlines.setOn
+	}
+	if config.closes != nil {
+		sockets.writeControl = config.closes.writer(clock)
+	}
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
 	server := httptest.NewUnstartedServer(apiAuth(listenerAPIAuth{brokers: tokens, logger: logger}, routes))
@@ -336,6 +363,22 @@ func (rig *relaySocketRig) openWith(t *testing.T, session, token string) *relayS
 		t.Fatalf("the socket was opened with the subprotocol %q, want %q", got, relaySubprotocol)
 	}
 	return client
+}
+
+// openWithholdingItsAnswer opens session's socket with token, as openWith does, on a client that
+// reads the server's close and withholds its answer: gorilla/websocket's client answers a close
+// frame with its own, and this one writes none, so its connection ends only when the listener
+// drops it.
+func (rig *relaySocketRig) openWithholdingItsAnswer(t *testing.T, session, token string) *relaySocketClient {
+	t.Helper()
+	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
+	if err != nil {
+		t.Fatalf("open the relay socket of %s: %v (%s)\n%s", session, err, describeUpgrade(response), rig.logs.String())
+	}
+	// Set before the client's reader starts, which reads it when the close comes.
+	conn.SetCloseHandler(func(int, string) error { return nil })
+	return startRelaySocketClient(t, conn)
 }
 
 // revoke has the broker hold token live no longer, as a revoke does, and moves the rig's clock past
@@ -908,6 +951,97 @@ func (rig *relaySocketRig) dialCounted(t *testing.T, session, token string) (*we
 	return conn, counted, socket
 }
 
+// dataWriteDeadline is one deadline a socket's data write set (withWriteDeadlines): the deadline
+// write passed to the connection's setter and the wall-clock moment write read to build it.
+type dataWriteDeadline struct{ deadline, origin time.Time }
+
+// dataWriteDeadlines records the deadline of every data frame's write the socket replica's sockets
+// make (relaySockets.writeDeadline), and sets each on its connection as the write would.
+type dataWriteDeadlines struct {
+	mu  sync.Mutex
+	set []dataWriteDeadline
+}
+
+// setOn is the sockets' writeDeadline: it records deadline and origin, then sets deadline on conn.
+func (d *dataWriteDeadlines) setOn(conn *websocket.Conn, deadline, origin time.Time) error {
+	d.mu.Lock()
+	d.set = append(d.set, dataWriteDeadline{deadline: deadline, origin: origin})
+	d.mu.Unlock()
+	return conn.SetWriteDeadline(deadline)
+}
+
+// requireEach fails the test, naming what, unless the sockets' data writes set a deadline and each
+// one set is wait past its origin exactly, and returns how many they set. Both readings carry the
+// monotonic clock's, so the span between them is exact.
+func (d *dataWriteDeadlines) requireEach(t *testing.T, wait time.Duration, what string) int {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.set) == 0 {
+		t.Fatalf("%s: no data write set a deadline", what)
+	}
+	for i, set := range d.set {
+		if got := set.deadline.Sub(set.origin); got != wait {
+			t.Fatalf("%s: data write %d of %d set its deadline %s past the moment it began, want %s exactly", what, i+1, len(d.set), got, wait)
+		}
+	}
+	return len(d.set)
+}
+
+// closeWrite is one close frame a socket of the rig wrote through the sockets' writeControl
+// (withCloseWrites): the arguments the close passed (its message type, its payload and its
+// deadline), the wall-clock moment the close read to build that deadline, the moment the rig's
+// clock stood at as the write began, and what the connection's own WriteControl answered.
+type closeWrite struct {
+	messageType      int
+	data             []byte
+	deadline, origin time.Time
+	began            time.Time
+	err              error
+}
+
+// closeWrites hands the row every close frame the socket replica's sockets write
+// (relaySockets.writeControl), each once the connection's own WriteControl has written it with the
+// arguments the close passed, or failed to.
+type closeWrites struct {
+	// during, when set, runs as each write begins, before the connection's own WriteControl, with
+	// the rig's clock: a row's way to have the write take time on that clock.
+	during func(clock *clocktest.Fake)
+	// written holds the writes, with room for more than the one close each socket writes, so a
+	// close never waits for the row to read it.
+	written chan closeWrite
+}
+
+// newCloseWrites is a closeWrites whose writes run during as they begin, when it is set.
+func newCloseWrites(during func(clock *clocktest.Fake)) *closeWrites {
+	return &closeWrites{during: during, written: make(chan closeWrite, 8)}
+}
+
+// writer is the sockets' writeControl on the rig's clock.
+func (c *closeWrites) writer(clock *clocktest.Fake) func(*websocket.Conn, int, []byte, time.Time, time.Time) error {
+	return func(conn *websocket.Conn, messageType int, data []byte, deadline, origin time.Time) error {
+		write := closeWrite{messageType: messageType, data: data, deadline: deadline, origin: origin, began: clock.Now()}
+		if c.during != nil {
+			c.during(clock)
+		}
+		write.err = conn.WriteControl(messageType, data, deadline)
+		c.written <- write
+		return write.err
+	}
+}
+
+// next waits for the next close frame a socket of the rig wrote, or failed to, failing the test,
+// naming what, unless it is the close frame of code and reason. It waits through testwait, with no
+// bound of its own.
+func (c *closeWrites) next(t *testing.T, what string, code int, reason string) closeWrite {
+	t.Helper()
+	write := testwait.Receive(t, what, c.written)
+	if want := websocket.FormatCloseMessage(code, reason); write.messageType != websocket.CloseMessage || !bytes.Equal(write.data, want) {
+		t.Fatalf("%s: the close wrote a frame of type %d carrying %q, want a close frame (%d) carrying %q", what, write.messageType, write.data, websocket.CloseMessage, want)
+	}
+	return write
+}
+
 // heldWrites wraps the socket replica's listener (withHeldWrites) so a row can hold a socket's
 // writer inside a write, as a client that reads nothing holds it, and know that it stays held until
 // the row lets it go: the shape of internal/dispatch/api's heldWrites. gorilla/websocket holds its
@@ -1070,14 +1204,13 @@ func flood(t *testing.T, url, session string, n int) {
 	}
 }
 
-// awaitBlockedWrite returns once socket holds a frame behind the one it is writing to its
-// client, failing the test when it never does within 10 s.
+// awaitBlockedWrite returns once socket holds a frame behind the one it is writing to its client,
+// bounded only by the test binary's deadline. A row whose write could fail first and clear the
+// queue does not call it.
 func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
 	t.Helper()
-	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
+	testwait.Until(t, "the socket to hold a frame behind the one it is writing", func() (int, bool) {
 		frames, _ := socket.held()
-		return frames > 1
-	}) {
-		t.Fatal("the socket never held a frame behind the one it was writing")
-	}
+		return frames, frames > 1
+	})
 }
