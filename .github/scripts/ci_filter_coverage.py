@@ -39,6 +39,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -214,8 +215,11 @@ class Run:
 def run(workdir, pkgs, why, *, tags="", mode="test", env=None, overlay=None, step="", source="", text="", race=False):
     if mode not in ("test", "vet", "build"):
         raise ValueError(f"run mode {mode!r}")
-    return Run(workdir, tuple(pkgs), why, tags, mode, tuple(sorted((env or {}).items())),
+    made = Run(workdir, tuple(pkgs), why, tags, mode, tuple(sorted((env or {}).items())),
                tuple(sorted((overlay or {}).items())), step, source, text, race)
+    if EARLY is not None:
+        EARLY.start(made)
+    return made
 
 
 @dataclass(frozen=True)
@@ -415,6 +419,14 @@ class Session:
     cache: dict = field(default_factory=dict)
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
+    # The future of the CompletedProcess of each run's listing start() began, by the key the cache
+    # keeps the listing under, until listing() drops it once the answer is cached; the pool that
+    # runs them, start_early()'s, None in every other session; and the lock that guards `early`
+    # alone, which start() fills on the table's thread while listing() empties it on the walk's and
+    # prefetch()'s threads.
+    early: dict = field(default_factory=dict)
+    pool: ThreadPoolExecutor | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self):
         self.tmp = tempfile.mkdtemp(prefix="check-ci-filters-")
@@ -441,22 +453,33 @@ class Session:
             self.toolchains[workdir] = str(exe) if exe and exe.is_file() else "go"
         return self.toolchains[workdir]
 
-    def go(self, run_: Run, args: list) -> str:
+    def command(self, run_: Run, args: list) -> subprocess.CompletedProcess:
+        """A go command of the run, run in this session's environment: what it printed and how it
+        ended, which no problem reports yet (reported() does)."""
         env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="",
                    GOWORK="", GOTOOLCHAIN="local", GOGC="400")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo
-        result = subprocess.run([self.toolchain(run_.workdir), *args], cwd=REPO / run_.workdir,
-                                env=env, capture_output=True, text=True)
+        return subprocess.run([self.toolchain(run_.workdir), *args], cwd=REPO / run_.workdir,
+                              env=env, capture_output=True, text=True)
+
+    def reported(self, run_: Run, args: list, result: subprocess.CompletedProcess) -> str:
+        """The stdout of a go command of the run; its failure is a problem of this session."""
         if result.returncode != 0:
             self.problems.append(error(None, f"in {run_.workdir}, go {' '.join(args)} failed, so the closure of "
                                        f"{run_.why} is unknown: {' '.join(result.stderr.split())[:500]}"))
         return result.stdout
 
+    def go(self, run_: Run, args: list) -> str:
+        """The stdout of a go command of the run, run now; its failure is a problem of this session."""
+        return self.reported(run_, args, self.command(run_, args))
+
     def overlay_args(self, run_: Run) -> list:
-        """The -overlay flag of a run, its file named by what it replaces and written once:
-        prefetch writes every one before its pool starts, so no two threads write one file."""
+        """The -overlay flag of a run, its file named by what it replaces and written once, before
+        any thread of a pool reads it: prefetch() writes every one before its pool starts, and
+        start() builds its command's arguments, this flag among them, on the table's thread before
+        it hands the command to its pool."""
         if not run_.overlay:
             return []
         name = hashlib.sha256(repr(run_.overlay).encode()).hexdigest()[:16]
@@ -465,12 +488,11 @@ class Session:
             path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
-    def listing(self, run_: Run) -> list:
-        """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
-        by the command it runs, so Runs that differ only in a mode that asks the same listing (a
-        test and a vet, a build and a run) share one. `--` ends go's flags before the packages, so
-        go reads a package that starts with `-` (a spec's selector can name one) as an import path,
-        which it refuses, and never as a flag such as -toolexec, which names a program go runs."""
+    def listing_command(self, run_: Run) -> tuple:
+        """(the cache key, the go list arguments) of the run's listing. `--` ends go's flags before
+        the packages, so go reads a package that starts with `-` (a spec's selector can name one)
+        as an import path, which it refuses, and never as a flag such as -toolexec, which names a
+        program go runs."""
         args = ["list", "-e", f"-json={FIELDS}", "-deps"]
         if run_.mode in ("test", "vet"):
             args.append("-test")
@@ -479,9 +501,23 @@ class Session:
         if run_.race:
             args.append("-race")
         args += self.overlay_args(run_) + ["--", *run_.pkgs]
-        key = ("list", run_.workdir, run_.env, tuple(args))
+        return ("list", run_.workdir, run_.env, tuple(args)), args
+
+    def listing(self, run_: Run) -> list:
+        """`go list -deps` of the run, with -test for a run that compiles tests (test, vet). Kept
+        by the command it runs, so Runs that differ only in a mode that asks the same listing (a
+        test and a vet, a build and a run) share one. A listing start() began is taken from its
+        future, and its failure becomes a problem of this session only now, when the walk asks it,
+        as it would had the command run now; so the cache, like the problems, holds only what the
+        walk asked."""
+        key, args = self.listing_command(run_)
         if key not in self.cache:
-            self.cache[key] = decode_stream(self.go(run_, args))
+            with self.lock:
+                begun = self.early.get(key)
+            result = begun.result() if begun is not None else self.command(run_, args)
+            self.cache[key] = decode_stream(self.reported(run_, args, result))
+            with self.lock:
+                self.early.pop(key, None)
         return self.cache[key]
 
     def named(self, run_: Run) -> list:
@@ -512,14 +548,32 @@ class Session:
             self.cache[key] = [r for r in reads if r.glob]
         return self.cache[key]
 
+    def start(self, run_: Run) -> None:
+        """Begin the run's listing on the pool start_early() made, and return at once: run() calls
+        it for each Run as the table declares it, so `go list` runs while the rest of the table
+        loads rather than after it. Its arguments and its toolchain are resolved here, on the
+        table's thread, so the pool's thread only runs the command: what it printed is decoded,
+        and its failure reported, when the walk asks it (listing), since decoding on the pool's
+        thread would hold the interpreter the table's load runs on. A listing already begun or
+        answered is not begun again."""
+        key, args = self.listing_command(run_)
+        self.toolchain(run_.workdir)
+        with self.lock:
+            if key in self.cache or key in self.early:
+                return
+            self.early[key] = self.pool.submit(self.command, run_, args)
+
     def prefetch(self, runs) -> int:
         """Run, at once, the go commands closure() asks of each of `runs` - its listings and its
         module files - so the walk that follows reads them from the cache. Each command is
         independent of the others and its answer is keyed by what it asks, so the cache holds
         what a run one after another would; the problems they raise are put in the order of
-        their messages, which no scheduling moves. CI_FILTERS_JOBS bounds the pool (default: the
-        machine's processors, at most 8; 1 runs them one after another). Returns the pool size."""
-        jobs = int(os.environ.get("CI_FILTERS_JOBS") or min(8, os.cpu_count() or 1))
+        their messages, which no scheduling moves. CI_FILTERS_JOBS bounds this pool, beside
+        start_early()'s (default: the machine's processors, at most 8; 1 runs them one after
+        another): a listing start() began is waited for here, not run again, but module_files()'s
+        commands run beside the early listings still running, so up to twice that many go commands
+        run at once. Returns the pool size."""
+        jobs = go_jobs()
         tasks = []
         for r in dict.fromkeys(runs):
             tasks.append(lambda r=r: self.listing(r))
@@ -537,6 +591,69 @@ class Session:
                 task()
         self.problems[before:] = sorted(dict.fromkeys(self.problems[before:]), key=lambda a: (str(a.file), a.message))
         return jobs
+
+
+def go_jobs() -> int:
+    """How many threads each of the two pools of go commands holds: start_early()'s, for the
+    listings begun while the table loads, and prefetch()'s, for the walk's commands. It is
+    CI_FILTERS_JOBS, by default the machine's processors, at most 8. prefetch()'s listings wait for
+    those start_early()'s pool began, but its module_files() commands run beside the early listings
+    still running, so up to twice that many go commands run at once until those end. A value of 1
+    still runs every command one after another, and start_early() makes no pool then."""
+    return int(os.environ.get("CI_FILTERS_JOBS") or min(8, os.cpu_count() or 1))
+
+
+def background_priority() -> None:
+    """Lower the calling thread's scheduling priority (nice 10), and so that of every command it
+    starts, which inherits it. The threads that run commands while the table loads call it first
+    (start_early's pool, ci_ts_listing.start's), so they take the processor time the table's load,
+    one interpreter thread, leaves; .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs
+    has the timings. PRIO_PROCESS takes a process id, which only Linux reads a thread's native id
+    as: on macOS that id is a Mach thread's, so there, as on any system but Linux, it changes
+    nothing, as it changes nothing where the system refuses."""
+    if sys.platform.startswith("linux"):
+        try:
+            os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
+        except OSError:
+            pass
+
+
+# The session whose pool begins each Run's `go list -deps` as run() declares it (start_early);
+# None until check-ci-filters.sh arms it, so a module that only imports the table starts nothing.
+EARLY: Session | None = None
+
+
+def start_early() -> None:
+    """Arm EARLY: check-ci-filters.sh calls it after this module's import and before the table's,
+    in every mode, so each Run's `go list -deps` runs while the table loads; the other go commands
+    run when the walk asks them. With CI_FILTERS_JOBS=1 nothing runs early, and every command runs
+    when the walk asks it, one after another, as before."""
+    global EARLY
+    jobs = go_jobs()
+    if jobs > 1 and EARLY is None:
+        EARLY = Session(pool=ThreadPoolExecutor(max_workers=jobs, initializer=background_priority))
+
+
+def early_progress() -> str | None:
+    """How many listings start() began on EARLY and how many of them have finished, as one line
+    of counts and no repository text, or None with EARLY not armed. check-ci-filters.sh asks it as
+    the table's load ends, before the walk takes any of them, and prints it after the load's time."""
+    if EARLY is None:
+        return None
+    with EARLY.lock:
+        begun = list(EARLY.early.values())
+    return (f"{len(begun)} go list -deps of the table's runs began while it loaded, "
+            f"{sum(future.done() for future in begun)} of them done by then")
+
+
+def stop_early() -> None:
+    """Stop the pool start_early() made: the go commands no thread has taken yet are dropped, and
+    one already running is waited for. check-ci-filters.sh calls it once, on every way out after
+    start_early(), so a run that ends before the walk asked them (a table that failed to load among
+    them) runs no more of them before it exits, and its second reading of the tree sees no command
+    still writing."""
+    if EARLY is not None:
+        EARLY.pool.shutdown(wait=True, cancel_futures=True)
 
 
 def rel(path: str) -> str | None:
@@ -893,9 +1010,24 @@ def module_trees_and_go_files(files: list) -> list:
 
 
 # ---------------------------------------------------------------- files and filters
+# The files git listed under the repository before the engine was imported (check-ci-filters.sh's
+# first reading of the tree), or None where nothing read them first.
+TREE_FILES: list | None = None
+
+
 def repo_files() -> list:
     """Tracked files and untracked ones git does not ignore, so an uncommitted new file counts
-    and a build output, which no diff ever carries, does not."""
+    and a build output, which no diff ever carries, does not. They are the ones git listed before
+    the engine was imported (TREE_FILES), where check-ci-filters.sh read them: go commands run while
+    the table loads (start_early), and a file one of them wrote, which that run then fails for,
+    would otherwise count among them. Where nothing read them first, git lists them now."""
+    files = TREE_FILES if TREE_FILES is not None else git_files()
+    return sorted({f for f in files if f and (REPO / f).is_file()})
+
+
+def git_files() -> list:
+    """The tracked files and the untracked ones git does not ignore, as `git ls-files` lists them
+    now, split at each NUL it ends a name with, so an empty name is among them."""
     out = []
     for extra in ([], ["--others", "--exclude-standard"]):
         result = subprocess.run(["git", "ls-files", "-z", *extra], cwd=REPO, capture_output=True)
@@ -905,7 +1037,7 @@ def repo_files() -> list:
                 RuntimeError(f"git ls-files failed in {REPO}: {os.fsdecode(result.stderr).strip()}"),
             )
         out += os.fsdecode(result.stdout).split("\0")
-    return sorted({f for f in out if f and (REPO / f).is_file()})
+    return out
 
 
 
@@ -3343,8 +3475,9 @@ def engine_inputs() -> list:
         if path and not path.endswith(".go") and not path.startswith(".github/ci-gates/") \
                 and (REPO / path).is_file():
             found.add(path)
-    # What tsc and bun resolved the listed blocks with: the tsconfig chains, the package.json
-    # files, the lockfile (ci_ts_listing.RESOLVED), which no Python open sees.
+    # What the compiler (ci_ts_listing.COMPILER) and bun resolved the listed blocks with: the
+    # tsconfig chains, the package.json files, the lockfile (ci_ts_listing.RESOLVED), which no
+    # Python open sees.
     listing = sys.modules.get("ci_ts_listing")
     if listing is not None:
         found |= set(listing.RESOLVED)
@@ -3525,7 +3658,8 @@ def gate_read_sets(session: Session, data, files: list, expander: Expander, unre
     own: dict = defaultdict(set)  # id of a gate -> the files it reads
     report = []
     # The go commands the walk below asks, run at once first: each gate's own and each one a
-    # //ci:builds line starts. A command only a listing below reveals runs when the walk asks it.
+    # //ci:builds line starts, most of them begun already as the table declared their runs
+    # (start_early). A command only a listing below reveals runs when the walk asks it.
     runs = [r for g in data.GATES for r in gate_runs(g)]
     runs += [action for actions in data.RULES.values() for action in actions if isinstance(action, Run)]
     jobs = session.prefetch(runs)
@@ -3827,12 +3961,12 @@ def check() -> int:
     # Every rule that decides what a filter is computed from runs in each mode: a go command no
     # Run claims, or a pin its step no longer holds, leaves what its job reads unknown.
     unreduced = check_table(documents, data, set(files), problems)
-    session = Session()
+    session = EARLY or Session()
     # The listed blocks need the workspace's node_modules and Bun, which the changes job installs
     # and the ci-filters job does not: only the generation lists them. No rule of the check reads
     # them, and rule 8's docs filter holds none. Which blocks it lists depends on no read the walk
-    # below finds, only on which filters a gate is on, so tsc and Bun list them while the walk's go
-    # commands run, rather than after them.
+    # below finds, only on which filters a gate is on, so the compiler (ci_ts_listing.COMPILER) and
+    # Bun list them while the walk's go commands run, rather than after them.
     listed, listed_problems = {}, []
     with ThreadPoolExecutor(max_workers=1) as beside:
         if mode == "generate":
