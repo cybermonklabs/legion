@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
+# Run one part with `bash loadtest/cluster/cluster.test.sh <part>` or list the parts with `--parts`.
+# To run every part, each alone in its own process and temporary directory, run:
+# rc=0; for p in $(bash loadtest/cluster/cluster.test.sh --parts); do bash loadtest/cluster/cluster.test.sh "$p" || rc=1; done; [ "$rc" = 0 ]
+# Each part ends by stopping and waiting for its remaining processes, then checking all its
+# kubectl calls for `-n loadtest-test`.
+#
 # Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
 # below, whose go fetches helm where no helm of the pinned version is on PATH): fakes `kubectl`,
 # `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
@@ -188,6 +194,32 @@
 # fact, and only on their fact where it is not.
 set -euo pipefail
 
+readonly -a cluster_test_parts=(refusals path all-quick all-seeded all-full typing checker-quota identity units daemons stops)
+readonly cluster_test_part=${1-}
+if [ "$#" -eq 1 ] && [ "$cluster_test_part" = --parts ]; then
+  printf '%s\n' "${cluster_test_parts[@]}"
+  exit 0
+fi
+for part_name in "${cluster_test_parts[@]}"; do
+  [ "$part_name" != "$cluster_test_part" ] || break
+done
+if [ "$#" -ne 1 ] || [ "$cluster_test_part" != "$part_name" ]; then
+  {
+    printf 'Usage: bash loadtest/cluster/cluster.test.sh <part>\nParts:\n'
+    printf '%s\n' "${cluster_test_parts[@]}"
+    printf '%s\n' 'Run all parts, each in its own process:' \
+      'rc=0; for p in $(bash loadtest/cluster/cluster.test.sh --parts); do bash loadtest/cluster/cluster.test.sh "$p" || rc=1; done; [ "$rc" = 0 ]'
+  } >&2
+  exit 2
+fi
+
+# A forked subshell's /proc/<pid>/environ shows what its process was exec'd with.
+# FAKE_DIR is exported after this shell starts, so it cannot identify those subshells.
+if [ ! -v CLUSTER_TEST_MARK ]; then
+  export CLUSTER_TEST_MARK=$$.$EPOCHREALTIME
+  exec bash "$0" "$@"
+fi
+
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly cluster=$here/cluster.sh
 readonly real_path=$PATH
@@ -256,6 +288,7 @@ cat >"$bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 # The fake kubectl: records each call, flags one without -n <FAKE_NS>, answers from FAKE_DIR.
 set -u
+printf . >>"$FAKE_DIR/kubectl-count"
 printf '%s\n' "$*" >>"$FAKE_DIR/kubectl.log"
 # kubectl-calls.log: one line per call, tagged with the caller's session, so a check can pair two
 # calls of one cluster.sh command whatever the run's daemons (each a session of its own, setsid)
@@ -1108,22 +1141,11 @@ echo fake-token >"$fake/token"
 ) >"$fake/seed-counts.sql"
 
 readonly commit_ok=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-readonly commit_none=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-readonly commit_parent=cccccccccccccccccccccccccccccccccccccccc
-readonly commit_ancestor=dddddddddddddddddddddddddddddddddddddddd
-printf '%s %s\n%s %s\n' "$commit_none" "$commit_parent" "$commit_parent" "$commit_ancestor" >"$fake/parents"
-printf '%s\n%s\n' "$commit_none" "$commit_parent" >"$fake/missing-refs"
-# The stored-order commits: commit_so, an INFRA-707 head (the command's files, and its
-# stored-order entry in cmd/dispatch/subcommands.go's table); commit_old, a dispatch tree without
-# the command whose table has the opener the overlay anchors on (as 9b92ac14); commit_noanchor,
-# one without the command whose table has no such opener; commit_noentry, one with the command's
-# files and no stored-order entry; and one the git store does not hold. commit_ok and commit_none
-# are dispatch trees with the command (commit_none has no image).
+# The stored-order commits are an INFRA-707 head (commit_so), a Dispatch tree with the
+# stored-order command (commit_ok), and one without it (commit_old, as at 9b92ac14).
+# The table in commit_old has the opener that the overlay uses as its anchor.
 readonly commit_so=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 readonly commit_old=ffffffffffffffffffffffffffffffffffffffff
-readonly commit_noanchor=1111111111111111111111111111111111111111
-readonly commit_noentry=2222222222222222222222222222222222222222
-readonly commit_unknown=0123456789abcdef0123456789abcdef01234567
 mkdir -p "$fake/git-trees"
 so_files=(packages/envoy/internal/dispatch/docs/storedorder.go packages/envoy/cmd/dispatch/storedorder.go)
 so_registry=packages/envoy/cmd/dispatch/subcommands.go
@@ -1142,10 +1164,7 @@ fake_tree() {
 }
 fake_tree "$commit_so" "$(printf '%s\n' "$so_opener" "$so_census" "$so_entry" '}')" "${so_files[@]}"
 fake_tree "$commit_ok" "$(printf '%s\n' "$so_opener" "$so_census" "$so_entry" '}')" "${so_files[@]}"
-fake_tree "$commit_none" "$(printf '%s\n' "$so_opener" "$so_census" "$so_entry" '}')" "${so_files[@]}"
 fake_tree "$commit_old" "$(printf '%s\n' "$so_opener" "$so_census" '}')"
-fake_tree "$commit_noanchor" "$(printf '%s\n' 'var subcommands = map[string]subcommand{' "$so_census" '}')"
-fake_tree "$commit_noentry" "$(printf '%s\n' "$so_opener" "$so_census" '}')" "${so_files[@]}"
 # The browsertype commit, whose tree has loadtest/browsertype (commit_so's has none).
 readonly commit_bt=abababababababababababababababababababab
 printf '%s\n' packages/envoy/go.mod packages/envoy/cmd/dispatch/main.go packages/envoy/loadtest/browsertype/main.go >"$fake/git-trees/$commit_bt"
@@ -1180,6 +1199,7 @@ write_manifest() {
 }
 readonly seeded=$fake/replay-seeded.json
 write_manifest "$seeded"
+jq '.seed = null' "$seeded" >"$fake/replay-null.json"
 
 # write_pods [DISPATCH_RESTARTS [DISPATCH_REASON]]: the run's pods as the fake kubectl lists them.
 write_pods() {
@@ -1244,24 +1264,6 @@ no_create() {
   ! grep -qE "^-n $ns (create|apply) " "$fake/kubectl.log" 2>/dev/null
 }
 
-# guarded_by_lock_read PATTERN: the last kubectl call that holds PATTERN came right after a read
-# of the lock by the same command, which is what a write through a guarded helper (runner_exec,
-# postgres_exec and the rest) looks like: copy_is_ours reads the lock, and the write is that
-# command's next kubectl call. The calls are paired in kubectl-calls.log (one line per call,
-# tagged with the caller's session), so the run's daemons, each a session of its own, can call
-# kubectl in between without changing the answer.
-guarded_by_lock_read() {
-  local entry sid
-  entry=$(grep -F -- "$1" "$fake/kubectl-calls.log" | tail -n1)
-  [ -n "$entry" ] || return 1
-  sid=${entry%%$'\t'*}
-  awk -F '\t' -v g="$sid" -v pat="$1" '
-    $1 != g { next }
-    index($0, pat) { before = prev }
-    { prev = $0 }
-    END { exit (index(before, "get configmap dispatch-loadtest-lock") ? 0 : 1) }' "$fake/kubectl-calls.log"
-}
-
 # own_calls_mark: a mark for own_calls_since, the number of calls in kubectl-calls.log now.
 own_calls_mark() { wc -l <"$fake/kubectl-calls.log" 2>/dev/null || echo 0; }
 
@@ -1276,85 +1278,6 @@ own_calls_since() {
     "$fake/kubectl-calls.log" 2>/dev/null || true
 }
 
-# all_gone PID...: none of the pids is a live process any more.
-all_gone() {
-  local pid
-  for pid in "$@"; do
-    if kill -0 "$pid" 2>/dev/null; then return 1; fi
-  done
-}
-
-# session_live SID: each live process (no zombie) of session SID, "pid command line" a line; true
-# when there is one. A daemon cluster.sh starts under setsid leads a session of its own, its pid
-# the session's id, and every child it starts, its role loops and their kubectl execs among them,
-# stays in it.
-session_live() {
-  local stat line state sid pid found=1
-  for stat in /proc/[0-9]*/stat; do
-    { read -r line <"$stat"; } 2>/dev/null || continue
-    read -r state _ _ sid _ <<<"${line##*) }"
-    if [ "$sid" != "$1" ] || [ "$state" = Z ]; then continue; fi
-    pid=${stat#/proc/}
-    pid=${pid%/stat}
-    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
-    found=0
-  done
-  return "$found"
-}
-
-# session_gone SID: no live process of session SID is left, for wait_for, which shows the ones
-# left at its last poll.
-session_gone() { ! session_live "$1"; }
-
-# keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
-# reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
-# judge their bounds by, which the bounds of (dd) and (ee) are held to, rather than to this test's
-# own clock. Where the case has made FAKE_DIR/clock, that clock is the fake one, which only the
-# fake sleep's recorded waits move: a wait whose polls are fast sleeps then reaches a bound of
-# seconds or minutes at the poll that would reach it in production, with no real second passing.
-# shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
-keep_timer_readings() {
-  timer_readings=$1
-  : >"$timer_readings"
-  timer_now() {
-    if [ -f "$FAKE_DIR/clock" ]; then NOW=$(<"$FAKE_DIR/clock"); else NOW=$EPOCHSECONDS; fi
-    printf '%s %s\n' "$*" "$NOW" >>"$timer_readings"
-  }
-}
-
-# timer_lags PREFIX: for each reading in timer_readings whose WHAT starts with PREFIX, how many
-# seconds past the second it judged (its due= or deadline=) it was read, one a line, in order.
-timer_lags() {
-  awk -v p="$1 " 'index($0, p) == 1 { d = $0; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d); print $NF - d }' \
-    "$timer_readings"
-}
-
-# ends_at_bound PREFIX BOUND: the readings of PREFIX (timer_lags) stay under BOUND seconds past
-# their second until the last, which is at or past it: the wait ended at its first judgment past
-# its bound, by its own clock, neither before its bound nor at a later one. Prints the lags when not.
-ends_at_bound() {
-  timer_lags "$1" | awk -v b="$2" '
-    { lag[NR] = $1 }
-    END {
-      ok = NR > 0 && lag[NR] >= b
-      for (i = 1; i < NR; i++) if (lag[i] >= b) ok = 0
-      if (!ok) { for (i = 1; i <= NR; i++) printf "%s ", lag[i]; exit 1 }
-    }'
-}
-
-# armed_after AT NEXT SECONDS: the first reading whose WHAT starts with NEXT, after the last that
-# starts with AT, judges the second SECONDS after that reading of AT: the deadline the wait armed
-# when it acted at AT. Prints both readings when not.
-armed_after() {
-  awk -v at="$1 " -v next_="$2 " -v s="$3" '
-    index($0, at) == 1 { t = $NF; armed = ""; seen = 1; next }
-    seen && armed == "" && index($0, next_) == 1 { armed = $0 }
-    END {
-      d = armed; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d)
-      if (!seen || armed == "" || d + 0 != t + s) { printf "%s at %s, then %s", at, t, armed; exit 1 }
-    }' "$timer_readings"
-}
-
 # logged_steps PREFIX: the step names, in argument order, of the last loadgen call that started
 # with PREFIX.
 logged_steps() {
@@ -1367,6 +1290,163 @@ logged_steps() {
 }
 
 up_args=(--namespace "$ns" --storage-class premium-rwo --pg-major 16 --production-repo example/deploy)
+
+# A 150Gi volume, as the fake df reports it: a tenth used or 10% free.
+readonly pg_size=161061273600 pg_used_low=16106127360 pg_used_high=144955146240
+readonly pg_free_low=144955146240 pg_free_high=16106127360
+# df_seq LINE...: the readings the fake kubectl answers with, in order, the last repeated.
+df_seq() {
+  printf '%s\n' "$@" >"$fake/df-seq"
+  rm -f -- "$fake/rc-polls" "$fake/runner-stops"
+}
+
+# write_lock RUN HEARTBEAT [UID]: another run's lock ConfigMap.
+write_lock() {
+  jq -n --arg run "$1" --arg hb "$2" --arg uid "${3:-99999999-8888-7777-6666-555555555555}" \
+    '{metadata: {name: "dispatch-loadtest-lock"}, data: {"holder-pod": "other-worker-3", "holder-uid": $uid,
+      issue: "OTHER-9", run: $run, started: $hb, heartbeat: $hb}}' >"$fake/lock.json"
+}
+readonly other_run=lt-20261028t080000-beef
+
+# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
+# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+copy_credentials() {
+  local dt lt pw
+  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
+  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
+  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
+  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+}
+
+# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
+# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
+# waited on the job removed it. A detached job's removal lands a moment after its start returned.
+job_credentials() {
+  local job=$1 naps=0 file value creds
+  creds=$(copy_credentials)
+  while compgen -G "$fake/runner/work/secrets/$job.*" >/dev/null; do
+    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -ld "$fake/runner/work/secrets/$job".*)"
+    sleep 0.05
+  done
+  while read -r file value; do
+    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
+      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
+  done <<<"$creds"
+}
+
+# evidence_calls OUT: the evidence export's psql calls in the fake kubectl's log (those that set a
+# statement_timeout) into OUT, each statement_timeout written as N; fails when one is not 1-600 s.
+evidence_calls() {
+  grep -F -- "-c set statement_timeout = '" "$fake/kubectl.log" | sed -E "s/statement_timeout = '[0-9]+s'/statement_timeout = 'Ns'/" >"$1"
+  grep -oE "statement_timeout = '[0-9]+s'" "$fake/kubectl.log" | tr -dc '0-9\n' | awk '$1 < 1 || $1 > 600 { bad = 1 } END { exit bad }'
+}
+# psql_call DB: an evidence export's kubectl call up to its first SQL, on database DB.
+psql_call() { printf '%s' "-n $ns exec postgres-0 -c postgres -- psql -X -q -U dispatch -d $1 -v ON_ERROR_STOP=1 -c set statement_timeout = 'Ns' -c"; }
+# names DIR: the names in DIR, sorted, on one line.
+names() { find "$1" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' '; }
+# line_of PATTERN [first|last]: the line number in kubectl.log of PATTERN's first (or last) match.
+line_of() {
+  local n
+  n=$(grep -nF -- "$1" "$fake/kubectl.log" | cut -d: -f1 | if [ "${2:-first}" = last ]; then tail -n1; else head -n1; fi)
+  [ -n "$n" ] || fail "kubectl.log has no '$1'"
+  printf '%s\n' "$n"
+}
+
+# The replay fixture for browser typing: a bundle state of one issue with four documents and a
+# file, its window's events, and public.loadtest_replay_ids's artifact rows. In 0-5m after the state's
+# 22:55: doc-1 has 3 agent writes (one at a fractional second, one with a +00:00 offset), doc-2 2
+# (and 2 by a person and a settlement, which do not count), doc-3 2 (and 3 more after 5m and one
+# before 22:55); doc-4 4 but no replay_ids row; file-1 5 but a file; doc-5 5 but not in the state
+# (a document the window creates); and comment events on doc-3, which are no document writes.
+readonly typing_l1=10000000-0000-4000-8000-000000000001 typing_l2=10000000-0000-4000-8000-000000000002
+readonly typing_l3=10000000-0000-4000-8000-000000000003
+# typing_event TYPE ACTOR_KIND CREATED_AT ARTIFACT [NAMED DIFF]: one window.jsonl line.
+typing_event() {
+  jq -nc --arg t "$1" --arg k "$2" --arg at "$3" --arg a "$4" --argjson named "${5:-false}" --argjson diff "${6:-\"@@ -1 +1 @@\"}" \
+    '{id: 1, issue_key: "FAKE-1", artifact_id: $a, project: "FAKE", seq: 1, type: $t, actor: {kind: $k, id: "s-1"}, notify: false,
+      created_at: $at, payload: {artifact_id: $a, name: "doc", diff: $diff, version: {named: $named, size: 10}}}'
+}
+# write_typing_bundle DIR IDS: the fixture's state.json and window.jsonl into DIR, its
+# replay_ids rows ("<logged>|<local>", as psql -At prints them) into IDS.
+write_typing_bundle() {
+  local v=artifact.version t
+  mkdir -p "$1"
+  jq -n '{project: "FAKE", at: "2026-10-26T22:55:00Z", until: "2026-10-26T23:34:00Z", issues: [{key: "FAKE-1", number: 1, exists: true,
+    created_at: "2026-10-01T00:00:00Z", artifacts: ([("doc-1", "doc-2", "doc-3", "doc-4") | {id: ., name: ., slug: ., kind: "doc"}]
+      + [{id: "file-1", name: "f", slug: "f", kind: "file"}])}]}' >"$1/state.json"
+  {
+    typing_event "$v" session 2026-10-26T22:55:10Z doc-1
+    typing_event "$v" session 2026-10-26T22:55:20.5Z doc-1
+    typing_event "$v" session 2026-10-26T22:56:00+00:00 doc-1
+    typing_event "$v" session 2026-10-26T22:57:00Z doc-2
+    typing_event "$v" user 2026-10-26T22:57:30Z doc-2
+    typing_event "$v" user 2026-10-26T22:57:31Z doc-2
+    typing_event "$v" session 2026-10-26T22:58:00Z doc-2
+    typing_event "$v" session 2026-10-26T22:59:00Z doc-2 true null
+    typing_event "$v" session 2026-10-26T22:54:00Z doc-3
+    typing_event "$v" session 2026-10-26T22:56:30Z doc-3
+    typing_event "$v" session 2026-10-26T22:59:59.999Z doc-3
+    for t in 23:01:00 23:02:00 23:03:00; do typing_event "$v" session "2026-10-26T${t}Z" doc-3; done
+    for t in 22:55:01 22:55:02 22:55:03; do typing_event comment.created session "2026-10-26T${t}Z" doc-3; done
+    for t in 22:56:01 22:56:02 22:56:03 22:56:04; do typing_event "$v" session "2026-10-26T${t}Z" doc-4; done
+    for t in 22:57:01 22:57:02 22:57:03 22:57:04 22:57:05; do typing_event "$v" session "2026-10-26T${t}Z" file-1; done
+    for t in 22:58:01 22:58:02 22:58:03 22:58:04 22:58:05; do typing_event "$v" session "2026-10-26T${t}Z" doc-5; done
+  } >"$1/window.jsonl"
+  printf '%s\n' "doc-1|$typing_l1" "doc-2|$typing_l2" "doc-3|$typing_l3" "doc-5|10000000-0000-4000-8000-000000000005" \
+    "file-1|10000000-0000-4000-8000-00000000000f" >"$2"
+}
+
+# Expand the glob before grep forks so grep is not among the processes it reads.
+# Poll again after TERM because a process can still make a call while it handles the signal.
+part_processes_gone() {
+  local action=$1 proc pid pending=0
+  grep -lszxF -- "CLUSTER_TEST_MARK=$mark" /proc/[0-9]*/environ >"$scan" || true
+  while IFS= read -r proc; do
+    pid=${proc#/proc/}
+    pid=${pid%/environ}
+    [[ $pid != "$$" && $pid != "$check_pid" ]] || continue
+    ((++pending))
+    printf '%s\n' "$pid"
+    if [ "$action" = term ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+    fi
+  done <"$scan"
+  ((pending == 0))
+}
+
+# The daemon and sampler can remove their pidfiles before the last process of their sessions
+# ends. Wait for the marker, not the pidfiles, before reading either log.
+part_end_check() {
+  local label=$1 mark=$2 fake_dir=$3 check_pid=$BASHPID scan=$3/part-processes count
+  part_processes_gone term >/dev/null || true
+  wait_for "the remaining processes of part $label to end (PIDs at the last poll)" part_processes_gone wait
+  if [ -s "$fake_dir/kubectl-no-ns.log" ]; then
+    fail "part $label: kubectl was called without -n $ns: $(head -n 5 "$fake_dir/kubectl-no-ns.log")"
+  fi
+  [ -s "$fake_dir/kubectl-count" ] || fail "part $label: no kubectl call was recorded"
+  count=$(wc -c <"$fake_dir/kubectl-count")
+  pass "part $label: every kubectl call of the part ($count of them, the daemons' included) carries -n $ns"
+}
+
+part_refusals() {
+# The missing-image refusal reads the first-parent chain past two commits with no image.
+readonly commit_none=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+readonly commit_parent=cccccccccccccccccccccccccccccccccccccccc
+readonly commit_ancestor=dddddddddddddddddddddddddddddddddddddddd
+printf '%s %s\n%s %s\n' "$commit_none" "$commit_parent" "$commit_parent" "$commit_ancestor" >"$fake/parents"
+printf '%s\n%s\n' "$commit_none" "$commit_parent" >"$fake/missing-refs"
+fake_tree "$commit_none" "$(printf '%s\n' "$so_opener" "$so_census" "$so_entry" '}')" "${so_files[@]}"
+
+# The checker refusals also need a tree with no registration anchor, one with no registration
+# entry, and a commit that the fake git store does not contain.
+readonly commit_noanchor=1111111111111111111111111111111111111111
+readonly commit_noentry=2222222222222222222222222222222222222222
+readonly commit_unknown=0123456789abcdef0123456789abcdef01234567
+fake_tree "$commit_noanchor" "$(printf '%s\n' 'var subcommands = map[string]subcommand{' "$so_census" '}')"
+fake_tree "$commit_noentry" "$(printf '%s\n' "$so_opener" "$so_census" '}')" "${so_files[@]}"
 
 # ---- (a) every subcommand refuses a missing --namespace --------------------------------------------
 
@@ -1497,7 +1577,6 @@ pass "up refuses a browsertype with no -person before the lock, naming the flag 
 # The committed manifest's seed is null until INFRA-639 uploads it; a seed check that failed any of
 # the three conditions is refused too. Each before any kubectl call, so before any kubectl write.
 reset_fake
-jq '.seed = null' "$seeded" >"$fake/replay-null.json"
 write_manifest "$fake/replay-unpassed.json" '{"passed": false, "version_size_mismatches": 0, "anchors_outside_logged_block": 0}'
 write_manifest "$fake/replay-sizes.json" '{"passed": true, "version_size_mismatches": 2, "anchors_outside_logged_block": 0}'
 write_manifest "$fake/replay-anchors.json" '{"passed": true, "version_size_mismatches": 0, "anchors_outside_logged_block": 1}'
@@ -1523,14 +1602,6 @@ reset_fake
   [ ! -s "$fake/kubectl.log" ] || fail "replay-prepare called kubectl before refusing an unset LOADTEST_REPLAY_ISSUE: $(cat "$fake/kubectl.log")"
 ) || exit 1
 pass "replay-prepare refuses an unset LOADTEST_REPLAY_ISSUE, which the manifest does not name, before any kubectl call"
-
-# write_lock RUN HEARTBEAT [UID]: another run's lock ConfigMap.
-write_lock() {
-  jq -n --arg run "$1" --arg hb "$2" --arg uid "${3:-99999999-8888-7777-6666-555555555555}" \
-    '{metadata: {name: "dispatch-loadtest-lock"}, data: {"holder-pod": "other-worker-3", "holder-uid": $uid,
-      issue: "OTHER-9", run: $run, started: $hb, heartbeat: $hb}}' >"$fake/lock.json"
-}
-readonly other_run=lt-20261028t080000-beef
 
 reset_fake
 # Own the clock: up reads the heartbeat's age by now(), here the fake clock at clock_start, and the
@@ -1560,7 +1631,52 @@ grep -q -- "pass --run $other_run" "$tmp/out" || fail "down's refusal of another
 [ -f "$fake/lock.json" ] || fail "down deleted another run's lock without --run"
 pass "down refuses another run's lock unless --run names it"
 
-# ---- (c) the whole path, and -n on every kubectl call ------------------------------------------------
+# The child gets an empty TMPDIR so any setup it runs leaves a file that this case can see.
+local refusal refusal_tmp refusal_rc expected_part listed_parts
+local -a refusal_args
+listed_parts=$(bash "$here/cluster.test.sh" --parts)
+[ -n "$listed_parts" ] || fail "cluster.test.sh --parts listed no parts"
+for refusal in no-argument unknown extra-argument; do
+  refusal_tmp=$tmp/$refusal
+  mkdir "$refusal_tmp"
+  refusal_args=()
+  case $refusal in
+    unknown) refusal_args=(no-such-part) ;;
+    extra-argument) refusal_args=(path refusals) ;;
+  esac
+  refusal_rc=0
+  TMPDIR=$refusal_tmp bash "$here/cluster.test.sh" "${refusal_args[@]}" >"$tmp/part-refusal.out" 2>"$tmp/part-refusal.err" ||
+    refusal_rc=$?
+  ((refusal_rc == 2)) || fail "cluster.test.sh with $refusal exited $refusal_rc, not 2: $(cat "$tmp/part-refusal.err")"
+  [ -z "$(names "$refusal_tmp")" ] || fail "cluster.test.sh with $refusal wrote into TMPDIR: $(names "$refusal_tmp")"
+  while IFS= read -r expected_part; do
+    grep -qxF -- "$expected_part" "$tmp/part-refusal.err" ||
+      fail "cluster.test.sh with $refusal did not name $expected_part: $(cat "$tmp/part-refusal.err")"
+  done <<<"$listed_parts"
+done
+pass "cluster.test.sh with no part, or with an unknown one, exits 2 before its setup, naming every part that --parts prints"
+}
+
+part_path() {
+# ---- (c) the whole path ----------------------------------------------------------------------------
+
+# guarded_by_lock_read PATTERN: the last kubectl call that holds PATTERN came right after a read
+# of the lock by the same command, which is what a write through a guarded helper (runner_exec,
+# postgres_exec and the rest) looks like: copy_is_ours reads the lock, and the write is that
+# command's next kubectl call. The calls are paired in kubectl-calls.log (one line per call,
+# tagged with the caller's session), so the run's daemons, each a session of its own, can call
+# kubectl in between without changing the answer.
+guarded_by_lock_read() {
+  local entry sid
+  entry=$(grep -F -- "$1" "$fake/kubectl-calls.log" | tail -n1)
+  [ -n "$entry" ] || return 1
+  sid=${entry%%$'\t'*}
+  awk -F '\t' -v g="$sid" -v pat="$1" '
+    $1 != g { next }
+    index($0, pat) { before = prev }
+    { prev = $0 }
+    END { exit (index(before, "get configmap dispatch-loadtest-lock") ? 0 : 1) }' "$fake/kubectl-calls.log"
+}
 
 reset_fake
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
@@ -1592,35 +1708,6 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
 [ "$(grep -c -- "^-n $ns cp $run_dir/envoy-dispatch runner:/work/envoy-dispatch " "$fake/kubectl.log")" = 1 ] ||
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
-
-# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
-# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
-# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
-copy_credentials() {
-  local dt lt pw
-  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
-  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
-  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
-  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
-  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
-}
-
-# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
-# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
-# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
-# waited on the job removed it. A detached job's removal lands a moment after its start returned.
-job_credentials() {
-  local job=$1 naps=0 file value creds
-  creds=$(copy_credentials)
-  while compgen -G "$fake/runner/work/secrets/$job.*" >/dev/null; do
-    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -ld "$fake/runner/work/secrets/$job".*)"
-    sleep 0.05
-  done
-  while read -r file value; do
-    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
-      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
-  done <<<"$creds"
-}
 
 # no_credential_in_args: no kubectl call and no jq call so far carries a credential of the copy
 # among its arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
@@ -1810,14 +1897,6 @@ grep -q "^cgroup-merge $run_dir/steps/reads " "$fake/loadgen.log" || fail "step 
 # doc_checkpoints of 22222222-... fails: reported, no step failure.
 so_mismatch=11111111-1111-4111-8111-111111111111 so_refused=22222222-2222-4222-8222-222222222222
 ev=$run_dir/steps/reads/stored-order-evidence
-# evidence_calls OUT: the evidence export's psql calls in the fake kubectl's log (those that set a
-# statement_timeout) into OUT, each statement_timeout written as N; fails when one is not 1-600 s.
-evidence_calls() {
-  grep -F -- "-c set statement_timeout = '" "$fake/kubectl.log" | sed -E "s/statement_timeout = '[0-9]+s'/statement_timeout = 'Ns'/" >"$1"
-  grep -oE "statement_timeout = '[0-9]+s'" "$fake/kubectl.log" | tr -dc '0-9\n' | awk '$1 < 1 || $1 > 600 { bad = 1 } END { exit bad }'
-}
-# psql_call DB: an evidence export's kubectl call up to its first SQL, on database DB.
-psql_call() { printf '%s' "-n $ns exec postgres-0 -c postgres -- psql -X -q -U dispatch -d $1 -v ON_ERROR_STOP=1 -c set statement_timeout = 'Ns' -c"; }
 evidence_calls "$tmp/evidence-calls" || fail "an evidence export's statement_timeout is not within its 600 s: $(grep -oE "statement_timeout = '[0-9]+s'" "$fake/kubectl.log")"
 for id in "$so_mismatch" "$so_refused"; do
   for t in "artifacts where id = '$id'" "doc_checkpoints where artifact_id = '$id'" "artifact_versions where artifact_id = '$id' order by number" \
@@ -1836,8 +1915,6 @@ done
 grep -qxF -- "$(psql_call dispatch) \\pset tuples_only on -c \\pset format unaligned -c select encode(convert_to(markdown, 'UTF8'), 'base64') from artifact_versions where artifact_id = '$so_mismatch' and number = 7 and markdown is not null" \
   "$tmp/evidence-calls" || fail "the evidence export did not read version 7's markdown: $(grep -F markdown "$fake/kubectl.log")"
 [ "$(grep -cF "encode(convert_to(markdown" "$fake/kubectl.log")" = 1 ] || fail "the evidence export read the markdown of a version that did not mismatch"
-# names DIR: the names in DIR, sorted, on one line.
-names() { find "$1" -mindepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' '; }
 start_files="start-artifact_versions.csv.gz start-doc_checkpoints.csv.gz start-doc_snapshots.csv.gz start-doc_updates.csv.gz"
 [ "$(names "$ev/$so_mismatch")" = "artifact_versions.csv.gz artifacts.csv.gz doc_checkpoints.csv.gz doc_snapshots.csv.gz doc_updates.csv.gz issue-events-in-window.csv.gz $start_files version-7.md " ] ||
   fail "the mismatched document's evidence is not one gzipped CSV per table, the events, the start-* tables and version-7.md: $(names "$ev/$so_mismatch")"
@@ -2024,6 +2101,9 @@ for d in heartbeat sampler; do
   [ ! -f "$run_dir/$d.pid" ] || fail "down left the $d daemon's pidfile"
 done
 pass "up, seed, step, step --reads-only, replay-prepare, replay, db-size, collect, status and down run through, each step and replay with its stored-order check"
+}
+
+part_all_quick() {
 
 reset_fake
 echo '400000 100000' >"$fake/cpu.max"
@@ -2052,14 +2132,9 @@ grep -q '^step-1x-db4 .*-duration 2m ' "$fake/runner-starts" || fail "quick's st
 [ ! -f "$fake/lock.json" ] || fail "all left the lock"
 ! grep -q '^replay-' "$fake/runner-starts" || fail "all ran a replay on a manifest whose seed is null"
 pass "all runs up, seed, the series, soak, db-size, 1x-db4, collect and down, the stored-order check on each step, one line per skipped phase"
-
-# line_of PATTERN [first|last]: the line number in kubectl.log of PATTERN's first (or last) match.
-line_of() {
-  local n
-  n=$(grep -nF -- "$1" "$fake/kubectl.log" | cut -d: -f1 | if [ "${2:-first}" = last ]; then tail -n1; else head -n1; fi)
-  [ -n "$n" ] || fail "kubectl.log has no '$1'"
-  printf '%s\n' "$n"
 }
+
+part_all_seeded() {
 
 reset_fake
 echo '400000 100000' >"$fake/cpu.max"
@@ -2100,6 +2175,9 @@ done
 [ "$(logged_steps 'tables -tops=false')" = "1x 2x 3x 5x 7x 10x 10x-reads 10x-hour r16 1x-db4 r4" ] ||
   fail "all's TABLES.md lists the steps as '$(logged_steps 'tables -tops=false')', not in the order they ran"
 pass "all with a seeded manifest runs replay-prepare and replay r16 after soak, replay r4 after db-size and 1x-db4, each over 0-5m under quick, and packs the phase replay"
+}
+
+part_all_full() {
 
 reset_fake
 echo '400000 100000' >"$fake/cpu.max"
@@ -2127,52 +2205,11 @@ done
 [ -n "$(find "$run_dir/upload" -name 'cluster-load-test-*-raw-refinement.tar.zst.part00')" ] || fail "all packed no phase refinement"
 [ ! -f "$fake/lock.json" ] || fail "all --profile full left the lock"
 pass "all --profile full runs one refinement step per refine.txt factor, then curves again, until refine.txt is empty, and each replay over 0-39m"
+}
+
+part_typing() {
 
 # ---- (c) browser typing ----------------------------------------------------------------------------
-
-# The replay fixture for browser typing: a bundle state of one issue with four documents and a
-# file, its window's events, and public.loadtest_replay_ids's artifact rows. In 0-5m after the state's
-# 22:55: doc-1 has 3 agent writes (one at a fractional second, one with a +00:00 offset), doc-2 2
-# (and 2 by a person and a settlement, which do not count), doc-3 2 (and 3 more after 5m and one
-# before 22:55); doc-4 4 but no replay_ids row; file-1 5 but a file; doc-5 5 but not in the state
-# (a document the window creates); and comment events on doc-3, which are no document writes.
-readonly typing_l1=10000000-0000-4000-8000-000000000001 typing_l2=10000000-0000-4000-8000-000000000002
-readonly typing_l3=10000000-0000-4000-8000-000000000003
-# typing_event TYPE ACTOR_KIND CREATED_AT ARTIFACT [NAMED DIFF]: one window.jsonl line.
-typing_event() {
-  jq -nc --arg t "$1" --arg k "$2" --arg at "$3" --arg a "$4" --argjson named "${5:-false}" --argjson diff "${6:-\"@@ -1 +1 @@\"}" \
-    '{id: 1, issue_key: "FAKE-1", artifact_id: $a, project: "FAKE", seq: 1, type: $t, actor: {kind: $k, id: "s-1"}, notify: false,
-      created_at: $at, payload: {artifact_id: $a, name: "doc", diff: $diff, version: {named: $named, size: 10}}}'
-}
-# write_typing_bundle DIR IDS: the fixture's state.json and window.jsonl into DIR, its
-# replay_ids rows ("<logged>|<local>", as psql -At prints them) into IDS.
-write_typing_bundle() {
-  local v=artifact.version t
-  mkdir -p "$1"
-  jq -n '{project: "FAKE", at: "2026-10-26T22:55:00Z", until: "2026-10-26T23:34:00Z", issues: [{key: "FAKE-1", number: 1, exists: true,
-    created_at: "2026-10-01T00:00:00Z", artifacts: ([("doc-1", "doc-2", "doc-3", "doc-4") | {id: ., name: ., slug: ., kind: "doc"}]
-      + [{id: "file-1", name: "f", slug: "f", kind: "file"}])}]}' >"$1/state.json"
-  {
-    typing_event "$v" session 2026-10-26T22:55:10Z doc-1
-    typing_event "$v" session 2026-10-26T22:55:20.5Z doc-1
-    typing_event "$v" session 2026-10-26T22:56:00+00:00 doc-1
-    typing_event "$v" session 2026-10-26T22:57:00Z doc-2
-    typing_event "$v" user 2026-10-26T22:57:30Z doc-2
-    typing_event "$v" user 2026-10-26T22:57:31Z doc-2
-    typing_event "$v" session 2026-10-26T22:58:00Z doc-2
-    typing_event "$v" session 2026-10-26T22:59:00Z doc-2 true null
-    typing_event "$v" session 2026-10-26T22:54:00Z doc-3
-    typing_event "$v" session 2026-10-26T22:56:30Z doc-3
-    typing_event "$v" session 2026-10-26T22:59:59.999Z doc-3
-    for t in 23:01:00 23:02:00 23:03:00; do typing_event "$v" session "2026-10-26T${t}Z" doc-3; done
-    for t in 22:55:01 22:55:02 22:55:03; do typing_event comment.created session "2026-10-26T${t}Z" doc-3; done
-    for t in 22:56:01 22:56:02 22:56:03 22:56:04; do typing_event "$v" session "2026-10-26T${t}Z" doc-4; done
-    for t in 22:57:01 22:57:02 22:57:03 22:57:04 22:57:05; do typing_event "$v" session "2026-10-26T${t}Z" file-1; done
-    for t in 22:58:01 22:58:02 22:58:03 22:58:04 22:58:05; do typing_event "$v" session "2026-10-26T${t}Z" doc-5; done
-  } >"$1/window.jsonl"
-  printf '%s\n' "doc-1|$typing_l1" "doc-2|$typing_l2" "doc-3|$typing_l3" "doc-5|10000000-0000-4000-8000-000000000005" \
-    "file-1|10000000-0000-4000-8000-00000000000f" >"$2"
-}
 
 reset_fake
 echo '400000 100000' >"$fake/cpu.max"
@@ -2182,6 +2219,10 @@ run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --browsertype-comm
 ((RC == 0)) || fail "up --browsertype-commit exited $RC"
 run=$(jq -r .data.run "$fake/lock.json")
 run_dir=$LOADTEST_CLUSTER_ROOT/$run
+checker=$(jq -c .stored_order "$run_dir/state.json")
+jq -e --arg c "$commit_ok" --arg s "$(sha256sum <"$run_dir/envoy-dispatch" | cut -d' ' -f1)" \
+  '. == {dispatch_commit: $c, built_from: $c, overlay_source: null, overlay_files: [], registration: null, renderer_matches: true, sha256: $s}' \
+  <<<"$checker" >/dev/null || fail "the typing run's state.json does not record the checker built from the dispatch commit and its sha256: $checker"
 jq -e --arg c "$commit_bt" --arg s "$(sha256sum <"$run_dir/browsertype" | cut -d' ' -f1)" '.browsertype == {commit: $c, sha256: $s}' \
   "$run_dir/state.json" >/dev/null || fail "state.json does not record the browsertype commit and binary's sha256: $(jq -c .browsertype "$run_dir/state.json")"
 grep -qx -- "-C $(cd -- "$here/../../../.." && pwd) archive $commit_bt packages/envoy" "$fake/git.log" ||
@@ -2314,6 +2355,9 @@ printf '%s\n' '| 10x-typing 2 78 |' '| 10x-typing-err 2 78 |' '| r16-typing 2 78
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down of the typing run exited $RC"
 pass "up --browsertype-commit builds browsertype; step and replay --typing start it before loadgen as people (-identity-header, -person, no token anywhere), type into the documents their own writes plan the most versions for, stop it after the stored-order commands, and record browsertype.txt and browsertype.json; a peer error is no step failure; collect's STORED-ORDER.md has the typed and typing columns and its curves leave typing steps out"
+}
+
+part_checker_quota() {
 
 # up --stored-order-source: the checker is the dispatch tree (commit_old, without the command) with
 # the source's INFRA-707 files copied into its scratch copy and the source's stored-order entry
@@ -2418,6 +2462,9 @@ grep -qF "$race" "$tmp/out" || fail "up's failure after five races does not show
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the failed up exited $RC"
 pass "up stops after five quota races in a row on one manifest"
+}
+
+part_identity() {
 
 # ---- (d2) Dispatch's identity at the copy's listener: up's refusals ---------------------------------
 
@@ -2521,6 +2568,9 @@ identity_sends_span_the_bound 'a listener no send reached'
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down after the up whose identity sends never ran exited $RC"
 pass "up makes an identity send that did not run again 3 s later and goes on once it runs; sends that never run stop it after 41 tries over its 120 s bound, naming the bound"
+}
+
+part_units() {
 
 # A listener built before role marks reads no mark and refuses the send's missing target: it
 # admitted Dispatch's token, and up goes on, saying so.
@@ -3211,6 +3261,9 @@ pass "the heartbeat stops once no command of its run is alive, so an abandoned r
     fail "stored-order.json of a summary line without unchecked is $(jq -c '{documents, clean, unchecked}' "$tmp/so-plain.json")"
 )
 pass "stored_order_summary reads a summary line that ends with unchecked=N, and one without it"
+}
+
+part_daemons() {
 
 # (q) A copy-back of a step's files from the runner that failed. The step's files are then missing
 # here, so the step is a failed one (step-failed.json kind copy_back), not a complete step whose
@@ -3423,15 +3476,8 @@ pass "a command of a run another PID namespace started is refused before it regi
 # never a Postgres that fills its volume.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-pgdisk
-# A 150Gi volume, as the fake df reports it: a tenth used, a fifth used, and 10% free.
-readonly pg_size=161061273600 pg_used_low=16106127360 pg_used_mid=32212254720 pg_used_high=144955146240
-readonly pg_free_low=144955146240 pg_free_mid=128849018880 pg_free_high=16106127360
-# df_seq LINE...: the readings the fake kubectl answers with, in order, the last repeated.
-df_seq() {
-  printf '%s\n' "$@" >"$fake/df-seq"
-  rm -f -- "$fake/rc-polls" "$fake/runner-stops"
-}
-
+# A fifth of the volume is used in the second reading of the step that keeps its room.
+readonly pg_used_mid=32212254720 pg_free_mid=128849018880
 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --pg-volume 300Gi
 ((RC != 0)) || fail "up accepted --pg-volume 300Gi, which the namespace's quota cannot hold beside NATS"
 grep -q -- '--pg-volume 300Gi is more than the 240Gi' "$tmp/out" ||
@@ -3505,6 +3551,88 @@ jq -e --argjson size "$pg_size" --argjson before "$pg_used_low" --argjson after 
 unset FAKE_FAST_SLEEP
 run_cluster down --namespace "$ns"
 pass "up sizes the Postgres claim with --pg-volume and refuses one the quota cannot hold; a step under the free-space threshold sends no load, one that falls under it mid-run has its load stopped, both failed with kind pg_disk, and each step writes pg-disk.json"
+}
+
+part_stops() {
+
+# all_gone PID...: none of the pids is a live process any more.
+all_gone() {
+  local pid
+  for pid in "$@"; do
+    if kill -0 "$pid" 2>/dev/null; then return 1; fi
+  done
+}
+
+# session_live SID: each live process (no zombie) of session SID, "pid command line" a line; true
+# when there is one. A daemon cluster.sh starts under setsid leads a session of its own, its pid
+# the session's id, and every child it starts, its role loops and their kubectl execs among them,
+# stays in it.
+session_live() {
+  local stat line state sid pid found=1
+  for stat in /proc/[0-9]*/stat; do
+    { read -r line <"$stat"; } 2>/dev/null || continue
+    read -r state _ _ sid _ <<<"${line##*) }"
+    if [ "$sid" != "$1" ] || [ "$state" = Z ]; then continue; fi
+    pid=${stat#/proc/}
+    pid=${pid%/stat}
+    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+    found=0
+  done
+  return "$found"
+}
+
+# session_gone SID: no live process of session SID is left, for wait_for, which shows the ones
+# left at its last poll.
+session_gone() { ! session_live "$1"; }
+
+# keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
+# reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
+# judge their bounds by, which the bounds of (dd) and (ee) are held to, rather than to this test's
+# own clock. Where the case has made FAKE_DIR/clock, that clock is the fake one, which only the
+# fake sleep's recorded waits move: a wait whose polls are fast sleeps then reaches a bound of
+# seconds or minutes at the poll that would reach it in production, with no real second passing.
+# shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
+keep_timer_readings() {
+  timer_readings=$1
+  : >"$timer_readings"
+  timer_now() {
+    if [ -f "$FAKE_DIR/clock" ]; then NOW=$(<"$FAKE_DIR/clock"); else NOW=$EPOCHSECONDS; fi
+    printf '%s %s\n' "$*" "$NOW" >>"$timer_readings"
+  }
+}
+
+# timer_lags PREFIX: for each reading in timer_readings whose WHAT starts with PREFIX, how many
+# seconds past the second it judged (its due= or deadline=) it was read, one a line, in order.
+timer_lags() {
+  awk -v p="$1 " 'index($0, p) == 1 { d = $0; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d); print $NF - d }' \
+    "$timer_readings"
+}
+
+# ends_at_bound PREFIX BOUND: the readings of PREFIX (timer_lags) stay under BOUND seconds past
+# their second until the last, which is at or past it: the wait ended at its first judgment past
+# its bound, by its own clock, neither before its bound nor at a later one. Prints the lags when not.
+ends_at_bound() {
+  timer_lags "$1" | awk -v b="$2" '
+    { lag[NR] = $1 }
+    END {
+      ok = NR > 0 && lag[NR] >= b
+      for (i = 1; i < NR; i++) if (lag[i] >= b) ok = 0
+      if (!ok) { for (i = 1; i <= NR; i++) printf "%s ", lag[i]; exit 1 }
+    }'
+}
+
+# armed_after AT NEXT SECONDS: the first reading whose WHAT starts with NEXT, after the last that
+# starts with AT, judges the second SECONDS after that reading of AT: the deadline the wait armed
+# when it acted at AT. Prints both readings when not.
+armed_after() {
+  awk -v at="$1 " -v next_="$2 " -v s="$3" '
+    index($0, at) == 1 { t = $NF; armed = ""; seen = 1; next }
+    seen && armed == "" && index($0, next_) == 1 { armed = $0 }
+    END {
+      d = armed; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d)
+      if (!seen || armed == "" || d + 0 != t + s) { printf "%s at %s, then %s", at, t, armed; exit 1 }
+    }' "$timer_readings"
+}
 
 # (w) The liveness of what a step leaves on this pod. A step killed outright (a SIGKILL, an OOM, a
 # worker turn cut short) runs neither pg_disk_watch_stop nor its EXIT trap, so its disk watcher
@@ -4790,3 +4918,56 @@ gg_unset=$(env -u LEGION_PROOF_DEADLINE_MS bash "$gg_dir/probe.sh" 2>&1) || gg_u
 ((gg_unset_rc == 0)) && [ "$gg_unset" = "held after 3 polls" ] ||
   fail "a wait with no deadline exported did not hold on its fact at its third poll (exit $gg_unset_rc): $gg_unset"
 pass "the suite's waits end at the deadline the CI step exports where it is set, naming their fact, and only on their fact where it is not"
+
+# Each probe's exec'd shell reaps its forked subshell. Neither writes a pidfile, and both keep
+# running on TERM so the check must wait for the late kubectl call and the subshell's exit.
+# It exports FAKE_DIR after exec, as the harness does, so /proc only holds its marker.
+local probe_dir probe_mark probe_pid probe_rc probe
+local -a probe_args
+for probe in without-namespace with-namespace; do
+  probe_dir=$tmp/part-end-$probe
+  probe_mark=$CLUSTER_TEST_MARK.$probe
+  mkdir "$probe_dir"
+  mkfifo "$probe_dir/hold"
+  probe_args=()
+  [ "$probe" = without-namespace ] || probe_args=(-n "$ns")
+  env -u FAKE_DIR CLUSTER_TEST_MARK="$probe_mark" bash -ec '
+    export FAKE_DIR=$1
+    shift
+    trap ":" TERM
+    (
+      exec 3<>"$FAKE_DIR/hold"
+      trap ": >\"\$FAKE_DIR/term\"" TERM
+      : >"$FAKE_DIR/ready"
+      while [ ! -e "$FAKE_DIR/term" ] && [ -d "$FAKE_DIR" ]; do
+        read -r -t 0.5 -u 3 || :
+      done
+      [ -e "$FAKE_DIR/term" ] || exit 1
+      kubectl "$@" logs part-end-late-call
+      : >"$FAKE_DIR/done"
+    )
+    :
+  ' bash "$probe_dir" "${probe_args[@]}" >"$probe_dir/worker.out" 2>&1 &
+  probe_pid=$!
+  wait_for "the part-end $probe control to hold at its builtin" test -f "$probe_dir/ready"
+  (part_end_check "$probe" "$probe_mark" "$probe_dir") >"$probe_dir/verdict" 2>&1 &
+  probe_rc=0
+  wait "$!" || probe_rc=$?
+  [ -f "$probe_dir/done" ] && all_gone "$probe_pid" ||
+    fail "the part-end $probe control returned before the forked shell was done: $(cat "$probe_dir/verdict" "$probe_dir/worker.out")"
+  wait "$probe_pid" || fail "the part-end $probe control process failed: $(cat "$probe_dir/worker.out")"
+  if [ "$probe" = without-namespace ]; then
+    ((probe_rc == 1)) &&
+      grep -qxF "FAIL: part $probe: kubectl was called without -n $ns: logs part-end-late-call" "$probe_dir/verdict" ||
+      fail "the part-end control did not refuse the late call without -n: $(cat "$probe_dir/verdict")"
+  else
+    ((probe_rc == 0)) &&
+      grep -qxF "PASS: part $probe: every kubectl call of the part (1 of them, the daemons' included) carries -n $ns" "$probe_dir/verdict" ||
+      fail "the part-end control did not pass the late call with -n: $(cat "$probe_dir/verdict")"
+  fi
+done
+pass "the part-end check finds a process of the part by its marker, not by a pidfile, waits for a forked shell of the harness, and fails on its late call without -n"
+}
+
+"part_${cluster_test_part//-/_}"
+part_end_check "$cluster_test_part" "$CLUSTER_TEST_MARK" "$fake"
