@@ -90,10 +90,10 @@ export function historyShowMore(page: Page): Locator {
 }
 
 /** Show more's name where its press reads the log's next page before it draws: "Show more
- *  (<n>+ left)" with `n` from 1 to `PAGE_SIZE`, so no more entries are read and not drawn than a
+ *  (<n>+ left)" with `n` from 0 to `PAGE_SIZE`, so no more entries are read and not drawn than a
  *  press draws. */
 const READS_FIRST = new RegExp(
-  `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE }, (_, index) => index + 1).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
+  `^${literally(CONTROL_LABELS.show_more)} \\((?:${Array.from({ length: PAGE_SIZE + 1 }, (_, index) => index).join("|")})\\+ ${literally(CONTROL_LABELS.show_more_left)}\\)$`,
   "u"
 );
 

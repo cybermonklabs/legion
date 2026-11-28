@@ -1113,17 +1113,16 @@ test("the history reads older pages before it draws until it holds more than 20 
 });
 
 // A history holding exactly 20 entries with an older page unread would draw them all and leave
-// none read and not drawn, so Show more would say no number: it reads on until it holds more.
+// none read and not drawn, so Show more would say "0+": it reads on until it holds more.
 test("a history whose first page holds exactly 20 entries reads the older page before it draws, and Show more says how many are left", async () => {
   const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(300 - index, 300 + index));
   const { olderReads, restore } = drawOverPages([pageOf(PAGE_SIZE, 600), olderPage]);
 
   try {
     const more = await screen.findByRole("button", { name: SHOW_MORE });
-    expect(
-      more.textContent,
-      "the history holding exactly 20 entries drew them and said no count"
-    ).toBe(showMoreName(30));
+    expect(more.textContent, "the history holding exactly 20 entries drew them and said 0+").toBe(
+      showMoreName(30)
+    );
     expect(drawnEntries()).toHaveLength(PAGE_SIZE);
     expect(olderReads()).toBe(1);
   } finally {
