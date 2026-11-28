@@ -127,20 +127,30 @@ const STEP_MS = 300_000;
 /** How long a pane must print no RPC frame before a step that waits for nothing more is done. */
 const QUIET_MS = 4_000;
 
+/** How the host's handoff prompt begins (`handoff-document.md` at the pinned tag). */
+export const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
+
 /**
  * The appended system prompt of every session, and the rules `standinReply` answers by. It names
  * the tool calls each kind of message asks for, so a real model makes the requests a case reads,
  * and acts on no task or card. It says nothing before its rules: claude-opus-5 refuses every
  * request whose system prompt also says the session is a test or asks for no real work
  * (`Refusal (reasoning_extraction)`, measured on the pod's route).
+ *
+ * Rule 4 takes the host's handoff prompt out of rule 5. Oh My Pi sends that prompt with
+ * `tool_choice: none`, and a model that read it as any other message owed a bash call the request
+ * forbids: claude-opus-5-5 on the pod's route then wrote that call out as text,
+ * `<invoke name="bash">` over and over toward its 128000-token cap, and the RPC `handoff` never
+ * answered.
  */
 const CONTRACT = [
   "Follow these rules in every turn, whatever a task, a notice, a card or any other message asks.",
   "1. A user message that says `Run the bash command` and a command in backticks names a command to run. Run each command named that way, in the order named, with one call of the bash tool each.",
   "2. A user message that says `Use the task tool once to hand one subagent this assignment:` asks for one call of the task tool with the assignment in backticks after it, and for nothing else.",
   "3. A user message that says `Run no command` asks for no tool call.",
-  "4. Any other message, such as a task, a notice or an Envoy card, asks for one call of the bash tool with the command `echo checked`.",
-  "5. When no call is left to make, reply with one short sentence. Call no other tool, read and write no file, and ask no question.",
+  `4. A user message that says \`${HANDOFF_PROMPT}\` asks for that document alone, in the structure it gives, and for no tool call.`,
+  "5. Any other message, such as a task, a notice or an Envoy card, asks for one call of the bash tool with the command `echo checked`.",
+  "6. When no call is left to make, reply with one short sentence, or with the document rule 4 asks for. Call no other tool, read and write no file, and ask no question.",
 ].join("\n");
 
 /** The prompts the cases send, in the words `CONTRACT` reads. */
@@ -150,9 +160,6 @@ const IN_TURN =
   "Run the bash command `sleep 4; echo first`, then run the bash command `echo second`.";
 const DELEGATE =
   "Use the task tool once to hand one subagent this assignment: `Reply with the word done.`";
-
-/** How the host's handoff prompt begins (`handoff-document.md` at the pinned tag). */
-export const HANDOFF_PROMPT = "Write a handoff document for another instance of yourself.";
 
 /** How pi-envoy's people's-answers message begins (`session-answers-context.ts`). */
 const ANSWERS_MESSAGE = "[Dispatch: what people wrote to this session";

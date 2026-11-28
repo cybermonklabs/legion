@@ -5351,6 +5351,8 @@ The approval's words are the daemon's own, which `go run ./internal/prompts/cmd/
 A notice and a role message reach the session as an Envoy card on its role lane, built as the listener builds the envelope of the daemon's publish;
 a task reaches it as the shim's RPC prompt, which a session in a turn refuses, and which the shim sends again when that turn ends.
 Each session's appended system prompt (`CONTRACT` in the driver) says which tool calls each message asks for, so the model makes the requests the case reads and acts on no task or card.
+It says that Oh My Pi's handoff prompt, which the host sends with `tool_choice: none`, asks for its document and no tool call:
+a model that took it for any other message owed a bash call it could not make, wrote that call out as text over and over toward its token cap, and the handoff never answered.
 
 The cases, and what each holds:
 
