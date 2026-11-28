@@ -265,6 +265,16 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the key" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names sets sparsePaths, which this gate does not read")"
 
+echo "case: --clients, a marketplace source with an empty key the gate does not read"
+box_case clients-marketplace-empty-key
+marketplace_source '{"source": "github", "repo": "example-org/plugins", "": "unread"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the empty marketplace key" \
+  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names sets , which this gate does not read')"
+check "asks GitHub nothing of the marketplace" "$(lacks "repos/example-org/plugins/contents/" "$calls")"
+check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
+
 echo "case: --clients, a marketplace path that climbs out of its repository"
 box_case clients-marketplace-path-dotdot
 marketplace_source '{"source": "github", "repo": "example-org/plugins", "path": "../../other-org/other/contents/market.json"}'
@@ -274,6 +284,16 @@ check "refuses UNKNOWN naming the path" \
   "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names sets path "../../other-org/other/contents/market.json", which is no plain path inside its repository')"
 check "asks GitHub nothing of it" "$(lacks "market.json" "$calls")"
 
+echo "case: --clients, a marketplace path whose trailing newline hides a dot-dot segment"
+box_case clients-marketplace-path-dotdot-newline
+marketplace_source '{"source": "github", "repo": "example-org/plugins", "path": "a/..\n"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the raw path" \
+  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: the marketplace legion-plugins it names sets path "a/..\n", which is no plain path inside its repository')"
+check "asks GitHub nothing of the marketplace" "$(lacks "repos/example-org/plugins/contents/" "$calls")"
+check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
+
 echo "case: --clients, an npm source with a key the gate does not read"
 box_case clients-plugin-unknown-key
 plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "integrity": "sha512-x"}'
@@ -282,6 +302,16 @@ check "exits 3" "$(is "$status" 3)"
 check "refuses UNKNOWN naming the key" \
   "$(has_line "UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy with integrity, which this gate does not read")"
 check "asks npm nothing" "$(lacks "npm " "$calls")"
+
+echo "case: --clients, an npm source with an empty key the gate does not read"
+box_case clients-plugin-empty-key
+plugin_source '{"source": "npm", "package": "@sjawhar/claude-envoy", "version": ">=1.0.0", "": "unread"}'
+run_gate -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the empty npm source key" \
+  "$(has_line 'UNKNOWN: dotfiles .claude/settings.json: example-org/plugins .claude-plugin/marketplace.json serves claude-envoy with , which this gate does not read')"
+check "asks npm nothing" "$(lacks "npm " "$calls")"
+check "the verdict is UNKNOWN" "$(last_line_is "UNKNOWN")"
 
 # npm picks the version on this box (`npm pack --dry-run --json`) under its own configuration, so a
 # setting that moves npm's pick moves what the gate judges. Each case below sets one, and its npm

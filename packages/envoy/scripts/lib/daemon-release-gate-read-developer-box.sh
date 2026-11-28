@@ -272,7 +272,8 @@ dotfiles_clients() {
 # ~/.claude or the CLAUDE_CONFIG_DIR this run is given, is UNKNOWN.
 dotfiles_claude_envoy() {
   local root=$1 label="dotfiles .claude/settings.json" record state own_record=absent name version enabled others marketplace repo ref query plugin range packed served
-  local extra file shown_file shown_range shown_plugin registry kind
+  local has_extra extra file shown_file shown_range shown_plugin registry kind
+  local marketplace_source marketplace_types path_ok path_json plugin_source plugin_package registry_type
   local -a registry_args=()
   for record in "$HOME/.claude/plugins/installed_plugins.json" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json"} "$root/.claude/plugins/installed_plugins.json"; do
     state=$(entry_state "$record")
@@ -344,28 +345,58 @@ dotfiles_claude_envoy() {
     unknown=$((unknown + 1))
     return
   fi
-  if [ "$(jq -r '.source // ""' <<<"$marketplace")" != github ] || ! repo=$(jq -er '.repo | strings' <<<"$marketplace") ||
+  # Match jq -r in a command substitution. Bash drops NULs and trailing newlines there.
+  # NUL framing keeps empty fields, tabs, and embedded newlines from shifting the read.
+  local jq_fields='
+    def shell_value: if type == "string" then split("\u0000") | join("") | sub("\n+\\z"; "") else . end;
+    def field: shell_value, "\u0000";
+  '
+  if ! {
+    IFS= read -r -d '' marketplace_source &&
+      IFS= read -r -d '' repo &&
+      IFS= read -r -d '' marketplace_types &&
+      IFS= read -r -d '' has_extra &&
+      IFS= read -r -d '' extra &&
+      IFS= read -r -d '' path_ok &&
+      IFS= read -r -d '' path_json &&
+      IFS= read -r -d '' ref &&
+      IFS= read -r -d '' file
+  } < <(jq -j "$jq_fields"'
+    (.source // "" | field),
+    (if type == "object" then
+      (.ref // "") as $ref | (.path // ".claude-plugin/marketplace.json") as $path |
+      (keys_unsorted - ["source", "repo", "ref", "path"]) as $extra |
+      (.repo | strings // "" | field),
+      ($ref | type == "string" and ($path | type == "string") | field),
+      ($extra | length > 0 | field),
+      ($extra | first // "" | field),
+      ($path | shell_value | if type == "string" then
+        length > 0 and (split("/") | all(. != "" and . != "." and . != ".."))
+      else false end | field),
+      (.path | tojson | field),
+      ($ref | field),
+      ($path | field)
+    else empty end)
+  ' <<<"$marketplace") ||
+    [ "$marketplace_source" != github ] ||
     ! [[ $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
-    ! jq -e '(.ref // "" | type == "string") and (.path // "" | type == "string")' <<<"$marketplace" >/dev/null; then
+    [ "$marketplace_types" != true ]; then
     printf 'UNKNOWN: %s: the marketplace legion-plugins it names is %s, which is no GitHub repository this gate reads\n' "$label" "$(printable "$marketplace")"
     unknown=$((unknown + 1))
     return
   fi
-  extra=$(jq -r 'keys_unsorted - ["source", "repo", "ref", "path"] | first // ""' <<<"$marketplace")
-  if [ -n "$extra" ]; then
+  if [ "$has_extra" = true ]; then
     printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets %s, which this gate does not read\n' "$label" "$(printable "$extra")"
     unknown=$((unknown + 1))
     return
   fi
   # A `..` or `.` segment, or an empty one, would let GitHub's API (or the URL it is sent as) read a
   # file the path does not name in the repository Claude Code clones.
-  if ! jq -e '.path // ".claude-plugin/marketplace.json" | split("/") | all(. != "" and . != "." and . != "..")' <<<"$marketplace" >/dev/null; then
-    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets path %s, which is no plain path inside its repository\n' "$label" "$(printable "$(jq -c '.path' <<<"$marketplace")")"
+  if [ "$path_ok" != true ]; then
+    printf 'UNKNOWN: %s: the marketplace legion-plugins it names sets path %s, which is no plain path inside its repository\n' "$label" "$(printable "$path_json")"
     unknown=$((unknown + 1))
     return
   fi
-  ref=$(jq -r '.ref // ""' <<<"$marketplace")
-  file=$(jq -r '.path // ".claude-plugin/marketplace.json"' <<<"$marketplace")
   shown_file=$(printable "$file")
   # The ref is one query value and each segment of the path one path segment, so every character a
   # URL reserves in them is percent-encoded.
@@ -377,23 +408,38 @@ dotfiles_claude_envoy() {
     return
   fi
   if ! plugin=$(jq -ec '[.plugins[] | select(.name == "claude-envoy")] | if length == 1 then .[0].source else error("\(length) entries name claude-envoy") end' "$work/marketplace.json" 2>"$work/err") ||
-    [ "$(jq -r '.source? // ""' <<<"$plugin")" != npm ] ||
-    [ "$(jq -r '.package? // ""' <<<"$plugin")" != "@sjawhar/claude-envoy" ] ||
-    ! jq -e '.registry // "" | type == "string"' <<<"$plugin" >/dev/null; then
+    ! {
+      IFS= read -r -d '' plugin_source &&
+        IFS= read -r -d '' plugin_package &&
+        IFS= read -r -d '' registry_type &&
+        IFS= read -r -d '' has_extra &&
+        IFS= read -r -d '' extra &&
+        IFS= read -r -d '' range &&
+        IFS= read -r -d '' registry
+    } < <(jq -j "$jq_fields"'
+      objects | (keys_unsorted - ["source", "package", "version", "registry"]) as $extra |
+      (.source // "" | field),
+      (.package // "" | field),
+      (.registry // "" | type == "string" | field),
+      ($extra | length > 0 | field),
+      ($extra | first // "" | field),
+      (.version // "latest" | field),
+      (.registry // "" | field)
+    ' <<<"$plugin") ||
+    [ "$plugin_source" != npm ] ||
+    [ "$plugin_package" != "@sjawhar/claude-envoy" ] ||
+    [ "$registry_type" != true ]; then
     if [ -n "$plugin" ]; then shown_plugin=$(printable "$plugin"); else shown_plugin=$(first_line "$work/err"); fi
     printf 'UNKNOWN: %s: %s %s serves claude-envoy as %s, not as one entry of the npm package @sjawhar/claude-envoy\n' "$label" "$repo" "$shown_file" "$shown_plugin"
     unknown=$((unknown + 1))
     return
   fi
-  extra=$(jq -r 'keys_unsorted - ["source", "package", "version", "registry"] | first // ""' <<<"$plugin")
-  if [ -n "$extra" ]; then
+  if [ "$has_extra" = true ]; then
     printf 'UNKNOWN: %s: %s %s serves claude-envoy with %s, which this gate does not read\n' "$label" "$repo" "$shown_file" "$(printable "$extra")"
     unknown=$((unknown + 1))
     return
   fi
-  range=$(jq -r '.version // "latest"' <<<"$plugin")
   shown_range=$(printable "$range")
-  registry=$(jq -r '.registry // ""' <<<"$plugin")
   registry_args=()
   # Claude Code takes a registry other than the box's default only over https, and npm answers from
   # its default registry, with a warning on stderr, for a value it cannot read as a URL.
