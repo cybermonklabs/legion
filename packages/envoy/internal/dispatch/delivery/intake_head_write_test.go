@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -101,10 +103,12 @@ type headWriteProcess struct {
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
 // the first one when hold is set until the row releases it or the handler making it is
 // abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test. before runs on the intake once it is built and
-// before it runs, for a row that gives it a hold clock of its own (heldDurable.holdClock) or tries
-// for the hold it reads (holdTries.on). The process's stop is runIntake's, which waits for Run
-// through the shared wait.
+// head write, which is the failure under test. The client's own bound on that read is the test's
+// give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the row's release or the handler's
+// own end ends it while the row stages its next step. before runs on the intake once it is built
+// and before it runs, for a row that gives it a hold clock of its own (heldDurable.holdClock) or
+// tries for the hold it reads (holdTries.on). The process's stop is runIntake's, which waits for
+// Run through the shared wait.
 func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool, before func(*Intake)) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
@@ -133,7 +137,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 		}
 		mustEncode(t, w, []any{})
 	})
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })
@@ -283,6 +287,12 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))
 	})
 	awaitEverythingAcknowledged(t, publisher)
+	// The recorder is handed each answer on its subscription's own goroutine, after the server has
+	// had it: the keeper's acknowledgement, which the durable's ack floor above shows the server
+	// has had, is recorded last of them, so the record is read once it holds that.
+	waitFor(t, func() bool { return slices.Contains(answers(), "+ACK") }, func() string {
+		return fmt.Sprintf("the keeper's acknowledgement, which the durable shows, never reached the record of its answers: %q", answers())
+	})
 
 	published := answers()
 	var handedBack []string

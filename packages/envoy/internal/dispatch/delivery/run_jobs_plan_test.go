@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -265,7 +267,7 @@ func requireTheNamedJobsReadIsIndexOnly(t *testing.T, ctx context.Context, pool 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit synchronously: %v", err)
 	}
-	testwait.UntilPolling(t, 100*time.Millisecond, "every page of delivery_run_jobs all-visible", func() (int, bool) {
+	testwait.Until(t, "every page of delivery_run_jobs all-visible", func() (int, bool) {
 		if _, err := pool.Exec(ctx, `vacuum (freeze, analyze) delivery_run_jobs`); err != nil {
 			t.Fatalf("vacuum delivery_run_jobs: %v", err)
 		}
@@ -324,15 +326,19 @@ func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the deploy runs: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
-		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
-		select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
-			case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
-		from delivery_runs r,
-			(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
-	`); err != nil {
-		t.Fatalf("seed the runs' jobs: %v", err)
-	}
+	// Each job's run is read from delivery_runs itself, so no job can break the foreign key to it,
+	// which is checked once over the table as it is put back rather than once for each job.
+	checkForeignKeysOnceAfter(t, ctx, pool, "delivery_run_jobs", func() {
+		if _, err := pool.Exec(ctx, `
+			insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion)
+			select r.repo, r.run_id, job.name, r.started_at, r.started_at + interval '10 minutes',
+				case when (r.run_id * 7 + job.slot) % 33 = 0 then 'failure' else 'success' end
+			from delivery_runs r,
+				(values (0, 'build'), (1, 'lint'), (2, 'test / unit'), (3, 'production / production-apply'), (4, 'notify-release')) job(slot, name)
+		`); err != nil {
+			t.Fatalf("seed the runs' jobs: %v", err)
+		}
+	})
 	if _, err := pool.Exec(ctx, `analyze delivery_runs, delivery_run_jobs`); err != nil {
 		t.Fatalf("analyze the seeded runs: %v", err)
 	}
@@ -374,6 +380,42 @@ func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
 				}
 			}
 			t.Logf("under %s the %s read reads %v", mode, read.name, scans)
+		}
+	}
+}
+
+// checkForeignKeysOnceAfter drops table's foreign keys, runs write, and adds each back as it was
+// (pg_get_constraintdef), which checks every row in one scan of the table, where the write made
+// with them in place checks each row it writes on its own (a constraint trigger per row): the bulk
+// load Postgres's documentation describes. table holds the same constraints, validated, once it
+// returns. For a test's database of its own, which nothing else writes while write runs.
+func checkForeignKeysOnceAfter(t *testing.T, ctx context.Context, pool *store.Pool, table string, write func()) {
+	t.Helper()
+	rows, err := pool.Query(ctx, `
+		select conname, pg_get_constraintdef(oid) from pg_constraint
+		where conrelid = $1::regclass and contype = 'f' order by conname
+	`, table)
+	if err != nil {
+		t.Fatalf("read %s's foreign keys: %v", table, err)
+	}
+	type foreignKey struct{ name, definition string }
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (foreignKey, error) {
+		var key foreignKey
+		err := row.Scan(&key.name, &key.definition)
+		return key, err
+	})
+	if err != nil {
+		t.Fatalf("read %s's foreign keys: %v", table, err)
+	}
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx, "alter table "+table+" drop constraint "+pgx.Identifier{key.name}.Sanitize()); err != nil {
+			t.Fatalf("drop %s's foreign key %s: %v", table, key.name, err)
+		}
+	}
+	write()
+	for _, key := range keys {
+		if _, err := pool.Exec(ctx, "alter table "+table+" add constraint "+pgx.Identifier{key.name}.Sanitize()+" "+key.definition); err != nil {
+			t.Fatalf("add %s's foreign key %s back (%s): %v", table, key.name, key.definition, err)
 		}
 	}
 }

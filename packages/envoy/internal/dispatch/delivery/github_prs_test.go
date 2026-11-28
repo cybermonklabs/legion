@@ -185,11 +185,17 @@ func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Clien
 	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
 }
 
-// newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
-// stand-in spec describes, with options where a test needs them.
+// fixtureAppKey is the one App key every App client of this package's tests signs with
+// (newAppClient), made once per test binary: no stand-in for GitHub here checks a signature, so no
+// verdict reads which key signed, and a 2048-bit key made for each client cost each test that
+// builds one more than the rest of its setup, the more so under -race on a loaded machine.
+var fixtureAppKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
+
+// newAppClient is a GitHub App client, signed with the package's fixture key (fixtureAppKey), of
+// the GitHub stand-in spec describes, with options where a test needs them.
 func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := fixtureAppKey()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}

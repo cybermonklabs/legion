@@ -340,6 +340,7 @@ func TestFirstShippingApply(t *testing.T) {
 // the last the apply ContainingRun answers, and nothing for a pull request of another repository
 // or one not merged.
 func TestAShippingIndexShipsEveryPullRequestAsContainingRunDoes(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	second := func(n int) time.Time { return base.Add(time.Duration(n) * time.Second) }
 	var applies []Apply

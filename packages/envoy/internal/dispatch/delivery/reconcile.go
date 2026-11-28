@@ -453,7 +453,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 				windowFailures = append(windowFailures, fmt.Errorf("pull request #%d: %w", pr.Number, err))
 				continue
 			}
-			if err := r.reconcilePullRequest(ctx, settings, repoFull, pr); err != nil {
+			if err := r.reconcilePullRequest(ctx, settings, repoFull, pr, until); err != nil {
 				slog.Warn("dispatch delivery: reconcile pull request", "repo", repoFull, "number", pr.Number, "error", err)
 				windowFailures = append(windowFailures, fmt.Errorf("%s#%d: %w", repoFull, pr.Number, err))
 			}
@@ -508,10 +508,11 @@ func (r *Reconcile) searchResultRepo(pr FetchedPullRequest) (string, error) {
 // decision handlePullRequestEnvelope makes: population membership from author (already true,
 // since the search itself filtered on it)/repository/task-label, then the row. A deploy-repo PR
 // the label rule cannot classify yet (IsTaskPR's "neither label" error) is logged and left for a
-// later pass, exactly as intake does.
-func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliverySettings, repoFull string, pr FetchedPullRequest) error {
+// later pass, exactly as intake does. now is the pass's moment (runOnce, on r.clock): the window
+// the classification reads ends an hour past it.
+func (r *Reconcile) reconcilePullRequest(ctx context.Context, settings DeliverySettings, repoFull string, pr FetchedPullRequest, now time.Time) error {
 	raw := RawPullRequest{Repo: repoFull, Number: pr.Number, Title: pr.Title, Author: pr.Author, Labels: pr.Labels, MergedAt: *pr.MergedAt}
-	isPopulation, err := IsPopulationPR(raw, settings, TimeWindow{Start: time.Unix(0, 0), End: time.Now().Add(time.Hour)})
+	isPopulation, err := IsPopulationPR(raw, settings, TimeWindow{Start: time.Unix(0, 0), End: now.Add(time.Hour)})
 	if err != nil {
 		return fmt.Errorf("classify: %w", err)
 	}

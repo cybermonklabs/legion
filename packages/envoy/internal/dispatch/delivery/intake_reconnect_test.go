@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -193,7 +194,9 @@ const (
 // writes the pull request's row and, with a shipping deploy stored, its issue.deployed event.
 // The counting fakes of this file's other rows answer 500, which writes nothing and so says
 // nothing about what a person sees. It counts every fetch of that pull request and, when hold is
-// set, holds the first one until the row releases it or the handler making it is abandoned.
+// set, holds the first one until the row releases it or the handler making it is abandoned. The
+// client's own bound on a fetch is the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp),
+// so that bound is not what abandons the held fetch while the row stages its next step.
 func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func(), github *githubapp.Client) {
 	t.Helper()
 	fetches = &atomic.Int64{}
@@ -230,7 +233,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 			"message": "feat: a widget", "author": map[string]any{"date": "2024-01-01T00:00:00Z"},
 		}}})
 	})
-	return fetches, release, fake.newTestClient()
+	return fetches, release, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 }
 
 // A handler that finishes while its process is cut off from NATS has its work redone by the
@@ -679,7 +682,9 @@ func (count fetchCount) Load() int64 { return count() }
 // That hold's wait on the request's own context, and not on the release alone, is what a row
 // holding a handler through a lost hold needs: the stop a lost hold runs abandons a handler by
 // cancelling it, waits for every handler to return before it hands the messages back, and a
-// handler returns only once the fetch it is inside does.
+// handler returns only once the fetch it is inside does. The holding fake's client ends a call only
+// at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so it is that stop, and not the
+// client's own bound, that abandons the held fetch.
 func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPullRequests, *githubapp.Client) {
 	t.Helper()
 	if which == holderCountsItsFetches {
@@ -688,7 +693,7 @@ func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPu
 	}
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient()
+	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 }
 
 // heldFetches is how many fetches of pull request number a holding fake GitHub was asked for: one

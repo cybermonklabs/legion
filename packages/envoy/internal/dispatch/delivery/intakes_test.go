@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -168,7 +170,10 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 // stops delivering by draining its subscription and waits for the message in its handler before
 // Run returns and stop closes the client. A client closed as Run returned took the acknowledgement
 // down with it, and the message stayed outstanding until the ack wait handed it to the next
-// process.
+// process. The held fetch does not watch the request's context, so the client's own bound on a call
+// is the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): at githubapp.RequestTimeout
+// (20 s) the client would give the held fetch up on its own while the row waits for the durable to
+// lose its subscriber, and the row would read a handler ended by that bound, not by its release.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	t.Parallel()
 	// The row requires that no component logged a line about an acknowledgement: both intakes, the
@@ -187,7 +192,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 		<-held
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	release := sync.OnceFunc(func() { close(held) })
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
@@ -260,7 +265,9 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
 // sets on their tuning and moves (intakeTuning.clock, which startIntakes gives both): each arms its
 // stop deadline its tuning's stopBudget from ctx's end, and once the fake reaches them the stop
-// gives the held handler up (its WARN line says so) and returns.
+// gives the held handler up (its WARN line says so) and returns. The GitHub client's own bound is
+// the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp), so only the stop gives the held
+// fetch up.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -277,7 +284,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	publisher := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	tuning.clock = stopClock

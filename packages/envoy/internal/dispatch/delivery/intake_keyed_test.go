@@ -24,6 +24,8 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -53,6 +55,10 @@ type pullRequestHold struct {
 // holdPullRequestOne holds the first fetch of pull request 1, and of every number in also, each
 // until that number is released (release, releaseNumber). A row that needs two handlers inside
 // their fetches at once names the second number here rather than installing a fake of its own.
+// The held fetch does not watch the request's context, so a row's client of this fake ends a call
+// only at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp): at
+// githubapp.RequestTimeout (20 s) the client would give the held fetch up and ask again, unheld,
+// and the handler would finish while the row stages a step that needs it held.
 func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
 	held := newHeldPullRequests(append([]string{"1"}, also...))
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +203,7 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	// After the fake's server, so it runs first: the server's Close waits for the fetch it holds.
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
@@ -280,7 +286,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	natsClient := intakeTestClient(t)
 	ackWaitPastTheRun(t)
 	first := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
@@ -332,7 +338,9 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 
 // holdPullRequestOneUntilAbandoned is holdPullRequestOne, except that the held fetch also ends when
 // the intake abandons it (the request's context ends), so its end is recorded as soon as the
-// intake stops waiting on it, by a release or by giving the call up.
+// intake stops waiting on it, by a release or by giving the call up. A row's client of this fake
+// ends a call only at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp) too, so the
+// client's own bound is not what gives the call up.
 func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 	held := newHeldPullRequests([]string{"1"})
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -361,7 +369,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	natsClient := intakeTestClient(t)
 	// The message given back is what must reach the standby, so the server's own redelivery at the
 	// ack wait never comes inside the run (ackWaitPastTheRun).
@@ -512,7 +520,7 @@ func TestAStoppingIntakeDoesNotWaitOutAGitHubCallThatDoesNotAnswer(t *testing.T)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	natsClient := intakeTestClient(t)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	stopClock := fakeIntakeClock()
@@ -570,7 +578,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	natsClient := intakeTestClient(t)
 	// The message given back is what the next process must redo at once, so the server's own
 	// redelivery at the ack wait never comes inside the run (ackWaitPastTheRun).
@@ -716,7 +724,7 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	// make: the JetStream account testnats.URL gives the row is its own, and so are its stream and
 	// durable.
 	natsClient := intakeTestClient(t)
-	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t))), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	// The stop has to be waiting for pull request 1's handler still while the counts below are
 	// read, and it is this row that releases that handler: the intake's clock is a fake the row
 	// never moves, so the stop's budget never gives the handler up first.
@@ -898,7 +906,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient()
+	github := fake.newTestClient(githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	natsClient := intakeTestClient(t, bus.WithLogger(logger))
 	hooked := make(chan struct{}, 8)
 	natsClient.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
