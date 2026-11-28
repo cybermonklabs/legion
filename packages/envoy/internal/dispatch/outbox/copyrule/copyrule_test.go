@@ -7,6 +7,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -77,7 +78,11 @@ func TestOnlyHolderReadsTheCopyRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk the module: %v", err)
 	}
-	problems := copyRuleProblems(t, sources)
+	findings := make(map[string]copyRuleFindings, len(sources))
+	for path, source := range sources {
+		findings[path] = fileFindings(t, path, source)
+	}
+	problems := copyRuleProblems(findings)
 	t.Logf("%d non-test Go files read; problems: %q", len(sources), problems)
 	if len(sources) < 100 {
 		t.Fatalf("the walk read %d files of %s, too few to be the module", len(sources), moduleRoot)
@@ -86,7 +91,8 @@ func TestOnlyHolderReadsTheCopyRule(t *testing.T) {
 		t.Fatalf("the copy rule is read outside copyrule.Holder:\n%s", strings.Join(problems, "\n"))
 	}
 
-	// Controls: each fault planted alone, in memory, on a copy of the module's sources.
+	// Controls: each fault planted alone, in memory, on a copy of the module's findings, in which
+	// only the file planted in is read again and the file deleted has none.
 	for _, plant := range []struct {
 		name, file, source string
 		// appended is that source goes at the end of file's own; otherwise it is the whole of a
@@ -112,22 +118,20 @@ func TestOnlyHolderReadsTheCopyRule(t *testing.T) {
 			source: "\nfunc plantedHolderReader(ctx context.Context, db Querier) {\n\t_, _ = db.Query(ctx, model.MentionCopyHolderSQL, 1, \"\")\n}\n",
 			want:   holderFile + " names model.MentionCopyHolderSQL"},
 	} {
-		planted := map[string][]byte{}
-		for path, source := range sources {
-			planted[path] = source
-		}
+		planted := maps.Clone(findings)
 		switch {
 		case plant.appended:
-			if _, ok := planted[plant.file]; !ok {
+			source, ok := sources[plant.file]
+			if !ok {
 				t.Fatalf("control: the walk read no %s to plant %s in", plant.file, plant.name)
 			}
-			planted[plant.file] = append(slices.Clone(planted[plant.file]), plant.source...)
+			planted[plant.file] = fileFindings(t, plant.file, append(slices.Clone(source), plant.source...))
 		case plant.source == "":
 			delete(planted, plant.file)
 		default:
-			planted[plant.file] = []byte(plant.source)
+			planted[plant.file] = fileFindings(t, plant.file, []byte(plant.source))
 		}
-		found := copyRuleProblems(t, planted)
+		found := copyRuleProblems(planted)
 		t.Logf("control, %s: %q", plant.name, found)
 		if len(found) != 1 || !strings.HasPrefix(found[0], plant.want) {
 			t.Fatalf("control: with %s the guard reports %q, want one problem saying %q", plant.name, found, plant.want)
@@ -135,59 +139,74 @@ func TestOnlyHolderReadsTheCopyRule(t *testing.T) {
 	}
 }
 
-// copyRuleProblems is each fault of sources, non-test Go files by their path under the module: a
-// name of a statement of the rule, qualified or not, or a fragment of its SQL in a string, outside
-// the rule's own definitions and Holder's body (ownSpans); and a package of callers none of whose
-// files calls copyrule.Holder.
-func copyRuleProblems(t *testing.T, sources map[string][]byte) []string {
+// copyRuleFindings is what the guard finds in one non-test Go file: each name of a statement of the
+// rule, qualified or not, or fragment of its SQL in a string, outside the rule's own definitions
+// and Holder's body (ownSpans), and whether the file calls copyrule.Holder.
+type copyRuleFindings struct {
+	problems    []string
+	callsHolder bool
+}
+
+// fileFindings is the guard's findings in source, the file at path under the module. A file in
+// which none of MentionCopy, owed and copyrule appears, one of which every name of the rule's
+// statements, fragment of its SQL and call of Holder holds, finds nothing and is not parsed.
+func fileFindings(t *testing.T, path string, source []byte) copyRuleFindings {
 	t.Helper()
+	var findings copyRuleFindings
+	code := string(source)
+	if !strings.Contains(code, "MentionCopy") && !strings.Contains(code, "owed") && !strings.Contains(code, "copyrule") {
+		return findings
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), path, code, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	own := ownSpans(path, file)
+	ast.Inspect(file, func(node ast.Node) bool {
+		if node == nil || slices.Contains(own, node) {
+			return false
+		}
+		switch node := node.(type) {
+		case *ast.SelectorExpr:
+			if base, ok := node.X.(*ast.Ident); ok && base.Name == "copyrule" && node.Sel.Name == "Holder" {
+				findings.callsHolder = true
+			}
+		case *ast.Ident:
+			if slices.Contains(ruleNames, node.Name) {
+				findings.problems = append(findings.problems, path+" names model."+node.Name)
+			}
+		case *ast.BasicLit:
+			if node.Kind != token.STRING {
+				return true
+			}
+			text, err := strconv.Unquote(node.Value)
+			if err != nil {
+				t.Fatalf("read a string of %s: %v", path, err)
+			}
+			for _, fragment := range ruleText {
+				if strings.Contains(text, fragment) {
+					findings.problems = append(findings.problems, path+" holds the rule's SQL ("+fragment+")")
+					break
+				}
+			}
+		}
+		return true
+	})
+	return findings
+}
+
+// copyRuleProblems is each fault of a module whose non-test Go files, by their path under the
+// module, hold findings: each file's problems, in path order, and a package of callers none of
+// whose files calls copyrule.Holder.
+func copyRuleProblems(findings map[string]copyRuleFindings) []string {
 	var problems []string
 	calls := map[string]bool{}
-	paths := make([]string, 0, len(sources))
-	for path := range sources {
-		paths = append(paths, path)
-	}
-	slices.Sort(paths)
-	for _, path := range paths {
-		source := string(sources[path])
-		if !strings.Contains(source, "MentionCopy") && !strings.Contains(source, "owed") && !strings.Contains(source, "copyrule") {
-			continue
+	for _, path := range slices.Sorted(maps.Keys(findings)) {
+		file := findings[path]
+		problems = append(problems, file.problems...)
+		if file.callsHolder {
+			calls[filepath.ToSlash(filepath.Dir(path))] = true
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), path, source, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		own := ownSpans(path, file)
-		ast.Inspect(file, func(node ast.Node) bool {
-			if node == nil || slices.Contains(own, node) {
-				return false
-			}
-			switch node := node.(type) {
-			case *ast.SelectorExpr:
-				if base, ok := node.X.(*ast.Ident); ok && base.Name == "copyrule" && node.Sel.Name == "Holder" {
-					calls[filepath.ToSlash(filepath.Dir(path))] = true
-				}
-			case *ast.Ident:
-				if slices.Contains(ruleNames, node.Name) {
-					problems = append(problems, path+" names model."+node.Name)
-				}
-			case *ast.BasicLit:
-				if node.Kind != token.STRING {
-					return true
-				}
-				text, err := strconv.Unquote(node.Value)
-				if err != nil {
-					t.Fatalf("read a string of %s: %v", path, err)
-				}
-				for _, fragment := range ruleText {
-					if strings.Contains(text, fragment) {
-						problems = append(problems, path+" holds the rule's SQL ("+fragment+")")
-						break
-					}
-				}
-			}
-			return true
-		})
 	}
 	for _, caller := range callers {
 		if !calls[caller] {

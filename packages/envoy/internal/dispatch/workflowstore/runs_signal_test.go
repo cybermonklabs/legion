@@ -22,8 +22,9 @@ import (
 // listens on, so the rows hold the wire's name whatever the package's constant is called.
 const runsSignalChannel = "dispatch_workflow_runs"
 
-// runsSignalQuiet is how long a row waits for a signal that must not come.
-const runsSignalQuiet = 500 * time.Millisecond
+// runsSignalMarker is the payload of the marker a row sends on the runs' channel after an action
+// that must send nothing more (signalBeforeMarker).
+const runsSignalMarker = "marker"
 
 // listenForRuns opens a connection of its own to pool's database, outside the pool, listening on
 // the runs' channel, as the live hub's listener does.
@@ -55,9 +56,29 @@ func nextRunsSignal(t *testing.T, conn *pgx.Conn, wait time.Duration) *pgconn.No
 	return notification
 }
 
+// signalBeforeMarker sends the marker on pool, in a transaction of its own, and returns the
+// notification conn receives before it, or nil when the marker is the next one, within 5 seconds.
+// Postgres delivers notifications to a listener in commit order, so a signal an action committed
+// before the marker comes first, and a transaction still open has sent nothing yet: its signal
+// comes at its commit, after the marker's.
+func signalBeforeMarker(t *testing.T, pool *store.Pool, conn *pgx.Conn, after string) *pgconn.Notification {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `select pg_notify($1, $2)`, runsSignalChannel, runsSignalMarker); err != nil {
+		t.Fatalf("after %s, send the marker on %s: %v", after, runsSignalChannel, err)
+	}
+	signal := nextRunsSignal(t, conn, 5*time.Second)
+	if signal == nil {
+		t.Fatalf("after %s, the marker sent on %s did not arrive within 5s", after, runsSignalChannel)
+	}
+	if signal.Payload == runsSignalMarker {
+		return nil
+	}
+	return signal
+}
+
 // requireOneRunsSignal requires conn to receive one notification of issue within 5 seconds, and
-// no second one after it.
-func requireOneRunsSignal(t *testing.T, conn *pgx.Conn, issue, after string) {
+// no second one before the marker sent on pool after it.
+func requireOneRunsSignal(t *testing.T, pool *store.Pool, conn *pgx.Conn, issue, after string) {
 	t.Helper()
 	signal := nextRunsSignal(t, conn, 5*time.Second)
 	if signal == nil {
@@ -66,15 +87,16 @@ func requireOneRunsSignal(t *testing.T, conn *pgx.Conn, issue, after string) {
 	if signal.Channel != runsSignalChannel || signal.Payload != issue {
 		t.Fatalf("after %s, a notification on %s with payload %q, want %s with the issue %s", after, signal.Channel, signal.Payload, runsSignalChannel, issue)
 	}
-	if again := nextRunsSignal(t, conn, runsSignalQuiet); again != nil {
+	if again := signalBeforeMarker(t, pool, conn, after); again != nil {
 		t.Fatalf("after %s, a second notification on %s with payload %q, want one", after, again.Channel, again.Payload)
 	}
 }
 
-// requireNoRunsSignal requires conn to receive nothing within runsSignalQuiet.
-func requireNoRunsSignal(t *testing.T, conn *pgx.Conn, after string) {
+// requireNoRunsSignal requires conn to receive nothing before the marker sent on pool after the
+// action.
+func requireNoRunsSignal(t *testing.T, pool *store.Pool, conn *pgx.Conn, after string) {
 	t.Helper()
-	if signal := nextRunsSignal(t, conn, runsSignalQuiet); signal != nil {
+	if signal := signalBeforeMarker(t, pool, conn, after); signal != nil {
 		t.Fatalf("after %s, a notification on %s with payload %q, want none", after, signal.Channel, signal.Payload)
 	}
 }
@@ -94,20 +116,22 @@ func TestAStepWriteSignalsItsIssueAtCommit(t *testing.T) {
 		if _, err := PutStep(ctx, tx, startOf(implementer(uuid.NewString()), minute(0)), daemon, minute(0)); err != nil {
 			t.Fatalf("write the run: %v", err)
 		}
-		requireNoRunsSignal(t, conn, "a write that has not committed")
+		// The marker commits while the write is still open, so it comes first unless the write
+		// signalled before its commit.
+		requireNoRunsSignal(t, pool, conn, "a write that has not committed")
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatalf("commit the write: %v", err)
 		}
-		requireOneRunsSignal(t, conn, "LEG-1", "the write's commit")
+		requireOneRunsSignal(t, pool, conn, "LEG-1", "the write's commit")
 	})
 	t.Run("W-2 the same write again, which sets nothing, and a write rolled back signal nothing", func(t *testing.T) {
 		pool := storetest.Open(t).Pool
 		conn := listenForRuns(t, pool)
 		id := uuid.NewString()
 		put(t, pool, startOf(implementer(id), minute(0)), minute(0))
-		requireOneRunsSignal(t, conn, "LEG-1", "the run's first write")
+		requireOneRunsSignal(t, pool, conn, "LEG-1", "the run's first write")
 		put(t, pool, startOf(implementer(id), minute(0)), minute(0))
-		requireNoRunsSignal(t, conn, "the same write again, which sets nothing")
+		requireNoRunsSignal(t, pool, conn, "the same write again, which sets nothing")
 
 		ctx := context.Background()
 		tx, err := pool.Begin(ctx)
@@ -120,15 +144,15 @@ func TestAStepWriteSignalsItsIssueAtCommit(t *testing.T) {
 		if err := tx.Rollback(ctx); err != nil {
 			t.Fatalf("roll the write back: %v", err)
 		}
-		requireNoRunsSignal(t, conn, "a write rolled back")
+		requireNoRunsSignal(t, pool, conn, "a write rolled back")
 	})
 	t.Run("W-3 a rating written on a retro's record signals its issue", func(t *testing.T) {
 		pool := storetest.Open(t).Pool
 		conn := listenForRuns(t, pool)
 		id := uuid.NewString()
 		put(t, pool, startOf(retroOf(id), minute(0)), minute(0))
-		requireOneRunsSignal(t, conn, "LEG-1", "the retro's start")
+		requireOneRunsSignal(t, pool, conn, "LEG-1", "the retro's start")
 		put(t, pool, rated(retroOf(id), 4, "The tester found the bug."), minute(3))
-		requireOneRunsSignal(t, conn, "LEG-1", "the rating of the retro")
+		requireOneRunsSignal(t, pool, conn, "LEG-1", "the rating of the retro")
 	})
 }
