@@ -257,7 +257,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[15],
   }),
   ...answers(
-    "Inbox | ReadingPane | early return | if (whoAmI.isPending || (person && inbox.isPending)) return …",
+    "Inbox | ReadingPane | early return | if (whoAmI.isPending || (holdsPerson && inbox.isPending)) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
@@ -298,7 +298,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[15],
   }),
   ...answers(
-    "Inbox | ThreadCardRow | early return | if (whoAmI.isPending || (person && inbox.isPending)) return …",
+    "Inbox | ThreadCardRow | early return | if (whoAmI.isPending || (holdsPerson && inbox.isPending)) return …",
     { reason: REASONS[12] }
   ),
   ...answers(
