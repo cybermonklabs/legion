@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The daemon creates an issue's branch on a private or internal repository whatever its name.
+    `ghbranch.Create` ran the deployment's private-name rules on every ref name and refused a
+    match on any repository, so an issue whose branch name the rules match waited on a create
+    that failed on every retry. A push and a `gh` call to a repository that is not public already
+    skip those rules. `Create` now reads the repository's visibility only when the rules refuse,
+    and refuses as before when it is public or the read fails.
+time: 2026-11-26T21:10:00Z
+custom:
+    Issue: branch-create-private-repo
