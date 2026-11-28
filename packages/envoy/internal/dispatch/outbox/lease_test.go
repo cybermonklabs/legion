@@ -15,6 +15,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -26,6 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// stagedAhead leaves a row live for the whole test, until the test makes it due.
+const stagedAhead = 24 * time.Hour
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
 // and its own NATS client, which counts every envelope it sends.
@@ -90,14 +95,20 @@ func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 // connected to url, until the test ends or stop is called.
 func startProcess(t *testing.T, name string, database *store.Store, url string, counter *sendCounter) *process {
 	t.Helper()
-	return startProcessWith(t, name, database, url, counter, nil)
+	return startProcessWith(t, name, database, url, counter, nil, nil)
 }
 
-// startProcessWith is startProcess whose outbox is given the Deps that with sets on top of
-// startProcess's, from the process's own NATS client; a nil with sets nothing.
-func startProcessWith(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, with func(client *bus.Client, deps *Deps)) *process {
+// startProcessOn puts the outbox's timers and the client's probe waits on the test's fake.
+func startProcessOn(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, probes *probeClock) *process {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{url})
+	return startProcessWith(t, name, database, url, counter, nil, probes.setOutbox, bus.WithWindowClock(probes))
+}
+
+// startProcessWith connects with options, lets with amend the process's Deps, and calls set
+// on the constructed outbox before starting Run. Either callback can be nil.
+func startProcessWith(t *testing.T, name string, database *store.Store, url string, counter *sendCounter, with func(*bus.Client, *Deps), set func(*Outbox), options ...bus.ConnectOption) *process {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{url}, options...)
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
 	}
@@ -117,6 +128,9 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 		with(client, &deps)
 	}
 	p.outbox = New(deps)
+	if set != nil {
+		set(p.outbox)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
@@ -283,7 +297,7 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 		return slices.Clone(armed)
 	}
 	atRest := restReading(t, outbox)
-	t.Cleanup(runTheOutbox(t, outbox))
+	t.Cleanup(runOn(t, outbox))
 
 	waitFor(t, "the outbox taking the publisher hold", outbox.Publishing)
 	// The first scan and the LISTEN connection's catch-up run as the hold is taken; the row reads
@@ -554,20 +568,93 @@ func requireTakenOverAfterCut(t *testing.T, recorder *logtest.Recorder, cut, wor
 	}
 }
 
-// requireNoTakeBackWhileSilent is what a row checks once the other process published after the
-// holder's NATS connection went silent, while the proxy stays frozen: silent gave the publisher
-// hold up for NATS lost, and once working has stopped, which releases the hold, silent does not
-// take it in the 2 s that follow. While working holds and renews the hold no take can succeed
-// (duty's takeHold takes only a lapsed row or the taker's own), so only a free hold shows what
-// silent does: its connection still reports itself connected, and the probe it makes first
-// (answering, probeBeforeHold) is what keeps it off. The hold is read every 25 ms, and the first
-// read that finds it held fails the row. recorder is the default logger the row installed before
-// it started either process.
-func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, silent, working *process) {
+// probeClock distinguishes an unpinned window's flush from its preceding connection wait.
+// Both arm probeTimeout; advancing on the first alone can strand the flush on a later deadline.
+type probeClock struct {
+	clock.Clock
+	fake *clocktest.Fake
+
+	mu          sync.Mutex
+	startedAt   time.Time
+	waits       int
+	confirmedAt time.Time
+	retry       atomic.Pointer[standbyRetryCheck]
+}
+
+type standbyRetryCheck struct {
+	at      time.Time
+	checked chan struct{}
+}
+
+func (c *probeClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	timed, cancel := c.Clock.WithTimeout(ctx, d)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.fake.Now()
+	if ctx != context.Background() {
+		c.confirmedAt = now
+	} else if d == probeTimeout {
+		if !now.Equal(c.startedAt) {
+			c.startedAt, c.waits = now, 0
+		}
+		c.waits++
+	}
+	return timed, cancel
+}
+
+// awaitConfirmedReadFlush waits for the read to enter the bus's confirmed flush, which
+// derives its timeout from the read's context instead of starting at context.Background.
+func (c *probeClock) awaitConfirmedReadFlush(t *testing.T) {
+	t.Helper()
+	at := c.fake.Now()
+	waitFor(t, "the held read entering its confirmed flush", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.confirmedAt.Equal(at)
+	})
+}
+
+func (c *probeClock) flushingSince(at time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.startedAt.Equal(at) && c.waits >= 2
+}
+
+func (c *probeClock) setOutbox(o *Outbox) {
+	o.clock = c.fake
+	o.afterStandbyWait = func() {
+		// Keep the retry armed even if a queued release notification would cancel it.
+		if retry := c.retry.Load(); retry != nil && c.fake.Now().Equal(retry.at) {
+			<-retry.checked
+		}
+	}
+}
+
+// requireNoTakeBackWhileSilent follows the standby's failed probe after working stops. Until
+// then the working process's live database row could prevent a take even without a probe.
+func requireNoTakeBackWhileSilent(t *testing.T, recorder *logtest.Recorder, silent, working *process, probes *probeClock) {
 	t.Helper()
 	requireReleasedForNATSLost(t, recorder, silent)
 	working.stop()
-	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return silent.outbox.hold.Load() != nil }) {
+	fake := probes.fake
+	now := fake.Now()
+	probeEnd := now.Add(probeTimeout)
+	waitFor(t, "the silent standby probing or taking the free publisher hold", func() bool {
+		return silent.outbox.hold.Load() != nil || probes.flushingSince(now)
+	})
+	requireSilentStandby(t, silent, working)
+	fake.AwaitArmedAt(t, "the silent standby's flush probe", probeEnd)
+	retry := &standbyRetryCheck{at: probeEnd, checked: make(chan struct{})}
+	probes.retry.Store(retry)
+	defer close(retry.checked)
+	fake.Set(probeEnd)
+	fake.AwaitArmedAt(t, "the silent standby retry after its failed probe", probeEnd.Add(holdRetry))
+	requireSilentStandby(t, silent, working)
+}
+
+func requireSilentStandby(t *testing.T, silent, working *process) {
+	t.Helper()
+	if silent.outbox.hold.Load() != nil {
 		t.Fatalf("%s took the publisher hold while its NATS connection stays silent, after %s released it", silent.name, working.name)
 	}
 }
@@ -617,7 +704,9 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	silent := startProcess(t, "silent", database, proxy.URL(), counter)
+	fake := clocktest.New(time.Time{})
+	probes := &probeClock{Clock: clocktest.WithNow(fake, time.Now), fake: fake}
+	silent := startProcessOn(t, "silent", database, proxy.URL(), counter, probes)
 	waitFor(t, "the first process taking the publisher hold", silent.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
@@ -625,11 +714,14 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	t.Cleanup(proxy.Restore)
 	frozenAt := time.Now()
 	event := writeMessage(t, working, "after the silence")
+	probeEnd := fake.Now().Add(probeTimeout)
+	fake.AwaitArmedAt(t, "the silent holder's probe after the batch sends go unanswered", probeEnd)
+	fake.Set(probeEnd)
 	waitFor(t, "the working process publishing the event", func() bool {
 		return working.outbox.Publishing() && publishedAt(t, database, event.ID) != nil
 	})
 	t.Logf("the working process published the event %s after the silence", time.Since(frozenAt).Round(time.Millisecond))
-	requireNoTakeBackWhileSilent(t, recorder, silent, working)
+	requireNoTakeBackWhileSilent(t, recorder, silent, working, probes)
 }
 
 // A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to
@@ -659,7 +751,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		Broker:    events.NewBroker(),
 		Listen:    database.Pool.Listener,
 	})
-	t.Cleanup(runTheOutbox(t, standby))
+	t.Cleanup(runOn(t, standby))
 	// Counted from the standby's first try: its LISTEN connection's catch-up wake, which comes as it
 	// starts, lands inside the count and is allowed for below.
 	waitFor(t, "the standby trying the publisher hold once", func() bool {
@@ -1225,6 +1317,8 @@ func failedClaims(logged *lockedBuffer) int {
 // read at all, because nextRetry reads comment_fallback_copies too: a read of it that fails arms
 // the timer by itself, its error path answering retry.BaseDelay, whatever serve made of the
 // pass's failure.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -1242,16 +1336,20 @@ func TestAFallbackPassWhoseClaimFailedHasTheHolderPassAgain(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	served := make(chan holdEnd, 1)
-	started := time.Now()
+	fake := clocktest.New(time.Time{})
+	outbox.clock = fake
 	go func() { served <- outbox.serve(ctx, hold) }()
 
+	deadline := fake.Now().Add(retry.BaseDelay)
+	fake.AwaitArmedAt(t, "the back-off after the failed fallback claim", deadline)
+	fake.Set(deadline.Add(-time.Nanosecond))
+	if claims := failedClaims(&logged); claims != 1 {
+		t.Fatalf("%d failed claims one tick before retry.BaseDelay, want only the first pass", claims)
+	}
+	fake.Set(deadline)
 	waitFor(t, "a second pass of the claim that keeps failing", func() bool {
 		return failedClaims(&logged) >= 2
 	})
-	if waited := time.Since(started); waited < retry.BaseDelay {
-		t.Fatalf("the holder passed again %s after it started, want it to wait retry.BaseDelay = %s rather than spin",
-			waited, retry.BaseDelay)
-	}
 	cancel()
 	if end := testwait.Receive(t, "serve returning once its context ended", served); end != stopping {
 		t.Fatalf("serve ended %q, want it to stop with its context", end)

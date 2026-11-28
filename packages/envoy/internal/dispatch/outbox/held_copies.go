@@ -72,14 +72,11 @@ func (h *heldCopies) register(registry *metrics.Registry) {
 }
 
 // hold records that row, a copy of event's comment, waits behind the earlier event by, and logs
-// its WARN once it has waited warnAfter (model.MentionCopyHeldWarnAfter when zero) since a pass
+// its WARN once it has waited model.MentionCopyHeldWarnAfter, on the record's clock, since a pass
 // first found it waiting.
-func (h *heldCopies) hold(row fallbackCopy, event model.Event, by model.MentionCopyHolder, warnAfter time.Duration) {
+func (h *heldCopies) hold(row fallbackCopy, event model.Event, by model.MentionCopyHolder) {
 	if h == nil {
 		return
-	}
-	if warnAfter <= 0 {
-		warnAfter = model.MentionCopyHeldWarnAfter
 	}
 	now := h.clock.Now()
 	key := heldCopyKey{comment: row.commentID, destination: row.destination}
@@ -98,7 +95,7 @@ func (h *heldCopies) hold(row fallbackCopy, event model.Event, by model.MentionC
 		h.rows[key] = entry
 	}
 	entry.seen = now
-	warn := !entry.warned && now.Sub(entry.since) >= warnAfter
+	warn := !entry.warned && now.Sub(entry.since) >= model.MentionCopyHeldWarnAfter
 	entry.warned = entry.warned || warn
 	owner, since := entry.owner, entry.since
 	h.mu.Unlock()

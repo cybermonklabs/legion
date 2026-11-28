@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -24,14 +25,6 @@ import (
 // expiryPassRole is the role the rows of this file route an event to. No session claims it, so a
 // scan keeps the event's copy on the role's kept lane, and the expiry pass keeps that copy again.
 const expiryPassRole = "expiry-pass-held"
-
-// silentTakeOver bounds the take-over from a holder whose NATS connection went silent, from the
-// silence to the other process publishing an event written after it: the in-process take-over of
-// a silence between passes (7.06 s to 7.08 s,
-// TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther at cedc5234) with a margin, which
-// leaves the rest of the 10 s of dispatch://INFRA-590 to the two-process row
-// (TestAPublisherCutFromNATSHandsOverWithin10Seconds, cmd/dispatch/multiprocess_test.go).
-const silentTakeOver = 8 * time.Second
 
 // passGate holds one call of the expiry pass. Once armed, it lets a given number of calls of its
 // kind through and holds the next: that call reports that it has begun (reached) and goes on only
@@ -52,6 +45,7 @@ type passGate struct {
 	// held. It stays below zero before the gate is armed and after the held call.
 	due      atomic.Int64
 	reached  chan struct{}
+	ended    chan error // the held read's answer, including an end at the gate
 	open     chan struct{}
 	opened   sync.Once
 	outlived atomic.Bool
@@ -61,7 +55,7 @@ type passGate struct {
 // holds then goes on, and the test fails then when its held call's deadline ended that call before
 // the gate opened.
 func newPassGate(t *testing.T) *passGate {
-	gate := &passGate{reached: make(chan struct{}), open: make(chan struct{})}
+	gate := &passGate{reached: make(chan struct{}), ended: make(chan error, 1), open: make(chan struct{})}
 	t.Cleanup(func() {
 		if gate.outlived.Load() {
 			t.Errorf("the held call's deadline ended it before the gate opened: the row did not hold the call it names")
@@ -122,8 +116,9 @@ type gatedLanes struct {
 	gate    *passGate
 }
 
-func (g gatedLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+func (g gatedLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (_ bus.StoredMessage, err error) {
 	if subject == g.subject && g.gate.takes() {
+		defer func() { g.gate.ended <- err }()
 		if err := g.gate.wait(ctx); err != nil {
 			return bus.StoredMessage{}, err
 		}
@@ -139,8 +134,9 @@ type gatedClaims struct {
 	gate *passGate
 }
 
-func (c gatedClaims) RoleClaim(ctx context.Context, role string) (envoystore.RoleClaim, error) {
+func (c gatedClaims) RoleClaim(ctx context.Context, role string) (_ envoystore.RoleClaim, err error) {
 	if role == c.role && c.gate.takes() {
+		defer func() { c.gate.ended <- err }()
 		if err := c.gate.wait(ctx); err != nil {
 			return envoystore.RoleClaim{}, err
 		}
@@ -191,6 +187,8 @@ type expiryPassCall struct {
 	gateOn   func(deps *Deps, gate *passGate)
 	skip     int64
 	recorded bool
+	keep     bool // the gate holds an asynchronous send, not a read with its own context
+	stored   bool // wait for this read to reach the bus's confirmed flush before moving the clock
 }
 
 // expiryPassCalls is each NATS call of the expiry pass, in the order the pass makes them. The gate
@@ -203,6 +201,7 @@ var expiryPassCalls = []expiryPassCall{
 		gateOn: func(deps *Deps, gate *passGate) {
 			deps.KeptLanes = gatedLanes{KeptLaneReader: deps.KeptLanes, subject: keptExpiryNotices, gate: gate}
 		},
+		stored: true,
 	},
 	{
 		// The notice's record reads the copy it names first (recordKeptExpiry, noticedCopy), and
@@ -214,6 +213,7 @@ var expiryPassCalls = []expiryPassCall{
 		},
 		skip:     1,
 		recorded: true,
+		stored:   true,
 	},
 	{
 		name: "the read of a role's holder",
@@ -228,6 +228,7 @@ var expiryPassCalls = []expiryPassCall{
 			deps.Publisher = gatedKeeps{Publisher: deps.Publisher, subject: bus.KeptRoleSubject(expiryPassRole), gate: gate}
 		},
 		recorded: true,
+		keep:     true,
 	},
 }
 
@@ -243,6 +244,8 @@ type expiryPassRow struct {
 	held     *process
 	client   *bus.Client
 	working  *process
+	probes   *countedProbes
+	window   *probeClock
 }
 
 // startExpiryPassRow installs the row's recorder as the default logger, starts the row's two
@@ -253,19 +256,28 @@ type expiryPassRow struct {
 // expiry pass, which reads the notice, records it and keeps the copy again. held reads the kept
 // lanes, the notices and the role and session buckets through its own client, as cmd/dispatch
 // wires them, so what the proxy does reaches every NATS call of the pass.
-func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryPassRow {
+func startExpiryPassRow(t *testing.T, name string, call expiryPassCall, fake, windows *clocktest.Fake) *expiryPassRow {
 	t.Helper()
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
 	_, url := testnats.Start(t)
 	row := &expiryPassRow{proxy: testnats.StartProxy(t, url), database: storetest.Open(t), counter: &sendCounter{}, recorder: recorder, gate: newPassGate(t)}
+	row.window = &probeClock{Clock: windows, fake: windows}
 	seedIssue(t, row.database, "T-1", nil)
 	row.held = startProcessWith(t, name, row.database, row.proxy.URL(), row.counter, func(client *bus.Client, deps *Deps) {
 		row.client = client
 		holders := roles.NewBuckets(client, roles.Windows{})
 		deps.RoleClaims, deps.Sessions, deps.KeptLanes = holders, holders, client
 		call.gateOn(deps, row.gate)
-	})
+		row.probes = &countedProbes{Publisher: deps.Publisher}
+		deps.Publisher = row.probes
+	}, func(o *Outbox) {
+		if windows == fake {
+			row.window.setOutbox(o)
+		} else {
+			o.clock = fake
+		}
+	}, bus.WithWindowClock(row.window))
 	waitFor(t, "the first process taking the publisher hold", row.held.outbox.Publishing)
 	row.working = startProcess(t, "working", storetest.SecondProcess(t, row.database), url, row.counter)
 	reader, err := bus.ConnectOwningStream([]string{url})
@@ -296,81 +308,110 @@ func startExpiryPassRow(t *testing.T, name string, call expiryPassCall) *expiryP
 	return row
 }
 
-// A holder whose NATS connection is cut while its expiry pass makes one of the pass's NATS calls
-// releases the publisher hold within natsLossGrace of the cut, as a holder cut between its passes
-// does (TestAnOutboxThatLosesNATSReleasesThePublisher), and gives it up for NATS lost; the other
-// process takes it and publishes what is written after the cut, and alone publishes. Each call is
-// a subtest (expiryPassCalls): the read of the listeners' expiry notices, the read of an expired
-// copy back from its role's kept lane, the read of the role's holder and the send of the keep.
-// cmd/dispatch gives the outbox one bus client for all four (Deps.KeptLanes, Deps.Publisher, and
-// the role and session buckets it reads Deps.RoleClaims and Deps.Sessions through), and each call
-// made while that client reconnects waits for the reconnect up to a bound of its own: 2 s for a
-// read, through boundedKeptLanes or readTimeout in internal/roles; 5 s for a keep,
-// publishAcknowledgementTimeout in internal/bus. Before boundedKeptLanes a stored-message read
-// waited storedMessageWait in internal/bus, 10 s, past the 10 s of
-// TestAPublisherCutFromNATSHandsOverWithin10Seconds (cmd/dispatch/multiprocess_test.go). A holder
-// that waits such a call out before it counts the loss releases the hold only after that bound and
-// natsLossGrace, past the natsLossGrace and half-second this row allows; the pass ends at the
-// client's connection event instead (passKeptExpiriesWhileNATSAnswers).
+// A cut inside any of the expiry pass's four NATS calls ends the pass at the connection change,
+// not the call's own timeout. The holder then releases exactly at natsLossGrace, and the other
+// process alone publishes what was written after the cut.
 //
-// Not parallel: its subject is that bound, the release within natsLossGrace and a half-second of
-// it, and it swaps the default logger (logtest.SetDefault).
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher(t *testing.T) {
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
-			row := startExpiryPassRow(t, "cut", call)
+			fake := clocktest.New(time.Time{})
+			row := startExpiryPassRow(t, "cut", call, fake, clocktest.New(time.Time{}))
 			row.proxy.Cut()
-			downAt := time.Now()
+			graceEnd := fake.Now().Add(natsLossGrace)
 			waitFor(t, "the cut process's client reporting itself disconnected", func() bool { return !row.client.Connected() })
 			row.gate.release()
-			waitWithin(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold", func() bool {
+			if !call.keep {
+				err := testwait.Receive(t, "the held read ending at the cut", row.gate.ended)
+				if errors.Is(err, context.DeadlineExceeded) ||
+					(!errors.Is(err, context.Canceled) && !errors.Is(err, bus.ErrReconnecting)) {
+					t.Fatalf("held read ended with %v, want cancellation by the pass or reconnect refusal, not its deadline", err)
+				}
+			}
+			fake.AwaitArmedAt(t, "the grace after the expiry pass ended at the cut", graceEnd)
+			fake.Set(graceEnd.Add(-time.Nanosecond))
+			if row.held.outbox.hold.Load() == nil {
+				t.Fatal("the cut process released the hold before the grace ended")
+			}
+			fake.Set(graceEnd)
+			waitFor(t, "the cut process releasing the publisher hold at the grace deadline", func() bool {
 				return row.held.outbox.hold.Load() == nil
 			})
 			row.gate.requireHeld(t)
-			t.Logf("the cut process released the publisher hold %s after a cut inside %s",
-				time.Since(downAt).Round(time.Millisecond), call.name)
+			t.Logf("the cut process released the publisher hold at the grace deadline inside %s", call.name)
 			event := writeMessage(t, row.working, "after the cut")
 			requireTakenOverAfterCut(t, row.recorder, row.held, row.working, event)
 		})
 	}
 }
 
-// A holder whose NATS connection goes silent - still connected, nothing answering - while its
-// expiry pass makes one of the pass's NATS calls gives the publisher hold up for NATS lost, and the
-// other process, whose NATS works, takes the hold and publishes an event written after the silence
-// within silentTakeOver of the silence, as it does after a silence between passes
-// (TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther). Each call is a subtest, as in
-// TestAnOutboxCutFromNATSInItsExpiryPassReleasesThePublisher. No connection event comes, so the
-// holder has to find the silence itself: a holder that waits a call out to its own bound - 2 s for
-// a stored-message read (boundedKeptLanes), 5 s for a keep, one call after another - before a
-// batch's sends go unanswered and their probe fails hands the hold over that bound later. The
-// pass's watcher finds it sooner (watchExpiryPass): a probe is due probeTimeout after the last one
-// that answered, or after the pass began, and is made then or as the pass returns, so the probe
-// that fails comes at most 2 x probeTimeout after the silence, and the pass, whose read in flight
-// then meets its own 2 s bound, returns at most about 3 x probeTimeout (6 s) after it. The silent
-// process then does not take the hold back while its connection stays silent, also once the other
-// process has stopped and released it (requireNoTakeBackWhileSilent).
+// A silence inside any of the expiry pass's four NATS calls has no connection event. The watcher
+// starts a probe at probeTimeout, and the failed flush ends the pass so the other holder can
+// publish. The silent holder must probe again before it can take back the free hold.
 //
-// Not parallel: its subject is the take-over within silentTakeOver of the silence, and it swaps the
-// default logger (logtest.SetDefault).
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAnOutboxWhoseNATSGoesSilentInItsExpiryPassGivesThePublisherToTheOther(t *testing.T) {
 	for _, call := range expiryPassCalls {
 		t.Run(call.name, func(t *testing.T) {
-			row := startExpiryPassRow(t, "silent", call)
+			fake := clocktest.New(time.Time{})
+			row := startExpiryPassRow(t, "silent", call, fake, fake)
 			row.proxy.Freeze()
 			t.Cleanup(row.proxy.Restore)
-			frozenAt := time.Now()
-			row.gate.release()
+			due := fake.Now().Add(probeTimeout)
 			event := writeMessage(t, row.working, "after the silence")
-			waitWithin(t, silentTakeOver-time.Since(frozenAt), "the working process publishing the event written after the silence", func() bool {
+			fake.AwaitArmedAt(t, "the expiry watcher's first probe", due)
+			fake.Set(due.Add(-time.Nanosecond))
+			if probes := row.probes.count.Load(); probes != 0 {
+				t.Fatalf("the expiry watcher made %d probes before its first probe was due", probes)
+			}
+			row.requireStillHeld(t, event)
+			row.gate.release()
+			if call.stored {
+				row.window.awaitConfirmedReadFlush(t)
+			}
+			fake.Set(due)
+			probeEnd := due.Add(probeTimeout)
+			waitFor(t, "the watcher's probe proceeding from the connection wait to the flush", func() bool {
+				return row.window.flushingSince(due)
+			})
+			fake.AwaitArmedAt(t, "the expiry watcher's probe flush", probeEnd)
+			fake.Set(probeEnd.Add(-time.Nanosecond))
+			row.requireStillHeld(t, event)
+			fake.Set(probeEnd)
+			waitFor(t, "the working process publishing the event at the failed probe's deadline", func() bool {
 				return row.working.outbox.Publishing() && publishedAt(t, row.database, event.ID) != nil
 			})
 			row.gate.requireHeld(t)
-			t.Logf("the working process published the event %s after a silence inside %s",
-				time.Since(frozenAt).Round(time.Millisecond), call.name)
-			requireNoTakeBackWhileSilent(t, row.recorder, row.held, row.working)
+			requireNoTakeBackWhileSilent(t, row.recorder, row.held, row.working, row.window)
 		})
 	}
+}
+
+func (r *expiryPassRow) requireStillHeld(t *testing.T, event model.Event) {
+	t.Helper()
+	if r.held.outbox.hold.Load() == nil || !r.client.Connected() || publishedAt(t, r.database, event.ID) != nil {
+		t.Fatal("before the probe's deadline, want the silent client connected, its hold still held and the event unpublished")
+	}
+}
+
+type countedProbes struct {
+	Publisher
+	count atomic.Int64
+}
+
+func (p *countedProbes) WindowUntil(deadline func() time.Time) bus.Sender {
+	return countedProbeSender{Sender: p.Publisher.WindowUntil(deadline), count: &p.count}
+}
+
+type countedProbeSender struct {
+	bus.Sender
+	count *atomic.Int64
+}
+
+func (w countedProbeSender) Probe(timeout time.Duration) error {
+	w.count.Add(1)
+	return w.Sender.Probe(timeout)
 }
 
 // answeredOnce is a test publisher with no NATS whose connection answers the first probe made of

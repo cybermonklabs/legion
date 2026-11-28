@@ -89,7 +89,7 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	publisher := &countingPublisher{fail: unreachable}
 	outbox := outboxOn(database, publisher, broker)
 	atRest := restReading(t, outbox)
-	defer runTheOutbox(t, outbox)()
+	defer runOn(t, outbox)()
 
 	waitFor(t, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them

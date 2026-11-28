@@ -1530,7 +1530,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			// An earlier event of the comment's owner still owes a send the row's session may
 			// take: the row waits for it as for a mention still being sent, counted and, past
 			// model.MentionCopyHeldWarnAfter, reported once (heldCopies.hold).
-			deps.held.hold(held, event.event, *out.heldBy, deps.heldCopyWarnAfter)
+			deps.held.hold(held, event.event, *out.heldBy)
 			release(held, mentionPendingDelay)
 		default:
 			// The key's mention is still being sent or resent: the row waits for it as an event

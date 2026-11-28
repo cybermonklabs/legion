@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -84,6 +85,8 @@ var holderSubject = contracts.LegacyAgentSubject(roleHolder)
 // agent subject) is not published: the outbox does not record the destination, does not mark the
 // event published, and backs it off for a retry, logging the route, the holder's subject and the
 // violation. The grant covers the role's topic, and nothing crosses it.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 	var logged lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
@@ -99,7 +102,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Route to the reviewer"},
 	})
-	stop := run(t, database, client, broker)
+	stop := runRetriesHeld(t, withHeldRoles(Deps{Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener}))
 	defer stop()
 
 	waitFor(t, "the outbox's first attempt at the event settled", func() bool {
@@ -140,6 +143,15 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 	if lines != 1 {
 		t.Fatalf("logged %d retry lines, want one:\n%s", lines, logged.String())
 	}
+}
+
+// runRetriesHeld keeps the retry timer on a fake the test never moves, so the event's
+// first attempt is the only one the test reads even if the database back-off has elapsed.
+func runRetriesHeld(t *testing.T, deps Deps) func() {
+	t.Helper()
+	outbox := New(deps)
+	outbox.clock = clocktest.New(time.Time{})
+	return runOn(t, outbox)
 }
 
 // A denied role forward holds back none of the event's other destinations: the granted author route

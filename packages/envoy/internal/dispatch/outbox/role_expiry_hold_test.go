@@ -2,16 +2,20 @@ package outbox
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // armTakeover sets deps's holdRead hook to make another process the publisher hold's holder
@@ -36,12 +40,18 @@ func armTakeover(t *testing.T, database *store.Store, deps *Deps) *atomic.Bool {
 // it adds to a window among them - before it can post that window. With the final lock taken away,
 // the takeover goes through while the record is still open, and the old holder commits after the
 // new one holds the hold.
+//
+// Not parallel: this row can observe a second process's lock wait in the database.
 func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	rig := newRoleRig(t)
 	const role = "expiry-record-open"
 	locked, release := make(chan struct{}), make(chan struct{})
+	unlock := sync.OnceFunc(func() { close(release) })
+	var recordPID, takerPID atomic.Uint32
+	database := tracedStore(t, rig.database, expiryLockTrace{record: &recordPID, taker: &takerPID})
 	deps := rig.deps()
+	deps.Store = database
 	deps.holdLocked = func() {
 		close(locked)
 		<-release
@@ -49,42 +59,60 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 	outbox := holding(t, deps)
 	event := expiredOnce(t, rig, outbox, role)
 	passed := make(chan struct{})
+	defer func() {
+		unlock()
+		testwait.Receive(t, "the holder's pass returning once the record is released", passed)
+	}()
 	go func() {
 		defer close(passed)
 		outbox.passKeptExpiries(ctx, unfenced{})
 	}()
-	select {
-	case <-locked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the expiry record did not reach its hold check within 30s")
-	}
+	testwait.Receive(t, "the expiry record reaching its final hold check", locked)
 	tookOver := make(chan error, 1)
-	go func() { tookOver <- writePublisherHold(ctx, rig.database, uuid.New()) }()
-	select {
-	case err := <-tookOver:
-		close(release)
-		<-passed
-		t.Fatalf("another process took the publisher hold (%v) while the holder's expiry record was open", err)
-	case <-time.After(time.Second):
-	}
-	close(release)
-	select {
-	case <-passed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the holder's pass did not return within 30s of its release")
-	}
-	select {
-	case err := <-tookOver:
-		if err != nil {
-			t.Fatalf("the takeover failed once the record committed: %v", err)
+	go func() { tookOver <- writePublisherHold(ctx, database, uuid.New()) }()
+	waitFor(t, "the takeover's backend waiting for the expiry record's backend", func() bool {
+		select {
+		case err := <-tookOver:
+			t.Fatalf("another process took the publisher hold (%v) while the holder's expiry record was open", err)
+		default:
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the takeover did not go through within 30s of the record's commit")
+		var waiting bool
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select exists (
+				select from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'
+				and $2 = any(pg_blocking_pids(pid))
+			)
+		`, takerPID.Load(), recordPID.Load()).Scan(&waiting); err != nil {
+			t.Fatalf("read which backend the takeover waits on: %v", err)
+		}
+		return waiting
+	})
+	unlock()
+	testwait.Receive(t, "the holder's pass returning once the record is released", passed)
+	if err := testwait.Receive(t, "the takeover completing once the record committed", tookOver); err != nil {
+		t.Fatalf("the takeover failed once the record committed: %v", err)
 	}
 	if rows := expiryRows(t, rig.database, event.ID, role); len(rows) != 1 {
 		t.Fatalf("the holder's record wrote %+v, want its one expiry, committed before the takeover", rows)
 	}
 }
+
+// expiryLockTrace identifies the backends that perform the final hold check and the takeover.
+type expiryLockTrace struct {
+	record, taker *atomic.Uint32
+}
+
+func (tr expiryLockTrace) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	switch {
+	case strings.Contains(data.SQL, "select holder = $2 and expires_at > now() from duty_holds"):
+		tr.record.Store(conn.PgConn().PID())
+	case strings.Contains(data.SQL, "insert into duty_holds"):
+		tr.taker.Store(conn.PgConn().PID())
+	}
+	return ctx
+}
+
+func (expiryLockTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // A takeover of the publisher hold that lands after a holder transaction's first, unlocked read
 // and before its final lock makes the transaction roll back: under READ COMMITTED the final lock

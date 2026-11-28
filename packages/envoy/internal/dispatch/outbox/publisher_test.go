@@ -2021,29 +2021,29 @@ func TestRunSettlesAPriorityEventPublishedWithoutASend(t *testing.T) {
 // run runs an outbox on database, publishing through publisher, until the returned func stops it.
 func run(t *testing.T, database *store.Store, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
-	return runTheOutbox(t, outboxOn(database, publisher, broker))
+	return runOn(t, outboxOn(database, publisher, broker))
 }
 
 // outboxOn is the outbox run runs: on database, publishing through publisher, its LISTEN
 // connection on database's pool and every role's holder held (withHeldRoles). The attempt test
 // builds it here to set a hook (restReading) before Run starts; a test that needs other Deps, as
-// the idle test does, builds its own with New. Either runs it with runTheOutbox.
+// the idle test does, builds its own with New. Either runs it with runOn.
 func outboxOn(database *store.Store, publisher Publisher, broker *events.Broker) *Outbox {
 	return New(withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener}))
 }
 
-// runDeps runs New(deps) until the returned func stops it (runTheOutbox). A test that needs more of
+// runDeps runs New(deps) until the returned func stops it (runOn). A test that needs more of
 // Deps than run's store, publisher and broker - a metrics counter among them - builds it itself
 // and calls this.
 func runDeps(t *testing.T, deps Deps) func() {
 	t.Helper()
-	return runTheOutbox(t, New(deps))
+	return runOn(t, New(deps))
 }
 
-// runTheOutbox runs outbox until the returned func stops it, which waits for Run to return through
+// runOn runs outbox until the returned func stops it, which waits for Run to return through
 // the shared wait, with no span of its own. (runOutbox, beside the throughput test, runs one as
 // cmd/dispatch wires it.)
-func runTheOutbox(t *testing.T, outbox *Outbox) func() {
+func runOn(t *testing.T, outbox *Outbox) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

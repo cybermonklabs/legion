@@ -140,13 +140,9 @@ type Deps struct {
 	Metrics *metrics.Registry
 	// held is the fallback copies this process's passes found waiting behind an earlier event of
 	// their owner, which the gauges read and which logs one WARN for a copy held past
-	// heldCopyWarnAfter (heldCopies). New makes it; a pass run with none - one by itself, as this
-	// package's tests run it - counts and reports nothing.
+	// model.MentionCopyHeldWarnAfter. New makes it; a pass run with none - one by itself, as
+	// this package's tests run it - counts and reports nothing.
 	held *heldCopies
-	// heldCopyWarnAfter is how long a copy waits before that WARN, and zero is
-	// model.MentionCopyHeldWarnAfter, which is what cmd/dispatch runs. A test shortens it, so it
-	// need not wait a claim lease out; it is unexported, so no importer can.
-	heldCopyWarnAfter time.Duration
 	// clock is the time a role forward is judged at: its resolution's fence before it publishes,
 	// and its acknowledgement once the stream answers (roleForward.forward, roles.ResolutionTooOld,
 	// roles.ForwardStoredTooLate). nil is time.Now, which is what cmd/dispatch runs. A test moves

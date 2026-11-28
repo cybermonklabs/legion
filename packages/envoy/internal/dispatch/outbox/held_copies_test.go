@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -14,12 +14,13 @@ import (
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 	t.Parallel()
-	held := newHeldCopies(clock.Real())
+	moment := clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	held := newHeldCopies(moment)
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}
 	stale := fallbackCopy{commentID: "stale", destination: "notifications.agent.s1"}
-	held.hold(stale, event, model.MentionCopyHolder{EventID: 1}, time.Hour)
-	long := time.Now().Add(-2 * fallbackClaim)
+	held.hold(stale, event, model.MentionCopyHolder{EventID: 1})
+	long := moment.Now().Add(-2 * fallbackClaim)
 	held.mu.Lock()
 	held.rows[heldCopyKey{comment: stale.commentID, destination: stale.destination}].seen = long
 	held.swept = long
@@ -34,14 +35,14 @@ func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
 		return comments
 	}
 
-	if count, _ := held.samples(time.Now()); count != 0 {
+	if count, _ := held.samples(moment.Now()); count != 0 {
 		t.Fatalf("the gauges read %d, want nothing of a copy no pass found waiting for %s", count, fallbackClaim)
 	}
 	if got := entries(); len(got) != 1 {
 		t.Fatalf("reading the gauges left the record %v, want it unchanged: the gauges only read", got)
 	}
 	held.hold(fallbackCopy{commentID: "fresh", destination: "notifications.agent.s1"}, event,
-		model.MentionCopyHolder{EventID: 2}, time.Hour)
+		model.MentionCopyHolder{EventID: 2})
 	got := entries()
 	t.Logf("the record after the next pass held a copy: %v", got)
 	if len(got) != 1 || got[0] != "fresh" {
