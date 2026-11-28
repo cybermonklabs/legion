@@ -123,6 +123,8 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  changes_reason?: string;
+  refusal?: string;
   issues?: readonly ParentStatusConflictIssue[] | null;
   changed?: readonly StatusChangeEntry[] | null;
 }
@@ -147,6 +149,13 @@ export class ApiError extends Error {
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
   readonly retryAfterMs: number | undefined;
+  /** The reason a request for changes sends to the author once Dispatch refused the person's
+   *  approval for the form of The Spec (`SPEC_FORM`); undefined on every other refusal. */
+  readonly changesReason: string | undefined;
+  /** A refusal for the form of The Spec (`SPEC_FORM`) without its next step, which Dispatch keeps
+   *  apart (`next_step`): a page that names a next step of its own shows it after these words.
+   *  The message is the whole refusal, as Dispatch wrote it. Undefined on every other refusal. */
+  readonly refusal: string | undefined;
 
   constructor(status: number, payload: ErrorPayload, retryAfterMs?: number) {
     super(payload.error ?? `Dispatch request failed (${status})`);
@@ -158,6 +167,8 @@ export class ApiError extends Error {
     this.issues = payload.issues ?? undefined;
     this.changed = payload.changed ?? undefined;
     this.retryAfterMs = retryAfterMs;
+    this.changesReason = payload.changes_reason;
+    this.refusal = payload.refusal;
   }
 }
 
@@ -447,6 +458,13 @@ export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
 }
 
+// The server refusing an approval request, or a person's approval, because a text of The Spec in
+// the document breaks its form (409 `SPEC_FORM`). The refusal names each text and the rule it
+// breaks, so a page shows those words; the same document is refused again until it changes.
+export function isSpecFormRefusal(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "SPEC_FORM";
+}
+
 // The server refusing a write because its text holds a decision block, which nobody can answer
 // where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
 // where the question belongs, so a page shows those words rather than wording of its own; a
@@ -467,6 +485,15 @@ export function isDocumentUnloadable(error: unknown): boolean {
 // instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
+}
+
+// A search whose keyword or meaning statement ran past the server's 15 s bound (`503
+// SEARCH_TIMEOUT`): a search that reaches the bound costs the database the whole of it, so sending
+// it again on its own only multiplies that cost and finds nothing more. It gets no automatic retry
+// (`isRetryableQueryError`), and no focus, reconnect or refresh of the live feed sends it again
+// (`heldAfterSearchTimeout` in `api/query-client.ts`). The bar offers its own Retry instead.
+export function isSearchTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "SEARCH_TIMEOUT";
 }
 
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
@@ -523,10 +550,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
-// definitive or too costly to send again at once; any other failure (dropped connection, a read
-// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
-// couple of automatic attempts before surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure or a search cut at its
+// bound is definitive or too costly to send again at once; any other failure (dropped connection,
+// a read past its deadline, 5xx, a document holding content this build cannot read yet) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -535,7 +562,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error) &&
-    !isReferencesTimeout(error)
+    !isReferencesTimeout(error) &&
+    !isSearchTimeout(error)
   );
 }
 
