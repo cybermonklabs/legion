@@ -480,9 +480,10 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	// it does of every other. Its reason opens on runtime.BreakingDrift, which is set here, where
 	// the account's drift is decided: no role can keep working in a pod on an account the operator
 	// replaced, so the round over it replaces the pod after the read of its workspace whatever the
-	// read finds (R7 of #5285, spec v23).
+	// read finds (R7 of #5285, spec v23). The reason's words are runtime.AccountDriftReason's, whose
+	// reader (runtime.AccountDrift) the daemon's notice of a round the work hold keeps reads.
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
-		drifted = append(drifted, runtime.BreakingDrift+"account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
+		drifted = append(drifted, runtime.AccountDriftReason(account, serviceAccountOr(r.pod.ServiceAccount)))
 	}
 	// The exchange identity's reason (movedExchangeIdentity) opens on the mark only where a launch
 	// into this pod is refused until the pod's round replaces it (spec v26): the deployment sets

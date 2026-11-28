@@ -9165,7 +9165,8 @@ The next attempt reads the workspace again.
 
 While held work keeps a breaking-drift round open, the daemon tells each role that answered once that it can continue its work (`liftAnswerHolds`).
 The answer still counts for the round but does not hold the role's tasks.
-After a clean read or after the hold opens, the round asks those roles again (`askRoundAgain`).
+After a clean read, after the hold opens, or after an operator acts on the stopped claim, the round asks again every role it asks (`askRoundAgain`), whether or not the daemon lifted any answer, a role the opening started included.
+A launch into the kept pod before that ask keeps the pod for it, the opening's own launch of a stopped role included: that role's pending task is the opening's, which marks the role as one the opening started until the round asks it again (`openedSinceAsk`).
 The new ask gives the roles a full grace period from the new start, plus any time that a project pause adds.
 The two claim marks preserve which answers the daemon lifted and when the round started again (`20261125105345_claim_round_hold_marks`).
 The next replacement reads the workspace again and tells the architect what it took if the read finds work or fails and the replacement proceeds.
@@ -9187,7 +9188,7 @@ The sweep keeps five records of its own in memory and none in the store, and a r
 
 - the waits it told the operator's side of (`podUpdateWaitsTold`), by claim: a restart forgets the wait and its notice, so the first refusal after a restart can be told again;
 
-- the breaking-drift rounds whose pod held work kept at the last replacement attempt (`podUpdateHeldWork`), so the sweep can lift an answer before the next replacement attempt: a restart reads the keep from the stored marks of the answers it lifted, or finds the keep at the next replacement attempt;
+- the breaking-drift rounds whose pod held work kept at the last replacement attempt (`podUpdateHeldWork`), so the sweep can lift an answer before the next replacement attempt: a restart reads the keep from the stored marks of the answers it lifted and from the opening's task of each role the opening started, or finds the keep at the next replacement attempt;
 
 - what the launches into an issue's pod decided of the round over it (`podUpdateLaunchReplaced`): a daemon that has just booted finishes a pod that a launch replaced as the round's own from that replacement's record in the store (above).
 
@@ -9610,9 +9611,9 @@ where the last read that could read the workspace found a commit or a change tha
 A start of a claim of the issue, or a turn of one, after that read ends the hold, in whichever pod it ran, since the role can have pushed the work; the release then has the launcher read the disk before it deletes anything, and a read that finds the same work keeps the pod again.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
 
-Of the reasons that hold such a pod past the idle period, the daemon writes five to its hold records, each under a name of its own:
-a claim of the issue still records a process (`unowned_claim_process`), a suspension that holds — the operator's or the controller's — is over a claim (`unowned_operator_suspended`, a name that says the operator's alone and stands for both), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), a decline or the launcher's read says the disk holds unpushed work (`unowned_unpushed_work`), and the launcher could not read the disk (`unowned_workspace_unread`).
-A project's pause adds a sixth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
+Of the reasons that hold such a pod past the idle period, the daemon writes six to its hold records, each under a name of its own:
+a claim of the issue still records a process (`unowned_claim_process`), a suspension that holds — the operator's or the controller's — is over a claim (`unowned_operator_suspended`, a name that says the operator's alone and stands for both), the work hold of a tree whose standing design gate is closed (`gates.hold: work`) stopped a claim of the issue, which keeps its session and its pending task until the gate opens (`unowned_work_held`), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), a decline or the launcher's read says the disk holds unpushed work (`unowned_unpushed_work`), and the launcher could not read the disk (`unowned_workspace_unread`).
+A project's pause adds a seventh, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
 the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.

@@ -664,12 +664,14 @@ type Claim struct {
 	// and so does the round's end.
 	UpdateHoldToldAt *time.Time
 	// UpdateAskedAgainAt is when the round asked this claim again, and nil while it has not: the
-	// work hold kept the round's pod and lifted the hold of this claim's answer on its tasks
-	// (UpdateHoldToldAt), and the replacement can be made again, at the hold's opening or once a
-	// read finds the held work pushed (internal/daemon's askRoundAgain). The round's new bound
-	// starts at the latest such stamp of its claims and not at the opening (internal/daemon's
-	// roundStartedAt, roundBound), so every role the round asks gets the round's whole grace once
-	// more. A later ask again moves it on, and the round's end clears it.
+	// work hold kept the round's pod, and the replacement can be made again, at the hold's opening,
+	// once a read finds the held work pushed, or once an operator acted on a claim the hold stopped
+	// (internal/daemon's askRoundAgain, Machine.PodUpdateAskedAgain). The round asks again each
+	// claim whose answer the hold lifted (UpdateHoldToldAt), each claim the opening started and
+	// each other claim it asks. The round's new bound starts at the latest such stamp of its
+	// claims and not at the opening (internal/daemon's roundStartedAt, roundBound), so every role
+	// the round asks gets the round's whole grace once more. A later ask again moves it on, and the
+	// round's end clears it.
 	UpdateAskedAgainAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
@@ -2706,25 +2708,35 @@ func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func
 }
 
 // PodUpdateAskedAgain is the round asking this claim again, at at, once the work hold no longer
-// keeps its pod (internal/daemon's askRoundAgain): the hold's opening, or a read that finds the
-// held work pushed. It is asked of a claim whose answer's hold on its tasks the work hold lifted
-// (UpdateHoldToldAt), and of no other: that claim went on with its work, so its answer says
-// nothing of the work it did since. Its answer, its ask mark and its mark of the hold's message go
-// (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt), so the sweep asks it again, and at is
-// stamped as the start of the round's new bound (UpdateAskedAgainAt). The round's notice mark
-// stays (UpdateToldAt): one round is told late once. A claim that left the round since keeps its
-// answer and its ask, and only its mark of the hold's message goes: the round asks it nothing, and
-// what it had answered when it left is what the round's end reads of it (Claim.LeftPodRound).
+// keeps its pod (internal/daemon's askRoundAgain): the hold's opening, a read that finds the held
+// work pushed, or an operator's act on a claim the hold stopped. The round asks again each claim
+// it asks, each claim the hold's opening started, and each claim whose answer's hold on its tasks
+// the work hold lifted (UpdateHoldToldAt), whether or not the hold lifted any answer: a claim the
+// hold lifted went on with its work, a claim the opening started goes on with the work the hold
+// stopped, so the answer of either says nothing of the work it did since, and the ask every
+// other claim holds names the round's old bound. Its answer, its ask mark and its mark of the
+// hold's message go (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt), so the sweep asks it
+// again, and at is stamped as the start of the round's new bound (UpdateAskedAgainAt). The
+// round's notice mark stays (UpdateToldAt): one round is told late once. A claim that left the
+// round since keeps its answer and its ask, and only its mark of the hold's message goes: the
+// round asks it nothing, and what it had answered when it left is what the round's end reads of
+// it (Claim.LeftPodRound).
 //
-// It does nothing and reports false where the claim is not in round or carries no mark of the
-// hold's message, so a second call for the same ask clears no answer given to it. A write the store
-// refuses puts every field back and is returned with false, and the claim still carries its mark,
-// so the sweep asks again at the next tick. The task the answer was holding is sent, as at any end
-// of an answer (openPodUpdate).
+// It does nothing and reports false where the claim is not in round, and, for a claim that carries
+// no mark of the hold's message, where it left the round or the round asked it again at at or
+// later: so a second call for the same ask clears no answer given to it, whichever claim it is
+// of, and a claim the hold lifted is asked again whatever it was asked before. A write the store
+// refuses puts every field back and is returned with false, and the sweep asks again at the next
+// tick (askRoundAgain says what it reads to know that it must). The task the answer was holding is
+// sent, as at any end of an answer (openPodUpdate).
 func (m *Machine) PodUpdateAskedAgain(ctx context.Context, round string, at time.Time) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
-	if m.claim.UpdateRound != round || m.claim.UpdateHoldToldAt == nil {
+	c := m.claim
+	if c.UpdateRound != round {
+		return false, nil
+	}
+	if c.UpdateHoldToldAt == nil && (c.LeftPodRound(round) || (c.UpdateAskedAgainAt != nil && !c.UpdateAskedAgainAt.Before(at))) {
 		return false, nil
 	}
 	before := m.claim

@@ -2088,3 +2088,100 @@ func TestPodUpdateAnOpenRoundHoldsATaskOnlyFromAWorkerThatAnsweredIt(t *testing.
 		})
 	}
 }
+
+// The round asks a claim again (PodUpdateAskedAgain) once the work hold no longer keeps the pod of
+// a round over a drift that breaks the pod, whether or not the hold lifted the claim's answer
+// (UpdateHoldToldAt, PodUpdateHoldTold): a claim the hold lifted; a claim whose answer the hold
+// did not lift, since no agent of it was ready while the pod was kept; and a claim that never
+// answered, as a claim the hold's opening started never did (the Legion reviewer's finding
+// PRRT_kwDORFy7ds69Beqt). Each loses its answer, its ask mark and its lift mark, carries the
+// moment of the ask again, durably, as the start of the round's new bound (UpdateAskedAgainAt),
+// and is handed the task its answer held. A second call at that same moment asks nothing again,
+// so the answer given to the ask again stands, and a later ask again takes that answer back. A
+// claim that left the round and carries no lift mark is asked nothing: the round asks it nothing.
+func TestPodUpdateTheRoundAsksAClaimAgainWhetherOrNotTheHoldLiftedItsAnswer(t *testing.T) {
+	const task = "review the pull request"
+	breaking := runtime.BreakingDrift + "account default, now legion-worker"
+	for _, tc := range []struct {
+		name            string
+		answers, lifted bool
+	}{
+		{name: "a claim whose answer the hold lifted", answers: true, lifted: true},
+		{name: "a claim whose answer the hold did not lift", answers: true},
+		{name: "a claim that never answered", answers: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateReady)
+			h.openUpdate(testRound, breaking)
+			h.markAsked(testRound)
+			if tc.answers {
+				h.signalUpdate("c0ffee")
+				h.must(RequestDeliver{Claim: h.token, Task: task})
+				h.wantPrompts(0) // held: the claim answered a round that is open
+			}
+			if tc.lifted {
+				if lifted, err := h.m.PodUpdateHoldTold(h.ctx, testRound, func(context.Context) error { return nil }); err != nil || !lifted {
+					t.Fatalf("the hold's lift of the answer = %t, %v; want it made", lifted, err)
+				}
+			}
+
+			at := h.clock.Now().Add(time.Minute)
+			if asked, err := h.m.PodUpdateAskedAgain(h.ctx, testRound, at); err != nil || !asked {
+				t.Fatalf("PodUpdateAskedAgain = %t, %v; want the claim asked again", asked, err)
+			}
+			c := h.wantRound(testRound)
+			if c.UpdateSignalledAt != nil || c.UpdateHead != "" || c.UpdateTaskedAt != nil || c.UpdateHoldToldAt != nil ||
+				c.UpdateAskedAgainAt == nil || !c.UpdateAskedAgainAt.Equal(at) {
+				t.Fatalf("the claim asked again answered at %v (head %q), asked at %v, lifted at %v, asked again at %v; want no answer, no ask, no lift and the ask again at %s",
+					c.UpdateSignalledAt, c.UpdateHead, c.UpdateTaskedAt, c.UpdateHoldToldAt, c.UpdateAskedAgainAt, at)
+			}
+			if s := h.store.load(h.token); s.UpdateSignalledAt != nil || s.UpdateAskedAgainAt == nil || !s.UpdateAskedAgainAt.Equal(at) {
+				t.Errorf("the stored claim answered at %v and was asked again at %v, want the ask again durable: a restart reads the new bound from it",
+					s.UpdateSignalledAt, s.UpdateAskedAgainAt)
+			}
+			if tc.answers {
+				// The send runs on the machine's own goroutine (sendPending), so it is waited out
+				// before the prompts are counted, as Handle's callers wait for it.
+				h.m.Wait()
+				if sent := h.wantPrompts(1)[0]; sent.Message != task {
+					t.Errorf("the claim was handed %q, want the task its answer held, %q", sent.Message, task)
+				}
+			}
+
+			h.markAsked(testRound)
+			h.signalUpdate("f00d")
+			if asked, err := h.m.PodUpdateAskedAgain(h.ctx, testRound, at); err != nil || asked {
+				t.Fatalf("a second PodUpdateAskedAgain at the same moment = %t, %v; want nothing asked again", asked, err)
+			}
+			if c := h.claim(); c.UpdateSignalledAt == nil || c.UpdateHead != "f00d" {
+				t.Fatalf("the answer to the ask again is %v (head %q), want it standing", c.UpdateSignalledAt, c.UpdateHead)
+			}
+			later := at.Add(time.Minute)
+			if asked, err := h.m.PodUpdateAskedAgain(h.ctx, testRound, later); err != nil || !asked {
+				t.Fatalf("a later PodUpdateAskedAgain = %t, %v; want the claim asked again", asked, err)
+			}
+			if c := h.claim(); c.UpdateSignalledAt != nil || c.UpdateAskedAgainAt == nil || !c.UpdateAskedAgainAt.Equal(later) {
+				t.Fatalf("after a later ask again the claim answered at %v and was asked again at %v, want no answer and %s",
+					c.UpdateSignalledAt, c.UpdateAskedAgainAt, later)
+			}
+		})
+	}
+
+	t.Run("a claim that left the round and carries no lift mark", func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.inPod(testRoundPod)
+		h.openUpdate(testRound, breaking)
+		h.markAsked(testRound)
+		h.signalUpdate("c0ffee")
+		h.diesIntoPod(testOtherPod)
+
+		if asked, err := h.m.PodUpdateAskedAgain(h.ctx, testRound, h.clock.Now()); err != nil || asked {
+			t.Fatalf("PodUpdateAskedAgain = %t, %v; want nothing asked of a claim that left the round", asked, err)
+		}
+		if c := h.wantRound(testRound); !c.LeftPodRound(testRound) || c.UpdateSignalledAt == nil || c.UpdateAskedAgainAt != nil {
+			t.Fatalf("the claim that left answered at %v and was asked again at %v; want the answer it left with and no ask again",
+				c.UpdateSignalledAt, c.UpdateAskedAgainAt)
+		}
+	})
+}

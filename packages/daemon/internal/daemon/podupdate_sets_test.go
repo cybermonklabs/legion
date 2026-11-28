@@ -296,8 +296,9 @@ type owedLaunchState struct {
 // waits for it or the pause keeps the pod for it. An answered claim keeps nothing and is in no
 // wait.
 //
-// The keep is read from the reason that each reading answers (a project's pause owes the
-// implementer a launch), because a suspension that holds holds the pod for a reason of its own.
+// The keep is read from the hold each reading answers (podKeep): a reading keeps the pod for the
+// pause where it answers keptForOwedLaunch. A suspension that holds answers keptByOperator, since
+// it holds the pod for its holder, never for the pause.
 //
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.

@@ -55,3 +55,37 @@ func TestRoleIdentitiesReadBackAndPassOverAnUnknownField(t *testing.T) {
 		}
 	}
 }
+
+// The account drift's reason reads back through its reader as it was written
+// (runtime.AccountDriftReason, runtime.AccountDrift): out of the reason alone, and out of a
+// round's recorded reasons (runtime.RoundReasons), where the mark puts it first and another reason
+// follows it. The text is pinned whole, since an operator reads it in a round's lines and notices.
+// A reason with no mark that displays the same words, and a round with no account drift, read as
+// none.
+func TestTheAccountDriftReasonReadsBackFromARoundsReasons(t *testing.T) {
+	reason := runtime.AccountDriftReason("default", "legion-worker")
+	if want := "[breaks the pod] account default, now legion-worker"; reason != want {
+		t.Fatalf("AccountDriftReason = %q, want %q", reason, want)
+	}
+	if !runtime.Breaks(reason) {
+		t.Fatalf("Breaks(%q) = false, want true: a pod on an account the operator replaced breaks", reason)
+	}
+	for name, reasons := range map[string]string{
+		"the reason alone":           reason,
+		"a round's recorded reasons": runtime.RoundReasons([]string{"image legion:1, now legion:2", reason, "leak check old, now new"}),
+		"the reason behind another":  runtime.RoundReasons([]string{runtime.BreakingDrift + "agent-secrets-exchange (unset), now set", reason}),
+	} {
+		if old, next, ok := runtime.AccountDrift(reasons); !ok || old != "default" || next != "legion-worker" {
+			t.Errorf("%s: AccountDrift(%q) = %q, %q, %t, want default, legion-worker, true", name, reasons, old, next, ok)
+		}
+	}
+	for name, reasons := range map[string]string{
+		"no drift":                        "",
+		"no account drift":                runtime.RoundReasons([]string{"image legion:1, now legion:2"}),
+		"the words with no mark in front": "image account default, now legion-worker",
+	} {
+		if old, next, ok := runtime.AccountDrift(reasons); ok {
+			t.Errorf("%s: AccountDrift(%q) = %q, %q, true, want no account drift", name, reasons, old, next)
+		}
+	}
+}

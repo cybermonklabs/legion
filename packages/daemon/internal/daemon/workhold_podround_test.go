@@ -8,9 +8,11 @@ package daemon
 // the hold, and holds none of its claim's tasks from then on, and the round does not ask it again
 // at each sweep. A launch goes into the pod the hold keeps, so the issue's architect goes on there,
 // and a released merger woken for the close message gets it there and is stopped 2 minutes after
-// its start. Once a read finds the held work pushed, or at the opening, the round asks each claim
-// whose answer it lifted again, under a bound of the round's own length from that ask, and replaces
-// the pod only once each claim it asks has answered. Under dispatch_token_broker with no
+// its start. Once a read finds the held work pushed, or at the opening, the round asks again each
+// claim it asks, whether or not the hold lifted an answer, a claim the opening started included,
+// under a bound of the round's own length from that ask; the opening's own launch into the kept
+// pod keeps it for that ask; and the round replaces the pod only once each claim it asks has
+// answered. Under dispatch_token_broker with no
 // dispatch_token_transition_file the runtime refuses every launch into such a pod: no role starts,
 // the pod is kept, and each launch that begins to wait is told to the operator's side.
 //
@@ -446,6 +448,63 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.answers(architect)
 		h.sweep()
 		h.wantNotReplaced("before the implementer answered")
+		h.answers(implementer)
+		h.awaitReplacedOnce("once the architect and the implementer answered")
+	})
+
+	// The architect answered the round and was then released, so no claim records a process in
+	// the pod, and the hold lifts no answer: the released architect has no agent that is ready
+	// (liftAnswerHolds). The pod's launcher reads the held work and the round keeps the pod past
+	// its first bound. At the opening the implementer's own launch is the first into the pod, and
+	// it keeps the pod; the opening's message then wakes the architect into the same pod. The
+	// round asks both again, with a bound of the round's own length from that ask again, and the
+	// pod is replaced only once both answered (the Legion reviewer's finding
+	// PRRT_kwDORFy7ds69Beqt).
+	t.Run("a released architect whose answer the hold did not lift, then the gate opens", func(t *testing.T) {
+		h := newHeldRoundRig(t, phase.Implementing)
+		h.liveInPod(architect)
+		h.closeOverAWorkingImplementer()
+		h.unpushed()
+		h.opensOver(heldAccountDrift, architect)
+		h.asked(architect)
+		h.answers(architect)
+		h.handle(architect, supervise.RequestSuspend{Claim: h.token(architect), By: supervise.SuspendedByReleased,
+			Reason: "the issue's pod is released"})
+		h.rt.ScriptIssuePod(h.tree.key, podUpdatePod)
+		h.keeps("with no role process in the pod")
+		h.wantLateAccountNotice(architect)
+		h.runNow()
+		if told := h.publishedHolding(architect, heldRoundWaits); len(told) != 0 {
+			t.Fatalf("the released architect was told %q of the hold, want nothing: the hold lifts no answer of a claim with no ready agent", told)
+		}
+		if c := h.machine(architect).Claim(); c.UpdateHoldToldAt != nil {
+			t.Fatalf("the released architect's answer carries the lift mark %s, want none", c.UpdateHoldToldAt)
+		}
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(implementer)}, fake.SpawnResult{Locator: h.locator(architect)})
+		h.approve(4, 12)
+		h.drain()
+		for _, role := range []claim.Role{implementer, architect} {
+			if got := h.launches(role); got != 2 {
+				t.Fatalf("the %s was started %d times in all, want its first launch and the opening's", role, got)
+			}
+			h.wantInPod(role)
+			readyClaimAs(t, h.sup, h.token(role), role, "ses-"+string(role))
+		}
+		reasked := h.clock.Now()
+		h.until("the round to ask its claims again at the opening", func() bool {
+			h.sweep()
+			return h.machine(implementer).Claim().UpdateAskedAgainAt != nil && h.machine(architect).Claim().UpdateSignalledAt == nil
+		})
+		h.wantNotReplaced("before the round's claims answered again")
+		for _, role := range []claim.Role{implementer, architect} {
+			h.asked(role)
+			h.wantAskEndsAt(role, reasked.Add(heldRoundGrace))
+		}
+		h.answers(architect)
+		h.sweep()
+		h.wantNotReplaced("before the implementer answered")
+		h.pushed()
 		h.answers(implementer)
 		h.awaitReplacedOnce("once the architect and the implementer answered")
 	})

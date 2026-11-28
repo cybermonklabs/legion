@@ -2062,12 +2062,13 @@ type supervision struct {
 	// at its keep is the case: a claim that answered before it was released and is woken into the
 	// kept pod holds its task behind its answer, and its process has sent no report yet, which
 	// holds the round from its replacement, and so from the read, until the bound. The entry goes
-	// where the round asks its claims again (askRoundAgain), where the sweep ends the round
-	// (endPodUpdates), and where the sweep finds the issue in another round or in none
-	// (forgetHeldWorks). A restart forgets it, and the walk reads the keep from the stored marks
-	// alone then: a round whose keep lifted an answer is read kept from them, and one that lifted
-	// none is kept again at its next replacement attempt, which writes the entry again. The sweep
-	// and the launch hook share this record.
+	// once the round has asked its claims again and stored every stamp of that ask (askRoundAgain),
+	// where the sweep ends the round (endPodUpdates), and where the sweep finds the issue in another
+	// round or in none (forgetHeldWorks). A restart forgets it, and the walk reads the keep from the
+	// stored marks alone then: a round whose keep lifted an answer is read kept from them, a claim
+	// the hold's opening started is read from the opening's task it holds (openedSinceAsk), and a
+	// round that has neither is kept again at its next replacement attempt, which writes the entry
+	// again. The sweep and the launch hook share this record.
 	podUpdateHeldWorkMu sync.Mutex
 	podUpdateHeldWork   map[string]string
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
