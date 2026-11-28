@@ -603,3 +603,80 @@ func TestACheckFailIsWrittenOnlyWhereItsBlamedDeployCountsForTheIssuesProject(t 
 		t.Fatalf("ALPHA's failure rows = %+v, want one blaming %s", rows, deploy.ID)
 	}
 }
+
+// TestACheckFailWhoseDeployIsDroppedWhileItIsWrittenIsNotRefused (dispatch://INFRA-978, R5 of the
+// review at 20c604ef): a fail of an after_merge check whose first match finds run 299's deploy row
+// live, and whose write then waits on that row's lock, which the drop a rule change makes of it
+// holds, reads the row dropped, a deploy that counts for no project. It writes no row, records no
+// refusal and logs none, as where the deploy row is gone since the lookup, so the result stays
+// bound to no row and unrefused. A later rule that calls run 299 a deploy again counts the row
+// again, and the derive matches the result with it: one counted check_fail blaming run 299's row,
+// bound to the result. Red where the write refuses every deploy that does not count for the
+// result's project: the result is refused for good, and the later rule writes no row.
+func TestACheckFailWhoseDeployIsDroppedWhileItIsWrittenIsNotRefused(t *testing.T) {
+	const pauseKey = 978_0713
+	r := newRig(t)
+	refusals := r.logRefusals()
+	issue := r.issue(17)
+	r.deployRun(299, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(299)
+	result := r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+
+	// The drop holds run 299's row for update, then waits on the pause before it writes the row's
+	// status and commits.
+	r.exec("make the pause", `create function signals_test_pause_drop() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock(tg_argv[0]::bigint);
+			return new;
+		end $$`)
+	r.exec("pause the drop's status write", fmt.Sprintf(`create trigger signals_test_pause_drop before update on production_events
+		for each row when (new.status = '%s' and old.status is distinct from new.status)
+		execute function signals_test_pause_drop('%d')`, prodevents.StatusDropped, pauseKey))
+	gate, err := r.pool.Begin(r.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(r.ctx)
+	if _, err := gate.Exec(r.ctx, `select pg_advisory_xact_lock($1)`, pauseKey); err != nil {
+		t.Fatalf("hold the pause: %v", err)
+	}
+	r.saveRule(canaryJob)
+	dropped := make(chan error, 1)
+	go func() { dropped <- passDeploys(r.ctx, r.pool) }()
+	r.awaitLockWait("the drop of run 299's row", "%set status = $2, note = $3%", dropped)
+	matched := make(chan error, 1)
+	go func() {
+		_, err := RecordCheckFailure(r.ctx, r.pool, result)
+		matched <- err
+	}()
+	r.awaitLockWait("the check_fail's write", "%kind = 'deploy' for key share%", matched)
+	if err := gate.Rollback(r.ctx); err != nil {
+		t.Fatalf("release the pause: %v", err)
+	}
+	if err := <-dropped; err != nil {
+		t.Fatalf("the pass that drops run 299's row: %v", err)
+	}
+	if err := <-matched; err != nil {
+		t.Fatalf("the check_fail's write: %v", err)
+	}
+	if row, err := prodevents.Get(r.ctx, r.pool, alpha, deploy.ID); err != nil || !row.Dropped() {
+		t.Fatalf("under the canary rule, run 299's row = %+v (%v); want it kept, dropped", row, err)
+	}
+	var refused bool
+	if err := r.pool.QueryRow(r.ctx, `select exists (select from check_fail_refusals where result_id = $1::uuid)`, result).Scan(&refused); err != nil {
+		t.Fatalf("read the result's refusal: %v", err)
+	}
+	if rows, bound, logged := r.failures(), r.boundTo(result), refusals(); refused || bound != "" || len(rows) != 0 || len(logged) != 0 {
+		t.Fatalf("the write that met the dropped deploy left a refusal %t, a binding to %q, failure rows %+v and refusals logged %q; want none",
+			refused, bound, rows, logged)
+	}
+
+	r.saveRule(prodJob)
+	r.passDeploys()
+	rows, bound := r.failures(), r.boundTo(result)
+	if len(rows) != 1 || *rows[0].DeployID != deploy.ID || rows[0].State != prodevents.StateCounted || bound != rows[0].ID {
+		t.Fatalf("once a later rule calls run 299 a deploy again, failure rows = %+v and the result is bound to %q; want one counted check_fail blaming %s, bound to the result",
+			rows, bound, deploy.ID)
+	}
+}

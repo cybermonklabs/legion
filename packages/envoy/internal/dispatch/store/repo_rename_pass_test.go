@@ -1166,16 +1166,18 @@ const renamedSourceSaveSeed = `
 `
 
 // A settings save (delivery.PutProjectSettings) takes its project's lock and each repository's
-// (delivery.LockProject, LockRepositories), then the change log's lock (6900, 0) in the trigger of
-// its write of project_delivery_settings where a logged column moves, and holds them while it
-// replaces the project's project_deploy_sources rows; a line of the pass that writes those tables
-// takes the change log's lock in the triggers of the statements that lock its rows. So the line of
-// projects.default_repo takes the lock of each pair's old and new name first
-// (repoRenameLine.repositories), as the save takes its repositories', and each line of those
-// tables then takes both tables' own locks (repoRenameLine.lock), before any row lock, and runs
-// beside no other writer of either. Over renamedSourceSaveSeed, a save runs PutProjectSettings'
-// statements up to its write of the settings row, which moves the population, and the pass runs.
-// Each row is one save, and proves one of the two locks:
+// (delivery.LockProject, LockDeployRepositories), then the change log's lock (6900, 0) in the
+// trigger of its write of project_delivery_settings where a logged column moves, and holds them
+// while it replaces the project's project_deploy_sources rows; a line of the pass that writes those
+// tables takes the change log's lock in the triggers of the statements that lock its rows. So the
+// line of projects.default_repo takes the lock of each pair's old and new name before its tables'
+// (repoRenameLine.repositories), as the save takes its repositories' before its writes, and each
+// line of those tables takes both tables' own locks (repoRenameLine.lock) before any row lock, and
+// runs beside no other writer of either. Neither project's default repository is a name of the
+// pair, so the line takes no project's lock (repoRenameLine.projects) here. Over
+// renamedSourceSaveSeed, a save runs PutProjectSettings' statements up to its write of the settings
+// row, which moves the population, and the pass runs. Each row is one save, and proves one of the
+// two locks:
 //
 //   - A save of TOOLS, which reads both names of the pair: the pass waits for it at the line of
 //     projects.default_repo, for a repository's lock (6903), holding no lock of either table. The
@@ -1258,11 +1260,14 @@ func TestTheRenamePassLocksTheDeliverySettingsTablesBeforeTheirRows(t *testing.T
 			// lock, each repository's in name order, then the upsert of the settings row, whose trigger
 			// takes the change log's lock for the moved population; then replaceSources' writes and
 			// the progress its repositories lose, after the pass has reached its wait.
-			written := []statement{{`select pg_advisory_xact_lock(6902, hashtext($1))`, []any{row.project}}}
-			for _, repo := range row.repos {
-				written = append(written, statement{LockDeployRepository, []any{repo}})
+			replacement := row.replacement(t, save)
+			if _, err := save.Exec(ctx, LockDeliveryProject, row.project); err != nil {
+				t.Fatalf("the settings save's lock of %s: %v", row.project, err)
 			}
-			written = append(written, statement{`
+			if err := LockDeployRepositories(ctx, save, row.repos); err != nil {
+				t.Fatalf("the settings save's locks of its repositories: %v", err)
+			}
+			if _, err := save.Exec(ctx, `
 				insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos,
 					failure_sources, failures_measured_since, updated_by)
 				values ($1, true, '{hubot,octocat}', '{}', '{}', null, '{"kind":"user","id":"alice"}')
@@ -1273,12 +1278,8 @@ func TestTheRenamePassLocksTheDeliverySettingsTablesBeforeTheirRows(t *testing.T
 					failure_sources = excluded.failure_sources,
 					failures_measured_since = excluded.failures_measured_since,
 					updated_by = excluded.updated_by,
-					updated_at = now()`, []any{row.project}})
-			replacement := row.replacement(t, save)
-			for _, s := range written {
-				if _, err := save.Exec(ctx, s.sql, s.args...); err != nil {
-					t.Fatalf("the settings save's %s: %v", s.sql, err)
-				}
+					updated_at = now()`, row.project); err != nil {
+				t.Fatalf("the settings save's write of its settings row: %v", err)
 			}
 			var holdsChanges bool
 			if err := save.QueryRow(ctx, `select exists (select 1 from pg_locks where pid = pg_backend_pid() and granted
@@ -1343,6 +1344,147 @@ func TestTheRenamePassLocksTheDeliverySettingsTablesBeforeTheirRows(t *testing.T
 				}
 			}
 		})
+	}
+}
+
+// renamedDefaultSaveSeed holds the rename pair sjawhar/legion to cybermonklabs/legion; TOOLS, a
+// delivery-on project whose default repository is the old name and whose one deploy source names
+// acme/tools; and OTHR, a delivery-on project whose one source names the new name.
+const renamedDefaultSaveSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('TOOLS', 'Tools', 'alice', 'sjawhar/legion'), ('OTHR', 'Other', 'alice', null);
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'TOOLS', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into project_delivery_settings (project_key, delivery, population_authors, excluded_repos, updated_by, updated_at) values
+		('TOOLS', true, '{hubot}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z'),
+		('OTHR', true, '{hubot}', '{}', '{"kind":"user","id":"alice"}', '2026-01-01T00:00:00Z');
+	insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path, production_job_names, pr_checks_workflow_path) values
+		('TOOLS', 0, 'github_workflow', 'acme/tools', 'deploy.yml', '{release}', 'pr.yml'),
+		('OTHR', 0, 'github_workflow', 'cybermonklabs/legion', 'deploy.yml', '{release}', 'pr.yml');
+`
+
+// A settings save takes its project's lock (delivery.LockProject) and reads the project's default
+// repository under it (delivery.StoredSettings), and only then takes the lock of each repository
+// it reads, that default among them (LockDeployRepositories), and checks that no other delivery-on
+// project's source reads one (delivery.RepositoryOwner). So the line of projects.default_repo takes
+// the delivery lock of each project whose default it moves before the repositories' locks, the
+// save's order, and moves the default of those projects alone (repoRenameLine.projects). Over
+// renamedDefaultSaveSeed, a save of TOOLS takes TOOLS's lock and reads its default,
+// sjawhar/legion, and the pass runs: it waits for the save at that line, for TOOLS's lock (6902),
+// holding no repository's lock. The save then adds a source that names no repository, so reads
+// the default: it takes the locks of acme/tools and sjawhar/legion, finds no other delivery-on
+// project's source reading sjawhar/legion, writes the source and commits. The pass, let on, finds
+// that source reading the old name beside OTHR's of the new name and deletes it
+// (TestARenameDeletesASourceItWouldMakeReadARepositoryAnotherSourceReads), and moves the default,
+// so no repository is the deploy source of two delivery-on projects. Red where the line takes no
+// project's lock: the pass moves the default beside the save, which then checks sjawhar/legion and
+// commits a source that reads cybermonklabs/legion beside OTHR's, unchecked.
+func TestTheRenamePassLocksTheProjectsWhoseDefaultItMoves(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedDefaultSaveSeed)
+	logs := capturePassLogs(t)
+	save, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the settings save: %v", err)
+	}
+	t.Cleanup(func() { _ = save.Rollback(context.Background()) })
+	// The save's statements up to its read of the stored settings: the project's lock, then the
+	// project's default repository.
+	if _, err := save.Exec(ctx, LockDeliveryProject, "TOOLS"); err != nil {
+		t.Fatalf("the settings save's lock of TOOLS: %v", err)
+	}
+	var defaultRepo string
+	if err := save.QueryRow(ctx, `select default_repo from projects where key = 'TOOLS'`).Scan(&defaultRepo); err != nil || defaultRepo != "sjawhar/legion" {
+		t.Fatalf("the settings save read TOOLS's default repository %q (%v), want sjawhar/legion", defaultRepo, err)
+	}
+
+	passed := make(chan RepoRenamePass, 1)
+	go func() { passed <- RewriteRenamedRepositories(ctx, store.Pool, pairs) }()
+	// queued is the lock the pass waits for behind the save, by pg_locks, and the backend it runs
+	// on; a pass that answered waits for none.
+	type queued struct {
+		pid  uint32
+		lock string
+	}
+	wait := testwait.Until(t, "the pass to wait for the settings save, or to answer", func() (queued, bool) {
+		select {
+		case pass := <-passed:
+			passed <- pass
+			return queued{lock: "none: the pass answered beside the save"}, true
+		default:
+		}
+		var q queued
+		if err := save.QueryRow(ctx, `
+			select coalesce(max(l.pid), 0), coalesce(max(l.locktype || ' ' || coalesce(l.relation::regclass::text, l.classid::text) || ' ' || l.mode), '')
+			from pg_locks l where not l.granted and pg_backend_pid() = any(pg_blocking_pids(l.pid))
+		`).Scan(&q.pid, &q.lock); err != nil {
+			t.Fatalf("read the waits behind the settings save: %v", err)
+		}
+		return q, q.pid != 0
+	})
+	var holdsRepositories bool
+	if err := save.QueryRow(ctx, `select exists (select 1 from pg_locks where pid = $1 and granted
+		and locktype = 'advisory' and classid = 6903 and objsubid = 2)`, wait.pid).Scan(&holdsRepositories); err != nil {
+		t.Fatalf("read the pass's locks: %v", err)
+	}
+	if want := "advisory 6902 ExclusiveLock"; wait.lock != want || holdsRepositories {
+		t.Errorf("the pass waits for the settings save for %q, holding a repository's lock %t; want it to wait for %q, TOOLS's lock, holding none",
+			wait.lock, holdsRepositories, want)
+	}
+
+	// The rest of the save, its other reads left out: the lock of each repository it reads,
+	// its stored source's and its new source's, which names none and so reads the default the save
+	// read; the check that no other delivery-on project's source reads that default; and the write
+	// of the new source.
+	saved := make(chan error, 1)
+	go func() {
+		saved <- func() error {
+			if err := LockDeployRepositories(ctx, save, []string{"acme/tools", defaultRepo}); err != nil {
+				return err
+			}
+			var owners int
+			if err := save.QueryRow(ctx, `
+				select count(*) from project_deploy_sources src
+				join projects p on p.key = src.project_key
+				join project_delivery_settings s on s.project_key = src.project_key and s.delivery
+				where src.kind = 'github_workflow' and src.project_key <> 'TOOLS'
+				  and lower(coalesce(src.repo, p.default_repo)) = $1`, defaultRepo).Scan(&owners); err != nil {
+				return err
+			}
+			if owners != 0 {
+				return fmt.Errorf("the save found %d other delivery-on projects whose source reads %s, want none", owners, defaultRepo)
+			}
+			if _, err := save.Exec(ctx, `
+				insert into project_deploy_sources (project_key, position, kind, repo, deploy_workflow_path,
+					production_job_names, pr_checks_workflow_path)
+				values ('TOOLS', 1, 'github_workflow', null, 'ship.yml', '{ship}', 'ci.yml')`); err != nil {
+				return err
+			}
+			return save.Commit(ctx)
+		}()
+	}()
+	requireNoDeadlock(t, "the settings save", testwait.Receive(t, "the settings save", saved))
+	if pass := testwait.Receive(t, "the rename pass", passed); pass.Deleted != 1 || pass.Failures != 0 || pass.Left != noneLeft {
+		t.Errorf("the pass = %+v (%v), want the save's source deleted, no failure and nothing left; it logged %v", pass, pass.Err(), named(logs(), failedLine))
+	}
+	// shared names each repository that github_workflow sources of two delivery-on projects read,
+	// with those projects.
+	const shared = `
+		select coalesce(string_agg(repo || ' ' || projects, ', ' order by repo), 'none') from (
+			select lower(coalesce(src.repo, p.default_repo)) as repo, string_agg(src.project_key, ',' order by src.project_key) as projects
+			from project_deploy_sources src
+			join projects p on p.key = src.project_key
+			join project_delivery_settings s on s.project_key = src.project_key and s.delivery
+			where src.kind = 'github_workflow'
+			group by 1 having count(distinct src.project_key) > 1) shared`
+	for query, want := range map[string]string{
+		`select string_agg(project_key || '#' || position || '=' || coalesce(repo, 'default'), ' ' order by project_key, position) from project_deploy_sources`: "OTHR#0=cybermonklabs/legion TOOLS#0=acme/tools",
+		`select string_agg(key || '=' || coalesce(default_repo, 'none'), ' ' order by key) from projects`:                                                       "OTHR=none TOOLS=cybermonklabs/legion",
+		shared: "none",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
 	}
 }
 

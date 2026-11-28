@@ -150,8 +150,9 @@ func TestAFailureNeedsTheDeployItBlames(t *testing.T) {
 // refused PRODUCTION_EVENT_NO_DEPLOY, as a failure blaming no row is, rather than failing its
 // foreign key. And the GitHub adapter's drop of a row that a failure still being written blames
 // (DropGitHubDeploy) waits for that failure's commit and then keeps the row, dropped, the failure
-// rejected with the drop's reason. Red where the failure reads its deploy with no lock: its insert
-// waits on the delete's lock and then fails the foreign key (23503), which the route answers 500.
+// rejected by the drop's writer (DropWriter) with the drop's reason. Red where the failure reads its
+// deploy with no lock: its insert waits on the delete's lock and then fails the foreign key (23503),
+// which the route answers 500.
 func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
@@ -222,7 +223,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 	const reason = "the rule no longer calls this run a deploy"
 	droppedDone := make(chan error, 1)
 	go func() {
-		droppedDone <- DropGitHubDeploy(ctx, pool, "ALPHA", kept.ID, reason, writer, *at(30))
+		droppedDone <- DropGitHubDeploy(ctx, pool, "ALPHA", kept.ID, reason, *at(30))
 	}()
 	waitsOnALock("the drop of a deploy a failure being written blames", droppedDone)
 	if err := failing.Commit(ctx); err != nil {
@@ -234,8 +235,8 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 	if row, err := Get(ctx, pool, "ALPHA", kept.ID); err != nil || !row.Dropped() || row.Note != reason {
 		t.Fatalf("the dropped deploy is %+v (%v), want it kept, dropped with the drop's reason", row, err)
 	}
-	if stored, err := Get(ctx, pool, "ALPHA", blamed.ID); err != nil || stored.State != StateRejected || stored.StateReason == nil || *stored.StateReason != reason {
-		t.Fatalf("the failure the drop found is %+v (%v), want it rejected with the drop's reason", stored, err)
+	if stored, err := Get(ctx, pool, "ALPHA", blamed.ID); err != nil || !RejectedByDrop(stored) || stored.StateReason == nil || *stored.StateReason != reason {
+		t.Fatalf("the failure the drop found is %+v (%v), want it rejected by the drop's writer with the drop's reason", stored, err)
 	}
 }
 
@@ -676,7 +677,9 @@ func TestARepeatAnswersItsRowOnceItsDeployNoLongerCounts(t *testing.T) {
 // person's restore of a revert's failure, which its own deploy restored, with or without a
 // restoring deploy of its own, and a person's second restore of a failure a person restored, each
 // answer the row as it stands, its restore time, writer and restoring deploy unmoved, and log no
-// change (R7).
+// change (R7). So does a second restore naming as its restoring deploy an id of no row, a word that
+// is no id and the id of a failure's row: one answer for every id, so a restore tells nothing of
+// whether an id is a deploy (dispatch://INFRA-978, R6 of the review at 20c604ef).
 func TestARestoreKeepsTheFirstRestore(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
@@ -721,6 +724,12 @@ func TestARestoreKeepsTheFirstRestore(t *testing.T) {
 		{"a person's restore of a revert's failure naming another deploy", reverted,
 			StateChange{State: StateRestored, RestoredByDeploy: &later.ID, Actor: person, At: *at(50)}},
 		{"a person's repeated restore", flagged, StateChange{State: StateRestored, Actor: person, At: *at(60)}},
+		{"a person's restore of a revert's failure naming an id of no row", reverted,
+			StateChange{State: StateRestored, RestoredByDeploy: new("0195f2a8-0000-7000-8000-000000000000"), Actor: person, At: *at(70)}},
+		{"a person's repeated restore naming a word that is no id", flagged,
+			StateChange{State: StateRestored, RestoredByDeploy: new("the-deploy"), Actor: person, At: *at(70)}},
+		{"a person's repeated restore naming a failure's row", flagged,
+			StateChange{State: StateRestored, RestoredByDeploy: &reverted.ID, Actor: person, At: *at(70)}},
 	} {
 		changes := len(pendingOf(t, ctx, pool, again.row.ID))
 		answered, err := SetState(ctx, pool, "ALPHA", again.row.ID, again.change)
@@ -745,13 +754,15 @@ func TestARestoreKeepsTheFirstRestore(t *testing.T) {
 }
 
 // TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsForIt: an automatic
-// signal's failure of ALPHA on a GitHub deploy counts for every project that deploy counts for,
-// so it is among the failures of other projects BETA's list asks its route of (OthersFailures),
-// and BETA's list and state write take it where the route's check of its deploy does (Reached,
-// StateChange.Check). A posted failure of ALPHA on that deploy, an automatic failure on a deploy
-// ALPHA posted, and the deploy's own row are none of them: BETA's write of the first and the last
-// is ErrNotFound whatever its check says, and so is its write of the check_fail where its check
-// refuses the deploy. A reject through BETA's route is the row's own state, which ALPHA reads too.
+// signal's failure of ALPHA on a GitHub deploy may count for another project that deploy counts
+// for, so it is among the failures of other projects BETA's list asks its route of
+// (OthersFailures), with its project, its signal and that deploy, and BETA's list and state write
+// take it where the route's question of it answers yes (Reached, StateChange.Reaches), which is
+// asked the failure and the deploy it blames. A posted failure of ALPHA on that deploy, an
+// automatic failure on a deploy ALPHA posted, and the deploy's own row are none of them: BETA's
+// write of the first and the last is ErrNotFound whatever the question answers, and so is its
+// write of the check_fail where the question answers no, or fails. A reject through BETA's route
+// is the row's own state, which ALPHA reads too.
 func TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsForIt(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
@@ -781,7 +792,9 @@ func TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsFor
 
 	query := ListQuery{Project: "BETA", From: day, To: day.Add(72 * time.Hour), Limit: 10}
 	others, err := OthersFailures(ctx, pool, query)
-	if err != nil || len(others) != 1 || others[0].ID != check.ID || others[0].Deploy.ID != shared.ID || others[0].Deploy.Source != SourceGitHub {
+	if err != nil || len(others) != 1 || others[0].Failure.ID != check.ID || others[0].Failure.ProjectKey != "ALPHA" ||
+		others[0].Failure.Signal == nil || *others[0].Failure.Signal != SignalCheckFail ||
+		others[0].Deploy.ID != shared.ID || others[0].Deploy.Source != SourceGitHub || others[0].Deploy.FinishedAt == nil {
 		t.Fatalf("the failures of other projects that may count for BETA = %+v (%v), want ALPHA's check_fail %s on its GitHub deploy %s", others, err, check.ID, shared.ID)
 	}
 	deploys := query
@@ -794,29 +807,35 @@ func TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsFor
 		t.Fatalf("BETA's page with ALPHA's check_fail reached = %+v, total %d (%v); want that row alone", page, total, err)
 	}
 
-	reaches := func(_ context.Context, _ pgx.Tx, deploy Event) error {
-		if deploy.ID == shared.ID {
-			return nil
-		}
-		return NoDeploy(deploy.ID)
+	var asked []BlamedFailure
+	reaches := func(_ context.Context, _ pgx.Tx, blamed BlamedFailure) (bool, error) {
+		asked = append(asked, blamed)
+		return blamed.Deploy.ID == shared.ID, nil
 	}
-	refuses := func(_ context.Context, _ pgx.Tx, deploy Event) error { return NoDeploy(deploy.ID) }
-	reject := func(id string, asks DeployCheck) (Event, error) {
-		return SetState(ctx, pool, "BETA", id, StateChange{State: StateRejected, Reason: "A flaky probe.", Check: asks, Actor: person, At: *at(40)})
+	refuses := func(context.Context, pgx.Tx, BlamedFailure) (bool, error) { return false, nil }
+	fails := errors.New("the reach could not be read")
+	breaks := func(context.Context, pgx.Tx, BlamedFailure) (bool, error) { return false, fails }
+	reject := func(id string, asks FailureReach) (Event, error) {
+		return SetState(ctx, pool, "BETA", id, StateChange{State: StateRejected, Reason: "A flaky probe.", Reaches: asks, Actor: person, At: *at(40)})
 	}
 	for _, refused := range []struct {
-		what  string
-		id    string
-		check DeployCheck
+		what    string
+		id      string
+		reaches FailureReach
+		want    error
 	}{
-		{"the check_fail where the check refuses its deploy", check.ID, refuses},
-		{"the check_fail with no check", check.ID, nil},
-		{"the posted failure", alert.ID, reaches},
-		{"the deploy's own row", shared.ID, reaches},
+		{"the check_fail where the question answers no", check.ID, refuses, ErrNotFound},
+		{"the check_fail with no question", check.ID, nil, ErrNotFound},
+		{"the check_fail where the question fails", check.ID, breaks, fails},
+		{"the posted failure", alert.ID, reaches, ErrNotFound},
+		{"the deploy's own row", shared.ID, reaches, ErrNotFound},
 	} {
-		if _, err := reject(refused.id, refused.check); !errors.Is(err, ErrNotFound) {
-			t.Errorf("BETA's reject of %s answered %v, want ErrNotFound", refused.what, err)
+		if _, err := reject(refused.id, refused.reaches); !errors.Is(err, refused.want) {
+			t.Errorf("BETA's reject of %s answered %v, want %v", refused.what, err, refused.want)
 		}
+	}
+	if len(asked) != 0 {
+		t.Errorf("BETA's writes of the posted failure and the deploy's row asked the route of %+v, want neither asked", asked)
 	}
 	if stored, err := Get(ctx, pool, "ALPHA", check.ID); err != nil || stored.State != StateCounted {
 		t.Fatalf("after the refused writes ALPHA's check_fail is %s (%v), want counted", stored.State, err)
@@ -824,6 +843,10 @@ func TestAnotherProjectsAutomaticFailureIsListedAndJudgedWhereItsDeployCountsFor
 	rejected, err := reject(check.ID, reaches)
 	if err != nil || rejected.State != StateRejected || rejected.StateBy == nil || rejected.StateBy.ID != person.ID {
 		t.Fatalf("BETA's reject of ALPHA's check_fail answered %+v, %v; want it rejected by %s", rejected, err, person.ID)
+	}
+	if len(asked) != 1 || asked[0].Failure.ID != check.ID || asked[0].Failure.ProjectKey != "ALPHA" || asked[0].Deploy.ID != shared.ID ||
+		asked[0].Deploy.FinishedAt == nil || !asked[0].Deploy.FinishedAt.Equal(*shared.FinishedAt) {
+		t.Errorf("BETA's reject asked the route of %+v, want ALPHA's check_fail %s with its deploy %s", asked, check.ID, shared.ID)
 	}
 	if stored, err := Get(ctx, pool, "ALPHA", check.ID); err != nil || stored.State != StateRejected {
 		t.Fatalf("after BETA's reject ALPHA reads its check_fail %s (%v), want rejected", stored.State, err)

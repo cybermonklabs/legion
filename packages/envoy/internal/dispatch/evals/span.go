@@ -318,9 +318,11 @@ func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan,
 
 // spanInput is where a span's days that no change names get their input: raw is each asked
 // project's rows and members of day as its input builds them, of the keys active (by project)
-// alone where it can read less for them; zeros the zero rows of a project's key on a day.
+// alone where it can read less for them, with the projects whose events repository's rows of the
+// day hang on the deploys of a repository whose rows of it are built whole (postedShares), which
+// the span builds no row of; zeros the zero rows of a project's key on a day.
 type spanInput struct {
-	raw   func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error)
+	raw   func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, []string, error)
 	zeros func(project string, day time.Time, key evalKey) []DayRow
 }
 
@@ -332,13 +334,17 @@ type spanDay struct {
 }
 
 // spanBuilt is what buildSpan builds of the days no change names: the rows of each tracked key on
-// each of its days (rows), those days (days), and the members of the days built whole for a
-// changed repository, under it (members), with those days by project (memberDays).
+// each of its days (rows), those days (days), the members of the days built whole for a changed
+// repository, under it (members), with those days by project (memberDays), and the days whose
+// events repository's rows hang on the deploys of a repository whose rows of the day it built
+// whole (shares, spanInput.raw's), which the write records owed where it moves that project's rows
+// of the day (spanWrite.owed).
 type spanBuilt struct {
 	rows       []DayRow
 	days       map[spanDay]bool
 	members    map[memberKey]memberAt
 	memberDays map[projectDay]bool
+	shares     map[projectDay]bool
 }
 
 // covers reports whether day is one of the days covered builds whole for deployRepo (keptSpans),
@@ -355,9 +361,12 @@ func covers(covered map[string]daySpan, deployRepo string, day time.Time) bool {
 // built whole for the key holds what its input builds, by the first input day found so far; a day
 // with input of the key holds what it held, and is left; and any other day holds the key's zero
 // rows from its first input day on, and the lead times dropUnshipped keeps from then. covered
-// names the days whose members it builds too, by repository.
+// names the days whose members it builds too, by repository. It notes the days of the projects
+// whose events repository's rows hang on a repository whose rows of the day it builds whole
+// (shares, spanInput.raw's), each where the page does not name the day: a named day is written
+// whole.
 func buildSpan(ctx context.Context, days *pageDays, tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, reach time.Time, input spanInput) (spanBuilt, error) {
-	built := spanBuilt{days: map[spanDay]bool{}, members: map[memberKey]memberAt{}, memberDays: map[projectDay]bool{}}
+	built := spanBuilt{days: map[spanDay]bool{}, members: map[memberKey]memberAt{}, memberDays: map[projectDay]bool{}, shares: map[projectDay]bool{}}
 	var start, end time.Time
 	for _, keys := range tracked {
 		for _, key := range keys {
@@ -401,9 +410,15 @@ func buildSpan(ctx context.Context, days *pageDays, tracked map[string]map[evalK
 		}
 		var raws map[string]ProjectDay
 		if len(unnamed) > 0 {
+			var shares []string
 			var err error
-			if raws, err = input.raw(ctx, day, unnamed); err != nil {
+			if raws, shares, err = input.raw(ctx, day, unnamed); err != nil {
 				return spanBuilt{}, err
+			}
+			for _, project := range shares {
+				if _, named := days.days[projectDay{project: project, day: day}]; !named {
+					built.shares[projectDay{project: project, day: day}] = true
+				}
 			}
 		}
 		for _, project := range projects {
@@ -464,9 +479,11 @@ func rowsOf(rows []DayRow, key evalKey) []DayRow {
 // are stored (stored), as they are built (members) and the days they are built of (memberDays);
 // the repositories that hold no run any more, whose every row and member goes (goneRepos, of
 // projects); the days whose stored figures it folds again, by project and eval, each run of them
-// apart (spans); the days it wrote, for the pass's report; and, where its rows and members that
-// moved stand staged aside (stageKept), their staging, which the commit writes them from, nil
-// where it sends them itself.
+// apart (spans); the days it records owed (owed: a project's day whose events repository's rows
+// hang on a repository whose rows of the day the span moved, spanBuilt.shares), which the pass
+// writes whole after the commit (writeOwed); the days it wrote, for the pass's report; and, where
+// its rows and members that moved stand staged aside (stageKept), their staging, which the commit
+// writes them from, nil where it sends them itself.
 type spanWrite struct {
 	family     dayFamily
 	build      string
@@ -479,6 +496,7 @@ type spanWrite struct {
 	goneRepos  []string
 	projects   []string
 	spans      writtenSpans
+	owed       []projectDay
 	report     []builtDay
 	staged     *ruleStaging
 }
@@ -537,7 +555,7 @@ func (b *spanWrite) writeRows(ctx context.Context, tx pgx.Tx) error {
 // writeMembers writes the span write's members in tx, after its rows: the named days', as
 // writeProjectDays writes them, the span's that moved (writeMovedMembers, or from their staging:
 // ruleStaging.writeMembers), and every member of a repository that holds no run any more, of its
-// projects in statements of at most statementBytes.
+// projects in statements of at most statementBytes; and records owed the days it owes (oweDays).
 func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayMembersIn(ctx, tx, b.days, b.family.families); err != nil {
 		return err
@@ -547,6 +565,9 @@ func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 			return err
 		}
 	} else if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
+		return err
+	}
+	if err := oweDays(ctx, tx, b.owed); err != nil {
 		return err
 	}
 	if len(b.goneRepos) == 0 {
@@ -563,6 +584,28 @@ func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 			delete from eval_day_members where project_key = any($1) and family = any($2) and deploy_repo = any($3)
 		`, projects, b.family.families, b.goneRepos); err != nil {
 			return fmt.Errorf("delete the members of %v, which hold no delivery run any more: %w", b.goneRepos, err)
+		}
+	}
+	return nil
+}
+
+// oweDays records each of days, a project's day, owed a rewrite of its delivery family
+// (eval_days_owed), in tx, in statements of at most statementBytes: a day whose events
+// repository's rows a write of another repository's rows moved (postedShares), which the pass
+// writes whole (apply and writeOwed, owedDays), as it writes a day an item left.
+func oweDays(ctx context.Context, tx pgx.Tx, days []projectDay) error {
+	size := func(day *projectDay) int { return textBytes(&day.project) + 4 + 8 }
+	for chunk := range statementChunks(days, paramBytes(2, KindDelivery), size) {
+		projects, dates := make([]string, len(chunk)), make([]time.Time, len(chunk))
+		for i, day := range chunk {
+			projects[i], dates[i] = day.project, day.day
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into eval_days_owed (project_key, family, day)
+			select owed.project_key, $3, owed.day from unnest($1::text[], $2::date[]) as owed(project_key, day)
+			on conflict do nothing
+		`, projects, dates, KindDelivery); err != nil {
+			return fmt.Errorf("record %d days owed a rewrite: %w", len(chunk), err)
 		}
 	}
 	return nil
@@ -929,11 +972,12 @@ func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered 
 // transaction, and records in b what moved: each built row of a span day whose stored row holds
 // other values or is missing, each stored row of a span day of its key that the day no longer
 // builds, and the stored members of the days whose members the span built (covered). It
-// widens b's figure spans and its report by the days whose rows moved. The refresher lease allows
-// one refresher pass at a time, but two writers outside it change rows and members and can commit
-// between this read and the span write: the boot's repository rename pass renames an owner key
-// (store.RewriteRenamedRepositories), and a project's delete deletes the project's rows
-// (eval_days_project_deleted, migration 20261117100006).
+// widens b's figure spans and its report by the days whose rows moved, and owes each of them whose
+// project's events repository's rows hang on the rows it built (spanBuilt.shares, spanWrite.owed).
+// The refresher lease allows one refresher pass at a time, but two writers outside it change rows
+// and members and can commit between this read and the span write: the boot's repository rename
+// pass renames an owner key (store.RewriteRenamedRepositories), and a project's delete deletes the
+// project's rows (eval_days_project_deleted, migration 20261117100006).
 func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt, covered map[string]daySpan) error {
 	type scope struct {
 		evals, repos map[string]bool
@@ -987,6 +1031,9 @@ func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt
 		return cmp.Or(strings.Compare(a.project, c.project), a.day.Compare(c.day))
 	}) {
 		b.report = append(b.report, builtDay{family: b.family.walk, project: day.project, day: day.day})
+		if built.shares[day] {
+			b.owed = append(b.owed, day)
+		}
 	}
 	repos := slices.Sorted(maps.Keys(covered))
 	if len(repos) == 0 {
@@ -1195,15 +1242,17 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	for _, repo := range repos {
 		histories[repo.rule.DeployRepo] = historyOf(repo, history.Deploys[repo.rule.DeployRepo], prs)
 	}
-	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
-		alone, as, ci := false, map[string]bool{}, map[string]bool{}
+	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, []string, error) {
+		// rebuilt is each repository whose rows of the day are built whole (trackedKey.covers).
+		alone, as, ci, rebuilt := false, map[string]bool{}, map[string]bool{}, map[string]bool{}
 		for project, keys := range active {
-			for key := range keys {
+			for key, one := range keys {
 				if key.deployRepo == "" {
 					alone = true
 					continue
 				}
 				as[key.deployRepo] = true
+				rebuilt[key.deployRepo] = rebuilt[key.deployRepo] || one.covers(day)
 				if slugOf(project, key.eval) == SlugPRCI && checkDays[key.deployRepo][day] {
 					ci[key.deployRepo] = true
 				}
@@ -1237,11 +1286,11 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			if ci[name] {
 				checks, err := delivery.ReadCheckRows(ctx, pool, name, day, day.AddDate(0, 0, 1))
 				if err != nil {
-					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
+					return nil, nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 				}
 				checkAttribute, err := readAttribution(ctx, r.store, nil, checks.Runs)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				one.checks, one.checkJobs = checkAttribute.checkRuns(checks.Runs), checks.Jobs
 			}
@@ -1253,6 +1302,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				shown = append(shown, as[repo.rule.DeployRepo])
 			}
 		}
+		shares := postedShares(built, func(repo string) bool { return rebuilt[repo] })
 		firstShipped(built)
 		for i := range built {
 			if shown[i] {
@@ -1263,7 +1313,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		for project := range active {
 			rows[project] = read.Rows(project)
 		}
-		return rows, nil
+		return rows, shares, nil
 	}
 	// The zero rows of a project's day are built once for each deploy repository, and each key
 	// takes its own of them, under the rule the repository's rows are built under (keptRule), as
@@ -1325,7 +1375,7 @@ func (s *Store) checkDays(ctx context.Context, repo string, from, to time.Time) 
 func (r *refresh) legionSpanInput(tracked map[string]map[evalKey]*trackedKey, reach time.Time) spanInput {
 	type inputDays struct{ closed, filed map[time.Time]bool }
 	read := map[string]inputDays{}
-	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
+	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, []string, error) {
 		rows := make(map[string]ProjectDay, len(active))
 		for project := range active {
 			days, held := read[project]
@@ -1343,7 +1393,7 @@ func (r *refresh) legionSpanInput(tracked map[string]map[evalKey]*trackedKey, re
 					select false, filed_at from issue_filings where project_key = $1 and filed_at >= $2 and filed_at < $3
 				`, project, start, reach.AddDate(0, 0, 1))
 				if err != nil {
-					return nil, fmt.Errorf("read the days of %s's Legion input: %w", project, err)
+					return nil, nil, fmt.Errorf("read the days of %s's Legion input: %w", project, err)
 				}
 				var closed bool
 				var at time.Time
@@ -1355,13 +1405,13 @@ func (r *refresh) legionSpanInput(tracked map[string]map[evalKey]*trackedKey, re
 					}
 					return nil
 				}); err != nil {
-					return nil, fmt.Errorf("read the days of %s's Legion input: %w", project, err)
+					return nil, nil, fmt.Errorf("read the days of %s's Legion input: %w", project, err)
 				}
 				read[project] = days
 			}
 			since, err := r.sinceOf(ctx, project)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			own := ProjectDay{Project: project, Day: day}
 			for _, slug := range legionDaySlugs {
@@ -1372,7 +1422,7 @@ func (r *refresh) legionSpanInput(tracked map[string]map[evalKey]*trackedKey, re
 			}
 			rows[project] = own
 		}
-		return rows, nil
+		return rows, nil, nil
 	}
 	zeros := func(project string, day time.Time, key evalKey) []DayRow {
 		return ZeroLegionDay(project, day, slugOf(project, key.eval)).Rows

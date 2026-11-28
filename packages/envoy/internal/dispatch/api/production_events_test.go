@@ -996,11 +996,286 @@ func TestAFailurePostedThroughOneRouteOnASharedDeployCountsForThatProjectAlone(t
 	}
 }
 
+// seedSharedRepoProjects writes projects, each with its issue <project>-1 and a pull request of repo
+// naming that issue, number i+1 for the ith project, merged three hours ago, so a GitHub deploy that
+// ships repo#n counts for the nth project through its issue.
+func seedSharedRepoProjects(t *testing.T, pool *store.Pool, repo string, projects ...string) {
+	t.Helper()
+	ctx := t.Context()
+	merged := time.Now().UTC().Add(-3 * time.Hour)
+	for i, project := range projects {
+		issue := project + "-1"
+		if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number) values ($1, $1, 'alice', 2)`, project); err != nil {
+			t.Fatalf("seed project %s: %v", project, err)
+		}
+		if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
+			values ($1, $2, 1, $1, 'in_progress', '00000001', '{"kind":"system","id":"record-reach-test"}', $3)`,
+			issue, project, merged.AddDate(0, 0, -1)); err != nil {
+			t.Fatalf("seed issue %s: %v", issue, err)
+		}
+		if err := delivery.UpsertPullRequest(ctx, pool, delivery.DeliveryPullRequest{
+			Repo: repo, Number: i + 1, Title: fmt.Sprintf("%s: change %d", issue, i+1),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, i+1), Author: "octocat",
+			CreatedAt: new(merged.Add(-time.Hour)), MergedAt: new(merged), IssueKey: new(issue), Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", repo, i+1, err)
+		}
+	}
+}
+
+// saveFailureSources saves project's delivery settings: delivery on, an events source, and
+// sources as its failure sources from three days ago.
+func saveFailureSources(t *testing.T, pool *store.Pool, project string, sources ...string) {
+	t.Helper()
+	since := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -3)
+	saveProjectDelivery(t, pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{}, FailureSources: sources, FailuresMeasuredSince: &since,
+	})
+}
+
+// failureIDsOf is the ids of the failures a list read answered, sorted, and its total.
+func failureIDsOf(t *testing.T, what string, response *httptest.ResponseRecorder) ([]string, int) {
+	t.Helper()
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s, want 200", what, response.Code, response.Body.String())
+	}
+	page := decodeBody[productionEventList](t, response)
+	ids := []string{}
+	for _, item := range page.Items {
+		ids = append(ids, item.ID)
+	}
+	slices.Sort(ids)
+	return ids, page.Total
+}
+
+// TestAProjectsStateRouteJudgesAnotherProjectsFailureOnlyThroughACredentialThatCoversItsProject
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 1, as
+// dispatch://INFRA-978/comment/68fc9683-23aa-445a-8af9-c88936fe0220 narrows it to writes): a GitHub
+// deploy stored under BRK's row ships BRK-1's and HIDDEN-1's pull requests, so it counts for BRK, a
+// public project, and for HIDDEN, a private one, and HIDDEN's check_fail on it counts in both
+// projects' numbers: each reads 1 failed deploy of 1. A broker token scoped to BRK, the session
+// BRK's Legion daemon names as its controller, lists the check_fail through BRK's route, total 1,
+// and reads it among BRK's change-fail-rate items, as every read of BRK does. Its reject of the
+// check_fail through BRK's state route is 404 PRODUCTION_EVENT_NOT_FOUND, as an id of no row is,
+// and leaves the row counted and both rates where they were. The same session's token scoped to
+// HIDDEN, which covers both projects, rejects it through BRK's route, and both rates read 0 failed
+// of 1.
+func TestAProjectsStateRouteJudgesAnotherProjectsFailureOnlyThroughACredentialThatCoversItsProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	ctx, pool := t.Context(), rig.database.Pool
+	const scoped, covering, repo = "a-token-of-BRK", "a-token-of-HIDDEN", "acme/shared"
+	rig.broker.Says(scoped, liveNamedToken(caller.jkt))
+	coveringToken := liveNamedToken(caller.jkt)
+	coveringToken.Projects = []string{"HIDDEN"}
+	rig.broker.Says(covering, coveringToken)
+	seedSharedRepoProjects(t, pool, repo, brokerTestProject, "HIDDEN")
+	if _, err := pool.Exec(ctx, `update projects set visibility = 'private' where key = 'HIDDEN'`); err != nil {
+		t.Fatalf("mark HIDDEN private: %v", err)
+	}
+	for _, project := range []string{brokerTestProject, "HIDDEN"} {
+		saveFailureSources(t, pool, project, delivery.FailureSourceEvents, delivery.FailureSourceCheckResults)
+	}
+	daemon := newControllerDaemon(t)
+	daemon.names(brokerTestSession)
+	if _, err := legion.PutSettings(ctx, pool, brokerTestProject, daemon.URL, model.Actor{Kind: "user", ID: brokerTestPerson}); err != nil {
+		t.Fatalf("name %s's Legion daemon: %v", brokerTestProject, err)
+	}
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+	finished := now.Add(-time.Hour)
+	shared := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: brokerTestProject, Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(41), StartedAt: new(finished.Add(-10 * time.Minute)), FinishedAt: &finished,
+		Repo: repo, PullRequests: []string{repo + "#1", repo + "#2"},
+	})
+	hidden := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "HIDDEN", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c1@" + shared.ID,
+		DeployID: new(shared.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(30 * time.Minute)),
+	})
+	registry := evals.New(rig.database, rig.deps.Docs, rig.deps.Events, rig.deps.Attributor)
+	window := url.Values{"from": {today.AddDate(0, 0, -2).Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}
+	// requireFailed builds the day rows the writes so far logged changes for and holds each
+	// project's change fail rate over the days around now to failed of 1 deploy.
+	requireFailed := func(when string, failed float64) {
+		t.Helper()
+		refreshEvalDays(t, registry, rig.database, time.Now().UTC())
+		for _, project := range []string{brokerTestProject, "HIDDEN"} {
+			read := false
+			for _, item := range evalGet[evalListResponse](t, rig.handler, "/api/v1/projects/"+project+"/evals?limit=200&"+window.Encode()).Items {
+				if item.Definition.Slug != evals.SlugChangeFailRate || len(item.Series) == 0 {
+					continue
+				}
+				read = true
+				if got, total := item.Series[0].Window["failed"], item.Series[0].Window["total"]; got == nil || total == nil || *got != failed || *total != 1 {
+					t.Errorf("%s: %s's change fail rate reads failed %v of %v, want %g of 1", when, project, got, total, failed)
+				}
+			}
+			if !read {
+				t.Errorf("%s: %s's evals hold no change fail rate series", when, project)
+			}
+		}
+	}
+	reject := func(token, id string) *httptest.ResponseRecorder {
+		return rig.serve(caller.presenting(t, http.MethodPut, productionEventStatePath(brokerTestProject, id), token,
+			map[string]any{"state": "rejected", "reason": "The check read the wrong cluster."}))
+	}
+
+	requireFailed("before any reject", 1)
+	query := url.Values{"kind": {"failure"}, "from": window["from"], "to": window["to"]}
+	if ids, total := failureIDsOf(t, "BRK's failures read with BRK's token",
+		rig.serve(caller.presenting(t, http.MethodGet, productionEventsPath(brokerTestProject)+"?"+query.Encode(), scoped, nil))); !slices.Equal(ids, []string{hidden.ID}) || total != 1 {
+		t.Errorf("BRK's token lists BRK's failures %v, total %d; want HIDDEN's check_fail %s, total 1", ids, total, hidden.ID)
+	}
+	itemsQuery := url.Values{"row_kind": {"failure"}, "from": window["from"], "to": window["to"]}
+	response := rig.serve(caller.presenting(t, http.MethodGet, evalItemsPath(brokerTestProject, evals.SlugChangeFailRate)+"?"+itemsQuery.Encode(), scoped, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("BRK's change-fail-rate items read with BRK's token: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+	keys := []string{}
+	for _, row := range decodeBody[evalItemsResponse](t, response).Items {
+		keys = append(keys, row.RowKey)
+	}
+	if !slices.Equal(keys, []string{hidden.ID}) {
+		t.Errorf("BRK's token reads BRK's change-fail-rate failures %v, want HIDDEN's check_fail %s", keys, hidden.ID)
+	}
+
+	expectRefusal(t, "BRK's token's reject of an id of no row", reject(scoped, "0195f2a8-0000-7000-8000-000000000000"),
+		http.StatusNotFound, codeProductionEventNotFound)
+	expectRefusal(t, "BRK's token's reject of HIDDEN's check_fail", reject(scoped, hidden.ID),
+		http.StatusNotFound, codeProductionEventNotFound)
+	if stored := readProductionEvent(t, rig.database, "HIDDEN", hidden.ID); stored.State != prodevents.StateCounted {
+		t.Fatalf("BRK's token's refused reject left HIDDEN's check_fail %s, want counted", stored.State)
+	}
+	requireFailed("after BRK's token's refused reject", 1)
+
+	if rejected := reject(covering, hidden.ID); rejected.Code != http.StatusOK || decodeBody[prodevents.Event](t, rejected).State != prodevents.StateRejected {
+		t.Fatalf("HIDDEN's token's reject of HIDDEN's check_fail through BRK's route: status=%d body=%s, want 200 and a rejected row", rejected.Code, rejected.Body.String())
+	}
+	requireFailed("after HIDDEN's token's reject", 0)
+}
+
+// TestAProjectWhoseMeasuresDoNotCountAFailureNeitherListsNorJudgesIt
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 2): a GitHub deploy
+// stored under ALPHA's row ships ALPHA-1's and OMEGA-1's pull requests, so it counts for both, and
+// ALPHA's check_fail on it counts in ALPHA's numbers, whose failure sources hold check_results, and
+// not in OMEGA's, whose hold events alone. So OMEGA's list leaves the check_fail out, and OMEGA's
+// person's reject of it is 404 PRODUCTION_EVENT_NOT_FOUND and leaves it counted. Once OMEGA's
+// failure sources hold check_results too, OMEGA lists it and its person rejects it.
+func TestAProjectWhoseMeasuresDoNotCountAFailureNeitherListsNorJudgesIt(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	pool := database.Pool
+	const repo = "acme/shared"
+	seedSharedRepoProjects(t, pool, repo, "ALPHA", "OMEGA")
+	saveFailureSources(t, pool, "ALPHA", delivery.FailureSourceCheckResults)
+	saveFailureSources(t, pool, "OMEGA", delivery.FailureSourceEvents)
+	finished := time.Now().UTC().Add(-time.Hour)
+	shared := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(51), StartedAt: new(finished.Add(-10 * time.Minute)), FinishedAt: &finished,
+		Repo: repo, PullRequests: []string{repo + "#1", repo + "#2"},
+	})
+	check := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "ALPHA", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c1@" + shared.ID,
+		DeployID: new(shared.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(30 * time.Minute)),
+	})
+	listed := func(project string) []string {
+		t.Helper()
+		ids, _ := failureIDsOf(t, project+"'s failures", dispatchRequest(t, handler, http.MethodGet, productionEventsPath(project)+"?kind=failure", nil, "alice"))
+		return ids
+	}
+	reject := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPut, productionEventStatePath("OMEGA", check.ID),
+			map[string]any{"state": "rejected", "reason": "Not OMEGA's check."}, "alice")
+	}
+
+	if got := listed("ALPHA"); !slices.Equal(got, []string{check.ID}) {
+		t.Fatalf("ALPHA lists the failures %v, want its check_fail %s", got, check.ID)
+	}
+	if got := listed("OMEGA"); len(got) != 0 {
+		t.Errorf("OMEGA, whose failure sources do not hold check_results, lists the failures %v, want none", got)
+	}
+	expectRefusal(t, "OMEGA's reject of ALPHA's check_fail while OMEGA does not count failing checks", reject(),
+		http.StatusNotFound, codeProductionEventNotFound)
+	if stored := readProductionEvent(t, database, "ALPHA", check.ID); stored.State != prodevents.StateCounted {
+		t.Fatalf("OMEGA's refused reject left ALPHA's check_fail %s, want counted", stored.State)
+	}
+
+	saveFailureSources(t, pool, "OMEGA", delivery.FailureSourceEvents, delivery.FailureSourceCheckResults)
+	if got := listed("OMEGA"); !slices.Equal(got, []string{check.ID}) {
+		t.Errorf("OMEGA, whose failure sources hold check_results now, lists the failures %v, want ALPHA's check_fail %s", got, check.ID)
+	}
+	if rejected := reject(); rejected.Code != http.StatusOK || decodeBody[prodevents.Event](t, rejected).State != prodevents.StateRejected {
+		t.Fatalf("OMEGA's reject of ALPHA's check_fail once OMEGA counts failing checks: status=%d body=%s, want 200 and a rejected row", rejected.Code, rejected.Body.String())
+	}
+}
+
+// TestADeployOfARepositoryGitHubSpellsWithCapitalsCountsForItsPullRequestsProject (dispatch://
+// INFRA-978, R23 of the review at 20c604ef): delivery_pull_requests keeps Acme/App#1 as GitHub
+// spells it, naming PEE-1, and the record names the deploy's pull request acme/app#1, in lower case.
+// The deploy counts for PEE alone, through its pull request's issue, and not for QUE, whose
+// published default repository is acme/app: QUE's list leaves PEE's check_fail on it out and QUE's
+// person's reject of it is 404 PRODUCTION_EVENT_NOT_FOUND, while PEE lists it, and a failure posted
+// to PEE's route on that deploy is taken.
+func TestADeployOfARepositoryGitHubSpellsWithCapitalsCountsForItsPullRequestsProject(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx, pool := t.Context(), database.Pool
+	seedSharedRepoProjects(t, pool, "Acme/App", "PEE")
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, next_number, default_repo) values ('QUE', 'QUE', 'alice', 1, 'acme/app')`); err != nil {
+		t.Fatalf("seed project QUE: %v", err)
+	}
+	publishDefaultRepos(t, pool)
+	for _, project := range []string{"PEE", "QUE"} {
+		saveFailureSources(t, pool, project, delivery.FailureSourceEvents, delivery.FailureSourceCheckResults)
+	}
+	finished := time.Now().UTC().Add(-time.Hour)
+	deploy := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "QUE", Kind: prodevents.KindDeploy, Status: prodevents.StatusSucceeded, Source: prodevents.SourceGitHub,
+		SourceRef: prodevents.GitHubSourceRef(61), StartedAt: new(finished.Add(-10 * time.Minute)), FinishedAt: &finished,
+		Repo: "Acme/App", PullRequests: []string{"acme/app#1"},
+	})
+	check := writeProductionEvent(t, pool, prodevents.Event{
+		ProjectKey: "PEE", Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults, SourceRef: "check:doc/c1@" + deploy.ID,
+		DeployID: new(deploy.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(finished.Add(30 * time.Minute)),
+	})
+	for project, want := range map[string]bool{"PEE": true, "QUE": false} {
+		if counts, err := evals.DeployCountsFor(ctx, pool, deps.Attributor, project, deploy); err != nil || counts != want {
+			t.Errorf("the deploy of Acme/App counts for %s: %v (%v), want %v", project, counts, err, want)
+		}
+	}
+	listed := func(project string) []string {
+		t.Helper()
+		ids, _ := failureIDsOf(t, project+"'s failures", dispatchRequest(t, handler, http.MethodGet, productionEventsPath(project)+"?kind=failure", nil, "alice"))
+		return ids
+	}
+	if got := listed("PEE"); !slices.Equal(got, []string{check.ID}) {
+		t.Errorf("PEE lists the failures %v, want its check_fail %s", got, check.ID)
+	}
+	if got := listed("QUE"); len(got) != 0 {
+		t.Errorf("QUE lists the failures %v, want none: the deploy counts for PEE alone", got)
+	}
+	expectRefusal(t, "QUE's reject of PEE's check_fail", dispatchRequest(t, handler, http.MethodPut, productionEventStatePath("QUE", check.ID),
+		map[string]any{"state": "rejected", "reason": "Not QUE's deploy."}, "alice"), http.StatusNotFound, codeProductionEventNotFound)
+	if stored := readProductionEvent(t, database, "PEE", check.ID); stored.State != prodevents.StateCounted {
+		t.Fatalf("QUE's refused reject left PEE's check_fail %s, want counted", stored.State)
+	}
+	posted := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PEE"), map[string]any{
+		"kind": "failure", "source_ref": "alerts:1", "deploy_id": deploy.ID, "actor": map[string]any{"kind": "session", "id": "ses-ci"},
+	})
+	if posted.Code != http.StatusCreated {
+		t.Fatalf("PEE's failure on the deploy of Acme/App: status=%d body=%s, want 201", posted.Code, posted.Body.String())
+	}
+}
+
 // TestASecondRestoreThroughTheStateRouteKeepsTheFirstOne: a person's restore of a failure that a
 // revert's own deploy restored, with no restoring deploy and with another one, answers 200 with
 // the revert's restore as it was (its time, its writer and its restoring deploy), and so does a
 // second person's restore of a failure a person restored: the stored row keeps the first
-// restore, so the failure's recovery time does not grow with a retried write (R7).
+// restore, so the failure's recovery time does not grow with a retried write (R7). A second
+// restore naming an id of no row, or a deploy of another project that counts for that project
+// alone, answers that same row, one answer for both, so the route tells nothing of whether an id
+// is a deploy (dispatch://INFRA-978, R6 of the review at 20c604ef).
 func TestASecondRestoreThroughTheStateRouteKeepsTheFirstOne(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -1047,6 +1322,13 @@ func TestASecondRestoreThroughTheStateRouteKeepsTheFirstOne(t *testing.T) {
 	}
 	sameRestore("a second person's restore of the flag", restore(flag.ID, "bob", map[string]any{"restored_by_deploy": later.ID}), first)
 	sameRestore("the flag as stored", readProductionEvent(t, database, "PRD", flag.ID), first)
+
+	createTestProject(t, handler, "OTH")
+	others := writeProductionDeploy(t, database, "OTH", 10, now.Add(-time.Hour))
+	for name, id := range map[string]string{"an id of no row": "0195f2a8-0000-7000-8000-000000000000", "OTH's deploy": others.ID} {
+		sameRestore("a restore of the revert's failure naming "+name, restore(revert.ID, "bob", map[string]any{"restored_by_deploy": id}), revert)
+		sameRestore("a restore of the flag naming "+name, restore(flag.ID, "bob", map[string]any{"restored_by_deploy": id}), first)
+	}
 }
 
 // TestARepeatOfAFailurePostAnswersItsRowOnceItsDeployIsDropped: a system's failure posted by a

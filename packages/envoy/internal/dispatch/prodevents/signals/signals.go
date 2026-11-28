@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,15 +42,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // loopActor writes every row the loop writes but a check_fail and an incident_issue, which carry
 // the actor of their result and of their event: the deploy rows, a revert's failure and its
-// restore, the reject of a failure on a deploy a rule change dropped, and that failure's re-count
-// when a later rule calls its deploy a deploy again. So a failure whose reject names loopActor is
-// one a drop rejected, and every other reject is a person's, a controller's or a retraction's,
-// which no later rule undoes (prodevents.UpsertGitHubDeploy, RejectRetractedCheck).
+// restore, and the re-count of a failure a drop rejected when a later rule calls its deploy a
+// deploy again. It writes no reject: a drop's is prodevents.DropWriter's, so a later rule undoes
+// that reject alone, and every other reject, a person's, a controller's or a retraction's, stays
+// (prodevents.UpsertGitHubDeploy, RejectRetractedCheck).
 var loopActor = model.Actor{Kind: "system", ID: "production-signals"}
 
 // Lease names the lease every pass takes (duty.Exclusive with no period): two processes woken by
@@ -183,4 +185,186 @@ func moveCursor(ctx context.Context, pool *store.Pool, name string, position int
 		return fmt.Errorf("move the %s cursor: %w", name, err)
 	}
 	return nil
+}
+
+// The write every automatic signal makes of its failure, the check_fail (RecordCheckFailure), the
+// incident_issue (recordIncident) and the revert (revertFailures): writeSignal writes the row only
+// where the deploy it blames counts for the row's project, judged in the write's transaction, and
+// keeps for good the signal's refusal of a deploy that counts for other projects alone
+// (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
+
+// errCountsElsewhere is deployCountsForRow's refusal of the deploy an automatic signal's row blames
+// where that deploy counts for other projects than the row's alone: writeSignal refuses the signal
+// on that deploy for good.
+var errCountsElsewhere = errors.New("the blamed deploy counts for other projects than the row's alone")
+
+// refusedMessage is the line each refusal of a signal logs (commitRefusal).
+const refusedMessage = "dispatch: an automatic signal is refused on the deploy it blames and makes no failure of that deploy, now or later"
+
+// refusal is how an automatic signal keeps its refusal of a deploy it blames, in its own table
+// (check_fail_refusals, incident_refusals, revert_refusals; migration 20261128030142): signal and
+// key name the signal as that table keys it, in the refusal's log line, and record inserts the
+// signal's refusal of deploy in tx, which it does not commit.
+type refusal struct {
+	signal string
+	key    string
+	record func(ctx context.Context, tx pgx.Tx, deploy string) error
+}
+
+// commitRefusal records in tx, and commits, refused's refusal of deploy, the deploy its signal
+// blames, and logs it with the signal's key, the deploy and why: the signal makes no row blaming
+// that deploy, then or on any later write of it, whatever makes the deploy count for the row's
+// project later.
+func commitRefusal(ctx context.Context, tx pgx.Tx, refused refusal, deploy, why string) error {
+	if err := refused.record(ctx, tx, deploy); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the refusal of %s %s on deploy %s: %w", refused.signal, refused.key, deploy, err)
+	}
+	slog.Info(refusedMessage, "signal", refused.signal, "key", refused.key, "deploy", deploy, "reason", why)
+	return nil
+}
+
+// writeSignal writes event, an automatic signal's failure, in tx, the transaction its caller began
+// and read the signal in, which takes the delivery change log's lock nowhere, then commits tx and,
+// where it created the row, drains the change rows the write left in the outbox, as
+// prodevents.Write does; it reports whether it created the row. The row is written only where the
+// deploy it blames counts for its project (countsForRow). bind, where not nil, runs in tx before
+// the commit, on the row written or on the row the project holds under event's source_ref already.
+// Where the blamed deploy counts for other projects alone, refused records the signal's refusal of
+// it in tx, which commits it (commitRefusal), so no later write of the signal makes a row blaming
+// that deploy. Where it counts for no project, as a deploy a rule change dropped since the signal's
+// lookup does, or where its row is gone since then, the write records nothing and commits nothing:
+// the signal stays unmatched, and a later write of it asks again.
+func writeSignal(ctx context.Context, pool *store.Pool, tx pgx.Tx, event prodevents.Event, refused refusal,
+	bind func(context.Context, pgx.Tx, prodevents.Event) error) (bool, error) {
+	blamed := *event.DeployID
+	row, created, err := prodevents.WriteIn(ctx, tx, event, countsForRow(event.ProjectKey, blamed))
+	switch {
+	case errors.Is(err, errCountsElsewhere):
+		return false, commitRefusal(ctx, tx, refused, blamed, "it counts for other projects than "+event.ProjectKey+" alone")
+	case blamesNoDeploy(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	if bind != nil {
+		if err := bind(ctx, tx, row); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
+	}
+	if created {
+		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of an automatic signal's write")
+	}
+	return created, nil
+}
+
+// countsForRow is the question an automatic signal's write of a row of project asks of the deploy
+// it blames, blamed (prodevents.DeployCheck), in the write's transaction while the store holds that
+// deploy's row for key share: deployCountsForRow. A restoring deploy the row names is asked
+// nothing.
+func countsForRow(project, blamed string) prodevents.DeployCheck {
+	return func(ctx context.Context, tx pgx.Tx, deploy prodevents.Event) error {
+		if deploy.ID != blamed {
+			return nil
+		}
+		return deployCountsForRow(ctx, tx, project, deploy)
+	}
+}
+
+// deployCountsForRow reads in tx whether deploy, the deploy an automatic signal's row of project
+// blames, counts for project: the projects it counts for by the rule the failure measures count a
+// deploy by (prodevents.DeployProjects), over the stored facts as the write's transaction reads
+// them (storedDeployFacts), and not the refresher's published copy of them (eval_days_rules,
+// eval_days_defaults), so a row whose deploy's rule is saved and not yet published is written, and
+// counts once the refresher's next pass publishes it
+// (dispatch://INFRA-978/comment/6da2d490-27d2-4d03-816a-a164a8d24dde). It answers nil where they
+// hold project, and errCountsElsewhere where they hold other projects alone. Where they hold none,
+// as for a dropped deploy, it answers prodevents.NoDeploy, the store's refusal of a deploy row gone
+// since the signal's lookup: only a deploy that counted for other projects alone refuses a signal
+// for good (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706), and one that counts
+// for none may count for the row's project once a later rule calls it a deploy again.
+func deployCountsForRow(ctx context.Context, tx pgx.Tx, project string, deploy prodevents.Event) error {
+	facts, err := storedDeployFacts(ctx, tx, deploy)
+	if err != nil {
+		return err
+	}
+	switch projects := prodevents.DeployProjects(deploy, facts); {
+	case slices.Contains(projects, project):
+		return nil
+	case len(projects) == 0:
+		return prodevents.NoDeploy(deploy.ID)
+	}
+	return errCountsElsewhere
+}
+
+// storedDeployFacts reads in q the facts deploy is counted by (prodevents.DeployFacts) from what is
+// stored: each project's default_repo, the project of the issue of each pull request deploy ships
+// (a pull request no issue Dispatch holds attributes counts for none, so for the projects whose
+// default repository is the deploy's), and, where it ships no pull request, the project whose
+// deploy source reads its repository by the stored settings' rules (delivery.SourceRules). A posted
+// and a dropped deploy read none of it.
+func storedDeployFacts(ctx context.Context, q delivery.Querier, deploy prodevents.Event) (prodevents.DeployFacts, error) {
+	facts := prodevents.DeployFacts{Defaults: map[string]string{}}
+	if deploy.Source != prodevents.SourceGitHub || deploy.Dropped() {
+		return facts, nil
+	}
+	var repos []string
+	var numbers []int32
+	for _, ref := range deploy.PullRequests {
+		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
+			repos, numbers = append(repos, repo), append(numbers, int32(number))
+		}
+	}
+	if len(repos) == 0 {
+		rules, err := delivery.ReadSourceRules(ctx, q)
+		if err != nil {
+			return prodevents.DeployFacts{}, err
+		}
+		if rule, read := rules.For(deploy.Repo); read {
+			facts.Source = rule.Project
+		}
+	} else {
+		rows, err := q.Query(ctx, `
+			select coalesce(issue.project_key, '')
+			from unnest($1::text[], $2::int[]) with ordinality as given(repo, number, at)
+			left join delivery_pull_requests request on lower(request.repo) = lower(given.repo) and request.number = given.number
+			left join issues issue on issue.key = request.issue_key
+			order by given.at`, repos, numbers)
+		if err != nil {
+			return prodevents.DeployFacts{}, fmt.Errorf("read the projects of the pull requests deploy %s ships: %w", deploy.ID, err)
+		}
+		terminals, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return prodevents.DeployFacts{}, fmt.Errorf("read the projects of the pull requests deploy %s ships: %w", deploy.ID, err)
+		}
+		for _, terminal := range terminals {
+			facts.Pulls = append(facts.Pulls, prodevents.PullAttribution{Terminal: terminal})
+		}
+	}
+	rows, err := q.Query(ctx, `select key, coalesce(default_repo, '') from projects`)
+	if err != nil {
+		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' default repositories: %w", err)
+	}
+	var project, repo string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
+		facts.Defaults[project] = repo
+		return nil
+	}); err != nil {
+		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' default repositories: %w", err)
+	}
+	return facts, nil
+}
+
+// blamesNoDeploy reports whether err is the store's refusal of the deploy an automatic row blames
+// as no deploy row (prodevents.CodeNoDeploy): a deploy row gone since the signal's lookup, or a
+// deploy that counts for no project (deployCountsForRow). The signal writes no row of it, as it
+// writes none where no deploy holds what it names, and is not refused.
+func blamesNoDeploy(err error) bool {
+	var refused *prodevents.Error
+	return errors.As(err, &refused) && refused.Code == prodevents.CodeNoDeploy
 }

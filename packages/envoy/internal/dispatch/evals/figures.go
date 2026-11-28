@@ -603,8 +603,9 @@ func (f figureEnds) rows() Range {
 // write keeps each of them true to its rows; no range ending after it is written, nor the day row
 // of a day on or after it: those are the walks' to fold, from the rows that stand when they do.
 // repos is the deploy repositories recorded with the rows, which its two questions of them answer
-// (unionCut, multiDeploy): read once for the transaction a write under it asks in, and for every
-// scope one reader answers there (figureScopeReader).
+// (unionCut, multiDeploy), each reading them where they were not read yet: once for the
+// transaction a write under it asks in, and for every scope one reader answers there
+// (figureScopeReader).
 type figureScope struct {
 	build   string
 	project string
@@ -613,54 +614,65 @@ type figureScope struct {
 }
 
 // recordedRepos is the deploy repositories recorded with the rows (DeployReposIn), as q read them:
-// nil q until a write asks for them (figureScope.readRepos).
+// nil q until a write asks for them (figureScope.deployRepos).
 type recordedRepos struct {
 	q     delivery.Querier
 	repos *DeployRepos
 }
 
-// readRepos reads, in q, the deploy repositories recorded with the rows that the scope's
-// questions answer of, where they were not read in q yet: once for the transaction, or the pool, a
-// write under the scope reads in, and not at all for a write that asks no question of them.
-func (s figureScope) readRepos(ctx context.Context, q delivery.Querier) error {
-	if s.repos.q == q {
-		return nil
+// deployRepos is, read in q, the deploy repositories recorded with the rows that the scope's
+// questions answer of, read where they were not read in q yet: once for the transaction, or the
+// pool, a write under the scope reads in, and not at all for a write that asks no question of
+// them. A scope that holds no record of them (a literal that names none) reads them at each
+// question. q holds no open read when it asks: a transaction's connection answers one statement at
+// a time.
+func (s figureScope) deployRepos(ctx context.Context, q delivery.Querier) (*DeployRepos, error) {
+	if s.repos == nil {
+		return DeployReposIn(ctx, q)
 	}
-	repos, err := DeployReposIn(ctx, q)
-	if err != nil {
-		return err
+	if s.repos.q != q {
+		repos, err := DeployReposIn(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		s.repos.q, s.repos.repos = q, repos
 	}
-	s.repos.q, s.repos.repos = q, repos
-	return nil
+	return s.repos.repos, nil
 }
 
 // unionCut is the project's union cut (`deploy_repo` `*`, unionDeployRepo) of cut's repository,
 // and whether cut's rows fold into it: where cut's deploy repository is one the project's read
-// folds (DeployRepos.Of), of those readRepos read.
-func (s figureScope) unionCut(cut figureCut) (figureCut, bool) {
-	if !s.repos.repos.hasRepo(s.project, cut.deployRepo) {
-		return figureCut{}, false
+// folds (DeployRepos.Of), of those recorded with the rows as q reads them (deployRepos). A cut of
+// no deploy repository, or a union cut, folds into none, and asks q nothing.
+func (s figureScope) unionCut(ctx context.Context, q delivery.Querier, cut figureCut) (figureCut, bool, error) {
+	if cut.deployRepo == "" || cut.deployRepo == unionDeployRepo {
+		return figureCut{}, false, nil
 	}
-	return figureCut{repo: cut.repo, deployRepo: unionDeployRepo}, true
+	repos, err := s.deployRepos(ctx, q)
+	if err != nil || !repos.hasRepo(s.project, cut.deployRepo) {
+		return figureCut{}, false, err
+	}
+	return figureCut{repo: cut.repo, deployRepo: unionDeployRepo}, true, nil
 }
 
 // multiDeploy reports whether the project's read folds several deploy repositories, of those
-// readRepos read (DeployRepos.several).
-func (s figureScope) multiDeploy() bool {
-	return s.repos.repos.several(s.project)
+// recorded with the rows as q reads them (deployRepos, DeployRepos.several).
+func (s figureScope) multiDeploy(ctx context.Context, q delivery.Querier) (bool, error) {
+	repos, err := s.deployRepos(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return repos.several(s.project), nil
 }
 
 // cutRepos is, read in q, the DeployRepos whose day rows a fold of cut reads: the project's
-// recorded deploy repositories for its union cut (readRepos), and DeployReposOf its one deploy
+// recorded deploy repositories for its union cut (deployRepos), and DeployReposOf its one deploy
 // repository, or none, for every other cut.
 func (s figureScope) cutRepos(ctx context.Context, q delivery.Querier, cut figureCut) (*DeployRepos, error) {
 	if cut.deployRepo != unionDeployRepo {
 		return DeployReposOf(s.project, cut.deployRepo), nil
 	}
-	if err := s.readRepos(ctx, q); err != nil {
-		return nil, err
-	}
-	return s.repos.repos, nil
+	return s.deployRepos(ctx, q)
 }
 
 // readFigureScope reads, in q, how far project's stored figures are folded (figureScope), for a
@@ -920,14 +932,10 @@ type evalSpan struct {
 // statementBytes (statementChunks), each read by both statements.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
 	var named []evalSpan
-	hasKeyed := false
 	for _, evalID := range spannedEvals(spans) {
 		entry, held := entries[evalID]
 		if !held {
 			continue
-		}
-		if KeyedByDeployRepo(entry.Definition) {
-			hasKeyed = true
 		}
 		for _, span := range spansOf(spans, evalID, scope.through.AddDate(0, 0, -1)) {
 			named = append(named, evalSpan{eval: evalID, writer: entry.Definition.writer(), daySpan: span})
@@ -936,11 +944,6 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	moved := map[figureGroupKey]map[time.Time]bool{}
 	if len(named) == 0 {
 		return moved, nil
-	}
-	if hasKeyed {
-		if err := scope.readRepos(ctx, q); err != nil {
-			return nil, err
-		}
 	}
 	type dayKey struct {
 		group figureGroupKey
@@ -978,13 +981,6 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
 			key.day = key.day.UTC()
 			stamped[key] = append(stamped[key], row)
-			if KeyedByDeployRepo(entries[key.group.eval].Definition) {
-				if cut, ok := scope.unionCut(key.group.figureCut); ok {
-					union := key
-					union.group.figureCut = cut
-					stamped[union] = append(stamped[union], row)
-				}
-			}
 			return nil
 		}); err != nil {
 			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
@@ -1010,6 +1006,25 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 			return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
 		}
 	}
+	// Each row of an eval keyed by the deploy repository is stamped into the project's union cut of
+	// its repository too, where the project's read folds its deploy repository (unionCut), once
+	// every chunk is read: the question reads the recorded repositories in q.
+	unions := map[dayKey][]stampedRow{}
+	for at, held := range stamped {
+		if !KeyedByDeployRepo(entries[at.group.eval].Definition) {
+			continue
+		}
+		cut, ok, err := scope.unionCut(ctx, q, at.group.figureCut)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			union := at
+			union.group.figureCut = cut
+			unions[union] = append(unions[union], held...)
+		}
+	}
+	maps.Copy(stamped, unions)
 	keys := map[string]int64{}
 	note := func(at dayKey) {
 		if moved[at.group] == nil {
@@ -1198,14 +1213,10 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		first, last time.Time
 	}
 	var named []given
-	hasKeyed := false
 	for _, evalID := range slices.Sorted(maps.Keys(spans)) {
 		entry, held := entries[evalID]
 		if !held {
 			continue
-		}
-		if KeyedByDeployRepo(entry.Definition) {
-			hasKeyed = true
 		}
 		span := spans[evalID]
 		first, last := span.first.AddDate(0, 0, 1-figureSpan), span.last.AddDate(0, 0, figureSpan-1)
@@ -1216,12 +1227,6 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			named = append(named, given{entry: entry, first: first, last: last})
 		}
 	}
-	if hasKeyed {
-		if err := scope.readRepos(ctx, q); err != nil {
-			return nil, err
-		}
-	}
-	multiDeploy := scope.multiDeploy()
 	byGroup := map[figureGroupKey][]WindowRow{}
 	size := func(one *given) int {
 		return 4*4 + len(one.entry.Definition.EvalID) + len(one.entry.Definition.writer()) + 2*8 + windowEntryBytes(&one.entry, false)
@@ -1269,16 +1274,6 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			row.Range, row.EvalID, row.UpdatedAt = RangeWindow, key.eval, row.UpdatedAt.UTC()
 			utcPart(part)
 			byGroup[key] = append(byGroup[key], row)
-			if KeyedByDeployRepo(entries[key.eval].Definition) {
-				if cut, ok := scope.unionCut(key.figureCut); ok {
-					unionRow := row
-					if multiDeploy {
-						unionRow.deployRepo = key.deployRepo
-					}
-					union := figureGroupKey{eval: key.eval, figureCut: cut}
-					byGroup[union] = append(byGroup[union], unionRow)
-				}
-			}
 			row, read = WindowRow{}, read+1
 			return nil
 		}); err != nil {
@@ -1289,6 +1284,35 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			times.rows += read
 		}
 	}
+	// Each row of an eval keyed by the deploy repository is also of the project's union cut of its
+	// repository, where the project's read folds its deploy repository (unionCut), with its deploy
+	// repository named where the read folds several (multiDeploy), once every chunk is read: the
+	// questions read the recorded repositories in q.
+	unions := map[figureGroupKey][]WindowRow{}
+	for key, held := range byGroup {
+		if !KeyedByDeployRepo(entries[key.eval].Definition) {
+			continue
+		}
+		cut, ok, err := scope.unionCut(ctx, q, key.figureCut)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		several, err := scope.multiDeploy(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		union := figureGroupKey{eval: key.eval, figureCut: cut}
+		for _, row := range held {
+			if several {
+				row.deployRepo = key.deployRepo
+			}
+			unions[union] = append(unions[union], row)
+		}
+	}
+	maps.Copy(byGroup, unions)
 	groups := make(map[figureGroupKey]*figureGroup, len(byGroup))
 	for key, held := range byGroup {
 		entry := entries[key.eval]
@@ -2209,18 +2233,17 @@ func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r R
 }
 
 // withUnionCuts is cuts with, for every repository in them that holds a row of one of the
-// project's currently recorded deploy repositories (unionCut, of those readRepos reads in q), the
-// project's union cut of it (`deploy_repo` `*`), whose fold reads all of the project's current
-// deploy repositories together, in their order (compareFigureCuts), each once.
+// project's currently recorded deploy repositories (unionCut, of those recorded with the rows as
+// q reads them), the project's union cut of it (`deploy_repo` `*`), whose fold reads all of the
+// project's current deploy repositories together, in their order (compareFigureCuts), each once.
 func (s figureScope) withUnionCuts(ctx context.Context, q delivery.Querier, cuts []figureCut) ([]figureCut, error) {
-	if slices.ContainsFunc(cuts, func(cut figureCut) bool { return cut.deployRepo != "" && cut.deployRepo != unionDeployRepo }) {
-		if err := s.readRepos(ctx, q); err != nil {
+	for _, cut := range cuts {
+		union, ok, err := s.unionCut(ctx, q, cut)
+		if err != nil {
 			return nil, err
 		}
-		for _, cut := range cuts {
-			if union, ok := s.unionCut(cut); ok {
-				cuts = append(cuts, union)
-			}
+		if ok {
+			cuts = append(cuts, union)
 		}
 	}
 	slices.SortFunc(cuts, compareFigureCuts)

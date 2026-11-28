@@ -81,13 +81,16 @@ func TestARevertBlamesNoDeployAnotherProjectPosted(t *testing.T) {
 	}
 }
 
-// TestARevertWhoseDeployFinishedBeforeTheBlamedDeployMakesNoRow: a revert whose restoring deploy
-// finished before the deploy the revert blames cannot restore a failure of that deploy, so the
-// revert signal writes no row for it; a revert shipped by the same deploy whose blamed deploy
-// finished before it still writes its row.
-func TestARevertWhoseDeployFinishedBeforeTheBlamedDeployMakesNoRow(t *testing.T) {
+// TestARevertWhoseDeployFinishedBeforeTheBlamedDeployIsRefusedOnIt (dispatch://INFRA-978, R8 of the
+// review at 20c604ef): a revert whose restoring deploy finished before the deploy the revert blames
+// cannot restore a failure of that deploy, so the revert signal writes no row for it, and refuses
+// the revert on that deploy (revert_refusals), logged once: a later pass writes nothing and logs
+// nothing again. A revert shipped by the same deploy whose blamed deploy finished before it still
+// writes its row, and is refused on nothing.
+func TestARevertWhoseDeployFinishedBeforeTheBlamedDeployIsRefusedOnIt(t *testing.T) {
 	r := newRig(t)
-	r.postDeploy(alpha, "ci:after", at(200), nil, []string{"acme/other#5"})
+	refusals := r.logRefusals()
+	later := r.postDeploy(alpha, "ci:after", at(200), nil, []string{"acme/other#5"})
 	earlier := r.postDeploy(alpha, "ci:before", at(50), nil, []string{"acme/other#6"})
 	for _, revert := range []delivery.Revert{
 		{Repo: widgets, Number: 9, RevertsRepo: "acme/other", RevertsNumber: 5, MergedAt: at(90)},
@@ -99,12 +102,41 @@ func TestARevertWhoseDeployFinishedBeforeTheBlamedDeployMakesNoRow(t *testing.T)
 	}
 	// Run 420 starts at(120) and finishes at(130): before ci:after (at(200)) and after ci:before (at(50)).
 	r.deployRun(420, at(120), sha("c"), prodJob, success, success)
-	r.passDeploys()
-	restoring := r.deployOf(420)
-	rows := r.failures()
-	if len(rows) != 1 || rows[0].SourceRef != RevertSourceRef(widgets, 10) || *rows[0].DeployID != earlier.ID ||
-		rows[0].RestoredByDeploy == nil || *rows[0].RestoredByDeploy != restoring.ID {
-		t.Fatalf("failure rows = %+v, want only revert #10 blaming %s restored by %s", rows, earlier.ID, restoring.ID)
+	refusedOn := func() map[int]string {
+		t.Helper()
+		rows, err := r.pool.Query(r.ctx, `select number, deploy_id::text from revert_refusals where repo = $1`, widgets)
+		if err != nil {
+			t.Fatalf("read the revert refusals: %v", err)
+		}
+		defer rows.Close()
+		refused := map[int]string{}
+		for rows.Next() {
+			var number int
+			var deploy string
+			if err := rows.Scan(&number, &deploy); err != nil {
+				t.Fatalf("read the revert refusals: %v", err)
+			}
+			refused[number] = deploy
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the revert refusals: %v", err)
+		}
+		return refused
+	}
+	for _, step := range []string{"the pass that ships the reverts", "a later pass"} {
+		r.passDeploys()
+		restoring := r.deployOf(420)
+		rows := r.failures()
+		if len(rows) != 1 || rows[0].SourceRef != RevertSourceRef(widgets, 10) || *rows[0].DeployID != earlier.ID ||
+			rows[0].RestoredByDeploy == nil || *rows[0].RestoredByDeploy != restoring.ID {
+			t.Fatalf("after %s, failure rows = %+v, want only revert #10 blaming %s restored by %s", step, rows, earlier.ID, restoring.ID)
+		}
+		if refused := refusedOn(); len(refused) != 1 || refused[9] != later.ID {
+			t.Errorf("after %s, the reverts are refused on %v; want #9 on ci:after's deploy %s alone", step, refused, later.ID)
+		}
+		if logged, want := refusals(), []string{prodevents.SignalRevert + " acme/widgets#9 " + later.ID}; !slices.Equal(logged, want) {
+			t.Errorf("after %s, the refusals logged = %q; want %q, once", step, logged, want)
+		}
 	}
 }
 
@@ -128,7 +160,7 @@ func TestARevertIsReadWhileItCanMakeItsFailure(t *testing.T) {
 	r.deployRun(431, at(120), sha("b"), prodJob, success, success)
 	read := func() []delivery.RevertShip {
 		t.Helper()
-		ships, err := delivery.ListRevertShips(r.ctx, r.pool, rule(prodJob))
+		ships, err := delivery.ListRevertShips(r.ctx, r.pool, rule(prodJob), prodevents.SourceReverts, prodevents.RevertSourceRefPrefix)
 		if err != nil {
 			t.Fatalf("read the reverts: %v", err)
 		}
@@ -159,12 +191,13 @@ func TestARevertIsReadWhileItCanMakeItsFailure(t *testing.T) {
 // dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): acme/widgets#5, BETA-1's pull
 // request, is the one pull request run 410 ships, so 410's deploy counts for BETA alone. The revert
 // of #5, which run 411 ships, blames 410's deploy, and while acme/widgets's one source is ALPHA's
-// its row would be ALPHA's: it is refused on that deploy, and it stays refused. When the source
-// moves to BETA, so the revert's row would be BETA's, for whom 410's deploy counts, the pass reads
-// the revert again and writes no row; when the source moves back, the record holds no failure row
-// of any project.
+// its row would be ALPHA's: it is refused on that deploy, logged once, and it stays refused. When
+// the source moves to BETA, so the revert's row would be BETA's, for whom 410's deploy counts, the
+// pass reads the revert again and writes no row; when the source moves back, the record holds no
+// failure row of any project.
 func TestARefusedRevertStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	r := newRig(t)
+	refusals := r.logRefusals()
 	r.project("BETA", "acme/beta")
 	r.pullRequest(5, at(30), sha("5"), r.issueOf("BETA", 1))
 	r.deployRun(410, at(60), sha("a"), prodJob, success, success)
@@ -212,4 +245,7 @@ func TestARefusedRevertStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	r.saveRule(prodJob)
 	r.passDeploys()
 	requireRefused("once the source moved back to ALPHA", alpha)
+	if logged, want := refusals(), []string{prodevents.SignalRevert + " acme/widgets#9 " + blamed.ID}; !slices.Equal(logged, want) {
+		t.Errorf("the refusals logged = %q; want %q, once", logged, want)
+	}
 }

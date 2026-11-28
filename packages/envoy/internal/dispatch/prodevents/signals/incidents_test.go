@@ -195,14 +195,15 @@ func TestAnIncidentBlamesNoDeployAnotherProjectPostedAndNeedsACountingDeploy(t *
 // TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack (the architect's ruling,
 // dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): a BETA incident whose link
 // names ALPHA's deploy run 312, which ships no pull request and so counts for ALPHA alone, is
-// refused on that deploy, and it stays refused. When acme/widgets's one source moves from ALPHA to
-// BETA, so run 312's row counts for BETA, a later event of the issue derives the incident again
-// from its links, a label it gains and then a link to the run's job page, and writes no row; when
-// the source moves back, the record holds no failure row of any project. The refusal is the
-// deploy's alone: a link to a pull request whose deploy BETA posted, which finished first and
+// refused on that deploy, logged once, and it stays refused. When acme/widgets's one source moves
+// from ALPHA to BETA, so run 312's row counts for BETA, a later event of the issue derives the
+// incident again from its links, a label it gains and then a link to the run's job page, and writes
+// no row; when the source moves back, the record holds no failure row of any project. The refusal
+// is the deploy's alone: a link to a pull request whose deploy BETA posted, which finished first and
 // counts for BETA, then writes the incident's row, blaming that deploy.
 func TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	r := newRig(t)
+	refusals := r.logRefusals()
 	r.project("BETA", "acme/beta")
 	r.deployRun(312, at(60), sha("a"), prodJob, success, success)
 	r.passDeploys()
@@ -272,5 +273,8 @@ func TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	if len(rows) != 1 || rows[0].SourceRef != IncidentSourceRef(incident) || *rows[0].DeployID != betaPost.ID || failureRows() != 1 {
 		t.Fatalf("once the incident linked a pull request of BETA's post, BETA's failure rows = %+v; want the one incident row blaming %s",
 			rows, betaPost.ID)
+	}
+	if logged, want := refusals(), []string{prodevents.SignalIncidentIssue + " " + incident + " " + deploy.ID}; !slices.Equal(logged, want) {
+		t.Errorf("the refusals logged = %q; want %q, once", logged, want)
 	}
 }

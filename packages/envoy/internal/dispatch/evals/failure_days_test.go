@@ -389,6 +389,44 @@ func TestAFailureCountsForEachProjectItsDeployCountsForWhoseSourcesIncludeItsSig
 	expectTruth(t, "after the revert on D", r.storedFigures(t), r.truthFigures(t))
 }
 
+// TestTheRecordAsksOfAFailureTheTestItsProjectsMeasuresCountItBy
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 2): FailuresCountFor
+// answers of each failure, in one call for all of them, whether the project's failure rows count it.
+// ALPHA's D ships ALPHA-1's and OMEGA-1's pull requests, and so does ALPHA's C, which finished the day
+// before the projects' first day; DELTA's E ships none. A failing check on D counts for ALPHA, whose
+// sources hold check_results, and for no other project: not OMEGA, whose sources hold reverts alone,
+// not DELTA, for which D does not count, and not BETA, which has no delivery settings. A revert on D
+// counts for OMEGA alone, and a failing check on C for no project, C finishing before ALPHA's first
+// day. ALPHA's stored rows read the same: D failed, and C in no row.
+func TestTheRecordAsksOfAFailureTheTestItsProjectsMeasuresCountItBy(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedFailureProjects(t)
+	r.exec(t, "a project with no delivery settings", `insert into projects (key, name, default_assignee, next_number)
+		values ('BETA', 'Beta', 'alice', 1)`)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceCheckResults}, failureDay)
+	r.putFailures(t, "OMEGA", omegaJob, []string{delivery.FailureSourceReverts}, failureDay)
+	r.putFailures(t, "DELTA", "delta / apply", []string{delivery.FailureSourceCheckResults}, failureDay)
+	early := r.githubDeploy(t, "ALPHA", alphaApp, "github:0", failureAt(-1, 10, 0), "", alphaApp+"#1", alphaApp+"#2")
+	d := r.githubDeploy(t, "ALPHA", alphaApp, "github:1", failureAt(1, 10, 0), "", alphaApp+"#1", alphaApp+"#2")
+	r.githubDeploy(t, "DELTA", deltaApp, "github:2", failureAt(1, 11, 0), "")
+	check := r.failure(t, "ALPHA", "check:1", prodevents.SourceCheckResults, prodevents.SignalCheckFail, d, failureAt(1, 12, 0), nil, nil)
+	revert := r.failure(t, "OMEGA", "revert:1", prodevents.SourceReverts, prodevents.SignalRevert, d, failureAt(1, 13, 0), nil, nil)
+	earlyCheck := r.failure(t, "ALPHA", "check:0", prodevents.SourceCheckResults, prodevents.SignalCheckFail, early, failureAt(1, 14, 0), nil, nil)
+	r.settle(t)
+	failures := []prodevents.BlamedFailure{{Failure: check, Deploy: d}, {Failure: revert, Deploy: d}, {Failure: earlyCheck, Deploy: early}}
+	for project, want := range map[string][]bool{
+		"ALPHA": {true, false, false}, "OMEGA": {false, true, false}, "DELTA": {false, false, false}, "BETA": {false, false, false},
+	} {
+		got, err := FailuresCountFor(t.Context(), r.database.Pool, r.registry.attributor, project, failures)
+		if err != nil || !slices.Equal(got, want) {
+			t.Errorf("FailuresCountFor(%s) of the check on D, the revert on D and the check on C = %v (%v), want %v", project, got, err, want)
+		}
+	}
+	wantFigures(t, "ALPHA", r.failureValues(t, "ALPHA", threeDays), map[string]*float64{
+		"change-fail-rate.failed": new(1.0), "change-fail-rate.total": new(1.0),
+	})
+}
+
 // ALPHA's two GitHub deploys both ship ALPHA-1's and OMEGA-1's pull requests, so both count for
 // ALPHA and OMEGA. Both projects count posted failures and failing checks.
 // A failure posted to ALPHA's route on D1 counts for ALPHA alone, and a person's flag

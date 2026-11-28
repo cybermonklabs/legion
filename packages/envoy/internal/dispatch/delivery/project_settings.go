@@ -478,35 +478,20 @@ const (
 	CodeDeliverySettingsAccess      = "DELIVERY_SETTINGS_ACCESS"
 )
 
-// LockProject takes the transaction-scoped lock of one project's delivery settings, so two saves of
-// one project run one after the other: the second reads the sources the first wrote. A path that
-// takes it takes it before any repository's lock (LockRepositories), so no two paths wait on each
-// other.
+// LockProject takes the transaction-scoped lock of one project's delivery settings
+// (store.LockDeliveryProject), so two saves of one project run one after the other: the second
+// reads the sources the first wrote. A path that takes it takes it before any repository's lock
+// (store.LockDeployRepositories), so no two paths wait on each other.
 func LockProject(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6902, hashtext($1))`, project); err != nil {
+	if _, err := tx.Exec(ctx, store.LockDeliveryProject, project); err != nil {
 		return fmt.Errorf("lock the delivery settings of %s: %w", project, err)
 	}
 	return nil
 }
 
-// LockRepositories takes the transaction-scoped lock of each repository's delivery ownership
-// (store.LockDeployRepository), in name order so two transactions taking two of them cannot wait
-// on each other: a save, a default-repository write and the rename pass's line of a default
-// repository, each of which can make one repository the source of a delivery-on project, see each
-// other's commit. Its first key, 6903, is its own: 6900 is the change log's lock
-// (lockChangesStatement), 6901 the Legion observations' (legion.ObservationsLockKey) and 6902 a
-// project's (LockProject), so no repository's name can hash onto another family's lock.
-func LockRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
-	for _, repo := range lowerSortedSet(repos) {
-		if _, err := tx.Exec(ctx, store.LockDeployRepository, repo); err != nil {
-			return fmt.Errorf("lock the deploy repository %s: %w", repo, err)
-		}
-	}
-	return nil
-}
-
 // RepositoryOwner is the delivery-on project other than project whose github_workflow source reads
-// repo, read in tx, and false where none does. The caller holds repo's lock (LockRepositories).
+// repo, read in tx, and false where none does. The caller holds repo's lock
+// (store.LockDeployRepositories).
 func RepositoryOwner(ctx context.Context, tx pgx.Tx, repo, project string) (string, bool, error) {
 	var other string
 	err := tx.QueryRow(ctx, `
@@ -547,12 +532,12 @@ func sharedRepository(repo, other string, index *int, viewer *model.Viewer) *Set
 // checkSources holds sources, the deploy sources of stored's project as a write leaves them, each
 // that names no repository reading defaultRepo (SourceRepoOf), to the delivery rules, under the
 // lock of every repository they read and every repository stored's sources read
-// (LockRepositories), which it takes: a save of the settings (PutProjectSettings) and a move of the
-// project's default repository (MoveDefaultRepository) both check here, so R2's and D1's rules are
-// stated once. Whether delivery is on or off, two github_workflow sources may not read one
-// repository, and two that name none read one, defaultRepo, whether there is one or not: the
-// refusal of the second has the code duplicate, each caller's own, and names it and the project.
-// With delivery on (on), a github_workflow source that reads no repository is refused
+// (store.LockDeployRepositories), which it takes: a save of the settings (PutProjectSettings) and a
+// move of the project's default repository (MoveDefaultRepository) both check here, so R2's and
+// D1's rules are stated once. Whether delivery is on or off, two github_workflow sources may not
+// read one repository, and two that name none read one, defaultRepo, whether there is one or not:
+// the refusal of the second has the code duplicate, each caller's own, and names it and the
+// project. With delivery on (on), a github_workflow source that reads no repository is refused
 // DELIVERY_NO_DEFAULT_REPOSITORY, and one whose repository a source of another delivery-on
 // project reads (RepositoryOwner) DELIVERY_REPOSITORY_SHARED, naming that project where viewer
 // sees it (sharedRepository). It answers a refusal as a *SettingsError, and nil where the sources
@@ -610,7 +595,7 @@ func checkSources(ctx context.Context, tx pgx.Tx, stored ProjectSettings, on boo
 			lock = append(lock, repo)
 		}
 	}
-	if err := LockRepositories(ctx, tx, lock); err != nil {
+	if err := store.LockDeployRepositories(ctx, tx, lock); err != nil {
 		return err
 	}
 	if !on {

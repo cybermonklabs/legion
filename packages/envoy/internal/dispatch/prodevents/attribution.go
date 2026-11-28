@@ -20,20 +20,27 @@ type PullAttribution struct {
 // Source, the project whose deploy source reads the deploy's repository ("" for none), where the
 // deploy ships no pull request; and Pulls, the attribution of each pull request it ships that
 // names one, in the order it names them. A reader fills them from the published state
-// (evals.DeployCountsFor) or from the stored facts (signals' deployCountsForRow).
+// (evals.DeployCountsFor, evals.FailuresCountFor) or from the stored facts (signals'
+// deployCountsForRow).
 type DeployFacts struct {
 	Defaults map[string]string
 	Source   string
 	Pulls    []PullAttribution
 }
 
-// DeployProjects is the projects deploy counts for under facts, in the one rule every reader of
-// the record's deploys counts by (INFRA-978 R12, INFRA-2916 R15): a posted deploy counts for its
-// route's project alone; a dropped GitHub deploy for none; a GitHub deploy that ships no pull
-// request for the project that reads its repository (facts.Source); and one that ships pull
-// requests for the project each one's list picks, the first of its conditions whose default
-// repository is the deploy's, else its terminal, a project that exists (facts.Defaults) alone, and,
-// where some list picks none, for each project whose default repository is the deploy's.
+// DeployProjects is the projects deploy counts for under facts: the restatement in Go, over facts
+// a caller supplies, of the rule the delivery evals and the failure measures count a deploy by in
+// SQL, through the owner keys of its repository and the projects eval_owner_readers names as
+// reading them (evals' deployProjects and readRecordReaders, migration 20261117100006; INFRA-978
+// R12, INFRA-2916 R15). It serves the readers that judge one deploy, or one page's, where no day
+// row is built: the record's routes over the published state and the production signals over the
+// stored facts (dispatch://INFRA-978/comment/6da2d490-27d2-4d03-816a-a164a8d24dde). A change to
+// the rule lands in both. A posted deploy counts for its route's project alone; a dropped GitHub
+// deploy for none; a GitHub deploy that ships no pull request for the project that reads its
+// repository (facts.Source); and one that ships pull requests for the project each one's list
+// picks, the first of its conditions whose default repository is the deploy's, else its terminal,
+// a project that exists (facts.Defaults) alone, and, where some list picks none, for each project
+// whose default repository is the deploy's.
 func DeployProjects(deploy Event, facts DeployFacts) []string {
 	switch {
 	case deploy.Dropped():

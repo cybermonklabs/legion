@@ -146,7 +146,8 @@ func TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor(t *testing.T) {
 // TestARuleChangeDerivesTheRepositorysDeployRowsAgain: a save that changes the repository's rule
 // derives its GitHub deploy rows again on the next pass. A run the new rule calls a deploy gains
 // its row; a row the new rule does not call a deploy stays, dropped, whether a failure blames it or
-// not, and each failure on it is rejected for a reason that names the rule change.
+// not, and each failure on it is rejected by the drop's writer (prodevents.DropWriter) for a reason
+// that names the rule change.
 func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	r := newRig(t)
 	r.deployRun(130, at(60), sha("e"), prodJob, success, success)
@@ -188,8 +189,9 @@ func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
 	}
 	if rejected.State != prodevents.StateRejected || rejected.StateReason == nil ||
 		!strings.Contains(*rejected.StateReason, "deploy rule of acme/widgets changed") ||
-		!strings.Contains(*rejected.StateReason, canaryJob) || rejected.StateBy == nil || *rejected.StateBy != loopActor {
-		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected naming the rule change", rejected.State, rejected.StateReason, rejected.StateBy)
+		!strings.Contains(*rejected.StateReason, canaryJob) || !prodevents.RejectedByDrop(rejected) {
+		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected by the drop's writer naming the rule change",
+			rejected.State, rejected.StateReason, rejected.StateBy)
 	}
 	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("e")); err != nil || held {
 		t.Errorf("a signal finds the dropped deploy by its commit (%v, %v): no signal blames it", held, err)
@@ -257,8 +259,8 @@ func TestARuleThatDropsADeployAndTakesItBackCountsItAndItsFailuresAgain(t *testi
 		}
 	}
 	for _, id := range []string{counted, after, checkFail} {
-		if row := stateOf(id); row.State != prodevents.StateRejected || row.StateBy == nil || *row.StateBy != loopActor {
-			t.Fatalf("under the canary rule, failure %s = state %q by %v; want rejected by the drop", id, row.State, row.StateBy)
+		if row := stateOf(id); !prodevents.RejectedByDrop(row) {
+			t.Fatalf("under the canary rule, failure %s = state %q by %v; want rejected by the drop's writer", id, row.State, row.StateBy)
 		}
 	}
 	reject(after, afterReason)
@@ -381,9 +383,10 @@ func TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures(t
 // for ALPHA alone (ruling 2(a)), and it stays refused. When acme/widgets's one source moves from
 // ALPHA to BETA, the derive that moves run 298's row binds no row to the result; when the source
 // moves back, no BETA row blames ALPHA's deploy, so ALPHA's numbers are as they were before the
-// move.
+// move. The refusal is logged once, naming the result and the deploy.
 func TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	r := newRig(t)
+	refusals := r.logRefusals()
 	r.project("BETA", "acme/beta")
 	r.deployRun(298, at(60), sha("a"), prodJob, success, success)
 	r.passDeploys()
@@ -421,6 +424,9 @@ func TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 	r.saveRule(prodJob)
 	pass()
 	requireRefused("once the source moved back to ALPHA", alpha)
+	if logged, want := refusals(), []string{prodevents.SignalCheckFail + " " + result + " " + deploy.ID}; !slices.Equal(logged, want) {
+		t.Errorf("the refusals logged = %q; want %q, once", logged, want)
+	}
 }
 
 // TestTheDeployRowWriteTakesNoChangeLogLock: the adapter writes a deploy row in a transaction of its

@@ -6,7 +6,8 @@
 -- deployCountsForRow), and a refusal writes no failure row. These tables record that refusal in
 -- the same transaction, so no later write makes the row either: not even a derive of deploy rows
 -- once a source move, a rule change or a default-repository move has made the deploy count for the
--- row's project. A deploy row gone since the write's lookup records no refusal.
+-- row's project. A deploy row gone since the write's lookup, and a deploy that counts for no
+-- project (one being dropped), record no refusal: the signal stays unmatched.
 --
 -- check_fail_refusals holds one row per failed after-merge check result refused so
 -- (signals.RecordCheckFailure). A result that holds one is never written again: neither the result
@@ -28,14 +29,16 @@
 --   refused_at  when the refusal was written.
 --
 -- revert_refusals holds one row per merged revert and blamed deploy refused so (signals'
--- revertFailures). A revert that holds a refusal of the deploy it blames writes no row on a later
--- pass; one whose blame moves to another deploy, one that counts for the repository's owner, still
--- writes its row. The columns:
+-- revertFailures), and one per revert whose own deploy finished before the deploy it blames, which
+-- restores no failure of that deploy. A revert that holds a refusal of the deploy it blames writes
+-- no row and logs nothing on a later pass; one whose blame moves to another deploy, one that counts
+-- for the repository's owner, still writes its row. The columns:
 --   repo, number   the delivery_reverts row of the revert, its key. The foreign key follows an
 --                  update of the key, so the boot's rename pass, which rewrites
 --                  delivery_reverts.repo, moves the refusal with its revert.
---   deploy_id      the production_events deploy row the revert blamed and that counted for other
---                  projects than the repository's owner alone.
+--   deploy_id      the production_events deploy row the revert blamed: one that counted for other
+--                  projects than the repository's owner alone, or one that finished after the
+--                  revert's own deploy.
 --   refused_at     when the refusal was written.
 --
 -- check_fail_refusals_deploy, incident_refusals_deploy and revert_refusals_deploy index the foreign

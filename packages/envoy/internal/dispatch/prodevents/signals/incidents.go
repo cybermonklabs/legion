@@ -26,8 +26,8 @@ import (
 // (IncidentSourceRef), its actor and detected time those of the event that made the issue an
 // incident or gave it its link, and only where the deploy it blames counts for the issue's project
 // (deployCountsForRow). An issue whose blamed deploy counts for other projects alone writes no row
-// and stays refused on that deploy: its refusal commits in the transaction that asked
-// (incident_refusals, migration 20261128030142), so no later event of the issue writes a row
+// and stays refused on that deploy: its refusal commits in the transaction that asked, with a log
+// line (incident_refusals, migration 20261128030142), so no later event of the issue writes a row
 // blaming that deploy, not even once a source move, a rule change or a default-repository move has
 // made it count for the issue's project
 // (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706). A bug label makes none.
@@ -67,9 +67,10 @@ func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
 // name no deployed pull request and no deploy run writes nothing until a link that does is added.
 // One whose blamed deploy counts for other projects than the issue's alone writes nothing either,
 // and its refusal of that deploy commits in the transaction that asked (writeSignal,
-// incident_refusals): a later event that blames the same deploy writes nothing, and a link that
-// makes another deploy the blamed one, which counts for the issue's project, writes its row. A
-// repeat writes nothing, and an incident whose row is made already reads no link.
+// incidentRefusal): a later event that blames the same deploy writes nothing, and a link that
+// makes another deploy the blamed one, which counts for the issue's project, writes its row. One
+// whose blamed deploy counts for no project writes nothing and is not refused, so a later event
+// asks again. A repeat writes nothing, and an incident whose row is made already reads no link.
 func recordIncident(ctx context.Context, pool *store.Pool, issue string, detected time.Time, actor model.Actor) (bool, error) {
 	var project string
 	if err := pool.QueryRow(ctx, `select project_key from issues where key = $1`, issue).Scan(&project); err != nil {
@@ -122,21 +123,33 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 	if len(pulls) == 0 {
 		pulls = blamed.PullRequests
 	}
-	created, err := writeSignal(ctx, pool, prodevents.Event{
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin the incident_issue of %s: %w", issue, err)
+	}
+	defer tx.Rollback(ctx)
+	created, err := writeSignal(ctx, pool, tx, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceIncidentLabel,
 		SourceRef: ref, PullRequests: pulls, Actor: actor,
 		DeployID: new(blamed.ID), Signal: new(prodevents.SignalIncidentIssue), DetectedAt: new(detected.UTC()),
-	}, blamed.ID, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `insert into incident_refusals (issue_key, deploy_id) values ($1, $2::uuid)
-			on conflict do nothing`, issue, blamed.ID); err != nil {
-			return fmt.Errorf("refuse %s the incident_issue on deploy %s: %w", issue, blamed.ID, err)
-		}
-		return nil
-	})
+	}, incidentRefusal(issue), nil)
 	if err != nil {
 		return false, fmt.Errorf("write the incident_issue of %s: %w", issue, err)
 	}
 	return created, nil
+}
+
+// incidentRefusal is issue's refusal of a deploy its links blame (incident_refusals): a later event
+// of the issue whose links blame the same deploy writes no row, and one whose links blame another
+// deploy asks again.
+func incidentRefusal(issue string) refusal {
+	return refusal{signal: prodevents.SignalIncidentIssue, key: issue, record: func(ctx context.Context, tx pgx.Tx, deploy string) error {
+		if _, err := tx.Exec(ctx, `insert into incident_refusals (issue_key, deploy_id) values ($1, $2::uuid)
+			on conflict do nothing`, issue, deploy); err != nil {
+			return fmt.Errorf("refuse %s the incident_issue on deploy %s: %w", issue, deploy, err)
+		}
+		return nil
+	}}
 }
 
 // issueLinks is the urls of issue's own links, in order.

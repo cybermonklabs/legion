@@ -343,7 +343,7 @@ func apply(ctx context.Context, pool *store.Pool, rule delivery.DeliverySettings
 		if wanted[old.SourceRef] || old.Dropped() {
 			continue
 		}
-		if err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), loopActor, at); err != nil {
+		if err := prodevents.DropGitHubDeploy(ctx, pool, old.ProjectKey, old.ID, dropReason(rule, old, at), at); err != nil {
 			return err
 		}
 	}

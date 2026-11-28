@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -68,6 +70,30 @@ func (r *rig) exec(what, statement string, args ...any) {
 	r.t.Helper()
 	if _, err := r.pool.Exec(r.ctx, statement, args...); err != nil {
 		r.t.Fatalf("%s: %v", what, err)
+	}
+}
+
+// logRefusals makes a Recorder the default logger's handler until the test ends, and answers a
+// read of each refusal of a signal logged since (refusedMessage), in order, as
+// "<signal> <key> <deploy>".
+func (r *rig) logRefusals() func() []string {
+	r.t.Helper()
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(r.t, recorder)
+	return func() []string {
+		var logged []string
+		for _, record := range recorder.Records() {
+			if record.Message != refusedMessage {
+				continue
+			}
+			attrs := map[string]string{}
+			record.Attrs(func(attr slog.Attr) bool {
+				attrs[attr.Key] = attr.Value.String()
+				return true
+			})
+			logged = append(logged, attrs["signal"]+" "+attrs["key"]+" "+attrs["deploy"])
+		}
+		return logged
 	}
 }
 

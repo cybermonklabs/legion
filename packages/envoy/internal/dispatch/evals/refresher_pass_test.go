@@ -1158,6 +1158,71 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 	expectTruth(t, "after the posted deploy timing pull requests", r.storedFigures(t), r.truthFigures(t))
 }
 
+// TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3): acme/omega-app#9 of
+// OMEGA-1, first committed at 07:00, opened at 08:00 and merged at 09:00, is named by a deploy
+// posted to OMEGA that finished at 09:30, before OMEGA's GitHub deploy 3001 ships it at 10:19.
+// OMEGA's merge-to-production times it once, to the post: 30 minutes in its events repository's
+// row and none in acme/omega-app's. Its first-commit-to-production (199 minutes) and
+// open-to-production (139) stay timed to 3001 in acme/omega-app's rows, and its member there names
+// 3001, as its events repository's names the post. Red where the GitHub row drops 3001 for the
+// post: those two lead times lose #9.
+func TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: omegaApp, Number: 9, Title: "OMEGA-1: change 9", URL: "https://github.com/" + omegaApp + "/pull/9", Author: "dev-ana",
+		FirstCommitAt: new(at(7, 0)), CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)), IssueKey: new("OMEGA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#9: %v", omegaApp, err)
+	}
+	posted := r.post(t, "OMEGA", "release-9", at(9, 30), omegaApp+"#9")
+	r.settle(t)
+	// samples is OMEGA's samples of slug's all-repositories row of deployRepo on sourcesDay, in
+	// order, none where no row holds one.
+	samples := func(slug, deployRepo string) []float64 {
+		t.Helper()
+		var held []float64
+		if err := r.database.Pool.QueryRow(t.Context(), `
+			select coalesce(array_agg(s.sample order by s.sample), '{}') from eval_days d cross join lateral unnest(d.samples) as s(sample)
+			where d.eval_id = $1 and d.deploy_repo = $2 and d.series = 'minutes' and d.repo = '' and d.day = $3
+		`, EvalID("OMEGA", slug), deployRepo, sourcesDay).Scan(&held); err != nil {
+			t.Fatalf("read OMEGA's %s of %s: %v", slug, deployRepo, err)
+		}
+		return held
+	}
+	for _, want := range []struct {
+		slug, deployRepo string
+		minutes          []float64
+	}{
+		{SlugMergeToProduction, EventsRepo("OMEGA"), []float64{30}},
+		{SlugMergeToProduction, omegaApp, []float64{}},
+		{SlugFirstCommitToProduction, omegaApp, []float64{199}},
+		{SlugOpenToProduction, omegaApp, []float64{139}},
+		{SlugFirstCommitToProduction, EventsRepo("OMEGA"), []float64{}},
+		{SlugOpenToProduction, EventsRepo("OMEGA"), []float64{}},
+	} {
+		if got := samples(want.slug, want.deployRepo); !slices.Equal(got, want.minutes) {
+			t.Errorf("OMEGA's %s of %s times %v, want %v", want.slug, want.deployRepo, got, want.minutes)
+		}
+	}
+	day := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)}
+	wantFigures(t, "after the post", map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", day)}, map[string]*float64{
+		SlugMergeToProduction + ".n": new(1.0), SlugMergeToProduction + ".max": new(30.0),
+	})
+	for deployRepo, shipper := range map[string]string{omegaApp: RunMember(omegaApp, 3001), EventsRepo("OMEGA"): PostedMember(posted.ID)} {
+		if n := r.count(t, `select count(*) from eval_day_members where project_key = 'OMEGA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
+			deployRepo, PullRequestMember(omegaApp, 9), shipper); n != 1 {
+			t.Errorf("OMEGA's member of %s#9 under %s names %s %d times, want once", omegaApp, deployRepo, shipper, n)
+		}
+	}
+	expectTruth(t, "after a post that ships a pull request first", r.storedFigures(t), r.truthFigures(t))
+}
+
 // mergeValues is project's merge-to-production over window as an eval read states it: its stored
 // rows of the deploy repositories recorded with them folded with its series' first day
 // (DeployReposIn, FirstDaysIn, DayWindowIn, SeriesValuesOf).

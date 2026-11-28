@@ -221,7 +221,7 @@ Deploy rows come from two writers:
   The production signals loop writes the row in a transaction of its own after the run's write commits, and moves it in place where the run moves, as when GitHub runs it again.
   When a repository's production jobs, its production apply step or the project whose source reads it change, the loop derives every deploy row of that repository again.
   A run the rule calls a deploy keeps its row, with its id, and the row moves to the project whose source reads the repository now, so every failure that blames the row and every restore that names it keep it.
-  Every other GitHub deploy row of the repository is kept with `status` `dropped` and the reason in its `note`, and each counted failure that blames it is rejected with that reason, which names the rule.
+  Every other GitHub deploy row of the repository is kept with `status` `dropped` and the reason in its `note`, and each counted failure that blames it is rejected with that reason, which names the rule, by the drop's own writer, the system actor `github-deploy-drop`.
   A `dropped` row counts in no failure measure, and no signal finds it by a commit, a run or a pull request.
   When a later rule calls its run a deploy again, the same row is `succeeded` again, and each failure that a drop rejected counts again, with a reason that names the later rule.
   A failure that a person or the project's controller rejected, or whose check result was retracted, stays rejected.
@@ -239,6 +239,7 @@ A project's failure measures count each signal where the project has the failure
   The result route writes it as soon as the result commits, and the production signals loop, which reads the `result.recorded` event, writes it where that write was lost.
   A result whose commit no deploy row holds yet makes its row when such a deploy row lands, and a result that no deploy ever ships makes none.
   A result whose first deploy counts for other projects alone makes none either, and stays refused: no later write makes its row, not even once a source move, a rule change or a default-repository move has made that deploy count for the result's project.
+  A result whose first deploy counts for no project, as one a rule change drops while the result is written, is not refused: it makes its row once a derive makes that deploy count for the result's project, as a later rule that calls the dropped deploy a deploy again does.
   A retraction of the result (`POST /api/v1/results/{id}/retract`) rejects the row with the retraction's reason and actor, unless another `fail` of the same check that is neither retracted nor refused, whose commit the same deploy first shipped, still stands behind it.
 
 - `revert` (failure source `reverts`): a merged pull request of a source repository whose body says `Reverts <owner>/<repo>#<n>`, the line GitHub's revert button writes, whoever wrote it.
@@ -248,8 +249,9 @@ A project's failure measures count each signal where the project has the failure
   It blames the deploy row that shipped the reverted pull request, or else the one whose commits hold that pull request's merge commit, and it is detected when the revert merged.
   The revert's own deploy restores it: `restored_at` is that deploy's finish, and `restored_by_deploy` is that deploy's row.
   Its `source_ref` is `revert:<owner>/<repo>#<n>`, the revert's own pull request.
-  A revert whose reverted pull request no deploy row holds makes no row, and neither does one whose blamed deploy finished after the revert's own deploy, which restores none of that deploy's failures.
-  A revert whose blamed deploy counts only for projects other than the one whose source reads the repository makes no row either, and stays refused on that deploy: a later pass that blames the same deploy makes none, even once a source move, a rule change or a default-repository move has made that deploy count for the source's project, while a revert that comes to blame another deploy, one that counts for that project, makes its row.
+  A revert whose reverted pull request no deploy row holds makes no row.
+  A revert whose blamed deploy finished after the revert's own deploy, which restores none of that deploy's failures, makes no row either, and so does one whose blamed deploy counts only for projects other than the one whose source reads the repository.
+  Each stays refused on that deploy: a later pass that blames the same deploy makes none, even once a source move, a rule change or a default-repository move has made that deploy count for the source's project, while a revert that comes to blame another deploy, one that counts for that project and finished no later than the revert's own deploy, makes its row.
 
 - `incident_issue` (failure source `incident_label`): an issue labelled `incident`, in any case, whose own links name a GitHub pull request page or a workflow run page (`/actions/runs/<id>`).
   It blames the earliest deploy among those its links name, of any project but a deploy another project posted: the deploy that shipped the pull request, or the run's deploy row.
@@ -270,13 +272,17 @@ Every signal counts when it arrives, and no step waits for a person.
 A failure leaves the numbers only when it is rejected.
 A person or the project's controller rejects one with `PUT /api/v1/projects/{key}/production-events/{id}/state` and `{"state": "rejected", "reason": "…"}`.
 The row stays, with the reason, who rejected it and when (`state_reason`, `state_by`, `state_at`), and `{"state": "counted", "reason": "…"}` puts it back with its own reason.
-An automatic signal's failure counts for every project its deploy counts for, so each of those projects lists it in its own `GET /api/v1/projects/{key}/production-events` and its person and controller reject, re-count and restore it through that project's own state route, under the same rule; a reject is the row's own state, so it takes the row out of every project's numbers.
+An automatic signal's failure counts in the numbers of each project whose failure measures count it (The failure measures, below): its deploy counts for that project, that project has delivery on and a failure source that counts the signal, and the deploy finished on or after that project's `failures_measured_since`.
+Each of those projects lists it in its own `GET /api/v1/projects/{key}/production-events`, and its person and controller reject, re-count and restore it through that project's own state route, under the same rule; a reject is the row's own state, so it takes the row out of every project's numbers.
+A project whose measures do not count the failure neither lists it nor judges it.
+Every reader of such a project's list and of its failure measures' items sees the failure, whatever project's row it is, a private project's included.
+A reject, a re-count or a restore of a failure of another project through a project's state route is taken only from a credential that may write the failure's own project: a credential that names one project writes a private project's failure only where it names that project, and any other is answered as a row that does not exist.
 A posted failure (`api`, or a person's flag) is listed and judged through its own project's routes alone.
 A person is a credential that holds the `person` scope.
 The project's controller is the session that the project's Legion daemon names as its registered controller at the moment of the write, calling with that session's own broker-issued token.
 Dispatch asks the daemon that the project's Legion setting names, at `GET /legion/v1/controller`, before it writes, and waits at most 2 seconds for the answer.
 A person marks a failure restored with `{"state": "restored", "restored_by_deploy": "<deploy id>"}`, which sets `restored_at` to the time of the write and names the deploy that restored it where the body names one: a deploy that counts for the project, whichever project's record holds it, and that finished no earlier than the deploy the failure blames.
-A failure keeps its first restore: a `restored` write to a failure that is restored already, by a person or by a revert's own deploy, answers the row as it stands and writes nothing.
+A failure keeps its first restore: a `restored` write to a failure that is restored already, by a person or by a revert's own deploy, answers the row as it stands and writes nothing, whatever deploy the write names, so the answer shows nothing of whether that id is a deploy.
 Anyone else is refused `403 PRODUCTION_EVENT_STATE_FORBIDDEN`, and so is a controller's write where the project names no Legion daemon or where its daemon names no registered controller or another session.
 Where Dispatch cannot learn the controller, a controller's write is refused `503 LEGION_CONTROLLER_UNREAD`, and the error says why: the daemon answered `404`, because its build is older than that route, it did not answer in time, or Dispatch could not read its answer.
 So the controller can reject or re-count only once its daemon runs a build that serves `GET /legion/v1/controller`, and a person can reject or re-count at any time.
@@ -345,9 +351,11 @@ The failure measures and their items use the same deploy attribution, including 
   While that project has delivery on and an `events` source, the deploy adds one to its `deploy-frequency` on the UTC day the deploy finished, and each population pull request it names adds its time from merge to the deploy's finish to that project's `merge-to-production`, unless a GitHub deploy that counts the pull request for that project shipped it earlier.
   Such a GitHub deploy counts the pull request for the project through the pull request's issue, or through the project's default repository where the pull request names no issue.
   So each pull request counts once in a project's `merge-to-production`, from the first deploy to finish that counts it there, and from the GitHub deploy where both finished at once.
+  A posted deploy counts in `deploy-frequency` and `merge-to-production` alone: the pull request's `first-commit-to-production` and `open-to-production` stay timed to the first GitHub deploy that ships it for the project, even where the post finished first, and a pull request that no such GitHub deploy ships has none.
   A move of the project's default repository changes which GitHub deploys count for it, and rewrites none of its posted deploys' times.
   The post moves no other project's numbers: a project whose GitHub deploy ships the same pull request times it to that deploy, whichever finished first.
-  That pull request's row in the eval's items carries the posted deploy's finish as `deployed_at` and no `deploy_run_id`, since a posted deploy is no GitHub run.
+  The eval items time each lead-time column of that pull request's row to the deploy that column's own eval counts: `merge_to_production_minutes` to the post where it finished first, and `first_commit_to_production_minutes` and `open_to_production_minutes` to the GitHub deploy.
+  The row's `deployed_at` and `deploy_run_id` name the deploy the read eval counts, so a `merge-to-production` row timed to a post carries the post's finish as `deployed_at` and no `deploy_run_id`, since a posted deploy is no GitHub run.
   A deploy posted to any other project stays in the record and counts in no eval.
 
 Each series of an eval read carries `via_repository`: how many of the rows its window counts reached the project through a repository rather than an issue, such as a pull request with no issue and a deploy that ships no pull request.
@@ -376,7 +384,8 @@ The record has three routes, each of a project:
 
 - `GET /api/v1/projects/{key}/production-events` reads one page of the project's rows, `{items, total, limit, offset}`, newest first: a deploy by its `finished_at` and a failure by its `detected_at`, in `[from, to)` (the last seven days by default, at most 84).
   `kind`, `state` and `deploy_id` keep the deploys or the failures, the counted or the rejected rows, and the failures that blame one deploy.
-  It also lists each automatic signal's failure (`check_fail`, `revert`, `incident_issue`) of another project whose blamed deploy counts for this project, since such a failure counts in this project's numbers too; a posted failure is listed by its own project alone.
+  It also lists each automatic signal's failure (`check_fail`, `revert`, `incident_issue`) of another project that this project's failure measures count, whatever project's row it is, since such a failure counts in this project's numbers too; a posted failure is listed by its own project alone.
+  `total` counts every row the query matches, those failures among them.
   Every reader of the project reads it, a read-only token included.
 
 - `POST /api/v1/projects/{key}/production-events` writes one deploy or failure, `{kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, note?, actor?}`, and takes OpenTelemetry's `deployment.environment.name`, `deployment.status` and `cicd.pipeline.run.url.full` for `environment`, `status` and `url` (one name of a field, or both alike) and `cicd.pipeline.run.id` for a failure's GitHub run.
@@ -395,8 +404,8 @@ The record has three routes, each of a project:
   Each of these refusals, and a field no row can hold, is `400 PRODUCTION_EVENT_INPUT`, naming the field.
 
 - `PUT /api/v1/projects/{key}/production-events/{id}/state` rejects, counts again or restores one failure, `{state, reason, restored_by_deploy?}` (The record of deploys and failed changes, above), and answers the row.
-  A row the project does not hold, and a row of another project that is not an automatic signal's failure counting for this project, is `404 PRODUCTION_EVENT_NOT_FOUND`; a deploy's row, a state that is none of the three, a reject or a re-count without a reason, a `restored_by_deploy` beside another state, and a `restored_by_deploy` that finished before the deploy the failure blames finished are `400 PRODUCTION_EVENT_STATE_INPUT`; and a `restored_by_deploy` that is no deploy row, or that counts for other projects alone, is `409 PRODUCTION_EVENT_NO_DEPLOY`, one answer for both.
-  A `restored` write to a failure restored already answers the row as it stands and writes nothing.
+  A row the project does not hold, a row of another project that is not an automatic signal's failure that this project's measures count, and such a failure of a private project the credential may not write, are `404 PRODUCTION_EVENT_NOT_FOUND`; a deploy's row, a state that is none of the three, a reject or a re-count without a reason, a `restored_by_deploy` beside another state, and a `restored_by_deploy` that finished before the deploy the failure blames finished are `400 PRODUCTION_EVENT_STATE_INPUT`; and a `restored_by_deploy` that is no deploy row, or that counts for other projects alone, is `409 PRODUCTION_EVENT_NO_DEPLOY`, one answer for both.
+  A `restored` write to a failure restored already answers the row as it stands and writes nothing, whatever `restored_by_deploy` names.
 
 Each of the three answers `404 PROJECT_NOT_FOUND` for no such project, and a credential the broker scoped to another project is refused either write with `403 PROJECT_SCOPE`.
 

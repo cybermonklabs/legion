@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -192,12 +194,15 @@ type RevertShip struct {
 // and that no revert row of the record holds yet, of any project. A revert row blames a deploy
 // that finished no later than the revert's own deploy, and the failure measures count no deploy
 // before a project's first day, so a revert shipped before every such day counts for no project.
-// A revert row is keyed revert:<repo>#<n>, the repository in lower case (signals'
-// RevertSourceRef), and stays under the project it was written under when the repository's
-// source moves, so the check reads every project's, through production_events_reverts (migration
-// 20261127200929). So a revert no deploy ships yet waits outside the read, and one whose row is
-// written leaves it.
-func ListRevertShips(ctx context.Context, q Querier, rule DeliverySettings) ([]RevertShip, error) {
+// The revert row's writer, which keys it, passes in how: the row's source, rowSource, and its
+// source_ref, rowRefPrefix followed by the revert's pull request as PullRequestName names it
+// (signals' RevertSourceRef). A revert row stays under the project it was written under when the
+// repository's source moves, so the check reads every project's, through production_events_reverts
+// (migration 20261127200929), whose predicate names the source: the statement is planned with its
+// values at each run (pgx.QueryExecModeDescribeExec), since a cached generic plan, which knows no
+// source, could not read that index. So a revert no deploy ships yet waits outside the read, and
+// one whose row is written leaves it.
+func ListRevertShips(ctx context.Context, q Querier, rule DeliverySettings, rowSource, rowRefPrefix string) ([]RevertShip, error) {
 	production := rule.Production()
 	rows, err := q.Query(ctx, `
 		select pr.repo, pr.number, pr.reverts_repo, pr.reverts_number, pr.reverts_merge_commit_sha,
@@ -206,12 +211,12 @@ func ListRevertShips(ctx context.Context, q Querier, rule DeliverySettings) ([]R
 		`+shippingRunJoin("$1", "$2", "$3")+`
 		where pr.repo = $1
 		  and not exists (select from production_events failure
-			where failure.source = 'reverts' and failure.source_ref = 'revert:' || lower(pr.repo) || '#' || pr.number)
+			where failure.source = $5 and failure.source_ref = $6 || lower(pr.repo) || '#' || pr.number)
 		  and ship.completed_at >= (
 			select min(s.failures_measured_since)::timestamp at time zone 'UTC' from project_delivery_settings s
 			where s.delivery and $4 = any(s.failure_sources))
 		order by pr.merged_at, pr.number
-	`, rule.DeployRepo, production.JobNames, production.ApplyStep, FailureSourceReverts)
+	`, pgx.QueryExecModeDescribeExec, rule.DeployRepo, production.JobNames, production.ApplyStep, FailureSourceReverts, rowSource, rowRefPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("read the reverts of %s: %w", rule.DeployRepo, err)
 	}

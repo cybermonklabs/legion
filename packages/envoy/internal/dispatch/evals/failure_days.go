@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,7 +38,9 @@ import (
 // person's flag counts under any source. A failure posted to a project's route, a system's (signal
 // api) or a person's flag, counts for that project alone, whatever other projects its deploy counts
 // for; an automatic signal's (check_fail, revert, incident_issue) counts for every project its deploy
-// counts for, whichever project's row it is (failureProject.counts). Of each day then:
+// counts for whose sources hold its signal's, whichever project's row it is (failureProject.counts),
+// the test the record's routes ask of such a failure of another project too (FailuresCountFor). Of
+// each day then:
 //
 //   - change-fail-rate: the deploys with a counted failure over the deploys
 //     (measures.ChangeFailRateDay);
@@ -135,6 +138,20 @@ func (p failureProject) counts(failure prodevents.Event) bool {
 	return known && slices.Contains(p.sources, source)
 }
 
+// takes reports whether p's rows take deploy, a deploy row that counts for p: one that finished on
+// or after p's first day, and a posted deploy only where p holds an events source (posted).
+func (p failureProject) takes(deploy prodevents.Event) bool {
+	return !deploy.FinishedAt.Before(p.since) && (deploy.Source != prodevents.SourceAPI || p.posted)
+}
+
+// countsOn reports whether p's measures count blamed's failure, where it is counted and its deploy
+// counts for p: its signal one p counts (counts), on a deploy p's rows take (takes). The measures
+// count a failure by these two (readFailureRecords, failureRecord.count), and so does the record's
+// question of one (FailuresCountFor).
+func (p failureProject) countsOn(blamed prodevents.BlamedFailure) bool {
+	return p.counts(blamed.Failure) && p.takes(blamed.Deploy)
+}
+
 // failureDeploy is one deploy row a project's failure rows count, and whether it reached the
 // project through its repository rather than an issue or a route (via_repository).
 type failureDeploy struct {
@@ -207,8 +224,7 @@ func readFailureRecords(ctx context.Context, q delivery.Querier, attributor *del
 		held := false
 		add := func(reader counted) {
 			record := byProject[reader.project]
-			if record == nil || deploy.FinishedAt.Before(record.project.since) ||
-				deploy.Source == prodevents.SourceAPI && !record.project.posted {
+			if record == nil || !record.project.takes(deploy) {
 				return
 			}
 			record.index[deploy.ID] = len(record.deploys)
@@ -329,7 +345,8 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 // GitHub deploys ship, by key. Its reads run as delivery.ReadAll runs them: side by side on the
 // pool, which the refresher's failure writes (applyFailures, walkFailures) and the record's routes
 // outside a transaction pass, and one after the other in a transaction, the read-only snapshot of
-// the items (FailureRecordIn) or a route's write (DeployCountsFor in prodevents.DeployCheck).
+// the items (FailureRecordIn) or a route's write (DeployCountsFor in prodevents.DeployCheck,
+// FailuresCountFor in prodevents.StateChange.Reaches).
 func readShippedAttribution(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) (attribution, error) {
 	var pulls []delivery.PullRequestKey
 	for _, deploy := range deploys {
@@ -376,57 +393,139 @@ func readRecordReaders(ctx context.Context, q delivery.Querier, attributor *deli
 	return keys, readers, missing, err
 }
 
-// readPublishedDeployFacts reads in q the facts deploy is counted by from the state the refresher
-// published: each project's published default repository (eval_days_defaults), the attribution of
-// the pull requests deploy ships (readShippedAttribution) and, where it ships none, the project
-// eval_days_rules records as reading its repository. A posted and a dropped deploy read none of it.
-func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploy prodevents.Event) (prodevents.DeployFacts, error) {
-	facts := prodevents.DeployFacts{Defaults: map[string]string{}}
-	if deploy.Source == prodevents.SourceAPI || deploy.Dropped() {
+// readPublishedDeployFacts reads in q the facts each of deploys is counted by, in deploys' order,
+// from the state the refresher published: each project's published default repository
+// (eval_days_defaults), the attribution of the pull requests each deploy ships
+// (readShippedAttribution) and, for a deploy that ships none, the project eval_days_rules records as
+// reading its repository. Each is one read for all of deploys, so a page's deploys cost what one
+// deploy does. A posted and a dropped deploy read none of it, and nothing is read where every deploy
+// is one.
+func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) ([]prodevents.DeployFacts, error) {
+	facts := make([]prodevents.DeployFacts, len(deploys))
+	if !slices.ContainsFunc(deploys, func(deploy prodevents.Event) bool { return deploy.Source != prodevents.SourceAPI && !deploy.Dropped() }) {
 		return facts, nil
 	}
-	attribute, err := readShippedAttribution(ctx, q, attributor, []prodevents.Event{deploy})
+	attribute, err := readShippedAttribution(ctx, q, attributor, deploys)
 	if err != nil {
-		return prodevents.DeployFacts{}, err
+		return nil, err
 	}
-	for _, ref := range deploy.PullRequests {
-		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
-			list := attribute.lists[PullRequestMember(repo, number)]
-			facts.Pulls = append(facts.Pulls, prodevents.PullAttribution{Conditions: list.conditions, Terminal: list.terminal})
-		}
-	}
+	defaults := map[string]string{}
 	rows, err := q.Query(ctx, `select p.key, coalesce(d.repo, '') from projects p left join eval_days_defaults d on d.project_key = p.key`)
 	if err != nil {
-		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' published default repositories: %w", err)
+		return nil, fmt.Errorf("read the projects' published default repositories: %w", err)
 	}
 	var project, repo string
 	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
-		facts.Defaults[project] = repo
+		defaults[project] = repo
 		return nil
 	}); err != nil {
-		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' published default repositories: %w", err)
+		return nil, fmt.Errorf("read the projects' published default repositories: %w", err)
 	}
-	if len(facts.Pulls) == 0 {
-		err := q.QueryRow(ctx, `select coalesce(project_key, '') from eval_days_rules where lower(repo) = lower($1)`,
-			deploy.Repo).Scan(&facts.Source)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return prodevents.DeployFacts{}, fmt.Errorf("read the project that reads %s: %w", deploy.Repo, err)
+	var unshipped []string
+	for i, deploy := range deploys {
+		if deploy.Source == prodevents.SourceAPI || deploy.Dropped() {
+			continue
+		}
+		facts[i].Defaults = defaults
+		for _, ref := range deploy.PullRequests {
+			if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
+				list := attribute.lists[PullRequestMember(repo, number)]
+				facts[i].Pulls = append(facts[i].Pulls, prodevents.PullAttribution{Conditions: list.conditions, Terminal: list.terminal})
+			}
+		}
+		if repo := strings.ToLower(deploy.Repo); len(facts[i].Pulls) == 0 && !slices.Contains(unshipped, repo) {
+			unshipped = append(unshipped, repo)
+		}
+	}
+	if len(unshipped) == 0 {
+		return facts, nil
+	}
+	sources := map[string]string{}
+	rows, err = q.Query(ctx, `select lower(repo), coalesce(project_key, '') from eval_days_rules where lower(repo) = any($1::text[]) order by repo`,
+		unshipped)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(unshipped), err)
+	}
+	if _, err := pgx.ForEachRow(rows, []any{&repo, &project}, func() error {
+		if _, held := sources[repo]; !held {
+			sources[repo] = project
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(unshipped), err)
+	}
+	for i, deploy := range deploys {
+		if facts[i].Defaults != nil && len(facts[i].Pulls) == 0 {
+			facts[i].Source = sources[strings.ToLower(deploy.Repo)]
 		}
 	}
 	return facts, nil
 }
 
-// DeployCountsFor reads in q whether deploy, a deploy row of the record, counts for project under
-// the attribution the failure measures count it by: the one rule prodevents.DeployProjects, over the state the
-// refresher published (readPublishedDeployFacts). It answers whether or not project's failure
-// measures are on, and reads deploy's own pull requests' attribution alone, so the record's routes
-// ask it in the transaction of their write (api's production events, prodevents.DeployCheck).
+// DeployCountsFor reads in q whether deploy, a deploy row of the record, counts for project, over
+// the state the refresher published (readPublishedDeployFacts): prodevents.DeployProjects, the Go
+// restatement over facts a caller supplies of the rule the failure measures count a deploy by in
+// SQL, through its owner keys and eval_owner_readers (readRecordReaders), so a change to that rule
+// lands in both. It answers whether or not project's failure measures are on, and reads deploy's
+// own pull requests' attribution alone, so the record's routes ask it in the transaction of their
+// write of a deploy they name (api's production events, prodevents.DeployCheck).
 func DeployCountsFor(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, project string, deploy prodevents.Event) (bool, error) {
-	facts, err := readPublishedDeployFacts(ctx, q, attributor, deploy)
+	facts, err := readPublishedDeployFacts(ctx, q, attributor, []prodevents.Event{deploy})
 	if err != nil {
 		return false, err
 	}
-	return slices.Contains(prodevents.DeployProjects(deploy, facts), project), nil
+	return slices.Contains(prodevents.DeployProjects(deploy, facts[0]), project), nil
+}
+
+// FailuresCountFor reads in q whether project's failure measures count each of failures, a failure
+// row with the deploy row it blames, where it is counted (its state aside), in failures' order: the
+// measures on for project (failureProjectOf: delivery on, a failure source and a first day), the
+// failure's signal among its failure sources and its deploy one its rows take, finished on or after
+// that first day (failureProject.countsOn, the test the measures count a failure by), and that
+// deploy among the projects it counts for (DeployCountsFor's rule, over the state the refresher
+// published). The facts are read once for every deploy that passes the rest, so a page of failures
+// costs one read of each. The record's routes ask it of the automatic signals' failures of other
+// projects that a project's list and state route would reach (api's production events,
+// prodevents.StateChange.Reaches), so a project lists and judges such a failure only where it
+// counts in that project's numbers
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 2).
+func FailuresCountFor(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, project string, failures []prodevents.BlamedFailure) ([]bool, error) {
+	counts := make([]bool, len(failures))
+	if len(failures) == 0 {
+		return counts, nil
+	}
+	settings, err := delivery.GetProjectSettings(ctx, q, project)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return counts, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	measured, on := failureProjectOf(settings)
+	if !on {
+		return counts, nil
+	}
+	var deploys []prodevents.Event
+	asked := map[string]int{}
+	for _, failure := range failures {
+		if _, held := asked[failure.Deploy.ID]; !held && measured.countsOn(failure) {
+			asked[failure.Deploy.ID] = len(deploys)
+			deploys = append(deploys, failure.Deploy)
+		}
+	}
+	facts, err := readPublishedDeployFacts(ctx, q, attributor, deploys)
+	if err != nil {
+		return nil, err
+	}
+	countsFor := make([]bool, len(deploys))
+	for i, deploy := range deploys {
+		countsFor[i] = slices.Contains(prodevents.DeployProjects(deploy, facts[i]), project)
+	}
+	for i, failure := range failures {
+		at, held := asked[failure.Deploy.ID]
+		counts[i] = held && countsFor[at] && measured.countsOn(failure)
+	}
+	return counts, nil
 }
 
 // deploysFrom is the index in f.deploys of the first deploy that finished at or after at.

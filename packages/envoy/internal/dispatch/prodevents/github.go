@@ -50,15 +50,28 @@ func (e Event) Dropped() bool {
 	return e.Source == SourceGitHub && e.Status == StatusDropped
 }
 
+// DropWriter writes a drop's reject (DropGitHubDeploy): the reject of each counted failure on a
+// GitHub deploy row the rule of its repository no longer calls a deploy. No other writer writes
+// under it, so a failure whose reject names it is one a drop rejected (RejectedByDrop), which a
+// later rule that calls that deploy a deploy again counts again (UpsertGitHubDeploy), and every
+// other reject, a person's, a controller's or a retraction's, stays as its writer left it.
+var DropWriter = model.Actor{Kind: "system", ID: "github-deploy-drop"}
+
+// RejectedByDrop reports whether failure is rejected by the drop of the deploy it blames: its
+// reject names DropWriter.
+func RejectedByDrop(failure Event) bool {
+	return failure.State == StateRejected && failure.StateBy != nil && *failure.StateBy == DropWriter
+}
+
 // UpsertGitHubDeploy writes event, the GitHub adapter's deploy row of a run its repository's rule
 // calls a deploy, and answers the row it wrote and true. The run's row, of any project (runRow),
 // moves in place to event's project and fields with its id: a re-run's times, the pull requests
 // and commits it ships, its url, a source moved to another project, a rule changed. A run that
 // holds no row gains one. A dropped row (StatusDropped) counts again, and so does each failure
-// that a drop rejected, whose reject names event's actor as its writer (DropGitHubDeploy): it is
-// counted again with reason, by that actor at at. A failure a person or a controller rejected or
-// counted stays as they left it. A row whose fields would not move is not written, so a second
-// write of one run writes nothing, logs no change, and answers no row and false.
+// that a drop rejected (RejectedByDrop): it is counted again with reason, by event's actor at at. A
+// failure a person or a controller rejected or counted stays as they left it. A row whose fields
+// would not move is not written, so a second write of one run writes nothing, logs no change, and
+// answers no row and false.
 func UpsertGitHubDeploy(ctx context.Context, pool *store.Pool, event Event, reason string, at time.Time) (Event, bool, error) {
 	if event.Kind != KindDeploy || event.Source != SourceGitHub {
 		return Event{}, false, refuse(CodeInput, "the GitHub adapter writes deploys of source github alone")
@@ -102,10 +115,14 @@ func UpsertGitHubDeploy(ctx context.Context, pool *store.Pool, event Event, reas
 		return Event{}, false, fmt.Errorf("write production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
 	}
 	if dropped && !stored.Dropped() {
+		dropWriter, err := json.Marshal(DropWriter.Recorded())
+		if err != nil {
+			return Event{}, false, fmt.Errorf("encode the writer of a drop's reject: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			update production_events set state = 'counted', state_reason = $2, state_by = $3, state_at = $4
-			where kind = 'failure' and deploy_id = $1 and state = 'rejected' and state_by = $3
-		`, id, reason, actor, at); err != nil {
+			where kind = 'failure' and deploy_id = $1 and state = 'rejected' and state_by = $5
+		`, id, reason, actor, at, dropWriter); err != nil {
 			return Event{}, false, fmt.Errorf("count again the failures of production event %s: %w", id, err)
 		}
 	}
@@ -143,11 +160,11 @@ func runRow(ctx context.Context, tx pgx.Tx, event Event) (string, bool, error) {
 // of its repository no longer calls its run a deploy. The row stays, so the failures that blame it
 // and the restores that name it keep it, and a later rule that calls its run a deploy again counts
 // it again (UpsertGitHubDeploy): its status is StatusDropped and its note reason, and each counted
-// failure that blames it is rejected with reason, by actor at at. The row is locked first, so a
+// failure that blames it is rejected with reason, by DropWriter at at. The row is locked first, so a
 // failure written against it meanwhile waits for this write and then finds it as it left it. A row
 // already dropped with this reason writes nothing.
-func DropGitHubDeploy(ctx context.Context, pool *store.Pool, project, id, reason string, actor model.Actor, at time.Time) error {
-	by, err := json.Marshal(actor.Recorded())
+func DropGitHubDeploy(ctx context.Context, pool *store.Pool, project, id, reason string, at time.Time) error {
+	by, err := json.Marshal(DropWriter.Recorded())
 	if err != nil {
 		return fmt.Errorf("encode the writer of the drop of production event %s: %w", id, err)
 	}

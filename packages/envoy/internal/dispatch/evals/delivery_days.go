@@ -215,12 +215,15 @@ type counted struct {
 
 // dayPR is one pull request merged on the day, as the builders read it, with its repository, its
 // row key, the project or owner key it counts for and the deploy run that ships it, nil while
-// none does.
+// none does; postedFirst where a deploy posted to that project ships it before that run does
+// (firstShipped), so the run times its first-commit-to-production and open-to-production and the
+// post its merge-to-production.
 type dayPR struct {
-	pr     measures.PR
-	repo   string
-	member string
-	deploy *dayItem
+	pr          measures.PR
+	repo        string
+	member      string
+	deploy      *dayItem
+	postedFirst bool
 	counted
 }
 
@@ -607,7 +610,7 @@ type Shipping struct {
 // Before reports whether s ships its pull request before other: it finished first, or, where both
 // finished at once, s is a GitHub deploy and other a posted one, or, of two of one kind, s's deploy
 // repository is the first by name. The day rows time a pull request to the deploy that ships it
-// first (firstShipped), and its items name that deploy (api's evals items).
+// first for each measure (firstShipped), and its items name that deploy (api's evals items).
 func (s Shipping) Before(other Shipping) bool {
 	switch {
 	case !s.At.Equal(other.At):
@@ -622,20 +625,26 @@ func (s Shipping) Before(other Shipping) bool {
 // deploy repositories, at the first deploy to ship it (Shipping.Before) for each project or owner
 // key the rows count it for (dispatch://INFRA-978, R12): a GitHub deploy of its own repository,
 // which ships it for what its attribution counts it for, or a deploy posted to a project's route
-// that names it, which ships it for that project alone. So a pull request that a project's GitHub
-// rows and a deploy posted to that project both ship counts its merge-to-production once in that
-// project, from its merge to the first of the two; a deploy posted to one project moves no other
-// project's timing of it, and no other project's deploy takes it out of the posting project's
-// rows. An owner key is a key of its own, which no posted deploy ships for, since several projects
-// read its rows and the published defaults choose them at read time: a project that reads the
-// owner key's time of a pull request and its own posted time of it counts the first of the two,
-// in the read (shippedOnce). A GitHub repository's day keeps a pull request another deploy ships
-// first for the same key as one no deploy of it ships, and an events repository's day drops it.
+// that names it, which ships it for that project alone. A posted deploy times merge-to-production
+// alone (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3), so the first
+// shipper of first-commit-to-production and open-to-production is chosen among the GitHub deploys
+// alone. So a pull request that a project's GitHub rows and a deploy posted to that project both
+// ship counts its merge-to-production once in that project, from its merge to the first of the
+// two, and its other two lead times at the GitHub deploy, whichever finished first; a deploy
+// posted to one project moves no other project's timing of it, and no other project's deploy
+// takes it out of the posting project's rows. An owner key is a key of its own, which no posted
+// deploy ships for, since several projects read its rows and the published defaults choose them at
+// read time: a project that reads the owner key's time of a pull request and its own posted time
+// of it counts the first of the two, in the read (shippedOnce). A GitHub repository's day keeps a
+// pull request another GitHub deploy ships first for the same key as one no deploy of it ships, and
+// one a posted deploy ships first with its deploy, merge-to-production timing it in none of its rows
+// (dayPR.postedFirst); an events repository's day drops a pull request another deploy ships first.
 func firstShipped(days []DeliveryDay) {
 	type shipped struct {
 		member, project string
 	}
-	first := map[shipped]Shipping{}
+	// first is each pull request's first deploy of every kind, by key; github its first GitHub one.
+	first, github := map[shipped]Shipping{}, map[shipped]Shipping{}
 	for _, day := range days {
 		for _, pr := range day.prs {
 			if pr.pr.DeployedAt == nil {
@@ -645,24 +654,70 @@ func firstShipped(days []DeliveryDay) {
 			if held, found := first[key]; !found || one.Before(held) {
 				first[key] = one
 			}
+			if held, found := github[key]; !day.posted && (!found || one.Before(held)) {
+				github[key] = one
+			}
 		}
 	}
 	for i := range days {
 		day := &days[i]
 		kept := make([]dayPR, 0, len(day.prs))
 		for _, pr := range day.prs {
-			if pr.pr.DeployedAt == nil || first[shipped{member: pr.member, project: pr.project}].Repo == day.deployRepo {
-				kept = append(kept, pr)
+			key := shipped{member: pr.member, project: pr.project}
+			switch {
+			case pr.pr.DeployedAt == nil || first[key].Repo == day.deployRepo:
+			case day.posted:
 				continue
+			case github[key].Repo == day.deployRepo:
+				pr.postedFirst = true
+			default:
+				pr.pr.DeployedAt, pr.pr.DeployRunID, pr.deploy = nil, nil, nil
 			}
-			if day.posted {
-				continue
-			}
-			pr.pr.DeployedAt, pr.pr.DeployRunID, pr.deploy = nil, nil, nil
 			kept = append(kept, pr)
 		}
 		day.prs = kept
 	}
+}
+
+// postedShares is, of days, one day's reads of the deploy repositories before firstShipped, the
+// project of each events repository's day that names a pull request which the day of a GitHub
+// repository rebuilt names among days can ship for that project: a pull request of that
+// repository (delivery.ContainingRun), counted for the same project. Which deploy ships such a
+// pull request first, and so whether the events repository's merge-to-production times it, hangs
+// on that repository's deploys (firstShipped), so a write that rebuilds the repository's rows of
+// the day and not the events repository's leaves the day owed to that project where its rows moved
+// (oweDays): the settings rewrite and the span of a changed repository. An events repository
+// rebuilt with them is none of them. Each project once, in days' order; none where days hold no
+// events repository's pull request.
+func postedShares(days []DeliveryDay, rebuilt func(deployRepo string) bool) []string {
+	if !slices.ContainsFunc(days, func(day DeliveryDay) bool { return day.posted && len(day.prs) > 0 && !rebuilt(day.deployRepo) }) {
+		return nil
+	}
+	type shipped struct {
+		member, project string
+	}
+	shippable := map[shipped]bool{}
+	for _, day := range days {
+		if day.posted || !rebuilt(day.deployRepo) {
+			continue
+		}
+		for _, pr := range day.prs {
+			if strings.EqualFold(pr.repo, day.deployRepo) {
+				shippable[shipped{member: pr.member, project: pr.project}] = true
+			}
+		}
+	}
+	var projects []string
+	for _, day := range days {
+		if !day.posted || rebuilt(day.deployRepo) {
+			continue
+		}
+		at := slices.IndexFunc(day.prs, func(pr dayPR) bool { return shippable[shipped{member: pr.member, project: pr.project}] })
+		if at >= 0 && !slices.Contains(projects, day.prs[at].project) {
+			projects = append(projects, day.prs[at].project)
+		}
+	}
+	return projects
 }
 
 // Rows is project's rows of the day and the items they count: each of its reads' (DeliveryDay.Rows).
@@ -860,8 +915,10 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 // (INFRA-978 R12, eval_project_owners): a run that did not reach production ships none, and so
 // counts there too. Its rows are the repository's whichever project's source reads it, so a source
 // moved away and back, or to another project, rewrites none of them. A day's deploys are read of a
-// repository the refresher keeps alone (refresh.keptRepos), one that a source reads or read. This
-// is the one rule the delivery evals and the failure measures read a GitHub deploy's projects by.
+// repository the refresher keeps alone (refresh.keptRepos), one that a source reads or read. The
+// delivery evals and the failure measures read a GitHub deploy's projects by it, with the readers
+// of its owner keys eval_owner_readers names (readRecordReaders); prodevents.DeployProjects
+// restates that rule in Go over facts a caller supplies, so a change to it lands in both.
 func (a attribution) deployProjects(repo string, shipped []*delivery.DeliveryPullRequest) []counted {
 	if len(shipped) == 0 {
 		return []counted{{project: sourceKey(repo), via: true}}
@@ -943,7 +1000,10 @@ func readAttribution(ctx context.Context, s *Store, prs []delivery.DeliveryPullR
 }
 
 // readAttributionIn also accepts pull requests known only by key (PR-checks runs and GitHub
-// deploys in the production record). A snapshot uses sequential reads on its one connection.
+// deploys in the production record). A snapshot uses sequential reads on its one connection. A
+// pull request is matched to its stored row by its repository without case, and its list keyed by
+// the name it was asked by: delivery_pull_requests keeps GitHub's spelling, and the record names a
+// pull request in lower case (delivery.PullRequestName), which its readers look its list up by.
 func readAttributionIn(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor,
 	prs []delivery.DeliveryPullRequest, referenced []delivery.PullRequestKey,
 	readAll func(context.Context, ...func(context.Context) error) error) (attribution, error) {
@@ -1027,7 +1087,7 @@ func readAttributionIn(ctx context.Context, q delivery.Querier, attributor *deli
 				rows, err := q.Query(ctx, `
 					select given.member, issue.project_key
 					from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-					join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
+					join delivery_pull_requests request on lower(request.repo) = lower(given.repo) and request.number = given.number
 					join issues issue on issue.key = request.issue_key
 					where request.attribution_title_keys is null
 				`, members, repos, numbers)
@@ -1242,18 +1302,23 @@ func (d DeliveryDay) build(project, repo string, rows familyRows) []DayRow {
 // requests alone those of the evals no deploy repository moves (readsDeployRepo): a builder whose
 // evals the read does not keep is not run. An events repository's day (posted) builds
 // deploy-frequency and merge-to-production alone: a posted deploy counts in those two
-// (dispatch://INFRA-978, R1), and has no run whose success, jobs or checks another eval reads.
+// (dispatch://INFRA-978, R1), and has no run whose success, jobs or checks another eval reads. A
+// pull request a posted deploy ships first (dayPR.postedFirst) is one no deploy ships in
+// merge-to-production's part, and keeps its deploy in the other lead times' (firstShipped).
 // The merge-to-production row of an owner key and of an events repository names the pull request
 // of each of its samples (DayRow.sampleKeys), by which a project that reads both kinds of row
 // counts a pull request they both time once (shippedOnce).
 func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every bool) []DayRow {
 	var built []DayRow
 	keyed := d.deployRepo != ""
-	add := func(slug string, parts, viaParts []measures.DayPart) {
+	// add appends slug's rows, one of each of parts with the via_repository of viaParts' part of
+	// its series, and answers the rows it appended.
+	add := func(slug string, parts, viaParts []measures.DayPart) []DayRow {
 		via := make(map[string]int, len(viaParts))
 		for _, part := range viaParts {
 			via[part.Series] = part.N
 		}
+		from := len(built)
 		for _, part := range parts {
 			part.ViaRepository = via[part.Series]
 			built = append(built, DayRow{
@@ -1261,30 +1326,58 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 				Listed: !strings.HasPrefix(part.Series, measures.JobSeriesPrefix), DayPart: part,
 			})
 		}
+		return built[from:]
 	}
 	if every || len(rows.prs) > 0 {
+		// prs is the pull requests as the builders read them, and viaPRs those of them that reached
+		// the project through their repository; merged and viaMerged the same as merge-to-production
+		// reads them, which differ only where a posted deploy ships one first.
 		var prs, viaPRs []measures.PR
+		postedFirst := false
 		for _, pr := range rows.prs {
 			prs = append(prs, pr.pr)
 			if pr.via {
 				viaPRs = append(viaPRs, pr.pr)
 			}
+			postedFirst = postedFirst || pr.postedFirst
+		}
+		merged, viaMerged := prs, viaPRs
+		if postedFirst {
+			merged, viaMerged = make([]measures.PR, 0, len(prs)), make([]measures.PR, 0, len(viaPRs))
+			for _, pr := range rows.prs {
+				timed := pr.pr
+				if pr.postedFirst {
+					timed.DeployedAt, timed.DeployRunID = nil, nil
+				}
+				merged = append(merged, timed)
+				if pr.via {
+					viaMerged = append(viaMerged, timed)
+				}
+			}
 		}
 		for _, builder := range []struct {
-			slug  string
-			build func(time.Time, []measures.PR) []measures.DayPart
+			slug     string
+			build    func(time.Time, []measures.PR) []measures.DayPart
+			prs, via []measures.PR
+			// keys is the pull request each sample of the builder's part times, which the rows of
+			// an owner key and of an events repository name (DayRow.sampleKeys); nil for a builder
+			// whose rows no project reads of both.
+			keys func([]measures.PR) []string
 		}{
-			{SlugMergeToProduction, measures.MergeToProductionDay},
-			{SlugFirstCommitToProduction, measures.FirstCommitToProductionDay},
-			{SlugOpenToProduction, measures.OpenToProductionDay},
-			{SlugPROpenToMerge, measures.OpenToMergeDay},
-			{SlugReworkShare, measures.ReworkShareDay},
+			{SlugMergeToProduction, measures.MergeToProductionDay, merged, viaMerged, measures.MergeToProductionKeys},
+			{SlugFirstCommitToProduction, measures.FirstCommitToProductionDay, prs, viaPRs, nil},
+			{SlugOpenToProduction, measures.OpenToProductionDay, prs, viaPRs, nil},
+			{SlugPROpenToMerge, measures.OpenToMergeDay, prs, viaPRs, nil},
+			{SlugReworkShare, measures.ReworkShareDay, prs, viaPRs, nil},
 		} {
-			if readsDeployRepo(builder.slug) == keyed && (!d.posted || builder.slug == SlugMergeToProduction) {
-				add(builder.slug, builder.build(d.Day, prs), builder.build(d.Day, viaPRs))
-				if builder.slug == SlugMergeToProduction && (d.posted || isOwner(project)) {
-					// MergeToProductionDay builds one part, the row add appended last.
-					built[len(built)-1].sampleKeys = measures.MergeToProductionKeys(prs)
+			if readsDeployRepo(builder.slug) != keyed || (d.posted && builder.slug != SlugMergeToProduction) {
+				continue
+			}
+			appended := add(builder.slug, builder.build(d.Day, builder.prs), builder.build(d.Day, builder.via))
+			if builder.keys != nil && (d.posted || isOwner(project)) {
+				keys := builder.keys(builder.prs)
+				for i := range appended {
+					appended[i].sampleKeys = keys
 				}
 			}
 		}

@@ -184,9 +184,11 @@ func TestTheItemsOfAProjectWithTwoSourcesReadEachUnderItsOwnRule(t *testing.T) {
 // acme/alpha-app#1 and #2, of ALPHA's issue, merge at 09:00, and ALPHA's GitHub deploy 101 ships
 // both at 10:29; a deploy posted to OMEGA's route at 09:30, which OMEGA's events source reads,
 // names #1, so OMEGA's merge-to-production times #1 to the post. OMEGA's merge-to-production items
-// time #1 as its day rows do: to the post's finish, with no run id, 30 minutes from the merge, 90
-// from the opening and 120 from the first commit, and the same with ALPHA's repository named as
-// without. The post counts for OMEGA alone, so it moves none of ALPHA's timing: ALPHA's items time
+// time #1 as its day rows do: to the post's finish, with no run id, 30 minutes from the merge, and
+// the same with ALPHA's repository named as without; its first-commit-to-production and
+// open-to-production hold no minutes, since a posted deploy times merge-to-production alone and no
+// GitHub deploy counts #1 for OMEGA (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57,
+// point 3). The post counts for OMEGA alone, so it moves none of ALPHA's timing: ALPHA's items time
 // #1 and #2 to run 101, 89 minutes each. Each project's items' minutes are the samples its day rows
 // of the day hold.
 func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
@@ -258,9 +260,12 @@ func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 	if len(omega) != 1 {
 		t.Errorf("OMEGA's merge-to-production items list %v, want %s#1 alone", slices.Sorted(maps.Keys(omega)), app)
 	}
-	shipped("OMEGA", app+"#1", omega[app+"#1"], nil, at(9, 30), map[string]float64{
-		"merge_to_production_minutes": 30, "open_to_production_minutes": 90, "first_commit_to_production_minutes": 120,
-	})
+	shipped("OMEGA", app+"#1", omega[app+"#1"], nil, at(9, 30), map[string]float64{"merge_to_production_minutes": 30})
+	for _, column := range []string{"open_to_production_minutes", "first_commit_to_production_minutes"} {
+		if minutes, held := omega[app+"#1"][column]; !held || minutes != nil {
+			t.Errorf("OMEGA's item %s#1 holds %s %v (held %t), want none: a posted deploy times merge-to-production alone", app, column, minutes, held)
+		}
+	}
 	if cut := items("OMEGA", app); !reflect.DeepEqual(cut, omega) {
 		t.Errorf("OMEGA's merge-to-production items of %s are %v, want those of every repository, %v", app, cut, omega)
 	}
@@ -288,6 +293,86 @@ func TestAPullRequestItemIsTimedToTheDeployItsDayRowsName(t *testing.T) {
 		}
 		if !slices.Equal(listed, stored) {
 			t.Errorf("%s's merge-to-production items time %v, want the samples its day rows hold, %v", project, listed, stored)
+		}
+	}
+}
+
+// TestAPullRequestItemTimesEachLeadTimeToTheDeployItsEvalCounts
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3): OMEGA's GitHub
+// source reads its default repository acme/omega-app beside an events source. acme/omega-app#1, of
+// OMEGA's issue, is first committed at 07:30, opened at 08:00 and merged at 09:00; a deploy posted
+// to OMEGA names it and finished at 09:30, before OMEGA's GitHub deploy 101 ships it at 10:29.
+// Its item times merge-to-production to the post (30 minutes), and first-commit-to-production
+// (179) and open-to-production (149) to run 101, in every one of the three evals' items, each item
+// naming as its deploy the one its own eval counts: the post, with no run id, in
+// merge-to-production's, and run 101 in the other two's. Each eval's items' minutes are the samples
+// its day rows of the day hold.
+func TestAPullRequestItemTimesEachLeadTimeToTheDeployItsEvalCounts(t *testing.T) {
+	t.Parallel()
+	const app = "acme/omega-app"
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	issue := createTestIssue(t, handler, "OMEGA", "One change to the app")
+	setDefaultRepository(t, handler, "OMEGA", app)
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
+		Project: "OMEGA", Delivery: true,
+		Sources:           []delivery.SourceInput{deliveryseed.SourceOf(deployRule(app, "release"), nil), {Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+	})
+	upsertPR(t, database, delivery.DeliveryPullRequest{
+		Repo: app, Number: 1, Title: "feat: " + issue, Author: "octocat", IssueKey: &issue, URL: "https://github.com/" + app + "/pull/1",
+		FirstCommitAt: new(sourcesDayAt(7, 30)), CreatedAt: new(sourcesDayAt(8, 0)), MergedAt: new(sourcesDayAt(9, 0)),
+	})
+	seedSourceRun(t, database, app, 101, 10, "release")
+	writeProductionEvent(t, database.Pool, prodevents.Event{
+		ProjectKey: "OMEGA", Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: "release-1",
+		FinishedAt: new(sourcesDayAt(9, 30)), PullRequests: []string{app + "#1"},
+	})
+	leaveAttributionInputsUnread(t, database.Pool)
+	next := sourcesDay.AddDate(0, 0, 1)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, next.Add(-time.Minute))
+
+	minutes := map[string]float64{
+		"merge_to_production_minutes": 30, "first_commit_to_production_minutes": 179, "open_to_production_minutes": 149,
+	}
+	for _, want := range []struct {
+		slug, column string
+		finished     time.Time
+		run          any
+	}{
+		{evals.SlugMergeToProduction, "merge_to_production_minutes", sourcesDayAt(9, 30), nil},
+		{evals.SlugFirstCommitToProduction, "first_commit_to_production_minutes", sourcesDayAt(10, 29), 101.0},
+		{evals.SlugOpenToProduction, "open_to_production_minutes", sourcesDayAt(10, 29), 101.0},
+	} {
+		query := url.Values{"from": {sourcesDay.Format(time.RFC3339)}, "to": {next.Format(time.RFC3339)}, "row_kind": {evalRowPullRequest}}
+		answer := evalGet[evalItemsResponse](t, handler, evalItemsPath("OMEGA", want.slug)+"?"+query.Encode())
+		if len(answer.Items) != 1 || answer.Items[0].RowKey != app+"#1" {
+			keys := make([]string, len(answer.Items))
+			for i, row := range answer.Items {
+				keys[i] = row.RowKey
+			}
+			t.Errorf("OMEGA's %s items list %v, want %s#1 alone", want.slug, keys, app)
+			continue
+		}
+		row := answer.Items[0].Cols
+		deployed, _ := row["deployed_at"].(string)
+		if when, err := time.Parse(time.RFC3339, deployed); err != nil || !when.Equal(want.finished) || row["deploy_run_id"] != want.run {
+			t.Errorf("OMEGA's %s item was deployed at %v by run %v, want at %s by %v", want.slug, row["deployed_at"], row["deploy_run_id"],
+				want.finished.Format(time.RFC3339), want.run)
+		}
+		for _, column := range slices.Sorted(maps.Keys(minutes)) {
+			if row[column] != minutes[column] {
+				t.Errorf("OMEGA's %s item holds %s %v, want %v", want.slug, column, row[column], minutes[column])
+			}
+		}
+		var stored []float64
+		if err := database.Pool.QueryRow(t.Context(), `
+			select coalesce(array_agg(s.sample order by s.sample), '{}') from eval_days d cross join lateral unnest(d.samples) as s(sample)
+			where d.project_key = 'OMEGA' and d.eval_id = $1 and d.series = 'minutes' and d.repo = '' and d.day = $2
+		`, evals.EvalID("OMEGA", want.slug), sourcesDay).Scan(&stored); err != nil {
+			t.Fatalf("read OMEGA's %s samples: %v", want.slug, err)
+		}
+		if !slices.Equal(stored, []float64{minutes[want.column]}) {
+			t.Errorf("OMEGA's %s day rows hold %v, want its item's %v alone", want.slug, stored, minutes[want.column])
 		}
 	}
 }

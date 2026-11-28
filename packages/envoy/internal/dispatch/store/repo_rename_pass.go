@@ -73,10 +73,10 @@ import (
 const repoRenameLockNamespace int32 = 0x524E414D
 
 // repoRenameLockTimeout is how long a statement of the pass waits for a lock: the advisory lock
-// of a line that another process is writing, a repository's lock a settings save holds
-// (repoRenameLine.repositories), the table lock a line takes first (repoRenameLine.lock) while a
-// writer of that table runs, or a row that a request holds. A line that waits longer fails and is
-// logged, and the next boot writes it.
+// of a line that another process is writing, a project's or a repository's lock a settings save
+// holds (repoRenameLine.projects and repositories), the table lock a line takes first
+// (repoRenameLine.lock) while a writer of that table runs, or a row that a request holds. A line
+// that waits longer fails and is logged, and the next boot writes it.
 const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 
 // deliverySettingsLock is the lock each line that writes project_delivery_settings or
@@ -98,15 +98,38 @@ const repoRenameLockTimeout = `set local lock_timeout = '5s'`
 // take no change log's lock, so they and the line take turns. Reads go on beside the line.
 const deliverySettingsLock = `lock table project_delivery_settings, project_deploy_sources in share row exclusive mode`
 
-// LockDeployRepository is the statement that takes, for the rest of its transaction, the lock of
-// one deploy repository's delivery ownership, the repository's name in lower case at $1: the lock
-// under which a write that can make a repository the source of a delivery-on project checks that
-// no other such project's source reads it. delivery.LockRepositories takes it for each repository
-// a settings save or a move of a default repository reads, in name order, after the project's lock
-// and before any row lock, and the line of projects.default_repo takes it for each pair's old and
-// new name the same way (repoRenameLine.repositories), before its tables' lock. Its first key,
-// 6903, is its own (delivery.LockRepositories names the others).
-const LockDeployRepository = `select pg_advisory_xact_lock(6903, hashtext($1))`
+// LockDeliveryProject is the statement that takes, for the rest of its transaction, the lock of
+// one project's delivery settings, the project's key at $1. delivery.LockProject runs it, so two
+// saves of one project run one after the other and the second reads the settings the first wrote,
+// and the line of projects.default_repo runs it for each project whose default repository it moves
+// (repoRenameLine.projects). A path that takes it takes it before any repository's lock
+// (LockDeployRepositories), so no two paths wait on each other.
+const LockDeliveryProject = `select pg_advisory_xact_lock(6902, hashtext($1))`
+
+// LockDeployRepositories takes, for the rest of tx, the lock of the delivery ownership of each
+// repository of repos, by its name in lower case and in name order, so two transactions taking two
+// of them cannot wait on each other: the lock under which a write that can make a repository the
+// source of a delivery-on project checks that no other such project's source reads it. A settings
+// save and a move of a default repository (delivery's checkSources) take it for each repository
+// they read, and the line of projects.default_repo for each pair's old and new name
+// (repoRenameLine.repositories), each after its projects' locks (LockDeliveryProject) and before
+// any row lock, so each sees the other's commit. Its first key, 6903, is its own: 6900 is the
+// change log's lock (delivery's lockChangesStatement), 6901 the Legion observations'
+// (legion.ObservationsLockKey) and 6902 a project's (LockDeliveryProject), so no repository's name
+// can hash onto another family's lock.
+func LockDeployRepositories(ctx context.Context, tx pgx.Tx, repos []string) error {
+	names := make([]string, len(repos))
+	for i, repo := range repos {
+		names[i] = strings.ToLower(repo)
+	}
+	slices.Sort(names)
+	for _, name := range slices.Compact(names) {
+		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(6903, hashtext($1))`, name); err != nil {
+			return fmt.Errorf("lock the deploy repository %s: %w", name, err)
+		}
+	}
+	return nil
+}
 
 // repoRenamesLeftTimeout bounds each count of the rows left on an old name, the one before the
 // lines and the one after them. The count has a bound of its own, which the end of the pass's
@@ -219,9 +242,9 @@ func countRepoRenamesLeftBounded(ctx context.Context, pool *Pool, renames []repo
 }
 
 // rewriteRepoRenameLine runs line's statements for each pair in one transaction and commits it,
-// and answers the rows it wrote and the rows it deleted: after the pass's lock, the repositories'
-// locks and the line's lock where it takes them, and then its steps. It logs its writes and its
-// deletions only once they are committed, so a line that fails logs nothing but its error.
+// and answers the rows it wrote and the rows it deleted: after the pass's lock, the projects', the
+// repositories' and the line's lock where it takes them, and then its steps. It logs its writes and
+// its deletions only once they are committed, so a line that fails logs nothing but its error.
 func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine, renames []repoRename) (int64, int64, error) {
 	// A line is a transaction like any other, so it is marked like any other: nothing it runs may
 	// take a second pooled connection while it is open.
@@ -237,16 +260,19 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1, 0)`, repoRenameLockNamespace); err != nil {
 		return 0, 0, fmt.Errorf("take the pass's lock: %w", err)
 	}
+	pairs := line.renamesOf(renames)
+	if line.projects {
+		if pairs, err = lockDefaultProjects(ctx, tx, pairs); err != nil {
+			return 0, 0, err
+		}
+	}
 	if line.repositories {
-		var names []string
-		for _, r := range line.renamesOf(renames) {
+		names := make([]string, 0, 2*len(pairs))
+		for _, r := range pairs {
 			names = append(names, r.From, r.To)
 		}
-		slices.Sort(names)
-		for _, name := range slices.Compact(names) {
-			if _, err := tx.Exec(ctx, LockDeployRepository, name); err != nil {
-				return 0, 0, fmt.Errorf("lock the deploy repository %s: %w", name, err)
-			}
+		if err := LockDeployRepositories(ctx, tx, names); err != nil {
+			return 0, 0, err
 		}
 	}
 	if line.lock != "" {
@@ -266,7 +292,7 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 	var writes []written
 	var deletions []deletion
 	var rows int64
-	for _, r := range line.renamesOf(renames) {
+	for _, r := range pairs {
 		for _, step := range line.steps(r) {
 			if step.deletes {
 				keys, err := deletedKeys(ctx, tx, step.sql)
@@ -299,6 +325,33 @@ func rewriteRepoRenameLine(ctx context.Context, pool *Pool, line repoRenameLine,
 		slog.Info("dispatch: rewrote a renamed repository's old name", "field", w.field, "from", w.From, "to", w.To, "rows", w.rows)
 	}
 	return rows, int64(len(deletions)), nil
+}
+
+// lockDefaultProjects takes the delivery lock (LockDeliveryProject) of each project whose default
+// repository is the old name of a pair of renames, in the order of their keys, and answers renames
+// with each of those projects on its pair (repoRename.projects).
+func lockDefaultProjects(ctx context.Context, tx pgx.Tx, renames []repoRename) ([]repoRename, error) {
+	froms := make([]string, len(renames))
+	for i, r := range renames {
+		froms[i] = r.From
+	}
+	rows, err := tx.Query(ctx, `select key, lower(default_repo) from projects where lower(default_repo) = any($1) order by key`, froms)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects whose default repository is an old name: %w", err)
+	}
+	defaults, err := pgx.CollectRows(rows, pgx.RowToStructByPos[struct{ Key, From string }])
+	if err != nil {
+		return nil, fmt.Errorf("read the projects whose default repository is an old name: %w", err)
+	}
+	locked := slices.Clone(renames)
+	for _, project := range defaults {
+		if _, err := tx.Exec(ctx, LockDeliveryProject, project.Key); err != nil {
+			return nil, fmt.Errorf("lock the delivery settings of %s: %w", project.Key, err)
+		}
+		i := slices.IndexFunc(locked, func(r repoRename) bool { return r.From == project.From })
+		locked[i].projects = append(locked[i].projects, project.Key)
+	}
+	return locked, nil
 }
 
 // deletedKeys runs a delete that returns the key of each row it deleted, as text, and answers
@@ -355,10 +408,16 @@ func countRepoRenamesLeft(ctx context.Context, pool *Pool, renames []repoRename)
 // repository runs before the pair (repoRenameLine.respells): it moves each other spelling of case
 // of the pair's new name to the new name itself, so the pair's rows, the new name's and the runs
 // they are built from stand under one key, the new name in lower case (RepoRename).
+//
+// projects is set on the line of projects.default_repo alone (repoRenameLine.projects): the
+// projects whose default repository the line found to be the old name, and whose delivery lock it
+// holds, whose default it moves (movesDefault). The count of the rows left reads the where of each
+// step and no statement, so it builds that line's steps with none.
 type repoRename struct {
 	RepoRename
-	url     RepoURLRule
-	respell bool
+	url      RepoURLRule
+	respell  bool
+	projects []string
 }
 
 // respelling is r's respelling (repoRename.respell).
@@ -388,6 +447,15 @@ func (r repoRename) held(column string) string {
 	return `lower(` + column + `) = ` + r.to()
 }
 
+// movesDefault is true where column, a project's key, is one of r.projects.
+func (r repoRename) movesDefault(column string) string {
+	keys := make([]string, len(r.projects))
+	for i, key := range r.projects {
+		keys[i] = QuoteLiteral(key)
+	}
+	return column + ` = any(array[` + strings.Join(keys, `, `) + `]::text[])`
+}
+
 // urlNamed is true where column, a URL, names the old name by the URL rule: the pattern RewriteSQL
 // replaces. The rewrite changes each URL it matches, as the new name differs from the old one in
 // lower case.
@@ -412,13 +480,19 @@ func (r repoRename) tokenReplacement() string {
 type repoRenameLine struct {
 	// fields names the line's fields, as the ERROR line of a line that failed names them.
 	fields string
-	// repositories, where it is set, makes the line take, after the pass's lock and before lock, the
-	// lock of each pair's old and new name (LockDeployRepository, in name order), as a settings save
-	// takes the lock of each repository it reads before its first row lock.
+	// projects, where it is set, makes the line take, after the pass's lock and before the
+	// repositories', the delivery lock of each project whose default repository is a pair's old
+	// name (lockDefaultProjects), as a settings save takes its project's lock before it reads the
+	// project's default repository and takes its repositories' locks; its steps read those projects
+	// (repoRename.projects).
+	projects bool
+	// repositories, where it is set, makes the line take, after the pass's lock and the projects'
+	// and before lock, the lock of each pair's old and new name (LockDeployRepositories), as a
+	// settings save takes the lock of each repository it reads before its first row lock.
 	repositories bool
-	// lock, where it is set, is a statement the line runs once, after the pass's lock and the
-	// repositories' and before its first step, that takes a table lock its steps must hold before
-	// any row lock of theirs.
+	// lock, where it is set, is a statement the line runs once, after the pass's lock, the
+	// projects' and the repositories' and before its first step, that takes a table lock its steps
+	// must hold before any row lock of theirs.
 	lock string
 	// steps are the line's statements for one pair, in the order they run.
 	steps func(r repoRename) []repoRenameStep
@@ -834,21 +908,38 @@ var repoRenameLines = []repoRenameLine{
 	{
 		// A github_workflow source that names no repository reads its project's default
 		// repository, so the new name can make such a source read a repository another source
-		// reads already, which is deleted first (sharedSources). The line takes the lock of the old
-		// and the new name (repositories) and then the settings tables' lock (deliverySettingsLock),
-		// in the order a settings save takes its repositories' locks and then its rows, so a save
-		// that read either name's owner (delivery.RepositoryOwner) commits before the line moves a
-		// default, or reads the moved one, and neither holds what the other waits for. The delete
-		// writes project_deploy_sources, under the tables' lock.
+		// reads already, which is deleted first (sharedSources). A settings save takes its
+		// project's lock (delivery.LockProject) and reads the project's default repository under it
+		// (delivery.StoredSettings), and only then takes the lock of each repository it reads, that
+		// default among them, and checks that no other delivery-on project's source reads one
+		// (delivery.RepositoryOwner). So the line takes the save's locks in the save's order: the
+		// delivery lock of each project whose default is the old name (projects), then the old and
+		// the new name's (repositories), then the settings tables' (deliverySettingsLock). A save of
+		// such a project that read its default before the line took that project's lock commits
+		// before the line reads its sources, and a later one reads the moved default and checks the
+		// new name; a save that read either name's owner commits before the line moves a default,
+		// or reads the moved one; and neither holds what the other waits for. The line moves the
+		// default of the projects whose lock it holds alone (repoRename.movesDefault): a project
+		// whose default a write that does not know the pair (a build before this one, or a process
+		// that booted before the pair) set to the old name after the line read the projects keeps
+		// it, and the next boot's pass moves it. The delete writes project_deploy_sources, under the
+		// tables' lock.
 		fields:       "projects.default_repo",
+		projects:     true,
 		repositories: true,
 		lock:         deliverySettingsLock,
 		steps: func(r repoRename) []repoRenameStep {
+			where := r.named("default_repo")
 			return []repoRenameStep{
 				sharedSources(r,
 					`kind = 'github_workflow' and repo is null and exists (select 1 from projects p where p.key = project_key and `+r.named("p.default_repo")+`)`,
-					`d.repo is null and `+r.named("dp.default_repo")),
-				nameWrite(r, "projects", "default_repo"),
+					`d.repo is null and `+r.named("dp.default_repo")+` and `+r.movesDefault("dp.key")),
+				{
+					table: "projects",
+					where: where,
+					write: "default_repo",
+					sql:   `update projects set default_repo = ` + r.to() + ` where ` + where + ` and ` + r.movesDefault("key"),
+				},
 			}
 		},
 	},

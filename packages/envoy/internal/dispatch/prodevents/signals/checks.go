@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,15 +22,17 @@ import (
 // another project posted), written under the project of the issue the result was recorded on,
 // naming that issue's pull requests, keyed by the check and the deploy (CheckSourceRef), its actor
 // the result's and its detected time the result's own. It is written only where that deploy counts
-// for that project (deployCountsForRow), asked in the write's transaction. A result whose deploy
-// counts for other projects alone writes no row and stays refused: its refusal commits in that
-// transaction (check_fail_refusals, migration 20261128030142), and no later write writes its row,
-// not even a derive of deploy rows once a source move, a rule change or a default-repository move
-// has made that deploy count for the result's project
+// for that project (deployCountsForRow), asked in the write's transaction (writeSignal). A result
+// whose deploy counts for other projects alone writes no row and stays refused: its refusal commits
+// in that transaction, with a log line (check_fail_refusals, migration 20261128030142), and no
+// later write writes its row, not even a derive of deploy rows once a source move, a rule change or
+// a default-repository move has made that deploy count for the result's project
 // (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706). A result whose commit no
 // deploy row holds yet is not refused, and makes its row when a deploy row that holds it lands
-// (matchEarlyChecks); a result no deploy ever holds makes none. The result is bound to the row its
-// first match wrote, or found under that key, in the transaction that writes it
+// (matchEarlyChecks); a result no deploy ever holds makes none. Nor is a result whose deploy counts
+// for no project, as one a rule change drops while the result is written: it makes its row once a
+// derive calls that deploy a deploy of its project again (matchEarlyChecks). The result is bound to
+// the row its first match wrote, or found under that key, in the transaction that writes it
 // (check_fail_bindings, migration 20261127022136), and stays on it: a deploy row found later that
 // shipped the commit earlier makes it no second row. A retraction of the result rejects the row it
 // is bound to, with the retraction's reason and actor. A result's first match and its retraction's
@@ -146,14 +147,16 @@ func lockResult(ctx context.Context, tx pgx.Tx, id string) error {
 // after_merge check, not retracted), a deploy row holds its commit and the result is neither bound
 // to a row nor refused yet (checkResult.matched), and reports whether it wrote a row. The row blames
 // the deploy that first shipped the commit, written only where that deploy counts for the result's
-// project (deployCountsForRow); where another result of the check wrote that row already, under the
-// same key, the result stands behind it and writes nothing. Either way the result is bound to the
-// row in the transaction that writes the row, which takes the delivery change log's lock nowhere
-// and drains after its commit: a repeat writes nothing, and a deploy row found later that shipped
-// the commit earlier makes the result no second row. A result whose deploy counts for other
-// projects alone is refused in the transaction that asked (refuseCheck), and no later call writes
-// it. A result no deploy holds yet is logged with its id (unmatchedCheck) and stays bound to no
-// row, and makes its row when a deploy row that holds its commit lands (matchEarlyChecks).
+// project (writeSignal); where another result of the check wrote that row already, under the same
+// key, the result stands behind it and writes nothing. Either way the result is bound to the row in
+// the transaction that writes the row, which takes the delivery change log's lock nowhere and
+// drains after its commit: a repeat writes nothing, and a deploy row found later that shipped the
+// commit earlier makes the result no second row. A result whose deploy counts for other projects
+// alone is refused in the transaction that asked (checkRefusal), and no later call writes it. A
+// result no deploy holds yet is logged with its id (unmatchedCheck) and stays bound to no row, and
+// makes its row when a deploy row that holds its commit lands (matchEarlyChecks); a result whose
+// deploy counts for no project, or whose deploy row is gone since its lookup, is not refused either
+// and stays bound to no row.
 func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool, error) {
 	if result, found, err := readCheckResult(ctx, pool, id); err != nil || !found || !result.counts() || result.matched() {
 		return false, err
@@ -182,52 +185,34 @@ func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool,
 	if err != nil {
 		return false, err
 	}
-	var refused bool
-	row, created, err := prodevents.WriteIn(ctx, tx, prodevents.Event{
+	created, err := writeSignal(ctx, pool, tx, prodevents.Event{
 		ProjectKey: result.project, Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults,
 		SourceRef: CheckSourceRef(result.artifactID, result.blockID, deploy.ID), PullRequests: pulls, Actor: result.actor,
 		DeployID: new(deploy.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(result.createdAt.UTC()),
-	}, countsForRow(result.project, deploy.ID, &refused))
-	switch {
-	case refused:
-		return false, refuseCheck(ctx, tx, result, deploy.ID)
-	case refusesBlame(err):
-		// A deploy row gone since its lookup: the result is one whose commit no deploy row holds.
-		unmatchedCheck(result)
-		return false, nil
-	}
+	}, checkRefusal(result), func(ctx context.Context, tx pgx.Tx, row prodevents.Event) error {
+		if _, err := tx.Exec(ctx, `insert into check_fail_bindings (result_id, failure_id) values ($1::uuid, $2::uuid)`,
+			result.id, row.ID); err != nil {
+			return fmt.Errorf("bind result %s to its check_fail %s: %w", result.id, row.ID, err)
+		}
+		return nil
+	})
 	if err != nil {
 		return false, fmt.Errorf("write the check_fail of result %s: %w", result.id, err)
-	}
-	if _, err := tx.Exec(ctx, `insert into check_fail_bindings (result_id, failure_id) values ($1::uuid, $2::uuid)`,
-		result.id, row.ID); err != nil {
-		return false, fmt.Errorf("bind result %s to its check_fail %s: %w", result.id, row.ID, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit the check_fail of result %s: %w", result.id, err)
-	}
-	if created {
-		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a check_fail write")
 	}
 	return created, nil
 }
 
-// refuseCheck records in tx, and commits, the refusal of result's check_fail on deploy, the deploy
-// its first match blamed, which the write refused as counting for other projects than the result's
-// alone (countsForRow, check_fail_refusals). The refused result makes no row, then or on any later
-// write of it, whatever makes the deploy count for its project later
-// (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
-func refuseCheck(ctx context.Context, tx pgx.Tx, result checkResult, deploy string) error {
-	if _, err := tx.Exec(ctx, `insert into check_fail_refusals (result_id, deploy_id) values ($1::uuid, $2::uuid)
-		on conflict do nothing`, result.id, deploy); err != nil {
-		return fmt.Errorf("refuse result %s the check_fail on deploy %s: %w", result.id, deploy, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the refusal of result %s's check_fail: %w", result.id, err)
-	}
-	slog.Info("dispatch: a failed after-merge check blames a deploy that counts for other projects alone; the result is refused and makes no failure, now or later",
-		"result", result.id, "commit", result.commitSHA, "deploy", deploy)
-	return nil
+// checkRefusal is result's refusal of the deploy its first match blamed (check_fail_refusals): a
+// result is refused once, and on no later write of it makes a row or stands behind one
+// (checkResult.matched), whatever makes that deploy count for its project later.
+func checkRefusal(result checkResult) refusal {
+	return refusal{signal: prodevents.SignalCheckFail, key: result.id, record: func(ctx context.Context, tx pgx.Tx, deploy string) error {
+		if _, err := tx.Exec(ctx, `insert into check_fail_refusals (result_id, deploy_id) values ($1::uuid, $2::uuid)
+			on conflict do nothing`, result.id, deploy); err != nil {
+			return fmt.Errorf("refuse result %s the check_fail on deploy %s: %w", result.id, deploy, err)
+		}
+		return nil
+	}}
 }
 
 // unmatchedCheck logs result, a check_fail signal whose commit no deploy row holds yet: the deploy
@@ -235,143 +220,6 @@ func refuseCheck(ctx context.Context, tx pgx.Tx, result checkResult, deploy stri
 func unmatchedCheck(result checkResult) {
 	slog.Info("dispatch: a failed after-merge check names a commit no deploy row holds yet; its deploy row makes its failure",
 		"result", result.id, "commit", result.commitSHA)
-}
-
-// countsForRow is the question an automatic signal's write of a row of project asks of the deploy
-// it blames, blamed (prodevents.DeployCheck): whether that deploy counts for project
-// (deployCountsForRow), asked in the write's transaction while the store holds the deploy's row, and
-// refused prodevents.NoDeploy where it does not (refusesBlame), which it reports in refused, so the
-// writer records that refusal in the same transaction (refuseCheck, writeSignal). A deploy row gone
-// since its lookup, which the store refuses in the same words before it asks, leaves refused false.
-// A restoring deploy the row names is asked nothing.
-func countsForRow(project, blamed string, refused *bool) prodevents.DeployCheck {
-	return func(ctx context.Context, tx pgx.Tx, deploy prodevents.Event) error {
-		if deploy.ID != blamed {
-			return nil
-		}
-		counts, err := deployCountsForRow(ctx, tx, project, deploy)
-		if err == nil && !counts {
-			*refused = true
-			err = prodevents.NoDeploy(deploy.ID)
-		}
-		return err
-	}
-}
-
-// refusesBlame reports whether err is the store's refusal of an automatic row's blamed deploy
-// (prodevents.CodeNoDeploy): a deploy that counts for other projects than the row's alone
-// (countsForRow), or a deploy row gone since its lookup. The signal writes no row of it, as it
-// writes none where no deploy holds what it names; a check_fail, an incident_issue and a revert
-// refused the first stay refused (refuseCheck, writeSignal).
-func refusesBlame(err error) bool {
-	var refused *prodevents.Error
-	return errors.As(err, &refused) && refused.Code == prodevents.CodeNoDeploy
-}
-
-// writeSignal writes event, an automatic signal's failure blaming deploy blamed, in a transaction of
-// its own that takes the delivery change log's lock nowhere and drains after its commit, as
-// prodevents.Write does, and reports whether it wrote a row. It is written only where blamed counts
-// for event's project (countsForRow); where blamed counts for other projects alone, refuse records
-// that refusal in the same transaction, which commits it, so no later write of the signal blaming
-// that deploy makes the row (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706). A
-// deploy row gone since its lookup writes nothing and records no refusal.
-func writeSignal(ctx context.Context, pool *store.Pool, event prodevents.Event, blamed string, refuse func(context.Context, pgx.Tx) error) (bool, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return false, fmt.Errorf("begin the write of production event %s: %w", event.SourceRef, err)
-	}
-	defer tx.Rollback(ctx)
-	var refused bool
-	_, created, err := prodevents.WriteIn(ctx, tx, event, countsForRow(event.ProjectKey, blamed, &refused))
-	switch {
-	case refused:
-		if err := refuse(ctx, tx); err != nil {
-			return false, err
-		}
-	case refusesBlame(err):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
-	}
-	if created {
-		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of an automatic signal's write")
-	}
-	return created, nil
-}
-
-// deployCountsForRow reads in tx whether deploy, the deploy an automatic signal's row of project
-// blames, counts for project: the rule the failure measures count a deploy by (prodevents.DeployProjects)
-// over the stored facts as the write's transaction reads them (storedDeployFacts), and not the
-// refresher's published copy of them (eval_days_rules, eval_days_defaults), so a row whose deploy's
-// rule is saved and not yet published is written, and counts once the refresher's next pass
-// publishes it (dispatch://INFRA-978/comment/6da2d490-27d2-4d03-816a-a164a8d24dde).
-func deployCountsForRow(ctx context.Context, tx pgx.Tx, project string, deploy prodevents.Event) (bool, error) {
-	facts, err := storedDeployFacts(ctx, tx, deploy)
-	if err != nil {
-		return false, err
-	}
-	return slices.Contains(prodevents.DeployProjects(deploy, facts), project), nil
-}
-
-// storedDeployFacts reads in q the facts deploy is counted by (prodevents.DeployFacts) from what is
-// stored: each project's default_repo, the project of the issue of each pull request deploy ships
-// (a pull request no issue Dispatch holds attributes counts for none, so for the projects whose
-// default repository is the deploy's), and, where it ships no pull request, the project whose
-// deploy source reads its repository by the stored settings' rules (delivery.SourceRules). A posted
-// and a dropped deploy read none of it.
-func storedDeployFacts(ctx context.Context, q delivery.Querier, deploy prodevents.Event) (prodevents.DeployFacts, error) {
-	facts := prodevents.DeployFacts{Defaults: map[string]string{}}
-	if deploy.Source != prodevents.SourceGitHub || deploy.Dropped() {
-		return facts, nil
-	}
-	var repos []string
-	var numbers []int32
-	for _, ref := range deploy.PullRequests {
-		if repo, number, ok := prodevents.ParsePullRequest(ref); ok {
-			repos, numbers = append(repos, repo), append(numbers, int32(number))
-		}
-	}
-	if len(repos) == 0 {
-		rules, err := delivery.ReadSourceRules(ctx, q)
-		if err != nil {
-			return prodevents.DeployFacts{}, err
-		}
-		if rule, read := rules.For(deploy.Repo); read {
-			facts.Source = rule.Project
-		}
-	} else {
-		rows, err := q.Query(ctx, `
-			select coalesce(issue.project_key, '')
-			from unnest($1::text[], $2::int[]) with ordinality as given(repo, number, at)
-			left join delivery_pull_requests request on lower(request.repo) = lower(given.repo) and request.number = given.number
-			left join issues issue on issue.key = request.issue_key
-			order by given.at`, repos, numbers)
-		if err != nil {
-			return prodevents.DeployFacts{}, fmt.Errorf("read the projects of the pull requests deploy %s ships: %w", deploy.ID, err)
-		}
-		terminals, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return prodevents.DeployFacts{}, fmt.Errorf("read the projects of the pull requests deploy %s ships: %w", deploy.ID, err)
-		}
-		for _, terminal := range terminals {
-			facts.Pulls = append(facts.Pulls, prodevents.PullAttribution{Terminal: terminal})
-		}
-	}
-	rows, err := q.Query(ctx, `select key, coalesce(default_repo, '') from projects`)
-	if err != nil {
-		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' default repositories: %w", err)
-	}
-	var project, repo string
-	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
-		facts.Defaults[project] = repo
-		return nil
-	}); err != nil {
-		return prodevents.DeployFacts{}, fmt.Errorf("read the projects' default repositories: %w", err)
-	}
-	return facts, nil
 }
 
 // issuePullRequests is the pull requests of issue (delivery_pull_requests attributed to it), as the
@@ -400,10 +248,10 @@ func issuePullRequests(ctx context.Context, q delivery.Querier, issue string) ([
 // the same check still stands behind (standsBehind) stays counted. A row rejected already, by a
 // person or by another retraction, or one no result made, writes nothing, and so does a refused
 // result, which made no row and stands behind none; a row the drop of its deploy rejected
-// (rejectedByDrop) takes the retraction's reject over the drop's, so a later rule that calls that
-// deploy a deploy again leaves it rejected. The decision and the reject commit together under the
-// result's lock (lockResult) and the row's, in a transaction that takes the delivery change log's
-// lock nowhere and drains after its commit.
+// (prodevents.RejectedByDrop) takes the retraction's reject over the drop's, so a later rule that
+// calls that deploy a deploy again leaves it rejected. The decision and the reject commit together
+// under the result's lock (lockResult) and the row's, in a transaction that takes the delivery
+// change log's lock nowhere and drains after its commit.
 func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason string, actor model.Actor, at time.Time) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -418,7 +266,7 @@ func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason stri
 		return false, err
 	}
 	row, made, err := rowOf(ctx, tx, result)
-	if err != nil || !made || row.State == prodevents.StateRejected && !rejectedByDrop(row) {
+	if err != nil || !made || row.State == prodevents.StateRejected && !prodevents.RejectedByDrop(row) {
 		return false, err
 	}
 	standing, err := standingFailsOf(ctx, tx, result)
@@ -440,13 +288,6 @@ func RejectRetractedCheck(ctx context.Context, pool *store.Pool, id, reason stri
 	}
 	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of a check_fail reject")
 	return true, nil
-}
-
-// rejectedByDrop reports whether row is rejected by the drop of the deploy it blames: its reject
-// names loopActor, the drop's writer (prodevents.DropGitHubDeploy), and a later rule that calls
-// that deploy a deploy again counts it again (prodevents.UpsertGitHubDeploy).
-func rejectedByDrop(row prodevents.Event) bool {
-	return row.State == prodevents.StateRejected && row.StateBy != nil && *row.StateBy == loopActor
 }
 
 // rowOf is the check_fail row result made or stands behind, locked in tx `for update` and read
@@ -521,9 +362,10 @@ func standingFailsOf(ctx context.Context, q delivery.Querier, result checkResult
 // not retracted, bound to no row and not refused, whose commit one of them holds
 // (RecordCheckFailure, which blames the deploy that first shipped the commit and binds the result
 // to its row). So it binds only a result whose commit no deploy row held when the result was
-// matched first: a result refused then, its deploy counting for other projects alone, stays
-// refused once a source move, a rule change or a default-repository move makes that deploy count
-// for the result's project (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
+// matched first, or whose deploy counted for no project then, as one a rule change dropped while
+// the result was written: a result refused then, its deploy counting for other projects alone,
+// stays refused once a source move, a rule change or a default-repository move makes that deploy
+// count for the result's project (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
 // deploys are every row a derive calls a deploy, whether its write moved the row or wrote nothing,
 // so a derive run again after a pass that failed between a deploy row's write and its check_fail's
 // matches that row all the same, and a result bound already, on this deploy or another, is left on

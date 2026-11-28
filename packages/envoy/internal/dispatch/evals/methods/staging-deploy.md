@@ -2,6 +2,6 @@
 
 Dispatch writes day rows of this eval only when the delivery settings name the staging deploy's job. When two deploy cards follow one job name, the job counts for the first of them, in this order: the production deploy, the staging end-to-end gate, the staging deploy.
 
-A run counts for each project whose pull requests it ships, through the issues they name. A run that ships no pull request of a project counts for each project whose published default repository is its repository, and for no project where none is. The Pipeline section, which follows no project, counts it either way.
+A run counts for the project of each issue that the pull requests it ships name. When it ships a pull request that names no issue, it also counts for each other project whose published default repository is its repository. A run that ships no pull request counts for the project whose deploy source found it, the delivery-on project whose source reads its repository, and for no other project; a run that did not reach production ships none, so it counts there too. The Pipeline section, which follows no project, counts it either way.
 
 **What it does not count.** Runs in which the job did not run or is still running, runs on other branches, and runs of other workflows.

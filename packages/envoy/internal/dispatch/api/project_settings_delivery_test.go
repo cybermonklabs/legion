@@ -828,8 +828,8 @@ const projectLockWait = `%pg_advisory_xact_lock(6902, hashtext(%`
 
 // heldSaveLocks counts the locks of a settings save that a session of the current database other
 // than $1 holds: a project's delivery lock (6902) and a repository's (6903), each of two keys
-// (objsubid 2: delivery.LockProject, LockRepositories), and the lock of each eval the database
-// holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
+// (objsubid 2: delivery.LockProject, store.LockDeployRepositories), and the lock of each eval the
+// database holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
 const heldSaveLocks = `
 	select count(*) from pg_locks
 	where locktype = 'advisory' and granted and pid <> $1

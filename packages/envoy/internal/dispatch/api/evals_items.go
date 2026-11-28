@@ -752,20 +752,25 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 
 // pullRequestItemRows is the pull requests a delivery eval's day rows of the range counted: those
 // merged in it (delivery.ListPullRequestsInWindow, as the day builder reads them), each with the
-// deploy its day rows time it to, and its four lead times, each built by its eval's day builder
-// over the one pull request (measures.MergeToProductionDay and the rest), so a row's minutes are
-// its part of that eval's day (of a posted deploy, merge-to-production's alone: the other lead
-// times fold no posted deploy, evals' buildFamilies). That deploy is the one its members name
-// (counted, evals.Member.ShippedBy), the first to ship it of those by the one comparison the day
-// builder picks it by (evals.Shipping.Before), and none where no member names one, as of an eval no
-// deploy repository moves: a production apply of a deploy repository the eval reads, under that
-// repository's rule (repoRules, the apply runs delivery.ReadApplyRows reads of the range, as
-// delivery.ReadMergedRows reads them beside the same pull requests), or a deploy posted to the
-// project's route (prodevents.PostedDeploysFrom, read once from the range's start where a member
-// names one), whose finish times it and which holds no run id. So a pull request of a GitHub
-// repository that a deploy posted to the project ships first is timed to the post, and one the
-// project reads in an owner key's row and in its events repository's is one item, timed to the
-// deploy the project's fold keeps (evals' shippedOnce), whichever repositories the request names.
+// deploy its eval's day rows time it to, and its four lead times, each built by its eval's day
+// builder over the one pull request (measures.MergeToProductionDay and the rest) and timed to the
+// deploy that eval's day rows time it to, so a row's minutes are its part of that eval's day. The
+// deploys are those its members name (counted, evals.Member.ShippedBy), none where no member names
+// one, as of an eval no deploy repository moves: a production apply of a deploy repository the
+// eval reads, under that repository's rule (repoRules, the apply runs delivery.ReadApplyRows reads
+// of the range, as delivery.ReadMergedRows reads them beside the same pull requests), or a deploy
+// posted to the project's route (prodevents.PostedDeploysFrom, read once from the range's start
+// where a member names one), whose finish times it and which holds no run id. Of them, by the one
+// comparison the day builder picks a first shipper by (evals.Shipping.Before), merge-to-production
+// times it to the first of all, and first-commit-to-production and open-to-production to the
+// first GitHub deploy, since a posted deploy times merge-to-production alone (evals' firstShipped,
+// dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3); its deploy_run_id
+// and deployed_at are those of the deploy the eval's own measure times it to, merge-to-production's
+// the first of all and any other's the first GitHub deploy. So a pull request of a GitHub
+// repository that a deploy posted to the project ships first is timed to the post in
+// merge-to-production and to the GitHub deploy in the other two, and one the project reads in an
+// owner key's row and in its events repository's is one item, timed to the deploy the project's
+// fold keeps (evals' shippedOnce), whichever repositories the request names.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
@@ -813,38 +818,56 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 			}
 		}
 	}
+	// timedBy is pr as the builders read it, shipped by deploy, nil for none: a posted deploy
+	// holds no run id.
+	timedBy := func(pr delivery.DeliveryPullRequest, deploy *shipping) measures.PR {
+		if deploy == nil {
+			return measures.PROf(pr, nil)
+		}
+		measured := measures.PROf(pr, &deploy.apply)
+		if deploy.Posted {
+			measured.DeployRunID = nil
+		}
+		return measured
+	}
+	slug := read.entry.Definition.Slug
 	var rows []evalItemRow
 	for _, pr := range prs {
 		ships := members[evals.PullRequestMember(pr.Repo, pr.Number)]
 		if pr.CreatedAt == nil || pr.MergedAt == nil || ships == nil {
 			continue
 		}
-		var first *shipping
+		// first is the first of the deploys its members name, and github the first GitHub one.
+		var first, github *shipping
 		for _, by := range ships {
-			if candidate, named := deploys[by]; named && (first == nil || candidate.Before(first.Shipping)) {
+			candidate, named := deploys[by]
+			if !named {
+				continue
+			}
+			if first == nil || candidate.Before(first.Shipping) {
 				first = &candidate
 			}
+			if !candidate.Posted && (github == nil || candidate.Before(github.Shipping)) {
+				github = &candidate
+			}
 		}
-		var apply *delivery.Apply
-		if first != nil {
-			apply = &first.apply
+		merge, lead := timedBy(pr, first), timedBy(pr, github)
+		shown := lead
+		if slug == evals.SlugMergeToProduction {
+			shown = merge
 		}
-		measured := measures.PROf(pr, apply)
-		if first != nil && first.Posted {
-			measured.DeployRunID = nil
-		}
-		day, one := measures.Midnight(*pr.MergedAt), []measures.PR{measured}
+		day := measures.Midnight(*pr.MergedAt)
 		rows = append(rows, evalItemRow{
-			RowKey:  measured.ID,
+			RowKey:  merge.ID,
 			RowKind: evalRowPullRequest,
 			Cols: map[string]any{
 				"repo": pr.Repo, "number": pr.Number, "title": pr.Title, "author": pr.Author, "issue": pr.IssueKey,
 				"created_at": pr.CreatedAt, "merged_at": pr.MergedAt, "first_commit_at": pr.FirstCommitAt,
-				"rework": pr.Rework, "deploy_run_id": measured.DeployRunID, "deployed_at": measured.DeployedAt,
-				"merge_to_production_minutes":        sampleOf(measures.MergeToProductionDay(day, one)),
-				"first_commit_to_production_minutes": sampleOf(measures.FirstCommitToProductionDay(day, one)),
-				"open_to_production_minutes":         sampleOf(measures.OpenToProductionDay(day, one)),
-				"open_to_merge_minutes":              sampleOf(measures.OpenToMergeDay(day, one)),
+				"rework": pr.Rework, "deploy_run_id": shown.DeployRunID, "deployed_at": shown.DeployedAt,
+				"merge_to_production_minutes":        sampleOf(measures.MergeToProductionDay(day, []measures.PR{merge})),
+				"first_commit_to_production_minutes": sampleOf(measures.FirstCommitToProductionDay(day, []measures.PR{lead})),
+				"open_to_production_minutes":         sampleOf(measures.OpenToProductionDay(day, []measures.PR{lead})),
+				"open_to_merge_minutes":              sampleOf(measures.OpenToMergeDay(day, []measures.PR{lead})),
 			},
 			MeasuredAt: *pr.MergedAt,
 			Source:     "delivery.ListPullRequestsInWindow",
@@ -915,8 +938,9 @@ func (s *server) deployItemRows(ctx context.Context, read evalItemsRead) ([]eval
 // failureItemsOf is the rows of the record behind read's eval, a failure measure, on the range's
 // days, as its day rows count them (evals.FailureRecord.Items over the record evals.FailureRecordIn
 // reads once a request, evalRequestReads), kept once a range (evalRangeReads): its deploys and its
-// failures both read them. Of a request naming repositories it keeps those counted through a
-// deploy of one of them, the rows of those repositories' day rows.
+// failures both read them, whatever project's row each is, as the record's list shows them. Of a
+// request naming repositories it keeps those counted through a deploy of one of them, the rows of
+// those repositories' day rows.
 func (s *server) failureItemsOf(ctx context.Context, read evalItemsRead) ([]evals.FailureItem, error) {
 	if !read.once.failuresRead {
 		record, err := evals.FailureRecordIn(ctx, read.tx, s.deps.Attributor, read.project, read.entry.Definition.Slug)

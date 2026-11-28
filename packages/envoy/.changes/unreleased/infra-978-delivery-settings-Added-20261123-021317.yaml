@@ -10,7 +10,10 @@ body: |-
   it. The answer gives each source its `reconciled_through`. A `PUT`
   keeps the stored value of every top-level field its body leaves out (`null` clears a field that
   may be empty, `sources` present replaces the list, and a `targets` key changes that target
-  alone), and the project settings tab edits them while sending back every field it does not edit.
+  alone). The project settings tab sends `{"delivery": false}` alone with delivery off, and with
+  delivery on the fields it edits and only the targets the reader changed; the route keeps every
+  field and target the body leaves out, so a target another write moved while the tab was open
+  stands.
   `GET` and `PUT /api/v1/settings/delivery` keep answering in this release and are removed in the
   next one. Each deploy and each failed change is a row of
   `production_events`, read, posted and judged at `GET` and `POST
@@ -34,9 +37,14 @@ body: |-
   A posted deploy is one to production that succeeded: `POST .../production-events` refuses another
   environment or status with `400 PRODUCTION_EVENT_INPUT`. An automatic failure (`check_fail`,
   `revert`, `incident_issue`) is written only for a deploy that counts for its project, is listed
-  by `GET .../production-events` of each project its deploy counts for, and is rejected,
-  re-counted and restored through each of their `PUT .../{id}/state` routes; a failure keeps its
-  first restore. An automatic failure refused because its deploy counted for other projects alone
+  by `GET .../production-events` of each project whose failure measures count it (its deploy
+  counts for the project, delivery on, a failure source counting its signal, the deploy finished
+  on or after `failures_measured_since`), whatever project's row it is, and is rejected,
+  re-counted and restored through each of their `PUT .../{id}/state` routes under the same rule,
+  where the caller's credential covers the failure's own project (a token naming one project
+  writes a private project's row only where it names it); a failure keeps its first restore
+  whatever `restored_by_deploy` names. An automatic failure refused because its deploy counted
+  for other projects alone
   stays refused: no later write makes its row, not even after a source move, a rule change or a
   default-repository move makes that deploy count for its project.
 time: 2026-11-23T02:13:17Z

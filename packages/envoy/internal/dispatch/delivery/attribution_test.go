@@ -474,6 +474,43 @@ func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStore
 	}
 }
 
+// TestResolvedCandidatesFindAStoredPullRequestByItsRepositoryInAnyCase (dispatch://INFRA-978, R23
+// of the review at 20c604ef): delivery_pull_requests keeps a repository as GitHub spells it, and
+// the record of production events names a pull request in lower case (PullRequestName), which the
+// evals look its attribution up by. A pull request stored under Acme/Widgets whose GitHub link
+// names ATTR-266 answers that candidate asked by acme/widgets, under the key it was asked by, and
+// asked by its stored spelling too, under that key.
+func TestResolvedCandidatesFindAStoredPullRequestByItsRepositoryInAnyCase(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	const url = "https://github.com/Acme/Widgets/pull/266"
+	seedAttributionIssues(t, ctx, pool, []string{"ATTR-266"}, map[string][]string{"ATTR-266": {url}})
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+		Repo: "Acme/Widgets", Number: 266, Title: "feat: no key here", URL: url,
+		Author: "octocat", CreatedAt: &merged, MergedAt: &merged, Attribution: &AttributionInputs{},
+	}); err != nil {
+		t.Fatalf("seed Acme/Widgets#266: %v", err)
+	}
+	lower, stored := PullRequestKey{Repo: "acme/widgets", Number: 266}, PullRequestKey{Repo: "Acme/Widgets", Number: 266}
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, []PullRequestKey{lower, stored})
+	if err != nil {
+		t.Fatalf("read the stored row's candidates: %v", err)
+	}
+	if len(resolved) != 2 {
+		t.Errorf("the answer holds %d pull requests (%v), want the two keys it was asked by", len(resolved), resolved)
+	}
+	for _, pull := range []PullRequestKey{lower, stored} {
+		var keys []string
+		for _, candidate := range resolved[pull] {
+			keys = append(keys, candidate.Key)
+		}
+		if !slices.Equal(keys, []string{"ATTR-266"}) {
+			t.Errorf("the candidates asked by %s#%d read %v, want [ATTR-266]", pull.Repo, pull.Number, keys)
+		}
+	}
+}
+
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {

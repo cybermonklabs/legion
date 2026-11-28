@@ -3020,6 +3020,61 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 	t.Logf("the change left %d rows and rules of other repositories and of none as they stood", len(othersBefore))
 }
 
+// TestARuleChangeThatFlipsWhichDeployShipsAPullRequestFirstCountsItOnce (dispatch://INFRA-978,
+// R24): over the three-source history, acme/omega-app#9 of OMEGA-1 merges at 09:00, a deploy posted
+// to OMEGA at 11:00 names it, acme/omega-app's run 3001 ships it at 10:19 under omegaJob, before the
+// post, and run 3002, created at 12:00, holds a job of another name alone. OMEGA's source then names
+// that job alone, so 3002 ships #9 at 12:19, after the post; and then omegaJob again. After the one
+// pass that follows each change OMEGA's merge-to-production counts #9 once, from the deploy that
+// ships it first (79 minutes to 3001, then 120 to the post, then 79 again); #9 is a member of
+// OMEGA's events repository, naming the post, exactly while the post ships it first, the one item
+// the items route then times to the post; the pass leaves no day owed; and the stored figures are
+// the fold of the rows. Red where the rewrite leaves the events repository's rows as they stood: no
+// row times #9 after the first change, and both do after the second.
+func TestARuleChangeThatFlipsWhichDeployShipsAPullRequestFirstCountsItOnce(t *testing.T) {
+	t.Parallel()
+	const omegaRelease = "omega / release"
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: omegaApp, Number: 9, Title: "OMEGA-1: change 9", URL: "https://github.com/" + omegaApp + "/pull/9", Author: "dev-ana",
+		CreatedAt: new(at(8)), MergedAt: new(at(9)), IssueKey: new("OMEGA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#9: %v", omegaApp, err)
+	}
+	r.deployRun(t, omegaApp, 3002, at(12), omegaRelease)
+	posted := r.post(t, "OMEGA", "release-9", at(11), omegaApp+"#9")
+	r.settle(t)
+	day := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)}
+	expect := func(what string, minutes float64, postedFirst bool) {
+		t.Helper()
+		wantFigures(t, what, map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", day)}, map[string]*float64{
+			SlugMergeToProduction + ".n": new(1.0), SlugMergeToProduction + ".max": new(minutes),
+		})
+		want := 0
+		if postedFirst {
+			want = 1
+		}
+		if n := r.count(t, `select count(*) from eval_day_members where project_key = 'OMEGA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
+			EventsRepo("OMEGA"), PullRequestMember(omegaApp, 9), PostedMember(posted.ID)); n != want {
+			t.Errorf("%s: OMEGA's events repository counts %s#9 shipped by the post %d times, want %d", what, omegaApp, n, want)
+		}
+		if n := r.count(t, `select count(*) from eval_days_owed`); n != 0 {
+			t.Errorf("%s: %d days are owed a rewrite after the pass, want none", what, n)
+		}
+		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
+	}
+	expect("before the change", 79, false)
+	authors := []string{"dev-ana"}
+	putSources(t, r.database.Pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaRelease), nil), eventsSource)
+	r.pass(t)
+	expect("once 3002, after the post, is the deploy that ships #9", 120, true)
+	putSources(t, r.database.Pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
+	r.pass(t)
+	expect("once 3001, before the post, ships #9 again", 79, false)
+}
+
 // stagePauses is a tracer (storetest.TracedStore) that, while armed (passPausedAtStagings), holds
 // the traced pool's commit of each transaction that staged rows or members of a rule (ruleStaging:
 // an insert into eval_rebuild_days or eval_rebuild_members) once the commit has succeeded, until

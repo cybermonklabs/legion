@@ -308,11 +308,11 @@ func TestFailingJobsCoverTheLast24HoursWithoutTheRollup(t *testing.T) {
 	assertCell(t, "run.total", run.Total, 4, new(30.0), new(30.0), 1, 3, 1, new(0.25))
 }
 
-// TestFailingJobsWithoutARollupLeaveNothingOut: with no roll-up job set, the job that only reports
-// the others' result is tallied like any other.
+// TestFailingJobsWithoutARollupLeaveNothingOut: with no roll-up job set (a lookup that answers ""
+// for every repository), the job that only reports the others' result is tallied like any other.
 func TestFailingJobsWithoutARollupLeaveNothingOut(t *testing.T) {
 	c := failingFixture()
-	failing := FailingJobs(c.runs, c.jobs, pipelineNow, nil)
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp(""))
 	names := make([]string, len(failing))
 	for i, j := range failing {
 		names[i] = j.Name
@@ -379,7 +379,7 @@ func TestAFailingJobsLastRunIsTheSameInEveryRunOrder(t *testing.T) {
 		for i, run := range runs {
 			ids[i] = run.RunID
 		}
-		failing := FailingJobs(runs, c.jobs, pipelineNow, nil)
+		failing := FailingJobs(runs, c.jobs, pipelineNow, rollsUp(""))
 		if len(failing) != 1 || failing[0].Failures != 3 || !failing[0].LastFailedAt.Equal(lastFailed) || failing[0].LastRunURL != runURL(9) {
 			t.Fatalf("failing jobs of runs listed %v = %+v, want build / unit failing 3 times, last in run 9 at %s", ids, failing, lastFailed)
 		}

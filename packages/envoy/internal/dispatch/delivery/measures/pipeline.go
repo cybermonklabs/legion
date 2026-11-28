@@ -397,7 +397,7 @@ func PRChecksTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery
 // first, then by name. It reads only runs that ended in success or failure (a cancelled run's jobs
 // are not the prototype's to count) and only their jobs that did, and leaves out each run's
 // roll-up job, the one rollupOf answers for the run's repository, since each repository's rule
-// names its own (none where it answers "" or rollupOf is nil), and every summary or guard job
+// names its own (none where it answers ""), and every summary or guard job
 // (delivery.IsSummaryOrGuardJob). It is no day part: the 24 hours it looks back over end at any
 // instant, not at a UTC day's end, so it is read from the run jobs themselves, the rows the
 // PR-checks parts are built from, as an items read is.
@@ -416,10 +416,7 @@ func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Del
 	})
 	tallies := map[string]*FailingJob{}
 	for _, run := range recent {
-		rollupJob := ""
-		if rollupOf != nil {
-			rollupJob = rollupOf(run.Repo)
-		}
+		rollupJob := rollupOf(run.Repo)
 		for _, job := range jobsByRun[run.RunID] {
 			outcome, ok := OutcomeOf(job.Conclusion)
 			if !ok || !outcome.timed() || (rollupJob != "" && job.Name == rollupJob) || delivery.IsSummaryOrGuardJob(job.Name) {
