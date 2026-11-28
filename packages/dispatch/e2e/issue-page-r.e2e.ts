@@ -614,15 +614,39 @@ const UNDER_CRITERION_OFFERS = [
   EDIT_LABELS.edit_new_under,
 ] as const;
 
+/** The read id of each row Graph draws directly under the first row of `parent`, in order, by the
+ *  tree's own `aria-level`, null for a row that holds no read id yet; none where no row of
+ *  `parent` is drawn. */
+function drawnUnder(page: Page, parent: string): Promise<(string | null)[]> {
+  return issuePage(page).evaluate((root, id) => {
+    const rows = [...root.querySelectorAll("[data-node-row]")];
+    const level = (row: Element) => Number(row.getAttribute("aria-level") ?? "");
+    const at = rows.findIndex((row) => row.getAttribute("data-node-read-id") === id);
+    const top = rows[at];
+    if (top === undefined) return [];
+    const under: (string | null)[] = [];
+    for (const row of rows.slice(at + 1)) {
+      if (level(row) <= level(top)) break;
+      if (level(row) === level(top) + 1) under.push(row.getAttribute("data-node-read-id"));
+    }
+    return under;
+  }, parent);
+}
+
 // c-new-node, third row: an edit of the spec takes the third statement, the criterion's last child
 // of the spec's band, out of its text, so its node is gone and keeps its part_of to the criterion
 // and its rank, which no tree read holds. New row under on the criterion sends `after: null`, and
 // the server answers it with the last ranked child of an earlier band it holds under the criterion
-// (`placeAmongSiblings` in `api/node_move.go`): the gone statement. The row is placed all the same,
-// by the parent the answer names, with its moves, Delete and New row under offered and no reload.
+// (`placeAmongSiblings` in `api/node_move.go`): the gone statement. The criterion holds the prose
+// block, a block of the issue's own fragment, so the reader made the new row right after the
+// second statement, first among the issue's own blocks under the criterion. R7's re-read, the
+// read of the outline from its first page after the placing's answer, is held (`holdReread`):
+// with the answer taken and no re-read, the row is placed by that answer alone and still stands
+// where the reader made it, its Move up grey as the first, with its other moves, Delete and New
+// row under offered and no reload. Then the re-read is let go, and the row stands there still.
 // SLOW(>=2s): an edit of the spec waited for until the tree read leaves the statement out, a
-// landing, a new row typed and placed through the block index's read of the room, and its menu
-// read until it offers its acts.
+// landing, a new row typed and placed through the block index's read of the room with R7's
+// re-read held, its menu read until it offers its acts, and the re-read let go and waited out.
 test("a new row under a parent whose ranked child is gone is placed @phone", async ({
   browser,
 }) => {
@@ -632,7 +656,7 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
     owedUnless(await roomWriteGate(page, seed.key));
     const ids = await graphEditIds(page, seed);
     const key = seed.key;
-    const statement3 = ids.statements[2];
+    const [, statement2, statement3] = ids.statements;
     await page.setViewportSize(size);
     await editArtifact(seed.spec, { ops: [{ block: "s3", op: "delete" }] });
     await expect
@@ -642,11 +666,31 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
       })
       .toBe(true);
     const sent = watchNodeRequests(page, key);
+    const traffic = watchApiRequests(page);
 
     await landOn(page, key, ids.criterion, "the criterion");
+    // R7's re-read is held from the placing's answer on (`holdReread`), which names the new node
+    // by the id its PATCH goes to: that PATCH waits at the node route until the hold is in place,
+    // so the hold stands before the answer comes. The route stays installed for the page's life,
+    // as `holdReread`'s does, and passes every other request of the node routes through.
+    const holding = Promise.withResolvers<{ readonly held: () => Route | undefined }>();
+    let routed = false;
+    const nodes = `/api/v1/issues/${encodeURIComponent(key)}/nodes/`;
+    await page.route(
+      (url) => url.pathname.startsWith(nodes),
+      async (route) => {
+        const request = route.request();
+        if (!routed && request.method() === "PATCH") {
+          routed = true;
+          const id = decodeURIComponent(new URL(request.url()).pathname.slice(nodes.length));
+          holding.resolve(await holdReread(page, key, id));
+        }
+        await route.continue();
+      }
+    );
     const from = nodeWrites(sent).length;
     const what = "the new row under the criterion";
-    await newRowUnder(page, sent, TYPED.underCriterion, "the criterion");
+    const made = await newRowUnder(page, sent, TYPED.underCriterion, "the criterion");
     const placing = await nthWrite(sent, from + 1, `the page sends no PATCH that places ${what}`);
     expect(placeOf(placing), `the PATCH that places ${what} sends another place`).toEqual({
       after: null,
@@ -657,6 +701,48 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
       `the answer to the PATCH that places ${what} names another after than the gone statement`
     ).toBe(statement3);
 
+    // R7's re-read is the first read of the outline from its first page after the answer.
+    const reread = await holding.promise;
+    await expect
+      .poll(() => reread.held() !== undefined, {
+        message: "no read of the tree from its first page follows the placing",
+        timeout: 60_000,
+      })
+      .toBe(true);
+    // Delete is grey on a new row until its answer is written into the held read and the row has
+    // left the new rows (`unplaced`), so once its menu counts Delete the outline draws the node
+    // where that read holds it. Delete and New row under are offered wherever under the criterion
+    // the answer put the row.
+    await expect
+      .poll(() => placedOffers(page, what, [EDIT_LABELS.edit_new_under]), {
+        message: "the answer places the new row before the re-read",
+        timeout: 30_000,
+      })
+      .toEqual({ delete: "counted", offered: [true] });
+    // The rows drawn under the criterion from the second statement to the prose block.
+    const secondToProse = async () => {
+      const under = await drawnUnder(page, ids.criterion);
+      return under.slice(under.indexOf(statement2), under.indexOf(ids.prose) + 1);
+    };
+    await expect
+      .poll(secondToProse, {
+        message: "the new row stays where the reader made it until the re-read",
+      })
+      .toEqual([statement2, made, ids.prose]);
+    // Each try opens the menu again, which reads the row's verdicts anew.
+    await expect(async () => {
+      await openRowMenu(page, "m", what);
+      try {
+        await expectGrey(
+          page,
+          EDIT_LABELS.edit_move_up,
+          EDIT_LINES.grey_first,
+          `Move up is grey on ${what}, the first of the issue's own blocks under the criterion`
+        );
+      } finally {
+        await closeRowMenu(page, what);
+      }
+    }).toPass({ timeout: 30_000 });
     // The row keeps the focus once Escape left its text: its menu, read again until it holds,
     // offers the acts of a placed node, with no reload.
     await expect
@@ -665,6 +751,15 @@ test("a new row under a parent whose ranked child is gone is placed @phone", asy
         timeout: 30_000,
       })
       .toEqual({ delete: "counted", offered: UNDER_CRITERION_OFFERS.map(() => true) });
+
+    // The re-read let go and answered, the row stands where the server keeps it: the same place.
+    await reread.held()?.continue();
+    await expectLoadSettled(traffic);
+    await expect
+      .poll(secondToProse, {
+        message: "the new row stands where the reader made it after the re-read",
+      })
+      .toEqual([statement2, made, ids.prose]);
   });
 });
 
