@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -271,14 +272,12 @@ func cmpOr[T comparable](value, otherwise T) T {
 	return value
 }
 
-// steppedClock is a rate reading's clock that a test moves (rateClock): its now is at, which a wait
-// moves to the time the wait was for, so a pass due at a reset's last minute runs at once and reads
-// the time it was due at, and which set moves for a test whose GitHub takes time to answer. It
-// keeps how long each wait was for, and ends the reading at its passes'th wait. between, where
-// set, runs between one pass and the next with the number of the pass that ended, for a test that
-// changes GitHub there.
+// steppedClock holds the fake that readPasses drives from at. waits records the duration of each
+// wait, and passes is the number of passes to run. If set, between runs with the number of the
+// pass that ended, before the driver advances the fake for the next pass.
 type steppedClock struct {
 	mu      sync.Mutex
+	fake    *clocktest.Fake
 	at      time.Time
 	passes  int
 	waits   []time.Duration
@@ -288,40 +287,71 @@ type steppedClock struct {
 // set moves the clock to at, from any goroutine: a fake GitHub's handler sets it to say how long
 // its answer took.
 func (c *steppedClock) set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.at = at
+	c.clock().Set(at)
 }
 
-func (c *steppedClock) clock() rateClock {
-	return rateClock{
-		now: func() time.Time {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			return c.at
-		},
-		wait: func(_ context.Context, until time.Time) bool {
-			c.mu.Lock()
-			c.waits = append(c.waits, until.Sub(c.at))
-			pass := len(c.waits)
-			c.mu.Unlock()
-			if pass >= c.passes {
-				return false
-			}
-			if c.between != nil {
-				c.between(pass)
-			}
-			c.set(until)
-			return true
-		},
+// clock is the fake the reading runs on, made at at on first use.
+func (c *steppedClock) clock() *clocktest.Fake {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fake == nil {
+		c.fake = clocktest.New(c.at)
 	}
+	return c.fake
 }
 
 // readPasses runs the rate reading with client on clock until its passes are done, its lines as
 // JSON into written, and answers the lines.
-func readPasses(t *testing.T, client *githubapp.Client, written *logtest.Buffer, clock *steppedClock) []map[string]any {
+func readPasses(t *testing.T, client *githubapp.Client, written *logtest.Buffer, c *steppedClock) []map[string]any {
 	t.Helper()
-	readRates(t.Context(), client, slog.New(slog.NewJSONHandler(written, nil)), clock.clock())
+	fake := c.clock()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		readRates(ctx, client, slog.New(slog.NewJSONHandler(written, nil)), fake)
+	}()
+
+	for handled := 0; handled < c.passes; {
+		var deadlines []time.Time
+		arms := testwait.Until(t, fmt.Sprintf("the rate reading to arm its wait after pass %d", handled+1), func() (int, bool) {
+			select {
+			case <-done:
+				t.Fatalf("the rate reading returned before the driver could handle its wait after pass %d", handled+1)
+			default:
+			}
+			count := fake.Arms()
+			if count <= handled {
+				return count, false
+			}
+			deadlines = fake.Armed()
+			return count, count == fake.Arms()
+		})
+
+		for ; handled < arms; handled++ {
+			pass := handled + 1
+			// Only the latest arm can still be pending. Earlier waits fired as they were armed.
+			if pass < arms || len(deadlines) == 0 {
+				c.waits = append(c.waits, 0)
+				if pass == c.passes || c.between != nil {
+					t.Fatalf("the driver cannot hold the rate reading's zero wait after pass %d", pass)
+				}
+				continue
+			}
+			at := deadlines[0]
+			c.waits = append(c.waits, at.Sub(fake.Now()))
+			if pass == c.passes {
+				continue
+			}
+			if c.between != nil {
+				c.between(pass)
+			}
+			fake.Set(at)
+		}
+	}
+	cancel()
+	testwait.Receive(t, "the rate reading to return after cancellation", done)
 	return logtest.JSONLines(t, written.String())
 }
 
@@ -488,7 +518,7 @@ func TestAPassThatEndsInsideALastMinuteItBeganOutsideReadsItAtOnce(t *testing.T)
 	clock := &steppedClock{at: start, passes: 3}
 	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		github.serve(w, r)
-		if r.URL.Path == "/rate_limit" && strings.Contains(r.Header.Get("Authorization"), "ghs_example_102_") && clock.clock().now().Before(start.Add(30*time.Second)) {
+		if r.URL.Path == "/rate_limit" && strings.Contains(r.Header.Get("Authorization"), "ghs_example_102_") && clock.clock().Now().Before(start.Add(30*time.Second)) {
 			clock.set(start.Add(30 * time.Second))
 		}
 	}})

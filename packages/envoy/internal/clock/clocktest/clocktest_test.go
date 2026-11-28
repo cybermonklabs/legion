@@ -38,6 +38,23 @@ const childTimeout = "35s"
 // alarm would end it. The move's give-up names no reading, so the child needs no room before it.
 const moveChildTimeout = "30s"
 
+// Arms counts each deadline armed on the fake, one that fires as it is armed among them, while
+// Armed holds only the deadline still pending: a driver that reads Arms sees a wait of zero that
+// Armed never shows.
+func TestArmsCountsTimersThatFireAsTheyAreArmed(t *testing.T) {
+	c := clocktest.New(epoch)
+	c.NewTimer(time.Minute)
+	c.NewTimer(0)
+
+	if got := c.Arms(); got != 2 {
+		t.Errorf("Arms() = %d, want 2", got)
+	}
+	want := []time.Time{epoch.Add(time.Minute)}
+	if got := c.Armed(); !slices.Equal(got, want) {
+		t.Errorf("Armed() = %v, want %v", got, want)
+	}
+}
+
 // Advance fires every timer due by the moment it moves to, earliest first and the timers due
 // together in the order they were armed, each reading its own deadline as the fake's time; a
 // timer one of them arms inside the span fires in the same move, and none due after it fires.
