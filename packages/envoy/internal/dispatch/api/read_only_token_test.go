@@ -735,11 +735,13 @@ var (
 // reads past comments where Postgres reads them (pgmigrate.WithoutComments, on the transcription
 // of scan.l: a -- comment ends at a newline or a carriage return; none starts inside a string or a
 // quoted name; and a dollar quote's body, a function's or a DO block's, is read as SQL, its own
-// strings and dollar quotes kept whole, so a write inside one it EXECUTEs stays visible), reads a
-// merge as a write of its table, and reads the word update as no write only where updateNoWrite
-// places it, so a write it cannot place is a write.
+// strings and dollar quotes kept whole, so a write inside one it EXECUTEs stays visible), reads
+// past the inside of each string literal outside a dollar quote (pgmigrate.WithoutStrings), a
+// value such as the slug 'post-merge-rework-30d' and never SQL, reads a merge as a write of its
+// table, and reads the word update as no write only where updateNoWrite places it, so a write it
+// cannot place is a write.
 func writesOf(statement string) ([]string, bool) {
-	read := pgmigrate.WithoutComments(statement)
+	read := pgmigrate.WithoutStrings(pgmigrate.WithoutComments(statement))
 	read = upsertUpdate.ReplaceAllString(read, "do upsert")
 	if mergeInto.MatchString(read) {
 		read = mergeAction.ReplaceAllString(read, "then merge_action")
@@ -845,6 +847,13 @@ func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
 		// A dollar quote inside a DO body is a string, kept whole, so a write in SQL the body
 		// EXECUTEs stays visible, a -- before it included.
 		{`do $$ begin execute $q$select 1 -- note update projects set name = name$q$; end $$`, []string{"update projects"}, true},
+		// A string literal outside a dollar quote is a value, never SQL: a word in it is no verb,
+		// as the code evals' slugs in the day rows' reads (evals' viaAsRead) hold merge, and a
+		// write after one is still read. A string inside a DO body stays whole, since the body can
+		// EXECUTE it.
+		{`select substr(d.eval_id, 3) in ('code-survival-30d', 'post-merge-rework-30d') from eval_days d`, nil, true},
+		{`select 'delete from projects', E'update \'x\''; update projects set name = name`, []string{"update projects"}, true},
+		{`do $$ begin execute 'update projects set name = name'; end $$`, []string{"update projects"}, true},
 	} {
 		writes, readable := writesOf(tc.statement)
 		if readable != tc.readable || !slices.Equal(writes, tc.writes) {

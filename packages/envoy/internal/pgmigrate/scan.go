@@ -104,6 +104,37 @@ func WithoutComments(text string) string {
 	return string(out)
 }
 
+// WithoutStrings is text with the inside of each string literal that stands outside a dollar
+// quote blanked, as WithoutComments blanks a comment: each byte between the quotes becomes a space
+// but a line break, and the quotes, a prefix such as E and every other byte stay, so offsets and
+// lines are kept. A literal outside a body is a value the statement reads, never SQL it runs, so
+// a reader that matches words reads none in it, as a slug such as 'post-merge-rework-30d' holds
+// the word merge. A dollar quote stays whole, its own strings included, since a function's or a
+// DO block's body can EXECUTE one as SQL. Literals are found as Postgres reads text with
+// standard_conforming_strings on, the setting a pgx statement is sent under.
+func WithoutStrings(text string) string {
+	out := []byte(text)
+	lexSQL(text, true, func(token sqlToken) {
+		if token.kind != sqlString {
+			return
+		}
+		open := strings.IndexByte(text[token.start:token.end], '\'')
+		if open < 0 {
+			return
+		}
+		inner, end := token.start+open+1, token.end
+		if end > inner && text[end-1] == '\'' {
+			end--
+		}
+		for i := inner; i < end; i++ {
+			if c := text[i]; c != '\n' && c != '\r' {
+				out[i] = ' '
+			}
+		}
+	}, nil)
+	return string(out)
+}
+
 // blankComments blanks, in out at offset at, each comment of text, and when text is not a body
 // itself, each comment of the body of each dollar quote in it, as WithoutComments says.
 func blankComments(text string, out []byte, at int, body bool) {
