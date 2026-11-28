@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -238,38 +239,76 @@ func newAfterMergeRig(t *testing.T) *afterMergeRig {
 }
 
 // issue is a new issue of acme/widgets holding verification as its Verification document, and
-// its key: ACME-1 for the rig's first, ACME-2 for its second, and on. It settles the issue's
-// documents before it answers, under the manifest the caller reads by (SettleIssueDocuments), so
-// the issue owes no settlement once the caller puts this build's manifest back
-// (useTheNextReleasesManifest's restore). Left to the timer, the upload's settlement is refused at
-// first, since the Verification document joined the issue's room after the room loaded, and the
-// room settles again from the store later: under this build's manifest, a check the next
-// release's manifest wrote as `:::check{#live subject="graph" when="after_merge"}` is saved again
-// as `:::check{#live when="after_merge" subject="graph"}`, a version that moves the check's text
-// digest and its changed version (document_blocks.text_sha256 and changed_version). A result
-// recorded before that version then reads as recorded under other words (check_words_moved) and
-// counts for nothing, and whether it does turned on whether that version landed before or after
-// the record.
+// its key: ACME-1 for the rig's first, ACME-2 for its second, and on.
 func (r *afterMergeRig) issue(t *testing.T, title, verification string) string {
 	t.Helper()
 	r.issues++
-	var key string
 	if r.issues == 1 {
-		key = issueInRepository(t, r.handler, afterMergeProject, "acme/widgets", title).Key
+		key := issueInRepository(t, r.handler, afterMergeProject, "acme/widgets", title).Key
 		uploadDocument(t, r.handler, "/api/v1/issues/"+key, "verification.md", verification)
-	} else {
-		key = issueOfProject(t, r.handler, afterMergeProject, title, verification)
+		return key
 	}
-	if err := r.documents.SettleIssueDocuments(context.Background(), key); err != nil {
-		t.Fatalf("settle the documents of %s: %v", key, err)
-	}
-	return key
+	return issueOfProject(t, r.handler, afterMergeProject, title, verification)
 }
 
 // record records role's verdict of check of issue at commit, and answers the stored result's id.
+// It settles issue's Verification document first (settleVerification), so the result is recorded
+// against the words every later read compares it with.
 func (r *afterMergeRig) record(t *testing.T, issue, check, role, verdict, commit string) string {
 	t.Helper()
+	r.settleVerification(t, issue)
 	return recordAfterMerge(t, r.handler, issue, check, role, verdict, commit)
+}
+
+// settleVerification settles the room issue's Verification document is edited in, on the calling
+// goroutine and under the manifest the package reads by now, so that no later settlement moves the
+// check's words: with no edit since, every later one renders what this one saved and writes no
+// version.
+//
+// A test that makes its issue under the next release's manifest (useTheNextReleasesManifest)
+// records and reads under this build's, and a settlement under this build's manifest saves a check
+// that manifest wrote as `:::check{#live subject="graph" when="after_merge"}` again as
+// `:::check{#live when="after_merge" subject="graph"}`: a version that moves the check's text
+// digest and its changed version (document_blocks.text_sha256 and changed_version), so a result
+// recorded before it reads as recorded under other words (check_words_moved) and counts for
+// nothing. Settling the issue before that manifest is put back does not keep the version away:
+// the upload of the Verification document arms a settlement under the document's own id, which no
+// settlement of the issue's room takes (SettleIssueDocuments takes the room's own timer), and
+// which arms the room's settlement once its delay ends, under whatever manifest stands then.
+//
+// The room is marked owed in a transaction that holds the issue's owner lock, which a settlement
+// of the room holds from before it reads and renders the room until it commits. So a settlement
+// that rendered under the manifest before has committed by the time the mark is written, the mark
+// is consumed only by a settlement that renders under this one, and SettleIssueDocuments runs that
+// settlement, or waits on the owner lock for the one that took it, before the record.
+func (r *afterMergeRig) settleVerification(t *testing.T, issue string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the mark of %s's Verification document: %v", issue, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issue)); err != nil {
+		t.Fatalf("take the owner lock of %s: %v", issue, err)
+	}
+	var room string
+	if err := tx.QueryRow(ctx, `
+		select (`+refs.DocumentRoomSQL("a.id")+`)::text from artifacts a where a.issue_key = $1 and a.name = 'verification.md'
+	`, issue).Scan(&room); err != nil {
+		t.Fatalf("read the room of %s's Verification document: %v", issue, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into doc_settlements_pending (artifact_id) values ($1) on conflict (artifact_id) do nothing
+	`, room); err != nil {
+		t.Fatalf("mark the room of %s's Verification document owed a settlement: %v", issue, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the mark of %s's Verification document: %v", issue, err)
+	}
+	if err := r.documents.SettleIssueDocuments(ctx, issue); err != nil {
+		t.Fatalf("settle the documents of %s: %v", issue, err)
+	}
 }
 
 // read is each check of one results read of issue, by its block id.

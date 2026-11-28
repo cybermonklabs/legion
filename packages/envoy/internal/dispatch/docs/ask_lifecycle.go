@@ -841,10 +841,12 @@ const (
 // SettleIssueDocuments runs, on the calling goroutine, the settlement each document of issueKey
 // owes, as Shutdown's drain does: it waits for the room's durable appends to land, reads whether
 // the document owes a settlement, and settles it at its room's current generation, in place of the
-// timer armed for it, if one is. Every new ask block the documents hold is then an ask, credited
-// to its author as settlement credits one, which the close of an issue withdraws with the rest:
-// a settlement after the close opens no ask, and saves a block it finds with none resolved
-// (reconcileAskBlocks).
+// timer armed under the room's id, if one is. A timer armed under a converted document's own id
+// (an upload's ScheduleSettlement) is not taken: it fires later and arms the room's settlement,
+// which writes no version unless the room's rendering of the document changed since. Every new ask
+// block the documents hold is then an ask, credited to its author as settlement credits one, which
+// the close of an issue withdraws with the rest: a settlement after the close opens no ask, and
+// saves a block it finds with none resolved (reconcileAskBlocks).
 //
 // A settlement that stops short (settleOutcome) is run again, up to issueSettleAttempts times for
 // each document and within issueSettleBudget for the whole issue, no retry starting once the
