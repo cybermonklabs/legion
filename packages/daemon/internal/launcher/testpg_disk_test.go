@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -590,7 +591,7 @@ func (r *pgDiskRig) binWithInitdb(t *testing.T, initdb string) string {
 			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(bin, "initdb"), []byte(initdb), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "initdb"), []byte(initdb), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return bin
@@ -776,7 +777,7 @@ func stubPGDisk(t *testing.T) (calls string) {
 	calls = filepath.Join(dir, "calls")
 	script := "#!/bin/sh\nprintf '%s %s %s %s\\n' \"$1\" \"${" + testPGFreeVariable + "-unset}\" \"${" + testPGSizeVariable + "-unset}\" \"${" +
 		testPGFloorVariable + "-unset}\" >> " + calls + "\n"
-	if err := os.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(dir, testPGProgram), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
