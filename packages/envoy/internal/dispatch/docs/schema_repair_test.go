@@ -23,10 +23,10 @@ import (
 
 func newSchemaRepairService(database *store.Store) *Service {
 	return New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:   database,
+		Events:  events.NewBroker(),
+		Origins: testOrigins,
+		Settle:  20 * time.Millisecond,
 	})
 }
 

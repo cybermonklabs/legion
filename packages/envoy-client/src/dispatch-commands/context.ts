@@ -8,6 +8,7 @@ import type {
   IssueDetails,
   IssuePriority,
   Sleep,
+  WhoamiResponse,
 } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
@@ -204,12 +205,23 @@ export interface CheckedCall {
   readonly pictures: LocalPicture[];
 }
 
-/** What the pre-send check reads: the call's arguments, its checkout and environment, and the
+/** One read of `GET /api/v1/whoami` for the server's origins, its canonical, served and former
+ *  addresses: called at most once per command, where a `ref` is an absolute http or https URL no
+ *  configured address matches, so a link at a served or former address reads as a reference. */
+export type WhoamiOriginsFn = () => Promise<Pick<WhoamiResponse, "origins">>;
+
+/** What the pre-send check reads: the call's arguments, its checkout and environment, the
  *  Dispatch server's addresses, whose dashboard URLs a `ref` may be (none when the session has no
- *  Dispatch configured, which only a dry run checks with). */
+ *  Dispatch configured, which only a dry run checks with, and none for a hostless `dispatch api`),
+ *  and the server's own list of its origins (`whoami`). A session's real call reads that list
+ *  (`executeDispatchTool`, `readDocumentBlocks`). A CI job's (`jobResultCommand`) goes without it:
+ *  `dispatch_result`, the one call it makes, takes no `ref`. A dry run that asks Dispatch nothing
+ *  goes without it too (dispatch-cli.ts, `dryRunAsksDispatch`), so it refuses a link at another
+ *  address of the server that the real call reads. */
 export interface DispatchCallCheckInput
   extends Pick<ExecuteDispatchToolInput, "tool" | "args" | "cwd" | "env" | "exec"> {
   readonly serverUrls: readonly string[];
+  readonly whoami?: WhoamiOriginsFn;
 }
 export function stringArg(args: Record<string, unknown>, name: string): string {
   const value = args[name];
@@ -398,6 +410,24 @@ export type ReadingContext<C extends SessionContext> = C & { readonly reading: R
 /** One Dispatch command: the whole of what `dispatch <command>` does, after the check passed. */
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
+/** One `DispatchClient` of `input`'s server, credential and fetch, with its signal, its write
+ *  pacing, its run-wait notice and its sleep, and `options` laid over them. */
+export function dispatchClientFor(
+  input: Pick<
+    ExecuteDispatchToolInput,
+    "config" | "fetchImpl" | "signal" | "writeRetry" | "onRunWait" | "sleep"
+  >,
+  options: DispatchClientOptions = {}
+): DispatchClient {
+  return new DispatchClient(input.config.url, input.config.credential, input.fetchImpl ?? fetch, {
+    signal: input.signal,
+    writeRetry: input.writeRetry,
+    onRunWait: input.onRunWait,
+    sleep: input.sleep,
+    ...options,
+  });
+}
+
 /**
  * The context every spec command starts from, built from the checked call. The client names the
  * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
@@ -409,9 +439,8 @@ export function sessionContext(
   input: ExecuteDispatchToolInput,
   checked: CheckedCall
 ): SessionContext {
-  const { url, credential } = input.config;
+  const { url } = input.config;
   const configUrl = urlForText(url, "the configured Dispatch URL");
-  const fetchImpl = input.fetchImpl ?? fetch;
   return {
     input,
     args: checked.args,
@@ -420,13 +449,6 @@ export function sessionContext(
     configUrl,
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
-    newClient: (options = {}) =>
-      new DispatchClient(url, credential, fetchImpl, {
-        signal: input.signal,
-        writeRetry: input.writeRetry,
-        onRunWait: input.onRunWait,
-        sleep: input.sleep,
-        ...options,
-      }),
+    newClient: (options = {}) => dispatchClientFor(input, options),
   };
 }

@@ -35,9 +35,9 @@ import (
 // A reply whose answers names the comment its replies_to names is listed once, by replies_to,
 // wherever replies_to is listed.
 type Query struct {
-	// ServerURL is the deployment the caller reads, whose dashboard URLs an edge's excerpt is cut
-	// around as references (itemExcerpt).
-	ServerURL string
+	// Origins are the server's origins the caller reads with, whose dashboard URLs an edge's
+	// excerpt is cut around as references (itemExcerpt).
+	Origins   text.Origins
 	Direction string
 	Kind      string
 	ID        string
@@ -366,9 +366,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case node.BlockID != "":
 			// A block's stored excerpt is already cut by BlockExcerpt, the excerpt a document's
 			// mention shows.
-			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(query.ServerURL)}
+			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(query.Origins)}
 		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: node.name(query.ServerURL)}
+			edge.Excerpt = &model.GraphExcerpt{Text: node.name(query.Origins)}
 		}
 		edges = append(edges, edge)
 	}
@@ -578,7 +578,7 @@ type TargetName struct {
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
 // or a message's body, a component's title and a block's text, each cut as an edge's excerpt is
 // cut (resolvedNode.name), which is what GET /api/v1/references already shows beside an edge at
-// that node; serverURL is the deployment whose dashboard URLs are references, so no cut splits
+// that node; origins are the server's, whose dashboard URLs are references, so no cut splits
 // one. The targets are addressed as the to side of an edge addresses them (TargetOf), so an
 // artifact's id is its ref_key. A comment or a message, and a block of one, carries its post's
 // marks beside its name (TargetName). A deleted post's node stands, with the empty body its
@@ -597,7 +597,7 @@ type TargetName struct {
 // targets, so a batch costs a statement per kind, not per target; a block of a comment or a
 // message that resolves to nothing, whose post targets does not name too, costs one statement
 // more per kind of post, which reads whether its post was deleted.
-func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target, serverURL string) (map[Target]TargetName, error) {
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target, origins text.Origins) (map[Target]TargetName, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
@@ -609,7 +609,7 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 	names := make(map[Target]TargetName, len(nodes))
 	for key, node := range nodes {
 		names[Target{Kind: key[0], ID: key[1]}] = TargetName{
-			Name: node.name(serverURL), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
+			Name: node.name(origins), EditedAt: node.EditedAt, DeletedAt: node.DeletedAt, DeletedBy: node.DeletedBy,
 		}
 	}
 	if err := deletedPostBlocks(ctx, q, who, targets, names); err != nil {
@@ -679,14 +679,14 @@ type resolvedNode struct {
 }
 
 // name is the words shown for the node in place of its text: its own text's first excerptRunes
-// runes, cut where no reference crosses the cut (itemExcerpt; serverURL is the deployment whose
+// runes, cut where no reference crosses the cut (itemExcerpt; origins are the server's, whose
 // dashboard URLs are references). A block's text is its stored excerpt, already cut by
 // BlockExcerpt.
-func (n resolvedNode) name(serverURL string) string {
+func (n resolvedNode) name(origins text.Origins) string {
 	if n.BlockID != "" {
 		return n.text
 	}
-	return itemExcerpt(n.text, serverURL)
+	return itemExcerpt(n.text, origins)
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may

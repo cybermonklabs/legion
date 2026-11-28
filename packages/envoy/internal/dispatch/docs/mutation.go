@@ -2747,7 +2747,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		// issue was closed names the editor a closed issue's settlement kept, where this version
 		// names SettlementActor only because it adds none of that editor's text
 		// (versionWrite.keptEditor).
-		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.serverURL); err != nil {
+		if err := moveApprovalAsk(ctx, tx, s.events, artifactID, version, markdown, actor, spec.keptEditor, spec.settlement, s.origins); err != nil {
 			return versionWriteResult{}, err
 		}
 		// A human's approval carries to the version this writes by carryApproval's rules: his
