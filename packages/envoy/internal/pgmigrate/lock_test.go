@@ -69,6 +69,62 @@ func TestAZeroLockingIsProductionsDiscipline(t *testing.T) {
 	}
 }
 
+// A Locking of any Timeout bounds every lock wait of a migration it applies, or refuses to apply
+// it. Postgres takes lock_timeout in whole milliseconds and reads 0 as no bound at all, so a
+// Timeout under a millisecond, written as 0ms, would leave the migration queued behind a holder
+// for as long as the holder lives, which is what LockTimeout is for; and a Timeout under 25 ns
+// makes the lock watch's interval, a 25th of it, zero, which clock.NewTicker refuses with a panic
+// on the watch's goroutine, ending the process. For each such Timeout, Pin either refuses it or
+// pins a lock_timeout that is a bound, and Exec of a migration that waits on a table another
+// session holds either returns Pin's refusal or gives up with a *LockTimeoutError. The Locking's
+// fake clock is never moved, so the lock watch never reads and never dials.
+func TestALockingOfAnyTimeoutBoundsTheMigrationsLockWaits(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	url := testpg.URL(t)
+	conn := connect(t, ctx, url)
+	if _, err := conn.Exec(ctx, "create table held (id integer)"); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := connect(t, ctx, url).Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, "lock table held in access share mode"); err != nil {
+		t.Fatal(err)
+	}
+	for _, timeout := range []time.Duration{500 * time.Microsecond, 10 * time.Nanosecond, -time.Nanosecond} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			locking := Locking{Timeout: timeout, Clock: clocktest.New(time.Unix(0, 0).UTC())}
+			var pinned string
+			pinErr := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+				if err := locking.Pin(ctx, tx); err != nil {
+					return err
+				}
+				return tx.QueryRow(ctx, "select current_setting('lock_timeout')").Scan(&pinned)
+			})
+			if pinErr == nil && pinned == "0" {
+				t.Fatalf("a Locking of %v pins lock_timeout %q, which Postgres reads as no bound at all: want a bound, or Pin's refusal", timeout, pinned)
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+					return locking.Exec(ctx, tx, Migration{Name: "0001_note.up.sql", SQL: "alter table held add column note text"}, nil)
+				})
+			}()
+			err := testwait.Receive(t, "Exec under a Locking of "+timeout.String()+" to return", done)
+			var timedOut *LockTimeoutError
+			switch {
+			case pinErr != nil && (err == nil || errors.As(err, &timedOut)):
+				t.Errorf("Pin refused a Locking of %v (%v), yet Exec under it returned %v, want that refusal", timeout, pinErr, err)
+			case pinErr == nil && !errors.As(err, &timedOut):
+				t.Errorf("Exec under a Locking of %v, which pins lock_timeout %q, returned %v, want a *LockTimeoutError: the wait on the held table is bounded", timeout, pinned, err)
+			}
+		})
+	}
+}
+
 // RetryLockTimeouts and RetryVersionTableLockTimeouts pause LockTimeoutRetryPause on their
 // Locking's Clock between attempts: after each timed-out attempt but the last, the fake holds a
 // pause armed two seconds past its moment, and the next attempt runs only once the test moves the
