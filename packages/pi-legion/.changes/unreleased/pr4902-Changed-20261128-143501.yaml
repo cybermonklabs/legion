@@ -3,9 +3,9 @@ body: |-
   The example task block of `skill://legion-architect`'s plan reference asks for the agent the
   work needs at every step, `acceptance:owner` included where the task has it: a fresh agent, or
   the agent of a named earlier step of this issue or of an earlier issue, and why, by what it
-  knows or must not know, not by the model or model family it runs on. Where this release cannot
-  start that agent, or its session has ended, the block still holds that choice, and then what
-  Legion does in its place.
+  knows or must not know, not by the model or model family it runs on, nor by what the step checks
+  or reviews. Where this release cannot start that agent, or its session has ended, the block still
+  holds that choice, and then what Legion does in its place.
 time: 2026-11-28T14:35:01Z
 custom:
     Issue: pr4902

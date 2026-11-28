@@ -17,7 +17,8 @@ In this release it holds one `plan_task` block, the issue's one task:
 What the task must deliver. What the steps after the first need to know, since no planner step
 writes it for them. For every step, `acceptance:owner` included where the task has it, the agent
 the work needs (a fresh agent, or the agent of a named earlier step of this or an earlier issue)
-and why: what it knows or must not know (the model or model family it runs on is no reason).
+and why: what it knows or must not know (the model or model family it runs on is no reason, nor is
+what the step checks or reviews).
 Where this release cannot start that agent, or its session has ended: that choice, and then what
 Legion does in its place.
 :::
