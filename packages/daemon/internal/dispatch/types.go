@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -352,6 +353,12 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
+// CurrentSHA256 and DigestOwed are Dispatch's hash-gate verdict on the latest version (R1 of
+// dispatch://INFRA-6065): the latest version's digest, nil while it is owed and from a Dispatch
+// that sends none, and whether Dispatch still owes that digest, nil from a Dispatch that sends no
+// digest_owed, so an absent field reads apart from false. Stands, OwesDigest and DigestFound read
+// them.
+//
 // Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
 // finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
 // Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
@@ -370,6 +377,8 @@ type Approval struct {
 	Primary       bool
 	Role          string
 	Slug          string
+	CurrentSHA256 *string
+	DigestOwed    *bool
 }
 
 // ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
@@ -404,6 +413,42 @@ func (a Approval) ApprovedLatest() int {
 	return 0
 }
 
+// Stands says whether Dispatch's approval of the document stands for its latest version, the one
+// question each reader that asks it asks here (R5 of dispatch://INFRA-6065). Where Dispatch sends
+// digest_owed, the approval stands when State is approved and Dispatch owes no digest, whatever
+// the version approved, which stays Version. Where it sends none, it stands only when it is an
+// approval of the latest version (ApprovedLatest).
+func (a Approval) Stands() bool {
+	if a.DigestOwed != nil {
+		return a.State == "approved" && !*a.DigestOwed
+	}
+	return a.ApprovedLatest() != 0
+}
+
+// OwesDigest says whether Dispatch sends digest_owed and still owes the digest of the latest
+// version, so its verdict on that version is still to come (R1 of dispatch://INFRA-6065). It is
+// false from a Dispatch that sends no digest_owed.
+func (a Approval) OwesDigest() bool {
+	return a.DigestOwed != nil && *a.DigestOwed
+}
+
+// DigestFound is what a read of the approval found of Dispatch's hash gate, as the id of the fact
+// that carries the read names it (api's gateRegister, the outbox's gate seed and pending-basis
+// seed): whether Dispatch owes the latest version's digest and, where it gave one, that digest
+// (current_sha256), each as Dispatch sent it (R3 of dispatch://INFRA-6065), so a later read whose
+// only change is the digest Dispatch filled since is a fact of its own. A read of a Dispatch that
+// sends no digest_owed finds "", and its fact keeps the id it always had.
+func (a Approval) DigestFound() string {
+	if a.DigestOwed == nil {
+		return ""
+	}
+	found := ":digest-owed:" + strconv.FormatBool(*a.DigestOwed)
+	if a.CurrentSHA256 != nil {
+		found += ":current:" + *a.CurrentSHA256
+	}
+	return found
+}
+
 func (a Approval) ChangesRequestedLatest() (int, string) {
 	if a.State != "changes_requested" || a.Version == nil || *a.Version != a.LatestVersion {
 		return 0, ""
@@ -413,13 +458,6 @@ func (a Approval) ChangesRequestedLatest() (int, string) {
 		reason = *a.Reason
 	}
 	return *a.Version, reason
-}
-
-func (a Approval) LatestReviewer() Actor {
-	if changes, _ := a.ChangesRequestedLatest(); a.ApprovedLatest() == 0 && changes == 0 {
-		return Actor{}
-	}
-	return a.By
 }
 
 // Ask is one ask as Dispatch reads it by its id (GET /api/v1/asks/{id}). State is the ask's state,

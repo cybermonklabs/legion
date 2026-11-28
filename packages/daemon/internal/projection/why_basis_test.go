@@ -43,14 +43,14 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 			[]record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
 			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: open, record.DesignStepCriteria: criteria},
 			shut + " The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3." +
-				" The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90."},
+				" The spec step of LEGION-100 stands open on an ancestor's approval: a person's approval of the primary document of LEGION-90 stands for its version 5."},
 		{"a spec a person approved beside a registered Verification document that waits on the ancestor's approval request", specAlone,
 			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: approvedSpec, record.DesignStepCriteria: pendingCriteria},
 			shut + " The spec step of LEGION-100 stands open on a person's approval." +
 				" The criteria step of LEGION-100 waits on the ancestor's approval request ask-91, which asks a person to approve version 4 of the Verification document of LEGION-90."},
 		{"a spec open on the ancestor's approval beside a registered Verification document with its reviewer", specAlone,
 			map[record.DesignStep]record.DesignGate{record.DesignStepSpec: open, record.DesignStepCriteria: criteria},
-			shut + " The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90." +
+			shut + " The spec step of LEGION-100 stands open on an ancestor's approval: a person's approval of the primary document of LEGION-90 stands for its version 5." +
 				" The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3."},
 		{"a spec step with no basis", nil, shutGate("LEGION-100"),
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},

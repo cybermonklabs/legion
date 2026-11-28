@@ -3770,6 +3770,57 @@ Run them only when every daemon of the database is stopped, and roll back every 
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
 
+#### Rolling back the release whose design gate follows Dispatch's approval verdict
+
+This release records on each `design_gates` row Dispatch's verdict on whether the approval of the row's document stands (dispatch://INFRA-6065).
+Its migration `20261127204213_design_gate_verdict` adds ten columns to `design_gates` and the check `design_gates_verdict_check`: the verdict (`latest_digest_version`, `approval_current`, `latest_digest`, `latest_digest_seq` and `latest_digest_at`), `approved_digest`, the generated column `digest_owed`, `told_open`, `basis_root_version` and `carried`.
+It also adds the table `design_gate_verdict_boots`, which holds one row for each boot of this release with the workflow, keyed by the boot's `daemon_boot` id and written in the same transaction as that boot's `daemon_boot` row and its reset below.
+A boot of this release without the workflow (no `dispatch_url`) runs no reset and writes no row of it, and no earlier release writes it.
+A row is in hash mode while `latest_digest_version` is set, and its gate opens while Dispatch reports the approval current for the latest version, whatever version the person approved.
+A row is in version mode while `latest_digest_version` is null, and its gate opens on an approval of its latest version, as before.
+The migration leaves every row it finds in version mode, and sets `carried` on each copy of a gate that a hand-over carried at its root's current generation.
+The release adds no outbox kind and no field of an outbox payload.
+
+**Run the way back for the project before you pin an earlier release.**
+It is the required step of this rollback, as each rollback of this repository runs the steps of its release.
+The earlier release names none of the new columns, so it reads every gate by the version rule.
+It does not know that a row owes Dispatch's digest, so it never settles what a version that owes its digest held back: the end of a basis, open or pending, that the version rule ends at once.
+What it decides on such a row is its own: for example, a person's approval of an ancestor's request opens a step that still waits on that request, at a version of the root's own document that nobody approved for the wait.
+
+The way back is the last paragraph of the header of `20261127204213_design_gate_verdict.up.sql` (`migrations.WayBack`).
+It acts on the rows of one project's issues alone, so replace `<PROJECT>` in it with the key of the project whose daemon rolls back: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
+Run it with that project's daemon stopped, before its earlier image is pinned, in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session.
+It is one transaction, and a second run changes nothing.
+The way back does these steps in this order:
+
+1. On each row that owes its digest, it ends each basis, open or pending, whose root version is below `latest_version`, as version mode would have ended it at once, so the step is closed.
+   An open step's root version is its `approved_version`, and the step falls back to the person's approval that it kept.
+   A pending step's root version is `basis_root_version`, or `latest_digest_version` where the row has none, and its wait ends.
+   A row that owes no digest keeps its basis, because this release ended each basis below the latest version when that version settled.
+
+2. It clears `carried` and marks the carried copies again as the migration does, and it puts each of the project's rows in version mode, with every other column that the migration adds cleared.
+
+It drops nothing and deletes no version row, so the daemons of this release that serve other projects from the same database go on.
+The earlier release names none of the columns or the table, and its `Migrate` applies only the migrations that it embeds, so it passes over this migration's version row.
+
+The way back tells nobody, because it runs in SQL with the daemon stopped.
+So after it, read each gated tree's steps (`legion state`), and tell the merger of a tree whose step the way back closed that its merge waits until that step stands open again.
+
+**A boot of this release after an earlier release's boot returns the project's rows to version mode.**
+Before it applies any fact, the reconcile and the catch-up of the events since the last boot included, each boot of this release with the workflow writes its `daemon_boot` row and its row in `design_gate_verdict_boots` in one transaction.
+Where the project's newest earlier `daemon_boot` row has no row in `design_gate_verdict_boots`, an earlier release, or this release without the workflow, booted since.
+That same transaction then puts each of the project's rows in version mode, clears every column that the migration adds, and marks the carried copies again as the migration does.
+It ends no basis and tells nothing, because the columns cannot show what the earlier release did, and the standing that version mode reads is the one that the earlier release left.
+A basis end that a skipped way back left unsettled stays as the earlier release left it: in version mode, a step open on such a basis reads closed, because its root version is below the latest version, and a pending step waits as the earlier release made it wait.
+Then the boot queues the gate seed of each registered step of each tree in the workflow, so each row reads its verdict from Dispatch again, and each verdict tells each change from the standing that version mode reads, as the verdict of any gate seed tells it.
+It logs the earlier boot's id, how many rows it put in version mode and how many seeds it queued.
+The boot's rows and the reset commit together, so a boot that fails after them leaves its marked row, and the next boot does not reset again over the rows that this release wrote since.
+The first boot after the migration finds the boot of the release before it and does the same: every row is in version mode already, so it changes no row, and it queues the seeds.
+A boot with the workflow after a boot of this release without it resets as above too, since that boot ran no reset, and the seeds it queues read each row's verdict again.
+
+The roll forward applies nothing, because the migration's version row stands, and its first boot finds the earlier release's boot and resets as above.
+`TestHashGateMigrationAndWayBack` in `internal/store` runs the way back for one project on a migrated database, writes gates with the earlier release's `PutGate` statement before and after it, runs the boot after an earlier release's boot and after a boot of this release without the workflow, and rolls forward.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -4413,6 +4464,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
+20261127204213_design_gate_verdict, of dispatch://INFRA-6065, adds ten columns of `design_gates`, each null on every row it finds but `carried`, which it sets true on each copy of a gate a hand-over carried at its root's current generation and false on every other row, the check `design_gates_verdict_check` and the table `design_gate_verdict_boots`, empty, and touches none of the six, so the block holds over it and leaves the columns and the table standing, which the earlier release names in no statement; its way back, which runs for the project that rolls back, with that project's daemon stopped, before the earlier image starts, first ends each basis below the latest version on a row of that project that owes its digest, then puts that project's rows in version mode with the columns cleared, and drops nothing and deletes no version row, so the daemons of this release that serve other projects from the same database go on ([Rolling back the release whose design gate follows Dispatch's approval verdict](#rolling-back-the-release-whose-design-gate-follows-dispatchs-approval-verdict)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

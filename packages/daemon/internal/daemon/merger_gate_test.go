@@ -36,7 +36,9 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	putOutboxTold(t, pool, records, issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 3})
 	putOutboxChanges(t, pool, records, record.VersionPair{ArtifactID: "artifact-208", From: 3, To: 4})
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
-	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
+	// Dispatch shows the approval standing, so the gate holds the start on the record alone
+	// (designGateStandsInDispatch).
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, dispatch: standingDispatch{},
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		// The deployment gates the spec step alone, the list `gates.design: root-issues` names
 		// (config.DesignGate.Steps, INFRA-1272): a runner told no step gates nothing, so the
@@ -148,7 +150,7 @@ func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed
 	putOutboxTold(t, pool, records, issue.Key, map[record.DesignStep]int{record.DesignStepSpec: 4, record.DesignStepCriteria: 1})
 	putOutboxChanges(t, pool, records, record.VersionPair{ArtifactID: "artifact-208-verification", From: 1, To: 2})
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
-	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, dispatch: standingDispatch{},
 		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
 		gatedSteps: config.DesignGateRootIssues.Steps(),
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {

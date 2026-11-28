@@ -301,8 +301,9 @@ func TestAKubernetesDaemonOpensItsStoreAfterAClusterCheckThatUsedMostOfItsBudget
 	}
 }
 
-// The worker image is proven after the runtime is built and before the boot is recorded; a refusal
-// refuses the boot.
+// The worker image is proven after the runtime is built and before the daemon is ready, so before
+// a daemon without the workflow, as this one is, records its boot; a refusal refuses the boot,
+// which then records none.
 func TestAKubernetesDaemonRefusesTheBootItsWorkerImageProbeRefuses(t *testing.T) {
 	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")

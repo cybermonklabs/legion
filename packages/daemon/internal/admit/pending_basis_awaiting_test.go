@@ -182,8 +182,8 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 		{
 			name: "a question of its own, then the person's approval of the ancestor's version", act: ancestorAct(intake.DispatchArtifactApproved, 60, ""),
 			by: record.AnsweredByApproval,
-			says: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 3: a person approved version 4 of " + ancestorDocument +
-				". No person approved your primary document at that version.", "The step stands open on that approval at version 3", workflow.DesignApprovedWake},
+			says: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 3: a person's approval of " + ancestorDocument +
+				" stands for its version 4. No person approved your primary document at that version.", "The step stands open on that approval at version 3", workflow.DesignApprovedWake},
 			not: []string{"was approved", "Do not request approval"},
 		},
 		{
@@ -280,8 +280,8 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 					t.Fatalf("architect starts = %q, want one resume", resumes)
 				}
 				for _, want := range []string{"Your ask", "was closed by a session of your tree",
-					"Your spec step stands open at version 3 on an ancestor's approval: a person approved version 4 of " + ancestorDocument +
-						". No person approved that version of your primary document.", workflow.DesignApprovedWake} {
+					"Your spec step stands open at version 3 on an ancestor's approval: a person's approval of " + ancestorDocument +
+						" stands for its version 4. No person approved that version of your primary document.", workflow.DesignApprovedWake} {
 					if !strings.Contains(resumes[0], want) {
 						t.Errorf("resume %q does not say %q", resumes[0], want)
 					}

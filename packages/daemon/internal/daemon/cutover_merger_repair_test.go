@@ -323,6 +323,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		t.Fatalf("E's merger was launched by %v while its tree's design gate was closed, want no start", cutoverMethods(launched))
 	}
 	approved := 2
+	rig.board.approve("spec-"+rig.e.key, approved, 2)
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
 	// The held start waits on its row's backoff, up to the outbox's 64 seconds
@@ -515,6 +516,10 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	}
 	rig.child = cfg.Project + "-11"
 	rig.board.place(rig.child, workflow.PhaseStatus(phase.Implementing), rig.d.key, false)
+	// Dispatch shows E's spec as its closed gate records it, the approval at 1 and version 2
+	// latest: the boot's gate seed of that closed step reads it and changes nothing, and the read
+	// before E's merger starts finds it standing once the test approves version 2 (below).
+	rig.board.approve("spec-"+rig.e.key, 1, 2)
 	rig.seed(t)
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the record legion-v19.57.3 left to this head's schema: %v", err)

@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -1605,10 +1604,14 @@ func (p PullRequestView) MarshalJSON() ([]byte, error) {
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, and the
-// version a human approved. ApprovedVersion is nil until someone approves one; the gate is open
-// exactly when it equals CurrentVersion. A spec step that stands open on an ancestor's approval
-// (dispatch://INFRA-3320, R1) holds the version its root registered there, which no person
-// approved: the step's entry in GatedSteps reads `open_on_basis` and names that approval.
+// version a human approved. ApprovedVersion is nil until someone approves one. With a Dispatch that
+// sends no digest verdict the gate is open exactly when it equals CurrentVersion; with one that
+// does, the gate can stand open with ApprovedVersion below CurrentVersion, where Dispatch reports
+// that approval current for the latest version (dispatch://INFRA-6065, R1 and R5), so a reader of
+// whether the gate is open reads the step's status in GatedSteps, not these two numbers. A spec
+// step that stands open on an ancestor's approval (dispatch://INFRA-3320, R1) holds the version its
+// root registered there, which no person approved: the step's entry in GatedSteps reads
+// `open_on_basis` and names that approval.
 type GateView struct {
 	ArtifactID      string `json:"artifactId"`
 	CurrentVersion  int    `json:"currentVersion"`
@@ -1626,10 +1629,15 @@ const (
 	GatedStepUnregistered GatedStepStatus = "unregistered"
 	// GatedStepWaiting is a registered step whose current document version no person has reviewed:
 	// the approval or the changes request it records, if any, is of a version below the current
-	// one, which a newer version of the document left behind. It waits on a person.
+	// one, which a newer version of the document left behind, and no digest verdict of Dispatch
+	// reports that approval current for it. It waits on a person.
 	GatedStepWaiting GatedStepStatus = "waiting"
-	// GatedStepApproved is a step a person approved at its current document version, which lets
-	// the tree's work past the step (classify.DesignGateOpen).
+	// GatedStepApproved is a step whose approval by a person stands for its current document
+	// version, which lets the tree's work past the step: an approval of that version, or, with a
+	// Dispatch that sends a digest verdict, an approval of an older version (ApprovedVersion below
+	// CurrentVersion) that Dispatch reports current for it (dispatch://INFRA-6065, R1 and R5). It is
+	// the standing the daemon last told (record.ToldStanding), so a step whose newer version owes
+	// Dispatch's digest keeps the word until the digest settles it.
 	GatedStepApproved GatedStepStatus = "approved"
 	// GatedStepChangesRequested is a step whose reviewer asked for changes at its current document
 	// version, which the architect was told of; ChangesReason carries the reason the reviewer gave.
@@ -1650,10 +1658,12 @@ const (
 // the step, the document its architect registered for the step, that document's current version,
 // the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
-// no approval. A step open on an ancestor's approval carries the root's version registered as its
-// ApprovedVersion, which the planner reads as the version its tree works from, and Basis beside it
-// says that no person approved that version; a step pending on an ancestor's request carries the
-// version a person approved of the root's own document, if any, and Basis names the request.
+// no approval. A step `approved` can carry an ApprovedVersion below its CurrentVersion, where
+// Dispatch reports that approval current for the current version (GatedStepApproved). A step open
+// on an ancestor's approval carries the root's version registered as its ApprovedVersion, which the
+// planner reads as the version its tree works from, and Basis beside it says that no person
+// approved that version; a step pending on an ancestor's request carries the version a person
+// approved of the root's own document, if any, and Basis names the request.
 type GatedStepView struct {
 	Step            record.DesignStep `json:"step"`
 	ArtifactID      string            `json:"artifactId,omitempty"`
@@ -1665,10 +1675,14 @@ type GatedStepView struct {
 }
 
 // GatedStepBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
-// request it waits on (record.GateBasis): the ancestor issue, its document and the version a
-// person approved or is asked to approve; for an approval, who gave it as Dispatch names an actor
-// and Dispatch's time of it, where Dispatch gave one; for a request, its ask id. It is present only
-// on a step whose status is GatedStepOpenOnBasis or GatedStepPendingOnBasis.
+// request it waits on (record.GateBasis): the ancestor issue, its document and a version of it. For
+// an approval, Version is the ancestor's latest version when the root registered, whose approval by
+// a person Dispatch reported standing then: the version that person approved, or, with a Dispatch
+// that sends a digest verdict, a later one Dispatch reported that approval current for
+// (dispatch://INFRA-6065, R5), so it names no version a person approved; who gave the approval as
+// Dispatch names an actor and Dispatch's time of it, where Dispatch gave one, ride beside it. For a
+// request, Version is the version the request asks a person to approve, beside its ask id. It is
+// present only on a step whose status is GatedStepOpenOnBasis or GatedStepPendingOnBasis.
 type GatedStepBasis struct {
 	Issue      string     `json:"issue"`
 	ArtifactID string     `json:"artifactId"`
@@ -1705,6 +1719,13 @@ func gatedStepBasisOf(basis record.GateBasis) *GatedStepBasis {
 // never answered `approved`, the word for a person's approval, and a step waiting on the
 // ancestor's request never `waiting`, which would send its architect to ask a person for an
 // approval of its own (dispatch://INFRA-3320, R2).
+//
+// A step reads open by the standing the daemon last told (record.ToldStanding), the standing its
+// architect and its tree were told, rather than by the rule the work it holds reads
+// (record.GateOpen): with a Dispatch that sends a digest verdict, a newer version that owes its
+// digest holds the work while the told standing stays as it was, so the step keeps the word it
+// was last told, `approved` or `open_on_basis`, until the digest settles it (dispatch://INFRA-6065,
+// R3). With a Dispatch that sends none the two are one rule.
 func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
 	views := make([]GatedStepView, 0, len(steps))
 	for _, step := range steps {
@@ -1723,9 +1744,9 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 		switch {
 		case gate.PendingOnBasis():
 			view.Status, view.Basis = GatedStepPendingOnBasis, gatedStepBasisOf(*gate.Basis)
-		case gate.OnBasis() && classify.DesignGateOpen(gate):
+		case gate.OnBasis() && record.ToldStanding(gate):
 			view.Status, view.Basis = GatedStepOpenOnBasis, gatedStepBasisOf(*gate.Basis)
-		case classify.DesignGateOpen(gate):
+		case record.ToldStanding(gate):
 			view.Status = GatedStepApproved
 		case gate.ToldChangesVersion != nil && *gate.ToldChangesVersion == gate.LatestVersion:
 			view.Status, view.ChangesReason = GatedStepChangesRequested, gate.ToldChangesReason

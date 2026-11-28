@@ -55,10 +55,11 @@ type Supersession struct {
 // registration's and the artifact event's reading of the gate before they apply the review; and
 // the daemon's readNoticeTree at the notice's delivery), the ancestor's copy of a changes request
 // on the version of its document that a step of a root stands open on (tellBasisChanges, and
-// again at that notice's delivery), the notice of an opened step (tellOpened), the resume of a
-// root a person answered (resumeTask), the decisions and the approval kept for an architect's
-// start or catch-up (KeptDecisionsTask, again at each send and each delivery; the kept approval
-// through StepApprovalStands), the controller's relay of a decision nobody in its tree hears (the
+// again at that notice's delivery), the notice of an opened step (tellOpened at a registration,
+// tellArtifactOpening at an artifact fact), the resume of a root a person answered (resumeTask),
+// the decisions and the approval kept for an architect's start or catch-up (KeptDecisionsTask,
+// again at each send and each delivery; the kept approval through StepApprovalStands), the
+// controller's relay of a decision nobody in its tree hears (the
 // daemon's parkDecision, and again at a relayed changes request's publish, its controllerNotice;
 // and the relay of a person's approval whose handover a later change of the root's status refused,
 // Engine.refuseHandover) and the news of an approved version at each send of the task that carries

@@ -832,6 +832,29 @@ func ReadTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return roots, nil
 }
 
+// ReadIssuesAndTreeRoots is the record of each of keys that is an issue of project, and of each
+// tree root those records name, by key: one query where every key is a root of its own tree, as a
+// gate's issue is, and one more otherwise (ReadTreeRoots). A key with no record has no entry, and
+// a key repeated next to itself is read once. It is the read the gate seeds of many steps make
+// (EnqueueGateSeeds), which the boot's pass over the recorded gates shares with its pending-basis
+// seeds (the daemon's queueRecordedGatesPublish).
+func ReadIssuesAndTreeRoots(ctx context.Context, tx pgx.Tx, store Store, project string, keys []string) (map[string]Issue, error) {
+	read, err := store.IssuesOf(ctx, tx, project, slices.Compact(keys))
+	if err != nil {
+		return nil, err
+	}
+	issues := make(map[string]Issue, len(read))
+	for _, issue := range read {
+		issues[issue.Key] = issue
+	}
+	roots, err := ReadTreeRoots(ctx, tx, store, project, read)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(issues, roots)
+	return issues, nil
+}
+
 // ReadTreeGates is the design gate of each tree root among issues, by root key, in one read
 // whatever the number of trees: one entry per root, so that a root with nothing registered is
 // the gate it is rather than a missing key every reader would have to answer for itself. steps
@@ -936,13 +959,76 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	return facts, nil
 }
 
-// GateOpen is whether an approval stands on the gate's current document version: a person's, or
-// the ancestor's approval a basis opened the step on, which sets ApprovedVersion to the version the
-// root registered (OpenOnBasis), so this one rule reads both. It is the one statement of it, which
-// classify.DesignGateOpen and Store.PutGate's own write both call. internal/classify reads this
-// package, so the rule lives here, where every reader can reach it.
+// GateOpen is whether an approval stands on the gate's current document version. In version mode
+// (DesignGate.Verdict nil), and for a step that stands open on an ancestor's approval (OnBasis) in
+// either mode, it is an approval of the latest version: a person's, or the ancestor's approval a
+// basis opened the step on, which sets ApprovedVersion to the version the root registered
+// (OpenOnBasis), so this one rule reads both. Every other row in hash mode reads Dispatch's verdict
+// (dispatch://INFRA-6065, R2): the approval stands for a version at or above the latest, whatever
+// version it approved, so the row reads closed while a newer version owes its digest
+// (DigestOwed). A step pending on an ancestor's request is no OnBasis row, so in hash mode it
+// reads the verdict on the root's own document. It is the one statement of the rule, which
+// classify.DesignGateOpen and Store.PutGate's own write both call, and which every reader that
+// holds work on the gate reads; a reader that tells the standing reads ToldStanding.
+// internal/classify reads this package, so the rule lives here, where every reader can reach it.
 func GateOpen(gate DesignGate) bool {
+	if gate.Verdict == nil || gate.OnBasis() {
+		return approvedAtLatest(gate)
+	}
+	return gate.Verdict.Current && gate.Verdict.Version >= gate.LatestVersion
+}
+
+// approvedAtLatest is the version rule: the gate holds an approval of its latest version.
+func approvedAtLatest(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+}
+
+// DigestOwed is whether the gate's latest version owes Dispatch's digest: in hash mode, the
+// verdict is for a version below the latest, which is design_gates.digest_owed, the column the
+// database derives from the same two versions and no write sets. A row in version mode owes none.
+func DigestOwed(gate DesignGate) bool {
+	return gate.Verdict != nil && gate.Verdict.Version < gate.LatestVersion
+}
+
+// ToldStanding is whether the step reads open to the readers that tell the tree's standing,
+// rather than hold work on it: in hash mode the standing the daemon last told
+// (DesignGate.ToldOpen), which a version that owes its digest leaves as it was, so a fill window
+// tells nothing and shows no new word; in version mode, and on a row in hash mode that stores
+// none, GateOpen.
+func ToldStanding(gate DesignGate) bool {
+	if gate.Verdict != nil && gate.ToldOpen != nil {
+		return *gate.ToldOpen
+	}
+	return GateOpen(gate)
+}
+
+// ToldOpenAfter is the standing told (DesignGate.ToldOpen) that gate records after a move of it,
+// where told is the standing told before the move (ToldStanding of the row the move began from).
+// It is the one write rule of the told standing, which classify.ApplyGateFact applies after each
+// fact, and the workflow after each move it makes beside that function (a registration's basis
+// opened or pended, a basis closed, a pending wait opened or ended: gateRegistered and
+// putGateTold):
+//
+//   - In version mode it is nil, and the told standing is GateOpen.
+//   - Where no digest is owed it is GateOpen.
+//   - A step that stands open on a basis at its latest version (OnBasis) reads no verdict, so the
+//     digest the root's own document owes holds nothing of it: it is GateOpen, open, also while a
+//     digest is owed. So a basis that opens a step during a fill window is told at once, as the
+//     work it releases starts at once (dispatch://INFRA-6065, R3).
+//   - Otherwise a version owes its digest, which leaves the standing told as it was: told.
+//
+// A told standing that a basis gave is no person's, and stays on the row after that basis ends or
+// turns pending while a digest is owed, as the tree was told it: no rule reads it as a person's
+// approval holding the step, since OpenOnBasis and PendOnBasis read the person's own approval
+// (heldByPerson) rather than the standing told.
+func ToldOpenAfter(told bool, gate DesignGate) *bool {
+	switch {
+	case gate.Verdict == nil:
+		return nil
+	case !DigestOwed(gate), gate.OnBasis() && GateOpen(gate):
+		told = GateOpen(gate)
+	}
+	return &told
 }
 
 // TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it
@@ -1029,8 +1115,22 @@ func (g TreeGate) Required() []DesignStep {
 // row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
 // reads it through.
 func (g TreeGate) Open() bool {
+	return g.openBy(GateOpen)
+}
+
+// ToldOpen is Open over the standing each row last told (ToldStanding) rather than over
+// GateOpen: every step the tree's work waits on has a row, and each reads open as told. The
+// readers that tell or say the tree's standing read it: the first opening's baseline (workflow's
+// putGateTold) and the architect's start (workflow's ArchitectStartTask).
+func (g TreeGate) ToldOpen() bool {
+	return g.openBy(ToldStanding)
+}
+
+// openBy is whether every required step has a row and open reads each of those rows open, the
+// rule of Open and ToldOpen.
+func (g TreeGate) openBy(open func(DesignGate) bool) bool {
 	for _, step := range g.Required() {
-		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
+		if row, registered := g.Rows[step]; !registered || !open(row) {
 			return false
 		}
 	}

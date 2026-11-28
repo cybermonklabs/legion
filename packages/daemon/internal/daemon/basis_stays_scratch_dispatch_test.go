@@ -1147,7 +1147,7 @@ func (r *personHandoverRig) reopenedOnPending(run basisRun, standing phase.Phase
 		t.Fatalf("the design-approved notices of %s = %+v, want a second naming version %d of %s's document as the basis", run.root.Key, approved, run.basisVersion, run.parent.Key)
 	}
 	testwait.Eventually(t, "the daemon to post on "+run.root.Key+" the second basis opening", func() bool { return len(r.basisMessages(run.root.Key)) == 2 })
-	if messages := r.basisMessages(run.root.Key); !strings.Contains(messages[1], fmt.Sprintf("- A person approved version %d of this document.", run.basisVersion)) {
+	if messages := r.basisMessages(run.root.Key); !strings.Contains(messages[1], fmt.Sprintf("- A person's approval of this document stands for its version %d.", run.basisVersion)) {
 		t.Fatalf("the second basis message on %s does not name version %d:\n%s", run.root.Key, run.basisVersion, messages[1])
 	}
 }
@@ -1410,8 +1410,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.pendingRegistered(member.basisRun, member.ask, true, phase.AwaitingChildren)
 	r.approve(member.parent.PrimaryArtifactID)
 	r.reopenedOnPending(member.basisRun, phase.AwaitingChildren)
-	standsOpen := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person approved version %d of the primary document of %s",
-		member.basisVersion, member.parent.Key)
+	standsOpen := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person's approval of the primary document of %s (dispatch://%s/spec) stands for its version %d",
+		member.parent.Key, member.parent.Key, member.basisVersion)
 	// The planner is told the opening once: by a role message, or, where it is owed news of the
 	// approved design, by the task that carries that news (openingWordsTold).
 	testwait.Eventually(t, "the daemon to tell the planner of "+member.member.Key+" the opening on the ancestor's approval", func() bool {

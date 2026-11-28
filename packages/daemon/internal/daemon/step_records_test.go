@@ -104,14 +104,17 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	})
 }
 
-// Dispatch does not answer while step records are due, and no phase waits for it.
+// Dispatch does not answer while step records are due, and no phase waits for it but the merge.
 // The handoff records of planning, implementing and testing are Dispatch's own, which the daemon
 // reads at each of those completions, so Dispatch stops once the issue is in reviewing, with the
-// record of every step from there on still to be written; the review, the acceptance, the retro
-// and the merge then walk the issue to done, and once Dispatch is back on the same database the
-// issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
-// stopped, the outbox holds the issue's step records unfinished and the read finds no server.
-func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
+// record of every step from there on still to be written; the review, the acceptance and the retro
+// then walk the issue to merging. The merger's start reads Dispatch's approval of the tree's spec
+// before it acts (R4 of dispatch://INFRA-6065, the outbox's designGateStandsInDispatch), so it
+// waits for Dispatch, and once Dispatch is back on the same database the merge walks the issue to
+// done and its seven records reach it, each ended. The control holds the outage real: while
+// Dispatch is stopped, the outbox holds the issue's step records unfinished and the read finds no
+// server.
+func TestNoPhaseButTheMergeWaitsForDispatch(t *testing.T) {
 	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
@@ -121,7 +124,6 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r.review("APPROVED", phase.Accepting)
 	r.accept()
 	r.retro()
-	r.merge()
 
 	t.Run("control", func(t *testing.T) {
 		if unfinished := r.unfinishedRows(record.OutboxKindStepRecord); unfinished == 0 {
@@ -133,6 +135,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	})
 
 	r.dispatch.start()
+	r.merge()
 	want := stepRecordsSeven
 	// A row Dispatch refused while it was stopped waits out its backoff, at most
 	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within

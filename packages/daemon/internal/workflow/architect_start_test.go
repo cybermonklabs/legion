@@ -268,7 +268,7 @@ func TestTheArchitectTaskSaysEachStepTheTreeIsGatedOnByWhatOpenedIt(t *testing.T
 					LatestVersion: 2}, basis)}}},
 			want: "LEGION-208 is yours and its design gate is open: " +
 				"its primary document is registered at version 2, which no person has approved, and its spec step stands open on an " +
-				"ancestor's approval, since a person approved version 5 of the primary document of LEGION-90 (dispatch://LEGION-90/spec). " +
+				"ancestor's approval, since a person's approval of the primary document of LEGION-90 (dispatch://LEGION-90/spec) stands for its version 5. " +
 				gateOpenInstructions + gateOpenClosing,
 		},
 		{

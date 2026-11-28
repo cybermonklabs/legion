@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `read_state`'s summary names a root's spec step by its status word beside its approved version:
+  `gate 8 approved, approved version 7` in place of `gate 8 approved 7`. With a Dispatch that sends
+  a digest verdict, the daemon API contract entry 20261128003114 (hash-gate-verdict) lets a step
+  stand `approved` with its approved version below its current version, where Dispatch reports that
+  approval current for the current version, so the two numbers alone would read an open gate as
+  stale. A state that names no spec step keeps `gate <current> approved <version|none>`, and a spec
+  step on an ancestor's basis keeps its `open_on_basis` or `pending_on_basis` line.
+time: 2026-11-28T03:32:09Z
+custom:
+    Issue: INFRA-6065

@@ -638,6 +638,13 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 	}
 }
 
+// approvedAtLatestBody is the artifact read of a Dispatch that sends no hash-gate field: LEGION-6's
+// document approved at its latest version 3 by user:alice, the review at sequence 12.
+// TestHashGateApprovalReadsTheVerdict reads it as version mode too.
+var approvedAtLatestBody = map[string]any{"id": "artifact-6", "issue_key": "LEGION-6", "approval": map[string]any{
+	"state": "approved", "latest_version": 3, "version": 3, "at": "2026-10-23T18:00:00.123456Z", "seq": 12,
+	"by": map[string]any{"kind": "user", "id": "alice"}}}
+
 // The artifact read carries the approval Dispatch derives, who gave the review it shows, the latest
 // review's time and its event's sequence (none from a Dispatch that predates the sequence).
 func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
@@ -648,9 +655,7 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/api/v1/artifacts/artifact-6":
-			writeJSON(t, w, map[string]any{"id": "artifact-6", "issue_key": "LEGION-6", "approval": map[string]any{
-				"state": "approved", "latest_version": 3, "version": 3, "at": "2026-10-23T18:00:00.123456Z", "seq": 12,
-				"by": map[string]any{"kind": "user", "id": "alice"}}})
+			writeJSON(t, w, approvedAtLatestBody)
 		case "/api/v1/artifacts/artifact-7":
 			writeJSON(t, w, map[string]any{"id": "artifact-7", "issue_key": "LEGION-7", "approval": map[string]any{
 				"state": "awaiting", "latest_version": 4, "version": 3, "at": "2026-10-23T17:00:00Z"}})

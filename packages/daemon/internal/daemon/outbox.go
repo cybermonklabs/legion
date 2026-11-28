@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -3142,6 +3144,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
 	// the phase.
 	var check *record.ProductionCheck
+	// roleRow is the role's phases row, read once for the entry fence below; the design gate's
+	// fence of a first phase reads its move from the same row (firstPhaseStart). A start the fence
+	// does not read it for keeps the zero row.
+	var roleRow record.PhaseRow
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
@@ -3183,13 +3189,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// a delivery of an entry it was already queued a task of queues no second one
 		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
-			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
-			if err != nil {
+			if roleRow, err = r.phaseRow(ctx, row.Issue, payload.Role); err != nil {
 				return err
 			}
-			if payload.Entry < entry {
+			if payload.Entry < roleRow.Entry {
 				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+					"phase", payload.Phase, "entry", payload.Entry, "current", roleRow.Entry, "role", payload.Role)
 				return nil
 			}
 		}
@@ -3281,7 +3286,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return nil
 			}
 		}
-		news, finished, err := r.startNewsOf(ctx, row, issue, payload, machine, found, token)
+		news, finished, err := r.startNewsOf(ctx, row, issue, payload, roleRow, machine, found, token)
 		if err != nil || finished {
 			return err
 		}
@@ -4732,9 +4737,20 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	return r.seedGateBasis(ctx, row, payload)
 }
 
-// seedGateDocument reads the approval of the document the gate seed names and applies what it
-// finds as the event that would have carried it.
+// seedGateDocument reads the issue the row names, then the approval of the document the gate seed
+// names, and applies what it finds as the event that would have carried it.
 func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, payload record.GateSeed) error {
+	// The issue is read before the approval, as register_gate reads it, so every event the
+	// approval's read does not show has a later sequence than the issue's last_seq (since): Dispatch
+	// gives an issue's events their sequence in commit order. A failed read is the row's error, as
+	// a failed read of the approval is, and the seed is retried on its backoff. The read's own time
+	// is taken before the approval too, so the verdict it carries is marked no earlier than the
+	// moment Dispatch gave it.
+	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("read Dispatch issue %s before the approval of %s: %w", row.Issue, payload.ArtifactID, err)
+	}
+	since, readAt := issue.LastSeq, r.now().UTC()
 	approval, err := r.dispatch.Approval(ctx, payload.ArtifactID)
 	if err != nil {
 		return fmt.Errorf("read Dispatch approval %s: %w", payload.ArtifactID, err)
@@ -4753,26 +4769,55 @@ func (r *outbox) seedGateDocument(ctx context.Context, row record.OutboxRow, pay
 	// could record one), so the seed resets the gate to Dispatch's version with what it read there
 	// (intake.GateAboveDispatch). A review also names its reviewer, since the seed is not fenced on
 	// the tree's linger and its review may meet a parked tree.
-	fact := intake.DispatchArtifact{Key: row.Issue, ArtifactID: payload.ArtifactID, Kind: intake.DispatchArtifactVersion, Version: approval.LatestVersion,
-		RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent"}
-	review := record.EventMark{Seq: approval.Seq, At: approval.At}
-	changes, reason := approval.ChangesRequestedLatest()
-	switch {
-	case approval.ApprovedLatest() != 0:
-		fact.Kind, fact.Mark, fact.Actor = intake.DispatchArtifactApproved, review, approval.LatestReviewer()
-	case changes != 0:
-		fact.Kind, fact.Reason, fact.Mark, fact.Actor = intake.DispatchArtifactChangesRequested, reason, review, approval.LatestReviewer()
-	case approval.LatestVersion == payload.Version:
+	//
+	// The fact is a read (intake.DispatchArtifact.Latest), so a row in hash mode that a Dispatch
+	// sending no digest field reads returns to version mode (R3 of dispatch://INFRA-6065). What it
+	// records is the one rule register_gate applies too (intake.ReadApproval), so the two record
+	// the same of one Dispatch body. Where Dispatch sends digest_owed, the read is of its verdict
+	// (R3, "A read"): the approval it shows, at the version approved (approval.version), never the
+	// latest, with the review's mark and its reviewer, or a changes request of the latest version
+	// as above, or else the latest version; and, where no digest is owed, the verdict at the latest
+	// version (dispatch.Approval.Stands), marked by the read as register_gate marks its own: the
+	// issue's last_seq read before the approval (since) and the read's own time, each raised to the
+	// review's where Dispatch's runs ahead, so no review the read shows is marked after the
+	// verdict, and every event the read does not show, a review whose transaction began before the
+	// read and committed after it among them, has a later sequence and is ordered after the
+	// verdict, in either order the two reach the row. A Dispatch that gives no sequence leaves the
+	// read's time alone, which record.EventMark.After orders as it did before Dispatch kept the
+	// sequence. Such a read is applied whatever it shows, so a read of the version registered still
+	// gives the verdict, a false one among them.
+	//
+	// The fact is keyed by the issue Dispatch names the document on, so the read of a carried
+	// copy's document reaches the copy as its old root's event does (workflow's copyTakes), and the
+	// old root's own gate as its own. Such a copy is never reset: the old root's versions move on
+	// their own, past any the copy holds. Its verdict's sequence floor is the newest review the read
+	// shows (approval.Seq), a place in the old root's event log, where an event the read did not
+	// show, an approval among them, commits with a higher sequence; the issue read is of the copy,
+	// whose last_seq is no place in that log, so it stays out of the floor.
+	carried := approval.IssueKey != "" && approval.IssueKey != row.Issue
+	read := intake.ReadApproval(approval, since, readAt, carried)
+	verdict := approval.DigestOwed != nil
+	if read.Kind == intake.DispatchArtifactVersion && !verdict && approval.LatestVersion == payload.Version {
 		return nil
 	}
-	if approval.LatestVersion < payload.Version {
-		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
+	fact := intake.DispatchArtifact{Key: cmp.Or(approval.IssueKey, row.Issue), ArtifactID: payload.ArtifactID, Kind: read.Kind, Version: read.Version,
+		Reason: read.Reason, Mark: read.Mark, Actor: read.Actor, Latest: approval.LatestVersion, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
+		DigestOwed: read.DigestOwed, Verdict: read.Verdict, VerdictMark: read.VerdictMark, CurrentSHA256: read.CurrentSHA256}
+	found := ""
+	if verdict {
+		// The id names the latest version too: a read of an approval below it carries its version
+		// apart from the latest. It names no part of the verdict's mark, so a later read that finds
+		// the same review, digest and verdict is the same fact, whatever its time and since.
+		found = fmt.Sprintf(":latest:%d", approval.LatestVersion) + approval.DigestFound()
+	}
+	if approval.LatestVersion < payload.Version && !carried {
+		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID()) + found
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}, r.handlers...); err != nil {
 			return fmt.Errorf("reset the gate of %s to the version Dispatch holds: %w", row.Issue, err)
 		}
 		return nil
 	}
-	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID())
+	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID()) + found
 	// A version fact carries no mark, so its id also says whether the read showed the request with
 	// the agent: a later seed of the same version that finds it moved there is another fact, not a
 	// duplicate of one that answered nothing.
@@ -4927,8 +4972,9 @@ func readBasis(ctx context.Context, client dispatch.Client, seed record.PendingB
 
 // basisReadFound names what read found, for the id of the fact that carries it: the document's
 // approval state, its latest version, the version and the place of its latest review and who gave
-// it, the request open on it, the ancestor's status and label, and, for a read of the request's
-// close, who closed it and its state. Two reads that name the same found the same, which the
+// it, the request open on it, the ancestor's status and label, for a read of the request's close,
+// who closed it and its state, and what the read found of Dispatch's hash gate where Dispatch
+// sends it (dispatch.Approval.DigestFound). Two reads that name the same found the same, which the
 // workflow judges alike.
 func basisReadFound(read intake.BasisRead) string {
 	approval := read.Approval
@@ -4941,7 +4987,7 @@ func basisReadFound(read intake.BasisRead) string {
 		closer, closed = read.Closed.Actor.Name(), read.Closed.State
 	}
 	return fmt.Sprintf("%s:%d:%d:%d:%s:%s:%s:%t:%s:%s", approval.State, approval.LatestVersion, version, record.EventMark{Seq: approval.Seq, At: approval.At}.ID(),
-		approval.By.Name(), approval.AskID, read.Ancestor.Status, read.Ancestor.HandedOver, closer, closed)
+		approval.By.Name(), approval.AskID, read.Ancestor.Status, read.Ancestor.HandedOver, closer, closed) + approval.DigestFound()
 }
 
 // seedReparent reads, for the row's issue, a root that ran as a tree of its own and that a person
@@ -4969,9 +5015,11 @@ func (r *outbox) seedReparent(ctx context.Context, row record.OutboxRow, payload
 
 // reparentBasisVersion is the version of parent's primary document that R1's path can rest a
 // child root on, 0 where the path is closed: parent carries the legion label, Dispatch shows it
-// not accepted (record.AcceptedStatus), a person approved the latest version of its primary
-// document, and that version marks a requirement block that names an id, as register_gate reads
-// one (dispatchblocks.RequirementIDs).
+// not accepted (record.AcceptedStatus), a person's approval of its primary document stands for its
+// latest version (dispatch.Approval.Stands, R5 of dispatch://INFRA-6065), whatever version that
+// person approved, and that latest version marks a requirement block that names an id, as
+// register_gate reads one (dispatchblocks.RequirementIDs). The version is that latest one, the
+// version a basis names (api's registrationBasis).
 func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, error) {
 	issue, err := r.dispatch.GetIssue(ctx, parent)
 	if err != nil {
@@ -4984,10 +5032,10 @@ func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, 
 	if err != nil {
 		return 0, fmt.Errorf("read Dispatch approval %s, the primary document of %s: %w", issue.PrimaryArtifactID, parent, err)
 	}
-	version := approval.ApprovedLatest()
-	if version == 0 || !approval.By.Person() {
+	if !approval.Stands() || !approval.By.Person() {
 		return 0, nil
 	}
+	version := approval.LatestVersion
 	markdown, err := r.dispatch.DocumentVersion(ctx, issue.PrimaryArtifactID, version)
 	if err != nil {
 		return 0, fmt.Errorf("read version %d of %s, the primary document of %s: %w", version, issue.PrimaryArtifactID, parent, err)
@@ -5008,27 +5056,53 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 	return nil
 }
 
-// designGateClosed says whether the design gate of the issue's tree is closed, which holds the
-// merger's start (supervise): the gate is the tree root's, so every member of the tree reads the
-// same rows, and it is closed when a step the tree is gated on holds a row no approval has opened
-// (classify.StandingGate, the first such step in the configured order). The steps are the
-// deployment's and a criteria row the root's architect registered beside a deployment of spec
-// alone (record.TreeSteps), so a new version of that Verification document holds the merger as a
-// new spec version does. A tree with no row for a step — nothing registered one, or the
-// project's design gate is off, which registers it approved — holds nothing on that step: nobody
-// can be waiting on a document the record does not know. It is read just before the row acts, as
-// every other fence of a row is.
-func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
-	var gates map[record.DesignStep]record.DesignGate
+// gateSnapshot is the design gate of an issue's tree as one read of the record holds it
+// (readGateSnapshot): the tree root's rows by step (gates), whether they hold the gate closed
+// (closed), and, where the read was asked for it and the rows hold the gate open, the tree's root
+// (root), nil where the record holds no issue of the tree. The read of Dispatch that follows an
+// open gate reads its steps and the root's generation from it (designGateStandsInDispatch).
+type gateSnapshot struct {
+	gates  map[record.DesignStep]record.DesignGate
+	closed bool
+	root   *record.Issue
+}
+
+// readGateSnapshot reads the design gate of the issue's tree in one read-only transaction. The
+// gate holds the merger's start (supervise): the gate is the tree root's, so every member of the
+// tree reads the same rows, and it is closed when a step the tree is gated on holds a row no
+// approval has opened (classify.StandingGate, the first such step in the configured order). The
+// steps are the deployment's and a criteria row the root's architect registered beside a
+// deployment of spec alone (record.TreeSteps), so a new version of that Verification document
+// holds the merger as a new spec version does. A tree with no row for a step — nothing registered
+// one, or the project's design gate is off, which registers it approved — holds nothing on that
+// step: nobody can be waiting on a document the record does not know. It is read just before the
+// row acts, as every other fence of a row is. withRoot reads the tree's root in the same
+// transaction where the rows hold the gate open, for a caller that reads Dispatch next.
+func (r *outbox) readGateSnapshot(ctx context.Context, issue record.Issue, withRoot bool) (gateSnapshot, error) {
+	var snapshot gateSnapshot
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		gates, err = r.records.GatesOf(ctx, tx, issue.Tree)
+		if snapshot.gates, err = r.records.GatesOf(ctx, tx, issue.Tree); err != nil {
+			return err
+		}
+		_, snapshot.closed = classify.StandingGate(r.gatedSteps, snapshot.gates)
+		if snapshot.closed || !withRoot {
+			return nil
+		}
+		snapshot.root, err = r.records.Issue(ctx, tx, issue.Tree)
 		return err
 	}); err != nil {
-		return false, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
+		return gateSnapshot{}, fmt.Errorf("read the design gate of %s: %w", issue.Tree, err)
 	}
-	_, closed := classify.StandingGate(r.gatedSteps, gates)
-	return closed, nil
+	return snapshot, nil
+}
+
+// designGateClosed says whether the record shows the design gate of the issue's tree closed
+// (readGateSnapshot), for a caller that reads no Dispatch after it: a held message's wake of a
+// released role that is no merger (deliverHeld).
+func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool, error) {
+	snapshot, err := r.readGateSnapshot(ctx, issue, false)
+	return snapshot.closed, err
 }
 
 // startNewsOf is what a start carries of news of the approved design, or that the start finishes
@@ -5044,16 +5118,17 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 //     suspension holds, and one it may not reach finishes it, since the start that brings that
 //     agent back carries the news. The generation, the phase, the workflow and the linger have
 //     fenced it before this, as they fence any start.
-//  2. A merger's start waits while its tree's design gate is closed or its news is not recorded
-//     (mergerWaitsForTheDesignGate), after the refusal, so a news-only start that reaches no claim
-//     finishes rather than waits.
+//  2. A start the design gate holds waits while the gate reads closed, on the record or in a read
+//     of Dispatch (designGateHoldsStart), after the refusal, so a news-only start that reaches no
+//     claim finishes rather than waits: a merger's start waits too while its news is not recorded
+//     (mergerWaitsForTheDesignGate).
 //  3. Every phase start (an entry's work, the held phase's retry among them) and every news-only
 //     start carries the news its role is owed, read from the record as it stands now
 //     (newsForStart), with no Dispatch read: an item whose change set is not recorded is left
 //     owed. A news-only start the record owes nothing now finishes. Any other start carries its
 //     own text alone.
 func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
-	machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
+	roleRow record.PhaseRow, machine *supervise.Machine, found bool, token claim.Token) (news startNews, finished bool, err error) {
 	if payload.News {
 		entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 		if err != nil {
@@ -5065,7 +5140,7 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 			return startNews{}, true, nil
 		}
 	}
-	if err := r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role); err != nil {
+	if err := r.designGateHoldsStart(ctx, issue, payload, roleRow); err != nil {
 		return startNews{}, false, err
 	}
 	if !payload.News && payload.Entry == 0 {
@@ -5082,21 +5157,64 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 	return news, false, nil
 }
 
+// designGateHoldsStart is the fence of a start the design gate holds (R4 of dispatch://INFRA-6065):
+// nil for every other start, and for one the gate lets act. Those starts are a merger's start,
+// which waits while its tree's gate is closed or its news unrecorded and then on Dispatch's
+// approval (mergerWaitsForTheDesignGate), and each member's first phase (firstPhaseStart, over
+// roleRow, the role's phases row the executor read), which the waiting line gives only while the
+// gate is open (record.Waiting), and which waits here while the record reads it closed
+// (readGateSnapshot) and then on Dispatch's approval (designGateStandsInDispatch). A merger's
+// start queued for news alone (record.SuperviseRequest.News) is a merger already at work, which
+// reads no Dispatch again (R3): it waits on the record alone (mergerHeldOnTheRecord). Of the work
+// in progress only the merge waits on a closed gate, so no other start reads the gate here.
+func (r *outbox) designGateHoldsStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, roleRow record.PhaseRow) error {
+	switch {
+	case payload.Role == claim.RoleMerger && payload.News:
+		_, err := r.mergerHeldOnTheRecord(ctx, issue, false)
+		return err
+	case payload.Role == claim.RoleMerger:
+		return r.mergerWaitsForTheDesignGate(ctx, issue, payload.Role)
+	}
+	if !firstPhaseStart(payload, roleRow) {
+		return nil
+	}
+	snapshot, err := r.readGateSnapshot(ctx, issue, true)
+	if err != nil {
+		return err
+	}
+	if snapshot.closed {
+		return wait.Errorf("the first phase of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	}
+	return r.designGateStandsInDispatch(ctx, issue, snapshot, "the first phase of "+issue.Key)
+}
+
+// firstPhaseStart says whether payload, a start of a role, is the start of its issue's first
+// phase, by a rule over row, the role's phases row, rather than a field of the start (R4 of
+// dispatch://INFRA-6065): a start that names a phase and the entry its task is of, that hands the
+// role no entry its row already named (record.SuperviseRequest.ResendEntry, the held phase's
+// retry), and whose role's row stands on that entry, raised by the move out of admitted
+// (record.PhaseRow.EntryFrom), which StartFirstPhase's transition (workflow's TriggerGateOpened)
+// alone makes. A later phase's start was raised from the phase before it, the return out of
+// awaiting_children from that wait, a re-admitted mid-phase member's start from no phase, and a
+// start of no entry raises none, so none of them is a first phase. The executor reads row for
+// every start that names a phase and an entry (its entry fence), so this reads nothing.
+func firstPhaseStart(payload record.SuperviseRequest, row record.PhaseRow) bool {
+	if payload.Phase == "" || payload.Entry == 0 || payload.ResendEntry {
+		return false
+	}
+	return row.Entry == payload.Entry && row.EntryFrom == phase.Admitted
+}
+
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
 // while its tree's design gate is closed, because a new version of the spec is with its reviewer
 // and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
 // wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
 // check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
 // The gate opening releases the row's next try, and tells every phase worker of the tree and the
-// root's architect as well (workflow's tellGateMoved).
-//
-// It also waits while the merger's member is owed news of the approved design that no start can
-// carry yet, its change set not recorded, read or unavailable, or its earlier version neither read
-// nor recorded unread with no reconcile of the tree pending (mergerNewsUnrecorded): a merger
-// released without the change list could merge before it reads what changed. That wait ends within
-// the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
-// unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
-// the start then carries the news (newsForStart).
+// root's architect as well (workflow's tellGateMoved). The record is read first
+// (mergerHeldOnTheRecord), and only a gate the record shows open is read in Dispatch too
+// (designGateStandsInDispatch): the merge is the merger's own act, so its start is the last moment
+// the daemon can hold it while Dispatch does not show the approval standing.
 //
 // Every held message to a released merger (deliverHeld: a merge-queue removal, a merge forward's
 // hold and landed, and a merge-holds change) reads this same rule before it wakes it, so no such
@@ -5105,18 +5223,117 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	if role != claim.RoleMerger {
 		return nil
 	}
-	closed, err := r.designGateClosed(ctx, issue)
+	snapshot, err := r.mergerHeldOnTheRecord(ctx, issue, true)
 	if err != nil {
 		return err
 	}
-	if closed {
-		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+	return r.designGateStandsInDispatch(ctx, issue, snapshot, "the merger of "+issue.Key)
+}
+
+// mergerHeldOnTheRecord is the merger's fence as the record reads it: a wait while its tree's
+// design gate is closed (readGateSnapshot), and while the merger's member is owed news of the
+// approved design that no start can carry yet, its change set not recorded, read or unavailable,
+// or its earlier version neither read nor recorded unread with no reconcile of the tree pending
+// (mergerNewsUnrecorded): a merger released without the change list could merge before it reads
+// what changed. That wait ends within the design_changes row's bounded attempts, since a pair
+// Dispatch cannot read is recorded unavailable, and a review history it cannot read is recorded
+// unread (designChangesAttempts), and the start then carries the news (newsForStart). It returns
+// the gate it read, with the tree's root where withRoot asks for it, for the read of Dispatch
+// that follows.
+func (r *outbox) mergerHeldOnTheRecord(ctx context.Context, issue record.Issue, withRoot bool) (gateSnapshot, error) {
+	snapshot, err := r.readGateSnapshot(ctx, issue, withRoot)
+	if err != nil {
+		return gateSnapshot{}, err
+	}
+	if snapshot.closed {
+		return gateSnapshot{}, wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
 	}
 	unrecorded, err := r.mergerNewsUnrecorded(ctx, issue)
-	if err != nil || !unrecorded {
-		return err
+	if err != nil {
+		return gateSnapshot{}, err
 	}
-	return wait.Errorf("the merger of %s waits for what changed in the approved design of %s to be recorded", issue.Key, issue.Tree)
+	if unrecorded {
+		return gateSnapshot{}, wait.Errorf("the merger of %s waits for what changed in the approved design of %s to be recorded", issue.Key, issue.Tree)
+	}
+	return snapshot, nil
+}
+
+// designGateStandsInDispatch is the read of Dispatch a start the design gate holds makes once the
+// record shows the gate open, just before the row acts, as each other fence of a start row is
+// read (R4 of dispatch://INFRA-6065); what names the start in its wait and its errors. For each
+// step the tree is gated on (record.TreeSteps) that the tree's root registered, it reads the
+// document's approval (dispatch.Client.Approval, under the client's own bound), and the start
+// acts only where each read shows the approval standing (dispatch.Approval.Stands). A read that
+// shows it not standing holds the start (a wait, on the row's backoff) and queues the gate seed of
+// that step, whose read closes the record and tells the tree, unless that seed is still pending
+// (record.EnqueueGateSeed), so a start held try after try queues one. A read that fails, does not
+// answer in time, or answers anything but the document — a 5xx, a 404, a body that does not
+// decode — is the row's error, so the start is held on its backoff and the row's failure is
+// logged with the reason, and it never starts.
+//
+// A step that stands open on an ancestor's approval (record.DesignGate.OnBasis) is not read: R5
+// decides it, on the ancestor's own document. Neither is a carried copy (record.DesignGate.Carried):
+// its document belongs to the old tree, and nothing on it closes the copy (workflow's copyTakes).
+// A copy a daemon from before that column carried is known by Dispatch naming its document on
+// another issue than the row's, the test the workflow makes of a copy (Departure D3): the step is
+// logged and passed over, neither held nor seeded. A tree with no registered row of a gated step,
+// and a deployment that gates no step, read nothing. The read only holds a start: it never opens
+// a gate the record holds closed, which its callers read first, in the snapshot they pass, whose
+// rows name the steps read and whose root names the generation of each seed.
+func (r *outbox) designGateStandsInDispatch(ctx context.Context, issue record.Issue, snapshot gateSnapshot, what string) error {
+	var read []record.DesignGate
+	for _, step := range record.TreeSteps(r.gatedSteps, snapshot.gates) {
+		if gate, registered := snapshot.gates[step]; registered && !gate.OnBasis() && !gate.Carried {
+			read = append(read, gate)
+		}
+	}
+	if len(read) == 0 {
+		return nil
+	}
+	if r.dispatch == nil {
+		return fmt.Errorf("%s waits on a read of Dispatch's approval of the design gate of %s, and the outbox has no Dispatch client", what, issue.Tree)
+	}
+	root := snapshot.root
+	if root == nil {
+		return fmt.Errorf("%s waits on the design gate of %s, which the record holds no issue of", what, issue.Tree)
+	}
+	var held []string
+	for _, gate := range read {
+		step := gate.Step.OrSpec()
+		approval, err := r.dispatch.Approval(ctx, gate.ArtifactID)
+		if err != nil {
+			return fmt.Errorf("%s waits on Dispatch's approval of %s, the %s document of %s, which it could not read: %w", what, gate.ArtifactID, step, gate.Issue, err)
+		}
+		if approval.IssueKey != "" && approval.IssueKey != gate.Issue {
+			r.log.Info("outbox start passes over a gated step whose document Dispatch names on another issue, as a carried copy's", "issue", issue.Key,
+				"tree", issue.Tree, "step", step, "artifact", gate.ArtifactID, "document_issue", approval.IssueKey)
+			continue
+		}
+		if approval.Stands() {
+			continue
+		}
+		var queued bool
+		if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			queued, err = record.EnqueueGateSeed(ctx, tx, r.records, gate.Issue,
+				record.GateSeed{ArtifactID: gate.ArtifactID, Step: step, Version: gate.LatestVersion, Generation: root.Generation}, r.now().UTC())
+			return err
+		}); err != nil {
+			return fmt.Errorf("queue the gate seed of the %s step of %s: %w", step, gate.Issue, err)
+		}
+		owed := approval.OwesDigest()
+		r.log.Info("outbox start waits: Dispatch does not show the approval of a gated step standing", "issue", issue.Key, "tree", issue.Tree,
+			"step", step, "artifact", gate.ArtifactID, "state", approval.State, "latest_version", approval.LatestVersion, "digest_owed", owed, "seed_queued", queued)
+		why := fmt.Sprintf("Dispatch shows the approval of %s, the %s document of %s, %s at its latest version %d", gate.ArtifactID, step, gate.Issue, approval.State, approval.LatestVersion)
+		if owed {
+			why += ", and owes that version's digest"
+		}
+		held = append(held, why)
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return wait.Errorf("%s waits for Dispatch to show the approval of each gated document standing: %s", what, strings.Join(held, "; "))
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
@@ -5317,18 +5534,26 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 // in its own transaction before the start it queues can run (workflow.Engine.enter), so a start
 // reading a number above its own is reading a later entry of the same phase.
 func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
-	var entry int64
+	row, err := r.phaseRow(ctx, issue, role)
+	return row.Entry, err
+}
+
+// phaseRow is role's phases row of issue (record.PhaseRowOf), read in a transaction of its own
+// just before the executor acts on a row: the row the executor fences a start's entry on, whose
+// move firstPhaseStart reads as well, and the row phaseEntry reads the entry of.
+func (r *outbox) phaseRow(ctx context.Context, issue string, role claim.Role) (record.PhaseRow, error) {
+	var row record.PhaseRow
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := r.records.Phases(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		entry = record.PhaseRowOf(rows, role).Entry
+		row = record.PhaseRowOf(rows, role)
 		return nil
 	}); err != nil {
-		return 0, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)
+		return record.PhaseRow{}, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)
 	}
-	return entry, nil
+	return row, nil
 }
 
 // issueBranch creates the issue's branch, legion/<KEY>, on GitHub at the repository's default

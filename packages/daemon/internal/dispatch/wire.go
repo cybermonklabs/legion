@@ -186,6 +186,11 @@ type approvalResponse struct {
 	Seq *int64  `json:"seq"`
 	// By is who gave the review State shows, and is absent where Dispatch names nobody.
 	By *actor `json:"by"`
+	// CurrentSHA256 and DigestOwed are Dispatch's hash-gate verdict on the latest version, each nil
+	// where Dispatch sends none or null: DigestOwed is a pointer so that an absent digest_owed reads
+	// apart from false.
+	CurrentSHA256 *string `json:"current_sha256"`
+	DigestOwed    *bool   `json:"digest_owed"`
 }
 
 // askReadResponse is one ask as GET /api/v1/asks/{id} answers it, its thread left undecoded: the

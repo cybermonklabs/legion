@@ -275,7 +275,7 @@ func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) 
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	told := rootHolderNews()
@@ -514,7 +514,7 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
@@ -536,7 +536,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
@@ -727,7 +727,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepCriteria, "artifact-checks", 3, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepCriteria, "artifact-checks", 3, 3, nil) {
 		t.Fatalf("the summary owed the opening opens %q, want the opened gate sentence of the criteria's version 3 (artifact-checks) first", first)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")

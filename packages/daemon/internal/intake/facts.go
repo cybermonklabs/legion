@@ -358,18 +358,21 @@ type MergeHoldsChanged struct {
 
 func (MergeHoldsChanged) namedIssue() (string, bool) { return "", false }
 
-// DispatchArtifactKind identifies the three Dispatch artifact observations that affect a gate.
+// DispatchArtifactKind identifies the four Dispatch artifact observations that affect a gate.
 type DispatchArtifactKind string
 
 const (
 	DispatchArtifactApproved         DispatchArtifactKind = "approved"
 	DispatchArtifactChangesRequested DispatchArtifactKind = "changes_requested"
 	DispatchArtifactVersion          DispatchArtifactKind = "version"
+	// DispatchArtifactDigest is Dispatch's verdict on a version (artifact.digest): whether the
+	// approval of the document stands for that version (DispatchArtifact.Verdict).
+	DispatchArtifactDigest DispatchArtifactKind = "digest"
 )
 
-// DispatchArtifact records one review or version event for a registered design document, from a
-// live event or from the daemon's own read of Dispatch's approval (the gate seed). Every source
-// applies alike: a key per review, not the source, keeps the architect from hearing one changes
+// DispatchArtifact records one review, version or digest event for a registered design document,
+// from a live event or from the daemon's own read of Dispatch's approval (the gate seed). Every
+// source applies alike: a key per review, not the source, keeps the architect from hearing one changes
 // request twice (the workflow's tellChanges). Mark places the event in the issue's Dispatch event log: the event's
 // sequence and Dispatch's time of it, from the event itself, or, for a review, from the read's
 // latest review (dispatch.Approval's Seq and At), whichever of them that read gave. A version the
@@ -379,7 +382,7 @@ const (
 // wait on its gate, and answers none. Actor is the event's actor: for a review, the person who
 // reviewed, named on the notice the review sends, since that notice goes to the controller when
 // nobody in its tree can hear it (the daemon's parkDecision); the gate seed's read names the
-// reviewer that read found (dispatch.Approval.LatestReviewer).
+// reviewer that read found (ReadApproval).
 type DispatchArtifact struct {
 	Key                 string
 	ArtifactID          string
@@ -409,9 +412,109 @@ type DispatchArtifact struct {
 	// (NeedsEventLog). It is 0 when no later event changed the status, and for every fact
 	// nothing read the log for.
 	StatusChangedSeq int64
+	// The hash-gate fields (R1 of dispatch://INFRA-6065): each nil or zero where the event or the
+	// read sent none, which is a Dispatch that gives no verdict and keeps today's rules.
+	// DigestOwed is an artifact.version's or a read's digest_owed, whether Dispatch still owes the
+	// digest of the version. Verdict is a digest's approval_current, or a read's verdict at its
+	// latest version: whether the approval stands for that version. VerdictMark is a read's mark of
+	// that verdict; a digest's verdict takes the event's Mark. Latest is a read's latest_version.
+	// ContentSHA256 is the version's digest an artifact.version or an artifact.digest names,
+	// CurrentSHA256 the latest version's a read names, and ApprovedSHA256 the approved version's an
+	// artifact.digest names. A digest's approved_version is read for nothing: the version approved
+	// stays the one of the approval the gate applied.
+	DigestOwed     *bool
+	Verdict        *bool
+	VerdictMark    record.EventMark
+	Latest         int
+	ContentSHA256  string
+	CurrentSHA256  string
+	ApprovedSHA256 string
 }
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
+
+// IsRead says whether the fact is a read of Dispatch's approval (the gate seed's) rather than a
+// live event: a read carries Dispatch's latest version (Latest), and a live event none.
+func (f DispatchArtifact) IsRead() bool { return f.Latest > 0 }
+
+// ApprovalRead is what a read of a document's approval on Dispatch records (ReadApproval): the
+// review the read shows, what it found of Dispatch's hash gate, and its verdict at the latest
+// version.
+type ApprovalRead struct {
+	// Kind is the review the read shows: an approval (DispatchArtifactApproved), a changes request
+	// of the latest version (DispatchArtifactChangesRequested), or neither (DispatchArtifactVersion).
+	// Version is the version of that approval or changes request, and the latest version for
+	// neither. Mark is where Dispatch recorded the review, Actor who gave it and Reason a changes
+	// request's reason, each zero for neither.
+	Kind    DispatchArtifactKind
+	Version int
+	Mark    record.EventMark
+	Actor   dispatch.Actor
+	Reason  string
+	// DigestOwed and CurrentSHA256 are the read's digest_owed and current_sha256, nil and "" from
+	// a Dispatch that sends no digest_owed. Verdict is the read's verdict at its latest version
+	// where Dispatch owes no digest, nil otherwise, and VerdictMark its mark.
+	DigestOwed    *bool
+	CurrentSHA256 string
+	Verdict       *bool
+	VerdictMark   record.EventMark
+}
+
+// ReadApproval is what a read of approval records, the one rule of both readers of a gated
+// document's approval, register_gate (api's gateRegister) and the gate seed (the outbox's
+// seedGateDocument), so the two record the same of one Dispatch body. since is the issue's last_seq
+// the reader read before the approval, readAt the read's own time, and carried says the read is of
+// a carried copy's document, an old root's.
+//
+// The review is approval.version where Dispatch shows an approval: in hash mode (Dispatch sends
+// digest_owed) wherever state is approved, of whatever version, with its reviewer (approval.By),
+// since a read records approval.version as the approved version and never records the latest
+// version as approved (R3 of dispatch://INFRA-6065, "A read"), also while a digest is owed; in
+// version mode only an approval of the latest version (dispatch.Approval.Stands), as before.
+// Otherwise it is a changes request of the latest version, with its reason, else none, at the
+// latest version. The review is marked where Dispatch recorded it (approval.Seq, approval.At).
+//
+// Where Dispatch sends digest_owed false, the read gives its verdict at its latest version: whether
+// the approval stands (dispatch.Approval.Stands), marked at a sequence floor and the read's own
+// time, each raised to the review's where Dispatch's runs ahead, so no review the read shows is
+// marked after the verdict, and every event the read does not show, a review whose transaction
+// began before the read and committed after it among them, has a later sequence and is ordered
+// after the verdict. The floor is since, or the review's sequence where it is higher; a carried
+// copy's read takes the review's sequence alone, a place in the old root's event log, since its
+// since is the copy's and no place in that log. A read that owes the digest, and one of a Dispatch
+// that sends no digest_owed, give no verdict: nil and the zero mark.
+func ReadApproval(approval dispatch.Approval, since int64, readAt time.Time, carried bool) ApprovalRead {
+	read := ApprovalRead{Kind: DispatchArtifactVersion, Version: approval.LatestVersion}
+	review := record.EventMark{Seq: approval.Seq, At: approval.At}
+	changes, reason := approval.ChangesRequestedLatest()
+	hash := approval.DigestOwed != nil
+	switch {
+	case approval.State == "approved" && approval.Version != nil && (hash || approval.Stands()):
+		read.Kind, read.Version, read.Mark, read.Actor = DispatchArtifactApproved, *approval.Version, review, approval.By
+	case changes != 0:
+		read.Kind, read.Version, read.Mark, read.Actor, read.Reason = DispatchArtifactChangesRequested, changes, review, approval.By, reason
+	}
+	if !hash {
+		return read
+	}
+	read.DigestOwed = approval.DigestOwed
+	if approval.CurrentSHA256 != nil {
+		read.CurrentSHA256 = *approval.CurrentSHA256
+	}
+	if *approval.DigestOwed {
+		return read
+	}
+	floor := max(since, approval.Seq)
+	if carried {
+		floor = approval.Seq
+	}
+	stands := approval.Stands()
+	read.Verdict, read.VerdictMark = &stands, record.EventMark{Seq: floor, At: readAt}
+	if approval.At.After(readAt) {
+		read.VerdictMark.At = approval.At
+	}
+	return read
+}
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
@@ -1413,9 +1516,10 @@ func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 
 // GateRegistered records a design document and its current version, with what register_gate read
 // of Dispatch's approval of it, so a person's review given before the architect registered is
-// applied at registration. ApprovedVersion is the version Dispatch showed approved, set only when
-// that approval is of Dispatch's latest version, and 0 otherwise: the gate opens at registration,
-// keeping that approval's place in the issue's Dispatch event log (ApprovedMark).
+// applied at registration, as ReadApproval records it. ApprovedVersion is the version Dispatch
+// showed approved: from a Dispatch that sends no digest_owed only an approval of its latest
+// version, and from one that sends it any approval it shows, of whatever version, and 0 otherwise,
+// with that approval's place in the issue's Dispatch event log (ApprovedMark).
 // ChangesRequestedVersion is the version of a changes request Dispatch showed on its latest
 // version, with its reason and the review's place in the issue's Dispatch event log
 // (ChangesRequestedMark), and 0 otherwise: the gate closes with the architect told.
@@ -1426,10 +1530,9 @@ func (f SignOff) namedIssue() (string, bool) { return f.Issue, true }
 // RequestAsk is the approval request the read found open (dispatch.Approval.AskID, "" when none
 // was), and RequestWaitsOnAgent says it waited on the agent (a reply or a newer version since it
 // was handed to the person): the registration writes that request's mirror row as the read found
-// it, at Since. ReviewedBy is who gave the review either version names
-// (dispatch.Approval.LatestReviewer), zero with neither: the notice the registration sends names
-// that person, since it goes to the controller when nobody in the tree can hear it (the daemon's
-// parkDecision).
+// it, at Since. ReviewedBy is who gave the review either version names (ReadApproval), zero with
+// neither: the notice the registration sends names that person, since it goes to the controller
+// when nobody in the tree can hear it (the daemon's parkDecision).
 //
 // Basis is the ancestor's approval the registration rests the step on, or, while its Pending is
 // set, the ancestor's open approval request the step waits on (dispatch://INFRA-3320, R1), as
@@ -1465,6 +1568,13 @@ type GateRegistered struct {
 	ReviewedBy              dispatch.Actor
 	Basis                   *record.GateBasis
 	ViewOf                  string
+	// DigestOwed, Verdict, VerdictMark and CurrentSHA256 are what the read found of Dispatch's
+	// hash-gate verdict (R1 of dispatch://INFRA-6065), as DispatchArtifact's fields of the same
+	// names say: each nil or zero where the read found none.
+	DigestOwed    *bool
+	Verdict       *bool
+	VerdictMark   record.EventMark
+	CurrentSHA256 string
 	// By and Generation are the architect's register_gate (api's gateRegister): its claim and the
 	// root's generation its route read, which the workflow judges again under the fact lock
 	// (ArchitectRequest). A registration the workflow makes itself carries neither.

@@ -427,7 +427,8 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 }
 
 // catchUpWindow applies every ask event (an ask.edited one when it moved an approval request),
-// review and document version Dispatch recorded on the root after from: it reads the root's event
+// review, document version and Dispatch's verdict on a version (artifact.digest, dispatch://INFRA-6065
+// R5) Dispatch recorded on the root after from: it reads the root's event
 // log past that point and applies each through the live decoder and the live handlers, with its
 // own sequence, so the asks' mirror and the architect's hand-backs stand as the live events would
 // have left them. It returns the highest sequence it read, and the lowest sequence of an event
@@ -475,7 +476,7 @@ func (w *workflowRuntime) catchUpWindow(ctx context.Context, root catchUpRoot, f
 		read = max(read, header.Seq)
 		switch header.Type {
 		case "ask.opened", "ask.answered", "ask.resolved", "ask.handed_back", "ask.edited", "comment.created", "comment.answered",
-			"artifact.version", "artifact.approved", "artifact.changes_requested":
+			"artifact.version", "artifact.approved", "artifact.changes_requested", "artifact.digest":
 		default:
 			continue
 		}

@@ -1997,8 +1997,15 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // closed later, and so does the step it carries, but only on each that is neither done nor
 // accepted. A rest on an ancestor that is either does not come with the step, which still comes
 // as above.
+//
+// Each step that comes keeps Dispatch's verdict as the old root's row held it (Verdict and
+// ApprovedDigest, dispatch://INFRA-6065 R5) and the standing the daemon last told of it
+// (ToldOpen), so key reads it open or closed, and tells it, by the rule the old root's row read.
+// It is marked a copy (record.DesignGate.Carried): its document is the old root's, whose facts
+// arrive keyed by that root and reach the copy only where they open it (workflow's copyTakes), and
+// the outbox reads no Dispatch for it before a start.
 func (a *Admission) carriedGate(ctx context.Context, tx pgx.Tx, key string, gate record.DesignGate) (*record.DesignGate, error) {
-	gate.Issue = key
+	gate.Issue, gate.Carried = key, true
 	standing := ""
 	if gate.OnBasis() {
 		standing = gate.Basis.Issue
@@ -2072,21 +2079,31 @@ func (a *Admission) releaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
-// person's approval a gate of its holds of a version its document has since moved past: the new
-// generation's architect registers each step again on a cleared gate, and its start task
-// (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
-// approval is kept, read from the first required step whose approved version sits below its
-// latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
-// task names the document the person reviewed rather than the spec of every deployment. The
-// required steps are the ones the root's tree is gated on (record.TreeSteps), so a Verification
-// document its architect registered as criteria beside a deployment that gates spec and not
-// criteria is read after the spec, as every other rule of the gate reads it.
+// person's approval a gate of its holds that no longer stands for the version its document has
+// since moved to: the new generation's architect registers each step again on a cleared gate, and
+// its start task (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest
+// version. One approval is kept, read from the first required step that holds such an approval,
+// because readmitted_approvals keeps one row for each root; it carries that step, so the task
+// names the document the person reviewed rather than the spec of every deployment. The required
+// steps are the ones the root's tree is gated on (record.TreeSteps), so a Verification document
+// its architect registered as criteria beside a deployment that gates spec and not criteria is
+// read after the spec, as every other rule of the gate reads it.
+//
+// Whether the approval stands is the gate's own rule (record.GateOpen, dispatch://INFRA-6065 R5),
+// not a comparison of version numbers: with a Dispatch that gives its verdict on the document, an
+// approval of an earlier version that Dispatch reports current for the latest version stands, and
+// nothing is kept for it; one Dispatch reports not current is kept, and so is one whose newer
+// version still owes its digest, since the gate reads closed then (a "request approval" line the
+// digest's opening corrects). Only an approval of a version below the latest is ever kept, which
+// is readmitted_approvals' check: an approval of the latest version that does not stand gives no
+// earlier version to name.
 //
 // The approval read is the person's own (record.DesignGate.ApprovedByPerson), never the version
 // an ancestor's approval opened the step at (dispatch://INFRA-3320, R2 and R3): a step that stands
 // open on a basis at its latest version keeps the person's approval of an earlier version apart,
 // and that is the approval kept, so the re-admission neither loses it nor names the basis as a
-// person's approval.
+// person's approval. So the rule reads the step as it stands on that approval, with the basis
+// closed (record.CloseBasis), where the row's verdict is the one on the root's own document.
 //
 // Where the deployment gates no step, which asks no person, nothing is kept and any pair an
 // earlier re-admission kept is dropped: no start names one there, so no delivery would forget
@@ -2110,7 +2127,8 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 			unregistered = true
 			continue
 		}
-		if approved := gate.ApprovedByPerson(); approved != nil && approved.Version < gate.LatestVersion {
+		if approved := gate.ApprovedByPerson(); approved != nil && approved.Version < gate.LatestVersion &&
+			!record.GateOpen(record.CloseBasis(gate)) {
 			return a.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
 				Step: step, Artifact: gate.ArtifactID, Approved: approved.Version, Latest: gate.LatestVersion})
 		}

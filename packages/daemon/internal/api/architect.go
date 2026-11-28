@@ -37,10 +37,12 @@ type EmptyResponse struct{}
 // to a document of its own (gateRegister).
 //
 // BasisArtifactID, BasisVersion and Reason name a basis: the same step's document of an ancestor on
-// the issue's Dispatch child_of chain, at a version a person approved or an open approval request
-// asks a person to approve, and the architect's reason, which the daemon posts on the issue
-// (dispatch://INFRA-3320, R1). The three come together or not at all (refuseBasisInput), and the
-// daemon checks the basis against what Dispatch shows before it records it (registrationBasis).
+// the issue's Dispatch child_of chain, at its latest version, where Dispatch reports a person's
+// approval standing for that version, whatever version the person approved (R5 of
+// dispatch://INFRA-6065), or where an open approval request asks a person to approve it, and the
+// architect's reason, which the daemon posts on the issue (dispatch://INFRA-3320, R1). The three
+// come together or not at all (refuseBasisInput), and the daemon checks the basis against what
+// Dispatch shows before it records it (registrationBasis).
 type GateRegisterRequest struct {
 	GrantID         string            `json:"grantId"`
 	Issue           string            `json:"issue"`
@@ -403,12 +405,14 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	// The issue is read before the approval, so every review that read does not show has a later
 	// event sequence: a review the gate applies after this read places after it. The same read
-	// names the issue's parent, which a basis and the view fact walk up from.
+	// names the issue's parent, which a basis and the view fact walk up from. The read's own time
+	// is taken before the approval too, so the verdict it carries is marked no earlier than the
+	// moment Dispatch gave it.
 	root, ok := s.gateIssue(w, r, req.Issue)
 	if !ok {
 		return
 	}
-	since := root.LastSeq
+	since, readAt := root.LastSeq, time.Now().UTC()
 	approval, ok := s.documentOfIssue(w, r, artifactID, req.Issue, "register_gate")
 	if !ok {
 		return
@@ -436,18 +440,25 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// and every act Dispatch records after the read carries a later sequence. The approval request
 	// the read found open, and whose turn it waits on, travel with it too, for the registration to
 	// mirror.
-	changes, reason := approval.ChangesRequestedLatest()
-	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ApprovedVersion: approval.ApprovedLatest(),
-		ChangesRequestedVersion: changes, ChangesReason: reason, ReviewedBy: approval.LatestReviewer(),
+	//
+	// What the read records is the one rule the gate seed applies too (intake.ReadApproval), so the
+	// two record the same of one Dispatch body: with a Dispatch that sends digest_owed, the
+	// approval Dispatch shows at the version the person approved, which can be below the latest,
+	// with its reviewer, also while the digest is owed (R3 of dispatch://INFRA-6065), and, where
+	// no digest is owed, the verdict at the latest version, marked by the read: the root's sequence
+	// and the read's own time, each raised to the review's where Dispatch's runs ahead, so no review
+	// the read shows is marked after the verdict it gave (registeredVerdict in the workflow).
+	read := intake.ReadApproval(approval, since, readAt, false)
+	fact := intake.GateRegistered{Issue: req.Issue, Step: step, ArtifactID: artifactID, Version: req.Version, ReviewedBy: read.Actor,
 		DispatchVersion: approval.LatestVersion, Since: record.EventMark{Seq: since},
 		RequestAsk: approval.AskID, RequestWaitsOnAgent: approval.AskID != "" && approval.WaitingOn == "agent",
+		DigestOwed: read.DigestOwed, Verdict: read.Verdict, VerdictMark: read.VerdictMark, CurrentSHA256: read.CurrentSHA256,
 		By: grant.Claim, Generation: recorded.Generation}
-	review := record.EventMark{Seq: approval.Seq, At: approval.At}
-	if changes != 0 {
-		fact.ChangesRequestedMark = review
-	}
-	if fact.ApprovedVersion != 0 {
-		fact.ApprovedMark = review
+	switch read.Kind {
+	case intake.DispatchArtifactApproved:
+		fact.ApprovedVersion, fact.ApprovedMark = read.Version, read.Mark
+	case intake.DispatchArtifactChangesRequested:
+		fact.ChangesRequestedVersion, fact.ChangesReason, fact.ChangesRequestedMark = read.Version, read.Reason, read.Mark
 	}
 	// A basis is checked against everything Dispatch shows of it and of the root, and recorded with
 	// the registration, or the call is refused and records nothing. Every registration of the spec
@@ -471,9 +482,13 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// generation's registration is its own fact. The fact's id names the read as well as the
 	// version: a second registration at one version carries what Dispatch showed when it ran, so a
 	// retry of one read stays one fact while a new read — a review or a version since — is a new
-	// fact the handlers see. The ancestor's document is read too, and moves on no event of the
-	// root's, so the id names what was read of it: the basis document, its version and the request
-	// a pending basis waits on, and the ancestor the view fact names. A registration with no basis
+	// fact the handlers see. It names what the read found of Dispatch's hash gate as well
+	// (dispatch.Approval.DigestFound), so a read whose only change is the digest Dispatch filled
+	// since is a new fact, while a read of a Dispatch that sends no digest field keeps the id it
+	// always had. The
+	// ancestor's document is read too, and moves on no event of the root's, so the id names what
+	// was read of it: the basis document, its version and the request a pending basis waits on,
+	// and the ancestor the view fact names. A registration with no basis
 	// after one with a basis at the same version and sequence is a new fact, not a duplicate that
 	// answers 200 and changes nothing. The record is read as well: the id names how many times the
 	// step's basis has moved (record.DesignGate.BasisMoves, stepBasisMoves), so a call made
@@ -485,7 +500,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if basisMoves, ok = s.stepBasisMoves(w, r, req.Issue, step); !ok {
 		return
 	}
-	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since)
+	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since) + approval.DigestFound()
 	if fact.Basis != nil {
 		id += fmt.Sprintf(":basis:%s:%d", fact.Basis.ArtifactID, fact.Basis.Version)
 		if fact.Basis.Pending != nil {

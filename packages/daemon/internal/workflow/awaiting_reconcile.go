@@ -763,6 +763,14 @@ const DesignApprovedWake = "this resume is your design-approved wake"
 // root's document. An end that came after the act that answered the wait (basisEndedAfter) is
 // named after that act.
 //
+// How the gate stands is the standing the tree was last told (record.ToldStanding), as every text
+// that says it reads it, so a version that owes Dispatch's digest says nothing new until the
+// digest settles it (dispatch://INFRA-6065 R3). In hash mode a gate stands open on Dispatch's
+// verdict, whatever version the approval is of: a person's approval of an older version is named
+// with the version Dispatch reports it current for (approvedAtWords), and a gate closed below an
+// approval that stands is said to be at a version Dispatch does not report that approval current
+// for, never at one "which is not approved".
+//
 // Every sentence about the gate names step's own document (record.DesignStep.Document), which is
 // the document gate holds and the one whose version it prints: under a deployment that gates the
 // decisions or the criteria step first, the step in question is not the spec, and a task saying
@@ -775,7 +783,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	asks []record.RootAsk, armed bool) string {
 	gate := gateOf(gates, step)
 	document := step.Document()
-	gateOpen := gate != nil && classify.DesignGateOpen(*gate)
+	gateOpen := gate != nil && record.ToldStanding(*gate)
 	gateClosed := gate != nil && !gateOpen
 	onBasis := gateOpen && gate.OnBasis()
 	pending := gate != nil && gate.PendingOnBasis()
@@ -887,15 +895,15 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case gateOpen && !armed:
 		fmt.Fprintf(&task, " The design gate is open at version %d: %s, so act on it as on design-approved.",
 			gate.LatestVersion, DesignApprovedWake)
-	case onBasis && openedOnBasis && openedBy == basisApproval(*gate):
+	case onBasis && openedOnBasis && namesBasisApproval(openedBy, *gate):
 		fmt.Fprintf(&task, " The step stands open on that approval at version %d, and the design gate is open: %s, so act on it as on design-approved.",
 			gate.LatestVersion, DesignApprovedWake)
 	case onBasis:
 		fmt.Fprintf(&task, " Your %s step stands open at version %d on an ancestor's approval: %s. No person approved that version of your %s. "+
 			"The design gate is open: %s, so act on it as on design-approved.", step, gate.LatestVersion, basisApproval(*gate), document, DesignApprovedWake)
 	case gateOpen:
-		fmt.Fprintf(&task, " Your %s is approved at version %d and the design gate is open: %s, so act on it as on design-approved.",
-			document, gate.LatestVersion, DesignApprovedWake)
+		fmt.Fprintf(&task, " Your %s is approved %s and the design gate is open: %s, so act on it as on design-approved.",
+			document, approvedAtWords(*gate), DesignApprovedWake)
 	case !armed:
 		fmt.Fprintf(&task, " The design gate is closed at version %d, as no registration of that version has opened it: when the %s is ready, "+
 			"register it at its current version, which opens the gate with no approval.", gate.LatestVersion, document)
@@ -903,6 +911,11 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		fmt.Fprintf(&task, " Your %s step is closed at version %d. It waits on approval request %s of version %d of %s. "+
 			"A person's approval of that version opens the step. Do not request approval of your own %s.",
 			step, gate.LatestVersion, gate.Basis.Pending.Ask, gate.Basis.Version, documentOf(gate.Basis.Issue, step), document)
+	case approved && superseded == nil && act == step && gate.ApprovedVersion != nil && gate.Verdict != nil:
+		// In hash mode the gate is closed on Dispatch's verdict that the approval does not stand for
+		// the latest version, or on a version whose verdict is still owed (dispatch://INFRA-6065).
+		fmt.Fprintf(&task, " The approval of version %d stands, and the %s is now at version %d, for which Dispatch does not report that approval current.",
+			*gate.ApprovedVersion, document, gate.LatestVersion)
 	case approved && superseded == nil && act == step && gate.ApprovedVersion != nil:
 		// The approval that answered still stands, and the gate is closed: a newer version of the
 		// document, which no person has approved, closed it. An approval of another step's

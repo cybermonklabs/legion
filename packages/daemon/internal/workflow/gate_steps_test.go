@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -1072,7 +1073,7 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 					t.Fatalf("%s after the first approval = %s, want it admitted: the other document is not approved", held, got)
 				}
 			}
-			if engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+			if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); !held {
 				t.Fatal("the standing gate is open after the first approval, want it closed until the second")
 			}
 
@@ -1082,7 +1083,7 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 				t.Fatalf("LEGION-209 once both documents are approved = %s, want planning", got)
 			}
 			assertRootWaitsOnItsChild(t, pool, gatedRoot)
-			if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+			if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); held {
 				t.Fatal("the standing gate is closed once both documents are approved, want it open")
 			}
 		})
@@ -1091,9 +1092,9 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 
 // A new version of a registered Verification document closes the standing gate under the workers
 // already running, as a new spec version does: the merger and the root architect are told it
-// closed, and the predicate the merger's start hold reads (standingGateOpen, which the outbox's
-// designGateClosed asks through classify.StandingGate) holds the merge until a person approves
-// that version. The approval opens the gate, and they are told that too: each took the version
+// closed, and the predicate the merger's start hold reads (classify.StandingGate, which the
+// outbox's readGateSnapshot asks) holds the merge until a person approves that version. The
+// approval opens the gate, and they are told that too: each took the version
 // before, so each is owed the new one's news, and the task that carries it leads with the opening,
 // its told row recording the opening as owed in place of the opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
@@ -1109,7 +1110,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+	if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); held {
 		t.Fatal("the standing gate is closed with both documents approved, want it open")
 	}
 
@@ -1120,7 +1121,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
-	if engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+	if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); !held {
 		t.Fatal("the standing gate is open under a new Verification version nobody approved, want it closed: the merge waits")
 	}
 
@@ -1130,7 +1131,7 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
 	})
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
-	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+	if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); held {
 		t.Fatal("the standing gate is closed once the new Verification version is approved, want it open")
 	}
 }

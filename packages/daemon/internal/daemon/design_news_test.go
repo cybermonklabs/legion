@@ -39,7 +39,9 @@ var reconcilePair = record.VersionPair{ArtifactID: reconcileDoc, From: 4, To: 5}
 // changeSetDispatch is a Dispatch that answers the two reads the reconcile of a tree's news makes,
 // and records each: what changed between two versions (answer, which defaults to one section and
 // one requirement changed) and the version approved before one (before, which refuses by default,
-// so a case that does not expect the review history read fails if it is made). Every other call
+// so a case that does not expect the review history read fails if it is made). It shows every
+// document's approval standing, as the read before a merger's start asks it
+// (designGateStandsInDispatch), so the record's gate alone holds the merger here. Every other call
 // reaches the nil Client it embeds.
 type changeSetDispatch struct {
 	dispatch.Client
@@ -71,6 +73,10 @@ func (d *changeSetDispatch) ApprovedVersionBefore(_ context.Context, artifact st
 		return 0, errors.New("this case reads no review history")
 	}
 	return d.before(artifact, version)
+}
+
+func (d *changeSetDispatch) Approval(ctx context.Context, artifact string) (dispatch.Approval, error) {
+	return standingDispatch{}.Approval(ctx, artifact)
 }
 
 // newsReconcileRig is one tree on a database of its own, gated on its spec, which stands approved at

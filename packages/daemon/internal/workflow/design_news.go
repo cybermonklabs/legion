@@ -239,8 +239,11 @@ func RenderNews(news News) string {
 // reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
 // opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
 // step in the tree's order where the marks cannot tell, with each step that stands open on an
-// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedMessage). It is "" when
-// no row holds an approval, which says nothing.
+// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedMessage), naming an
+// approval of a version below the latest as one Dispatch reports current for the latest
+// (dispatch://INFRA-6065 R3). It reads the gate that holds work (record.GateOpen) rather than the
+// standing told, so a task sent while a version owes its digest says the gate is closed, as the
+// merger's hold holds it then. It is "" when no row holds an approval, which says nothing.
 func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
 	if held, closed := classify.StandingGate(steps, gates); closed {
 		return gateClosedSentence(tree, held.Step.OrSpec(), held.ArtifactID, held.LatestVersion)
@@ -259,7 +262,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	if openedStep == "" {
 		return ""
 	}
-	return gateOpenedMessage(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, basisStepsOf(steps, gates))
+	return gateOpenedMessage(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, opened.LatestVersion, basisStepsOf(steps, gates))
 }
 
 // holderNews is the holder's form after its gate sentence: what changed for its issue, then the

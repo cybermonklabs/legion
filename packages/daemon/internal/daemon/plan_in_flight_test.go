@@ -270,8 +270,7 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 		if stood == phase.Admitted {
 			status = "in_progress"
 		}
-		var created createdIssue
-		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": inFlightTitles[place]}, http.StatusCreated, &created)
+		created, spec := r.approvedIssue(inFlightTitles[place])
 		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": status, "labels": []string{"legion"}}, http.StatusOK, &created)
 		issue := &inFlightIssue{walkIssue: walkIssue{key: created.Key, title: inFlightTitles[place], number: int(number) + 1 + place},
 			stands: stood, sessions: map[claim.Role]inFlightSession{}}
@@ -285,7 +284,7 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 		} else {
 			r.walks = append(r.walks, issue)
 		}
-		r.seedInFlight(issue, seeded, status, created)
+		r.seedInFlight(issue, seeded, status, created, spec)
 	}
 	if _, err := st.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate the store the release before left to the branch's schema: %v", err)
@@ -338,14 +337,15 @@ func storeBeforeThePlans(t *testing.T) (*store.Store, string) {
 }
 
 // seedInFlight writes issue as the release before leaves it in seeded, with plain SQL in that
-// release's columns: the root handed to Legion, its tree under the workflow, its approved design
-// gate, its slot while its phase holds one, the pull request it opened once it is past
+// release's columns: the root handed to Legion, its tree under the workflow, its design gate
+// approved on spec, the issue's own document a person approved at version 1 (approvedIssue), its
+// slot while its phase holds one, the pull request it opened once it is past
 // implementing, the implementer's phases row once it has implemented (pass and rounds 1 on the
 // issue in reviewing, which had one round that requested changes), the row of the role at work at
 // entry 1, and the claim of that role and of the architect each a launch the release before began
 // in the session it recorded, which the boot resumes. Its phase is the seeded one's but on the
 // control, which stands at admitted.
-func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, status string, created createdIssue) {
+func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, status string, created createdIssue, spec string) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
@@ -362,7 +362,7 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		key, r.cfg.Project, issue.title, string(issue.stands), status, created.Rank, created.LastSeq, liveRepo)
 	exec("the tree of "+key, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, 'workflow')`, r.project, key)
 	exec("the design gate of "+key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
-		values ($1, $2, 1, 1, true, 'spec')`, key, "spec-"+key)
+		values ($1, $2, 1, 1, true, 'spec')`, key, spec)
 	order := slices.Index(phase.Order, seeded)
 	if record.PhaseKeepsSlot(seeded) {
 		exec("the slot of "+key, `insert into slots (issue, index, admitted_at) values ($1, $2, now() - interval '1 day')`,

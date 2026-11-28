@@ -227,9 +227,10 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 // reparentedWords is what a root that ran is told when a person makes it a child of parent, in
 // the live tree of tree, and what that tree's architect is told: it stays a tree of its own, for
 // the reason ran. Where version is set, R1's path is open on parent at that version of its
-// primary document, and the words name that path: the root can be written as a view on parent and
-// register its design gate on that approval. Otherwise the root's work reaches the tree only
-// through that tree's own issues.
+// primary document, its latest, which a person's approval stands for (dispatch.Approval.Stands,
+// whatever version the person approved, dispatch://INFRA-6065 R5), and the words name that path:
+// the root can be written as a view on parent and register its design gate on that approval.
+// Otherwise the root's work reaches the tree only through that tree's own issues.
 func reparentedWords(issue, parent, tree, ran string, version int) string {
 	stays := fmt.Sprintf("%s is now a child of %s in Dispatch, and it stays a tree of its own in Legion: %s, so the tree of %s cannot take it in and no architect of that tree can release it.",
 		issue, parent, ran, tree)
@@ -237,7 +238,7 @@ func reparentedWords(issue, parent, tree, ran string, version int) string {
 		return stays + fmt.Sprintf(" It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", tree)
 	}
 	return stays + fmt.Sprintf(" It runs under its own architect. %s carries the legion label and marks requirement blocks in its primary document. "+
-		"A person approved version %d of that document, which is its latest version. So the architect of %s can write it as a view on %s. "+
+		"A person's approval of that document stands for its version %d, which is its latest version. So the architect of %s can write it as a view on %s. "+
 		"Then that architect can register the design gate of %s on that approval, with no approval of its own, "+
 		"with register_gate's basis.", parent, version, issue, parent, issue)
 }

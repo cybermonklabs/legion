@@ -397,7 +397,9 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		for _, step := range required {
 			stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 			if recorded, ok := gates[step]; ok {
-				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
+				// Whether the step is open is the standing the tree was last told
+				// (record.ToldStanding), as every text says it (dispatch://INFRA-6065).
+				stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, record.ToldStanding(recorded)
 				// A step open on an ancestor's approval holds the version the root registered as
 				// its ApprovedVersion, which no person approved, so it states no approved version:
 				// the basis beside it is what opened the step (dispatch://INFRA-3320, R2).
