@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..e12ffa96 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -181,9 +181,6 @@ const (
+ //   - OpenChange is taken as the facts give it.
+ func CloseWaitOf(f CloseFacts) CloseWait {
+ 	wait := CloseWait{Production: productionTerm(f), OpenChange: f.OpenChange}
+-	if len(f.Beneath) > 0 {
+-		wait.Beneath = f.Beneath
+-	}
+ 	if len(f.OpenChildren) > 0 {
+ 		wait.OpenChildren = f.OpenChildren
+ 	}

@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..f86b4212 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -951,9 +951,6 @@ func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []recor
+ 		if issue == nil || issue.Phase != phase.Verifying {
+ 			continue
+ 		}
+-		if told := issue.StandingToldAt; told != nil && told.UTC().Format(time.DateOnly) == now.UTC().Format(time.DateOnly) {
+-			continue
+-		}
+ 		view, err := e.closeWait(ctx, tx, *issue)
+ 		if err != nil {
+ 			return err

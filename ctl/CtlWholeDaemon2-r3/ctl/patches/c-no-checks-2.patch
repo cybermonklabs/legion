@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..5622522d 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -210,6 +210,9 @@ func CloseWaitOf(f CloseFacts) CloseWait {
+ 			wait.Checks = append(wait.Checks, state)
+ 		}
+ 	}
++	if len(answer.Results.Checks) == 0 {
++		wait.Checks = append(wait.Checks, CheckWait{State: CheckStateNoResult, Answer: dispatch.PassStandsNo, Reason: dispatch.PassStandsReasonNoResult})
++	}
+ 	wait.Unapproved = unapprovedSince(answer.Approval)
+ 	return wait
+ }

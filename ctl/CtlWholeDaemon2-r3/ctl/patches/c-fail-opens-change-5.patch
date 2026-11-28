@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/record/outbox.go b/packages/daemon/internal/record/outbox.go
+index 98bf36ef..5a23a919 100644
+--- a/packages/daemon/internal/record/outbox.go
++++ b/packages/daemon/internal/record/outbox.go
+@@ -2115,9 +2115,6 @@ type BranchFrom struct {
+ // no From.
+ func IssueBranchOf(issue Issue) IssueBranch {
+ 	row := IssueBranch{Generation: issue.Generation}
+-	if issue.NextChange != 0 && issue.NextChange == issue.Generation && issue.Merge.Merged() {
+-		row.From = &BranchFrom{Base: issue.Merge.Base, MergedHead: issue.Merge.Head}
+-	}
+ 	return row
+ }
+ 

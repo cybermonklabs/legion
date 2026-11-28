@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..c6fc5f68 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -371,7 +371,7 @@ func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Iss
+ 		return err
+ 	}
+ 	stored := e.waitOf(issue, view, old, now)
+-	stored.Entered, stored.Ended = now, ended
++	stored.Ended = ended
+ 	if err := putStoredWait(&issue, stored); err != nil {
+ 		return err
+ 	}

@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..5f42cb01 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -515,9 +515,6 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
+ 	case phase.Done:
+ 		return intake.Result{}, e.tellClosedCheckFailed(ctx, tx, *issue, fact)
+ 	case phase.Verifying:
+-		if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
+-			return intake.Result{}, err
+-		}
+ 		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
+ 	}
+ 	// An open next change ends when each of its reasons is resolved, a check's by its pass, so a

@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..8df754ee 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -699,8 +699,7 @@ func (e *Engine) judgeCloseNoting(ctx context.Context, tx pgx.Tx, issue record.I
+ 	if err := e.storeWait(ctx, tx, issue, view, withdrawn); err != nil {
+ 		return err
+ 	}
+-	_, err = e.startChangeIfDue(ctx, tx, issue.Key)
+-	return err
++	return nil
+ }
+ 
+ // storeWait writes the stored wait of view where it differs from the one the row holds, with the

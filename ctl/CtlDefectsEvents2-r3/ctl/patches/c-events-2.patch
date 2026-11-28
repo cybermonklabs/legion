@@ -1,0 +1,24 @@
+diff --git a/packages/daemon/internal/workflow/engine.go b/packages/daemon/internal/workflow/engine.go
+index 1304c2635c6..d2c4cba2f51 100644
+--- a/packages/daemon/internal/workflow/engine.go
++++ b/packages/daemon/internal/workflow/engine.go
+@@ -536,19 +536,6 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
+ 			return intake.Result{}, err
+ 		}
+ 	}
+-	// A change of what Dispatch shows of an issue, its status or its parent, changes what the close
+-	// of each issue above it in verifying waits for, whoever wrote it: the echo of the daemon's own
+-	// status write among them, since a read made before that write reached Dispatch saw the old
+-	// status (D15). The read reads the children from Dispatch after the change.
+-	recordedParent := ""
+-	if issue.Parent != nil {
+-		recordedParent = *issue.Parent
+-	}
+-	if fact.Status != issue.DispatchStatus || fact.Parent != recordedParent {
+-		if err := e.askAncestorsRead(ctx, tx, *issue); err != nil {
+-			return intake.Result{}, err
+-		}
+-	}
+ 	// The engine reacts to a newer status alone: an event carrying the status the record holds is
+ 	// an edit, which it leaves to the observation admission records (admit's recordObservation).
+ 	if fact.Status == issue.Status {

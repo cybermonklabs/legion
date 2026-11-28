@@ -1,0 +1,15 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..ee25a76f 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -786,10 +786,6 @@ func (e *Engine) tellAtOnce(ctx context.Context, tx pgx.Tx, issue record.Issue,
+ 		}
+ 		switch {
+ 		case check.Answer == dispatch.PassStandsNo && check.Reason == dispatch.PassStandsReasonFail:
+-			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "check-failed", Role: claim.RoleArchitect,
+-				Reason: checkFailedReason(issue, check.ID, wait)}); err != nil {
+-				return err
+-			}
+ 		case check.Answer == dispatch.PassStandsUnknown && check.Reason == dispatch.PassStandsReasonPassAndFail:
+ 			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "check-unknown", Role: claim.RoleArchitect,
+ 				Reason: fmt.Sprintf("Check %s of %s has a pass and a fail at one commit. Dispatch counts no pass of it, and no later pass at that commit ends it.", check.ID, issue.Key)}); err != nil {

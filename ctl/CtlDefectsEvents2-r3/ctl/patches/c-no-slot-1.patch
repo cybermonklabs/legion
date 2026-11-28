@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/project.go b/packages/daemon/internal/record/project.go
+index e56d8959..fb91d208 100644
+--- a/packages/daemon/internal/record/project.go
++++ b/packages/daemon/internal/record/project.go
+@@ -1195,7 +1195,7 @@ func AtWork(issue Issue, gate TreeGate) bool {
+ func PhaseKeepsSlot(at phase.Phase) bool {
+ 	switch at {
+ 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
+-		phase.Reviewing, phase.Held:
++		phase.Reviewing, phase.Held, phase.Verifying:
+ 		return true
+ 	default:
+ 		return false

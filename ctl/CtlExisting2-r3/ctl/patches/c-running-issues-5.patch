@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/store/migrations/20261128022325_done_by_checks.up.sql b/packages/daemon/internal/store/migrations/20261128022325_done_by_checks.up.sql
+index d20d6596..33fb3bf9 100644
+--- a/packages/daemon/internal/store/migrations/20261128022325_done_by_checks.up.sql
++++ b/packages/daemon/internal/store/migrations/20261128022325_done_by_checks.up.sql
+@@ -106,9 +106,6 @@
+ -- -- Block A: once for each project, with <PROJECT> its key, in any order.
+ -- begin;
+ -- do $$ begin
+---   if exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'close_wait_since') then
+---     raise notice 'issues of <PROJECT> in verifying: %', (select coalesce(json_agg(listed), '[]') from (select key, close_wait_since, merge_number, merge_sha from issues where phase = 'verifying' and split_part(key, '-', 1) = '<PROJECT>' order by key) listed);
+---   end if;
+ --   if to_regclass('defects') is not null then
+ --     raise notice 'open defects of <PROJECT>: %', (select coalesce(json_agg(listed), '[]') from (select issue, id, kind, text from defects where merged_at is null and withdrawn_at is null and split_part(issue, '-', 1) = '<PROJECT>' order by issue, id) listed);
+ --   end if;

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index d1ec65ce..d9bcd1da 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -717,7 +717,7 @@ func (e *Engine) carriedByChange(ctx context.Context, tx pgx.Tx, trigger Trigger
+ // reasons the change carries (carriedByChange): each by id, kind and what it says, and a check's
+ // by its block id, which the change's work takes (D7).
+ func withChangeReasons(reason string, carried []record.Defect) string {
+-	return withNamed(reason, "This next change carries these reasons, which its work takes:", carried)
++	return reason
+ }
+ 
+ // firstStartAt is where the working copy of issue's first start of a next change starts

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/store.go b/packages/daemon/internal/record/store.go
+index 079182cf..1ffb0644 100644
+--- a/packages/daemon/internal/record/store.go
++++ b/packages/daemon/internal/record/store.go
+@@ -2356,7 +2356,7 @@ func (s *Postgres) ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue s
+ 	}
+ 	phases := clearedIssue + " and not (role = '" + string(claim.RoleArchitect) +
+ 		"' and exists (select 1 from issues root where root.key = $1 and root.tree = root.key))"
+-	return runClearStatements(ctx, tx, runStatements(clearedIssue, phases), issue, describe)
++	return runClearStatements(ctx, tx, append(runStatements(clearedIssue, phases), "delete from design_gates where "+clearedIssue), issue, describe)
+ }
+ 
+ // runClearStatements runs each statement of a clear with key as $1.

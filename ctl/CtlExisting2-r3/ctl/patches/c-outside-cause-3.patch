@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/record.go b/packages/daemon/internal/record/record.go
+index 1d912a2e..3af6ae13 100644
+--- a/packages/daemon/internal/record/record.go
++++ b/packages/daemon/internal/record/record.go
+@@ -2114,7 +2114,7 @@ func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixM
+ // from one again, or the one that replaced this.
+ func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
+ 	if openedAt.IsZero() {
+-		return c.Generation == 0
++		return true
+ 	}
+ 	return openedAt.Equal(c.OpenedAt)
+ }

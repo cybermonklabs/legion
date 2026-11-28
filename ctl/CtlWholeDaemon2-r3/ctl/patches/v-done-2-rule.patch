@@ -1,0 +1,17 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index 5b064b5a..ff7c1039 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -363,11 +363,7 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
+ // the merge (changeMerged). record.PullRequest.Generation is not read: it is the CI settlement's
+ // generation, which names no generation of the issue.
+ func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+-	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
+-	if err != nil || pr == nil {
+-		return true, err
+-	}
+-	return pr.State == record.PullRequestMerged && pr.Number == issue.NextChangeFollows, nil
++	return true, nil
+ }
+ 
+ // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):

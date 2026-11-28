@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/admit/stalled.go b/packages/daemon/internal/admit/stalled.go
+index 91dde76e..b503a733 100644
+--- a/packages/daemon/internal/admit/stalled.go
++++ b/packages/daemon/internal/admit/stalled.go
+@@ -908,7 +908,7 @@ func (a *Admission) lineCanMove(issues []record.Issue, holds lineHolds, working
+ // (record.TreeQuiet.AtWork, which the caller asks before this walk).
+ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHolds, canMove bool) bool {
+ 	for _, issue := range members {
+-		if holds.waitsForItsChecks(issue) || holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
++		if holds.waitsOnWorkOutsideItsTree(issue) || canMove && holds.waitsByDesign(issue) {
+ 			continue
+ 		}
+ 		// Nothing of the daemon's holds this issue: it has stopped, and so has its tree.

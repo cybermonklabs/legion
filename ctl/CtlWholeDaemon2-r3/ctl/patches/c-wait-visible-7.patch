@@ -1,0 +1,17 @@
+diff --git a/packages/daemon/internal/projection/project.go b/packages/daemon/internal/projection/project.go
+index 476d8f41..a2f12e0f 100644
+--- a/packages/daemon/internal/projection/project.go
++++ b/packages/daemon/internal/projection/project.go
+@@ -321,11 +321,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
+ 		}
+ 		// What the issue's close waits for, from its stored wait (closeWaitView): an issue in
+ 		// verifying, and one before its merge that holds a reported defect.
+-		closeWait, err := closeWaitView(issue)
+-		if err != nil {
++		if _, err := closeWaitView(issue); err != nil {
+ 			return api.State{}, err
+ 		}
+-		view.CloseWait = closeWait
+ 		// The refusal for good of the issue's branch row, where one stands at its generation.
+ 		if refusal, refused := refusedBranches[issue.Key]; refused {
+ 			view.BranchRefused = &api.BranchRefusedView{Row: refusal.Row, Write: refusal.Write, Kind: refusal.Kind, Reason: refusal.Reason,

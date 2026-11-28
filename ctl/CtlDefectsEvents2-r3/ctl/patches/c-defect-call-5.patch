@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index 5b064b5a..58a7e44c 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -347,9 +347,6 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
+ 		merged = view.facts.Entered
+ 	}
+ 	fallback := merged.UTC().Add(MergerCompletionBound)
+-	if !e.now().Before(fallback) {
+-		return time.Time{}, true
+-	}
+ 	return fallback, false
+ }
+ 

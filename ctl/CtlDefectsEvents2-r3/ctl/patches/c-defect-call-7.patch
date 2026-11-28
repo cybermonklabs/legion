@@ -1,0 +1,35 @@
+diff --git a/packages/daemon/internal/api/defects.go b/packages/daemon/internal/api/defects.go
+index 8d2e1aea..b8e117f5 100644
+--- a/packages/daemon/internal/api/defects.go
++++ b/packages/daemon/internal/api/defects.go
+@@ -167,11 +167,6 @@ func (s *server) withdrawDefect(w http.ResponseWriter, r *http.Request) {
+ 	if !ok {
+ 		return
+ 	}
+-	if grant.Controller || grant.Role != claim.RoleArchitect {
+-		s.writeFailure(w, r, http.StatusForbidden, "DEFECT_WITHDRAW_NOT_OWNER", fmt.Sprintf(
+-			"only the architect that owns %s by the rule of sign_off withdraws a defect of it; nothing was withdrawn", req.Issue))
+-		return
+-	}
+ 	id, err := strconv.ParseInt(strings.TrimSpace(req.Defect), 10, 64)
+ 	if err != nil || id <= 0 {
+ 		s.writeRefusal(w, r, intake.DefectNotFound(req.Issue, req.Defect))
+diff --git a/packages/daemon/internal/workflow/defects.go b/packages/daemon/internal/workflow/defects.go
+index a2bae284..d7c92d6a 100644
+--- a/packages/daemon/internal/workflow/defects.go
++++ b/packages/daemon/internal/workflow/defects.go
+@@ -146,14 +146,6 @@ func (e *Engine) defectWithdrawal(ctx context.Context, tx pgx.Tx, fact intake.De
+ 	if err != nil || refusal != nil {
+ 		return intake.Result{Refusal: refusal}, err
+ 	}
+-	owns, err := e.ownsBySignOff(ctx, tx, fact.By, issue)
+-	if err != nil {
+-		return intake.Result{}, err
+-	}
+-	if !owns {
+-		return intake.Result{Refusal: &intake.Refusal{Status: http.StatusForbidden, Code: "DEFECT_WITHDRAW_NOT_OWNER", Message: fmt.Sprintf(
+-			"only the architect that owns %s by the rule of sign_off withdraws a defect of it. This withdrawal changed nothing.", issue.Key)}}, nil
+-	}
+ 	defect, err := e.store.Defect(ctx, tx, issue.Key, fact.Defect)
+ 	if err != nil {
+ 		return intake.Result{}, err

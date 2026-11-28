@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..7b4505a0 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -385,7 +385,7 @@ func productionTerm(f CloseFacts) string {
+ 		return ""
+ 	}
+ 	check := f.Production
+-	if check == nil || check.Generation == 0 || check.Generation != f.Generation {
++	if check == nil {
+ 		if f.OpenChange {
+ 			return ProductionAwaitingChange
+ 		}

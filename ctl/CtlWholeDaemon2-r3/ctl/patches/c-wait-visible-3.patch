@@ -1,0 +1,49 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index e98e7cc5..ff17f201 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -164,7 +164,7 @@ func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWai
+ 		}
+ 	}
+ 	for _, check := range wait.Checks {
+-		item := record.WaitCheck{ID: check.Check, When: blocks[check.Check].When, Answer: check.Answer, Reason: check.Reason, Since: now}
++		item := record.WaitCheck{ID: check.Check, When: blocks[check.Check].When, Answer: check.Answer, Reason: check.Reason}
+ 		for _, was := range old.Checks {
+ 			if was.ID == item.ID && was.Answer == item.Answer && was.Reason == item.Reason {
+ 				item.Since = was.Since
+@@ -173,7 +173,7 @@ func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWai
+ 		stored.Checks = append(stored.Checks, item)
+ 	}
+ 	if wait.Production != "" {
+-		item := record.WaitProduction{State: wait.Production, Generation: issue.Generation, Merge: issue.Merge.SHA, Since: now}
++		item := record.WaitProduction{State: wait.Production, Generation: issue.Generation, Merge: issue.Merge.SHA}
+ 		if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.Generation != 0 {
+ 			item.Merge = check.MergeSHA
+ 			if check.Open() {
+@@ -207,7 +207,7 @@ func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWai
+ 		}
+ 	}
+ 	if wait.OpenChange {
+-		change := record.WaitChange{Generation: issue.NextChange, Reasons: []record.WaitReason{}, Since: now}
++		change := record.WaitChange{Generation: issue.NextChange, Reasons: []record.WaitReason{}}
+ 		for _, defect := range view.facts.Defects {
+ 			if defect.CarriedBy == issue.NextChange {
+ 				change.Reasons = append(change.Reasons, waitReason(defect))
+@@ -227,7 +227,7 @@ func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWai
+ 		stored.Unread = &item
+ 	}
+ 	if wait.Unapproved && view.answer != nil {
+-		item := record.WaitUnapproved{Checks: record.UnapprovedChecks(view.answer.Approval), Since: now}
++		item := record.WaitUnapproved{Checks: record.UnapprovedChecks(view.answer.Approval)}
+ 		if was := old.Unapproved; was != nil && slices.Equal(was.Checks, item.Checks) {
+ 			item.Since = was.Since
+ 		}
+@@ -241,7 +241,7 @@ func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWai
+ func waitIssues(keys []string, statuses map[string]string, old []record.WaitIssue, now time.Time) []record.WaitIssue {
+ 	var issues []record.WaitIssue
+ 	for _, key := range keys {
+-		item := record.WaitIssue{Key: key, Status: statuses[key], Since: now}
++		item := record.WaitIssue{Key: key, Status: statuses[key]}
+ 		for _, was := range old {
+ 			if was.Key == key && was.Status == item.Status {
+ 				item.Since = was.Since

@@ -1,0 +1,20 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc..d798bf01 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -201,15 +201,6 @@ func CloseWaitOf(f CloseFacts) CloseWait {
+ 		wait.Unread = true
+ 		return wait
+ 	}
+-	for _, check := range answer.Results.Checks {
+-		state, fresh := f.checkAtNewestMerge(check, answer.AtMergeHead)
+-		switch {
+-		case !fresh:
+-			wait.Unread = true
+-		case state.State != CheckStatePass:
+-			wait.Checks = append(wait.Checks, state)
+-		}
+-	}
+ 	wait.Unapproved = unapprovedSince(answer.Approval)
+ 	return wait
+ }
