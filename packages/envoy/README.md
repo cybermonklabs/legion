@@ -212,7 +212,9 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
 
 - **GitHub repositories**: the edge asks the secrets broker which repositories each project's issues resolve to, `GET <ENVOY_AGENT_SECRETS_URL>/v1/project-repositories?project=<KEY>`, with its own broker account.
   It asks at each registration that follows a GitHub topic, and every 30 seconds for each project it serves, each project's read on its own (`cmd/listener/edge_repositories.go`), and it compares owner and name ignoring case.
+  When the broker answers a read `503` with `Retry-After`, as it does while it cannot read the key set of the issuer of the edge's own account token, the 30-second refresh skips that project until the wait, read as at most a minute, has passed; a registration still asks at once.
   A registration for which it gets no whole answer gets `503` with the reason `repositories_unknown`, whose text is the listener's own: what the broker answered goes to the log alone.
+  That `503` carries the broker's `Retry-After`, rounded up to whole seconds, where the broker's own `503` named one, and none otherwise.
   The relay delivers a GitHub event only while an answer no older than 60 seconds names the repository the event's own payload names.
   A subject writes a dot in a name as `_`, so `acme/a.b` and `acme/a_b` publish on one subject, and an answer that names one admits only that one's events.
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:

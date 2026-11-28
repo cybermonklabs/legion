@@ -11279,13 +11279,16 @@ each issue's pod (every role of it alike) and the image probe's.
   token`, or `agent-secrets: the token login failed; retrying` with the class the failure was sorted into, the schedule that class takes and the cause), and `GET /legion/v1/state`'s `agentSecretsLogin` reads its `state`:
   `none` before the first login finishes, `issued` while a credential that has not expired is held (a renewal that failed beside it included), or `failed` (daemon API contract 22).
   Pod enrollment fails closed and retries until a login succeeds.
-  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes.
+  After a login given no HTTP answer, or a 408, a 429 or a 5xx from the broker or its front door, the daemon waits 2 s before the next, doubling each time to at most 10 s, so it logs in again within about 10 s of the broker serving; after a 429, at least its `Retry-After`, at most 5 minutes; after a 503, at least its `Retry-After`, at most a minute.
   Every other transport failure — a refused or reset connection, a timeout, an unreachable network, a resolver that failed for any other reason — is the broker out of reach too, and takes that same short wait.
   After a login the broker refused (any other 4xx), one a fault on the daemon's own side ended (a TLS handshake that failed or a TLS alert, or a host name that does not resolve), or a token file it could not read, it waits 30 s, doubling each time to at most 5 minutes, because no wait of seconds changes any of those: its trust store, its broker URL or its resolver has to change.
   On both schedules it waits whether or not it still holds a credential, and a successful login resets both waits.
   One line is logged per failed login: its class (`broker-unavailable`, `daemon-side-fault`, `broker-refusal` or `login-not-made`), the schedule that class takes (`short` or `long`), the wait before the next login, and the cause.
   Running the daemon off the cluster (the Stage 4a live proof), `token_file` holds a token the operator mints, at most an hour long, for a ServiceAccount of the proof's own that `BROKER_SERVICE_LOGINS` lists for `legion-daemon` and no running daemon uses, with `kubectl create token <account> -n <namespace> --audience <the broker's audience> --duration 1h`:
   each account holds one credential, so a proof logging in as a running daemon's account would take that daemon's credential.
+
+- A broker that cannot read the key set of the cluster's token issuer answers each route that checks a token against it `503 ISSUER_UNAVAILABLE` with `Retry-After`: the token is not refused, only not checked yet.
+  The daemon then sends nothing to the route that answered so before that wait, read as at most a minute, has passed: its token login, a pod's enrollment or its renewal, a session's registration and a release each keep their own route's wait, and a call whose RPC bound ends before the wait is not sent and is retried as any transient failure is, the pod keeping its key.
 
 - A held enrollment can come long after the shim's hello, which carries the pod's projected token as the shim read it then, and that token lives `token_expiry_seconds` from when the kubelet wrote it;
   the broker refuses an expired one as `POD_TOKEN_EXPIRED`, naming its expiry.
@@ -11506,7 +11509,7 @@ each issue's pod (every role of it alike) and the image probe's.
     It overwrites a registration the daemon's account released, one another registrar wrote and one that names no registrar, whatever generation each holds, but only of a session name bound to the daemon's account, which the name's first registration binds for good: a name bound to another account it refuses `409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR` and writes nothing, a refusal the daemon logs and does not write again (below).
     An answer at a later generation than the daemon sent ends that registration's writes, and the daemon logs it at error level, naming the pod, the session and both generations: as a later process's registration when the answered generation is at most the claim's current one, and as a registration this daemon never made when it is above it, since no process of the claim reached that generation (another claim of this daemon registered the session id, or another process logged in as the daemon's account wrote it, such as a pod of that account where `BROKER_POD_REGISTRARS` pairs the account with itself, or another daemon of that account).
 
-  - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
+  - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes, or once the wait a `503` asked for with `Retry-After` has passed, at most a minute, where that is later;
     that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
 
   - Any other refusal is logged and not written again for that process.
@@ -11784,6 +11787,7 @@ From then on every Dispatch call of the daemon carries `Authorization: DPoP <tok
 Once `whoami` passes, the daemon renews its token in the background, with no restart (`renewDispatchCredential`): it trades again when the boot's token comes due, five minutes before it expires or halfway through the life of a token that lives less than five minutes, and likewise for each token after it.
 It asks a broker that does not answer again from 15 s, doubling to 5 minutes, and meanwhile each Dispatch call presents the token in hand, without waiting on that trade, until 10 s before the token expires (`cipherclient.NewTokenTransport`).
 Only a call that finds no token good for that long trades for one itself.
+After a `503` with `Retry-After`, which the broker answers while it cannot read the key set of the cluster's token issuer, no trade goes before that wait, read as at most a minute, has passed: the renewal waits the longer of its own step and the wait, and a call with no unexpired token in hand waits the wait out within its own deadline.
 A refusal that no retry cures stops the renewal, logged at Error as `legion daemon's Dispatch credential renewal stopped` with the `session` and the `error`, and each call then trades for itself.
 After a Dispatch answer of `401 BROKER_TOKEN_NOT_ACTIVE` the daemon drops that token, so the next call trades again.
 After the boot, a failed trade is a failed Dispatch call that sent nothing, and the outbox waits it out as it waits out a Dispatch outage.
@@ -11792,7 +11796,7 @@ The boot refuses, in words that name the cause:
 - an identity variable that is missing: `AGENT_SECRETS_MACHINE_IDENTITY` unset, `AGENT_SECRETS_MACHINE_TOKEN_FILE` unset beside it, or `AGENT_SECRETS_URL` unset;
 
 - a trade the broker refuses for good (`cipherclient.RefusedError.Permanent`), in the broker's words.
-  The boot logs any other failed trade and tries it again;
+  The boot logs any other failed trade and tries it again, after a broker's `503` with `Retry-After` no sooner than that wait;
 
 - a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
   The session refusal names the `403 ACTOR_SESSION_MISMATCH` that Dispatch would answer every write of the daemon's with.

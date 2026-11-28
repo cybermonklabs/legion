@@ -2627,13 +2627,17 @@ notice comes once per handoff commit, from whichever read finds it first.
   asked. The line names the class the failure was sorted into (`class`), the retry schedule that
   class takes (`schedule`), the wait before the next login (`retry_in`) and the cause (`error`).
   When a login got no HTTP answer, or a 408, a 429 or a 5xx answer from the broker or its front
-  door (the broker is down, out of reach, cannot reach its database, or will not take a login
-  yet), the daemon retries 2 s later, doubling to at most 10 s, so it logs in within about 10 s of
-  the broker serving again. After a 429 it waits at least as long as the answer's `Retry-After`
-  asks, at most 5 minutes. After any other failure it retries 30 s later, doubling to at most 5
-  minutes: a refusal the broker decided (any other 4xx), a token file it could not read, and a
-  fault on the daemon's own side — a TLS handshake that failed, or a host name that does not
-  resolve — which no wait of seconds fixes.
+  door (the broker is down, out of reach, cannot reach its database, cannot read the key set of
+  the cluster's token issuer, or will not take a login yet), the daemon retries 2 s later,
+  doubling to at most 10 s, so it logs in within about 10 s of the broker serving again. After a
+  429 it waits at least as long as the answer's `Retry-After` asks, at most 5 minutes, and after a
+  503 at least as long as its `Retry-After` asks, at most a minute: the broker answers
+  `503 ISSUER_UNAVAILABLE` with `Retry-After` while it cannot read that key set, and the daemon
+  sends nothing to the route that answered so (its login, a pod's enrollment, a session's
+  registration or a release) before the wait has passed. After any other failure it retries 30 s
+  later, doubling to at most 5 minutes: a refusal the broker decided (any other 4xx), a token file
+  it could not read, and a fault on the daemon's own side — a TLS handshake that failed, or a host
+  name that does not resolve — which no wait of seconds fixes.
 
   ```sh
   legion state --config legion.yaml --json | jq .agentSecretsLogin
@@ -2653,4 +2657,7 @@ notice comes once per handoff commit, from whichever read finds it first.
   `403 POD_IDENTITY_MISMATCH: the projected token does not identify this pod`. The token is not
   this pod's: it names another pod UID, it is not signed by the cluster the broker trusts
   (`BROKER_K8S_OIDC_ISSUER`), or it is for another audience. An expired token is answered
-  `POD_TOKEN_EXPIRED` instead.
+  `POD_TOKEN_EXPIRED` instead, and a token the broker cannot check, because it cannot read that
+  cluster's key set, `503 ISSUER_UNAVAILABLE`: the daemon logs `enrollment failed; retrying on the
+  next observation`, keeps the pod's key and enrolls it again no sooner than the answer's
+  `Retry-After` allows.

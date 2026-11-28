@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  The daemon's secrets broker client waits out the broker's `503` with `Retry-After`, which the
+  broker now answers when it cannot check a token because the key set of the token's issuer cannot
+  be read, instead of dropping a pod's identity. Before, the broker refused such a token
+  (`403 POD_IDENTITY_MISMATCH` on a pod's enrollment, a `401` on a pod session's registration),
+  which the daemon read as permanent: it dropped the pod's identity until the
+  shim's next hello and ended that registration's writes. Now the token login, a pod's enrollment
+  and its renewal, a pod session's registration and a release each send nothing to their route
+  before the wait has passed, read as at most a minute; a call whose own bound ends first fails as
+  an outage that a later attempt retries, and the pod keeps its key. A login waits at least the
+  `503`'s `Retry-After`, as it waits a `429`'s, and a registration's next write waits the larger
+  of its backoff and the wait. `legion controller start` and the daemon's own Dispatch
+  credential, which trade at the broker through the envoy module's client, wait the outage out
+  too, within each call's deadline.
+time: 2026-11-28T17:47:55Z
+custom:
+    Issue: INFRA-6421
