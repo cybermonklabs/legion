@@ -33,14 +33,22 @@ import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
-import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
+import { editNote, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { useFollowing } from "./slots/following";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
-import { focusIsLoose, nodeRowSelectorOf, rowSelectorOf } from "./tree-focus";
+import {
+  type FocusedRowNote,
+  focusedRowIn,
+  focusedRowNote,
+  focusIsLoose,
+  nearestRowIn,
+  nodeRowSelectorOf,
+  rowSelectorOf,
+} from "./tree-focus";
 import {
   DRAWN_LEVELS,
   NARROW_LEVELS,
@@ -292,16 +300,8 @@ export function IssueTree({
     if (node !== undefined) ownAct.current = { id: node.id, kind: "keep", node, root: tree };
   }, []);
   const noteEdit = useCallback((row: string, block: DisplayTree) => {
-    const id = body.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
-    if (id === undefined) return;
-    ownAct.current = {
-      ended: false,
-      id,
-      kind: "edit",
-      root: drawnRoot.current,
-      row,
-      words: editWords(block),
-    };
+    const note = editNote(body.current, row, block, drawnRoot.current);
+    if (note !== undefined) ownAct.current = note;
   }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
@@ -1130,14 +1130,7 @@ export function IssueTree({
     undefined
   );
   const heldRow = useRef<
-    | {
-        readonly following: string;
-        readonly index: number;
-        readonly key: string;
-        readonly node: string | undefined;
-        readonly root: TreeNode;
-      }
-    | undefined
+    (FocusedRowNote & { readonly following: string; readonly root: TreeNode }) | undefined
   >(undefined);
   const editingRow = editing?.row;
   useEffect(() => {
@@ -1165,10 +1158,8 @@ export function IssueTree({
         (landed !== undefined && landed.node === held.node && landed.presses === presses.current);
       if (caused || openingLost) {
         // The nearest row is the one now at the dropped row's place, or the last where none is.
-        const key = order[Math.min(held.index, order.length - 1)];
-        const nearest =
-          key === undefined ? null : tree?.querySelector<HTMLElement>(rowSelectorOf(key));
-        if (nearest !== null && nearest !== undefined) moveToRow(nearest);
+        const nearest = nearestRowIn(tree, order, held.index);
+        if (nearest !== null) moveToRow(nearest);
       } else {
         leave();
         setFocusedNode(undefined);
@@ -1177,18 +1168,8 @@ export function IssueTree({
     // The drop check above has read the note: the tree drawn now decides whether it lasts
     // (`noteAfterDraw`).
     ownAct.current = noteAfterDraw(ownAct.current, root, editingRow);
-    const holder = focusedRowIn(tree);
-    const focusedKey = holder?.dataset.rowKey;
-    heldRow.current =
-      focusedKey === undefined
-        ? undefined
-        : {
-            following,
-            index: order.indexOf(focusedKey),
-            key: focusedKey,
-            node: holder?.dataset.nodeId,
-            root,
-          };
+    const focused = focusedRowNote(tree, order);
+    heldRow.current = focused === undefined ? undefined : { ...focused, following, root };
   }, [editingRow, following, leave, root, rows, setFocusedNode, stopEditing]);
 
   // A write from the line at the foot takes the reader to what they wrote: their newest
@@ -1283,6 +1264,7 @@ export function IssueTree({
               message={read.message}
               onRetry={read.retry}
               retrying={read.retrying}
+              speaks={read.speaks}
             />
           ))}
         </div>
@@ -1506,7 +1488,7 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * `landed` is called once the row holds the focus the frame gave it, and only then.
  *
  * It is exported for the Plan view's chart, which is to land on the row an address names as the
- * outline does.
+ * outline does, and for the Spec view's tree, which does the same.
  */
 export function landOnRow(
   row: HTMLElement,
@@ -1539,13 +1521,6 @@ export function landOnRow(
 function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
   held.current?.abort();
   held.current = holdOnScreen(row);
-}
-
-/** The row of `tree` that holds the focus, on the row itself or on a control inside it; null
- *  where the focus is on no row of it. */
-function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
-  const row = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
-  return row !== null && tree?.contains(row) === true ? row : null;
 }
 
 /** Whether the first line of `row` - the line its bullet stands on - is whole on screen: below
