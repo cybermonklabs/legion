@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `legacy-subjects-gate.sh --broker` reads an answer for the auth service's Deployment that holds
+  no JSON document, or more than one, as a Deployment that is no JSON object: the reading is
+  UNKNOWN by name and writes its record. Such an answer used to stop the gate with jq's own error
+  and exit 2, before it wrote a record.
+time: 2026-11-28T13:06:55Z
+custom:
+    Issue: INFRA-6359
