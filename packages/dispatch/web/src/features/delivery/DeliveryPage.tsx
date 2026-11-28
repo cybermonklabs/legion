@@ -315,8 +315,9 @@ function LanesSwitch({
  *  A value's count is of every pull request of the window, with no facet or search applied
  *  (`deliveryColorCounts` in Dispatch's `api/delivery.go`), so a facet or a search changes none.
  *  It is drawn only while `counted` holds, the page's word that the answer on screen is the one
- *  for the address: while a read is out the previous answer stays on screen, and where the
- *  address names another window, its counts are the previous window's. */
+ *  for the window the address names: while a new window's read is out the previous window's
+ *  answer stays on screen, and its counts are that window's. A new facet's or search's read in
+ *  the same window leaves them drawn, since its answer counts them the same. */
 function OwnColourPicker({
   counted,
   counts,
@@ -454,8 +455,11 @@ function Facet({
  * on screen is the one for the window, filters and search the address names (`counted`): while a
  * new read is out the previous answer stays on screen, and its counts would be the last filter's.
  * **Edit groups**, at the foot of this panel, opens the session-groups editor, which lists the
- * sessions of the answer on screen and draws each one's count under the same gate: where the
- * address names another window, they are the previous window's.
+ * sessions of the answer on screen with how many pull requests of the window each is first on,
+ * whatever the facets and the search (`sessionPRCounts` in Dispatch's `api/delivery.go`). It draws
+ * each count while the answer on screen is the one for the window the address names
+ * (`windowCounted`): where the address names another window, they are the previous window's, and
+ * a new facet's or search's read in the same window changes none of them.
  *
  * The row is drawn from the address alone, before the first answer and after a first read that
  * failed (`data` undefined), so a link's narrowing has its chip, its count and its way off while
@@ -474,12 +478,13 @@ function DeliveryControls({
   data,
   filters,
   onFilters,
+  windowCounted,
 }: {
   /** Whether the List view is chosen, whose list's headers hold the five facets that are its
    *  columns. */
   columnsDrawn: boolean;
   /** Whether `data` is the answer for the window, filters and search the address names, the
-   *  page's own gate on its count, and on the panel's and the session-groups editor's. */
+   *  page's own gate on its count, and on the panel's. */
   counted: boolean;
   /** The answer the panel counts and names values from; undefined until the first one. */
   data:
@@ -495,6 +500,9 @@ function DeliveryControls({
     | undefined;
   filters: Filters;
   onFilters: (next: Filters) => void;
+  /** Whether `data` is the answer for the window the address names, whatever its filters and
+   *  search: the gate on the session-groups editor's counts, which no facet or search changes. */
+  windowCounted: boolean;
 }): ReactNode {
   const [panelOpen, setPanelOpen] = useState(false);
   const facetPanel = useNestedPanels<FacetKey>(panelOpen);
@@ -606,7 +614,7 @@ function DeliveryControls({
     >
       {editingGroups && data !== undefined ? (
         <SessionGroupsEditor
-          counted={counted}
+          counted={windowCounted}
           counts={data.session_pr_counts ?? {}}
           groups={data.session_groups ?? []}
           onClose={() => setEditingGroups(false)}
@@ -664,6 +672,12 @@ export function DeliveryPage(): ReactNode {
   const answeredAtRef = useRef(0);
   if (query.dataUpdatedAt > 0) answeredAtRef.current = query.dataUpdatedAt;
   const answeredAt = answeredAtRef.current;
+  // The window of the last answer that was its own view's (not `isPlaceholderData`), as the live
+  // view names it: while a new view's read is out that answer stays on screen, and this names the
+  // window it counts, which a facet pick or a search leaves as it was.
+  const viewWindow = JSON.stringify(liveWindow(state.window));
+  const answeredWindowRef = useRef<string | null>(null);
+  if (data !== undefined && !query.isPlaceholderData) answeredWindowRef.current = viewWindow;
 
   const activeWindow = useMemo(
     () =>
@@ -785,12 +799,17 @@ export function DeliveryPage(): ReactNode {
   // it and a link's narrowing has its chip and its way off while the page reads.
   const drawn = data !== undefined && activeWindow !== null;
   // The count is the answer's for the filter and the window the address names, so it is drawn
-  // only while the answer on screen is that one: not while a new filter's or a new window's read
-  // is out and the previous answer stays on screen (`isPlaceholderData`), nor while a search the
-  // reader is typing waits out its debounce before it is asked for. A value's count in the Filter
-  // panel, in the Own colour list, in a List column's header filter and in the session-groups
-  // editor is drawn under the same gate.
+  // only while the answer on screen is that one (`counted`): not while a new filter's or a new
+  // window's read is out and the previous answer stays on screen (`isPlaceholderData`), nor while
+  // a search the reader is typing waits out its debounce before it is asked for. A value's count
+  // in the Filter panel and in a List column's header filter is drawn under the same gate. A count
+  // in the Own colour list and in the session-groups editor is of every pull request of the window,
+  // with no facet or search applied (`deliveryColorCounts` and `sessionPRCounts` in Dispatch's
+  // `api/delivery.go`), so it is drawn while the answer on screen is the one for the window the
+  // address names (`windowCounted`): not while a new window's read is out, and on through a new
+  // facet's or search's read, which answers it unchanged.
   const counted = !query.isPlaceholderData && search === state.filters.search.trim();
+  const windowCounted = answeredWindowRef.current === viewWindow;
   return (
     // From `xl` the page is the window's height and the chart takes what its header leaves, never
     // less than its own `min-h-[28rem]`. Where the window is too short for both - 1280x800 and
@@ -901,7 +920,7 @@ export function DeliveryPage(): ReactNode {
               </div>
               {state.view.colorBy === "parentAgent" ? (
                 <OwnColourPicker
-                  counted={counted}
+                  counted={windowCounted}
                   counts={data.color_counts?.parent_agent ?? {}}
                   groups={data.session_groups ?? []}
                   onChange={(agents) => setView({ ...state.view, agents })}
@@ -928,6 +947,7 @@ export function DeliveryPage(): ReactNode {
             data={data}
             filters={state.filters}
             onFilters={setFilters}
+            windowCounted={windowCounted}
           />
 
           {drawn ? (

@@ -333,10 +333,11 @@ function GroupCard({
  *  to select and name as a new group, and every group, to rename, add the selected sessions to,
  *  remove members from, or delete. Every session is an `AgentName`; a member no pull request of
  *  the window names has no stored title, so it reads by its registry title, else its short id. A
- *  session's count is drawn only while `counted` holds, the page's word that the answer on screen
- *  is the one for the window, filters and search its address names: not while a new read is out
- *  and the previous answer stays on screen, nor while a typed search waits to be asked for. Where
- *  the address names another window, the counts on screen are the previous window's. While
+ *  session's count, how many pull requests of the window it is first on whatever the page's facets
+ *  and search, is drawn only while `counted` holds, the page's word that the answer on screen
+ *  is the one for the window its address names: while a new window's read is out, the previous
+ *  window's answer stays on screen and its counts are that window's. A new facet's or search's
+ *  read in the same window leaves them drawn, since its answer counts them the same. While
  *  `counted` does not hold, each session is listed with its group alone. A save reaches the
  *  page's live views as Dispatch's own delta, so it refreshes only the `["delivery"]` reads that
  *  are not live (an open run's drill-down), and a refusal shows as the server wrote it, after the
@@ -362,8 +363,8 @@ export function SessionGroupsEditor({
   onClose: () => void;
   groups: readonly DeliverySessionGroup[];
   titles: Readonly<Record<string, string>>;
-  /** Whether the answer `counts` comes from is the one for the window, filters and search the
-   *  page's address names (the page's `counted`); an editor given none counts. */
+  /** Whether the answer `counts` comes from is the one for the window the page's address names
+   *  (the page's `windowCounted`); an editor given none counts. */
   counted?: boolean;
   counts: Readonly<Record<string, number>>;
 }): ReactNode {
@@ -464,8 +465,8 @@ export function SessionGroupsEditor({
           {sessions.map((session) => {
             const count = counts[session] ?? 0;
             const inGroup = groupOf.get(session);
-            // No count while the answer on screen is not the address's (`counted`): the session's
-            // group alone.
+            // No count while the answer on screen is not the one for the address's window
+            // (`counted`): the session's group alone.
             const detail = [counted ? prCount(count) : undefined, inGroup]
               .filter((part) => part !== undefined)
               .join(" · ");
