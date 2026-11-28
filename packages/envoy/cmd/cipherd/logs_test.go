@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/awssdk"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -242,4 +243,31 @@ func (r *redirectedStderr) point(w io.Writer) {
 	r.mu.Lock()
 	r.to = w
 	r.mu.Unlock()
+}
+
+// TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore loads
+// to sign in to an IAM database (databaseSignIn) is the one whose logger is the broker's own
+// (awssdk.Log), whose lines are the broker's rather than the SDK's own log.Logger on stderr, and it
+// signs in with the RDS IAM token minter built from that configuration; a database that signs in
+// as its URL says loads no AWS configuration at all. The AWS store's own configuration is the AWS
+// store package's (TestOpenStoreLogsThroughTheBrokersLogger there).
+//
+// The named revert: load the IAM database's configuration with the SDK's own LoadDefaultConfig,
+// and its logger is the SDK's.
+func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
+	isolateAWS(t)
+	opts, awsCfg, err := databaseSignIn(t.Context(), config.Config{DatabaseIAM: true})
+	if err != nil {
+		t.Fatalf("databaseSignIn(an IAM database): %v", err)
+	}
+	if len(opts) != 1 {
+		t.Fatalf("databaseSignIn(an IAM database) answers %d store options; want the one RDS IAM token minter", len(opts))
+	}
+	if _, ok := awsCfg.Logger.(awssdk.Log); !ok {
+		t.Fatalf("the IAM database's AWS configuration logs through %T; want awssdk.Log, the broker's own", awsCfg.Logger)
+	}
+	opts, awsCfg, err = databaseSignIn(t.Context(), config.Config{})
+	if err != nil || len(opts) != 0 || awsCfg.Logger != nil || awsCfg.Region != "" {
+		t.Fatalf("databaseSignIn(a password database) = %d options, logger %T, region %q, %v; want no option and no AWS configuration", len(opts), awsCfg.Logger, awsCfg.Region, err)
+	}
 }

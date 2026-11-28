@@ -35,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
@@ -1100,30 +1101,40 @@ func fatal(err error) {
 	}
 }
 
-// openStore opens the broker's database as cfg says. An IAM-form BROKER_DATABASE_URL signs each
-// new connection in with an RDS IAM token minted from the AWS configuration (awssdk.LoadConfig),
-// so it is loaded, for that alone, before the database is opened. It migrates nothing: the server
-// migrates after this, and the end-sessions, versions and revoke-dispatch-signins subcommands must
-// not. All four open the store here, so each subcommand reaches the same database and signs in to
-// it the same way as the server.
+// openStore opens the broker's database as cfg says, signing each new connection in as
+// databaseSignIn says, which for an IAM-form BROKER_DATABASE_URL loads the AWS configuration before
+// the database is opened. It migrates nothing: the server migrates after this, and the
+// end-sessions, versions and revoke-dispatch-signins subcommands must not. All four open the store
+// here, so each subcommand reaches the same database and signs in to it the same way as the server.
 func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
-	var opts []store.Option
-	if cfg.DatabaseIAM {
-		awsCfg, err := awssdk.LoadConfig(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("load the AWS configuration: %w", err)
-		}
-		mint, err := rdsAuthTokens(awsCfg)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, store.WithTokenMinter(mint))
+	opts, _, err := databaseSignIn(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("open the database: %w", err)
 	}
 	return st, nil
+}
+
+// databaseSignIn is how cfg's database signs each new connection in. An IAM-form
+// BROKER_DATABASE_URL signs in with an RDS IAM token minted from the AWS configuration it loads
+// (awssdk.LoadConfig, whose logger is the broker's own), which it answers beside the minter's
+// option; any other URL signs in as it says, with no option and no AWS configuration loaded.
+func databaseSignIn(ctx context.Context, cfg config.Config) ([]store.Option, aws.Config, error) {
+	if !cfg.DatabaseIAM {
+		return nil, aws.Config{}, nil
+	}
+	awsCfg, err := awssdk.LoadConfig(ctx)
+	if err != nil {
+		return nil, aws.Config{}, fmt.Errorf("load the AWS configuration: %w", err)
+	}
+	mint, err := rdsAuthTokens(awsCfg)
+	if err != nil {
+		return nil, aws.Config{}, err
+	}
+	return []store.Option{store.WithTokenMinter(mint)}, awsCfg, nil
 }
 
 // refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
