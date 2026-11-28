@@ -246,11 +246,17 @@ func TestTheCurrentPullRequestsMergeReplacesAnEarlierSnapshotWithNoMergedAt(t *t
 }
 
 // close_root refuses a root whose pull request merged, CLOSE_AFTER_MERGE: such a root closes by
-// its checks or a person. Here its next change waits at admitted.
+// its checks or a person. Here its next change waits at admitted: the change is of the root's own
+// generation (record.OnNextChange), which is what makes its merge this generation's. A root re-run
+// after an earlier merge holds the same snapshot and no such change, and closes
+// (TestCloseRootReadsThisGenerationsMergeAndAChildInVerifying).
 func TestCloseRootRefusesARootWhosePullRequestMerged(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Admitted, "todo")
+	if _, err := rig.pool.Exec(t.Context(), `update issues set next_change = generation, next_changes = 1 where key = $1`, waitRoot); err != nil {
+		t.Fatalf("open %s's next change: %v", waitRoot, err)
+	}
 	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
 		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitRoot, record.Merge{Number: waitRootNumber, Head: headOne, SHA: waitRootMerge,
 			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt})
