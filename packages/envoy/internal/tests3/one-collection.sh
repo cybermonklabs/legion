@@ -23,27 +23,15 @@
 # waits on it. The write then fails after 10 s. When the filer gives up on it before the master
 # answers, every later write to the store fails at once ("Connection wait stopped: context
 # canceled" in the log) until the store is restarted; when the master answers first, a retry of
-# the write can succeed. Run 44292015929 met the first outcome in shard 2: the first object of
-# dispatch-e2e-files-worker-2 was a row's upload, Dispatch answered it 502
-# FILE_STORE_UNAVAILABLE, and the row and its retry each waited 45 s for a Download link that
-# could not come. The race is rare, not absent: 1 of the 1,066 growths of the 265 shard legs of
-# 200 ci.yaml runs, read from their record artifacts on 2026-11-18 (10:02 to 13:06Z). A growth
-# that no write waits on survives it, since the next heartbeat lists the volume again. So no
-# write may grow a collection.
+# the write can succeed. The race is rare, not absent: 1 of the 1,066 growths of the 265 shard
+# legs of 200 ci.yaml runs, read from their record artifacts. A growth that no write waits on
+# survives it, since the next heartbeat lists the volume again. So no write may grow a collection.
 #
 # EVERY WAIT HAS A BOUND, AND EVERY BOUND AND CHECK FAILS BY NAME. The script asks the store
 # things in two helpers only, shell and master, each under a bound of its own, and it waits in
 # one only, within, which ends by its seconds; every check and every wait fails by a message of
-# its own. TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) parses this file as POSIX
-# shell, reads every command it runs wherever it runs it (a function, a substitution, a trap,
-# within's and timeout's command), and fails on a request outside those helpers or under no bound
-# above 0, a wait outside within or inside another wait, a sleep but `sleep 1`, a command outside
-# the list of those that end by themselves (its scriptCommands, with tail only as
-# `tail -n <lines> [--] <file>`, a file a variable gives after --), a function that runs itself,
-# is defined twice or takes a listed name, a within whose command runs within, a deadline or
-# seconds set but within's own, arithmetic but within's deadline, a within that does not take its
-# arguments as its first two statements, a set of the arguments, an exit outside fail and usage, a
-# return but "$status", a test nothing acts on, a message no case wants, or shell it cannot read.
+# its own, and TestOneCollectionFailsWhenTheRuleDoesNotHold (one_collection_test.go) has a case
+# that ends in each.
 #
 # The log lines this reads are SeaweedFS 3.97's, which .github/ci-images.yaml pins by digest for
 # both images; whoever moves that row reads them again.
@@ -75,8 +63,8 @@ fail() {
 
 # shell <file> <command>...: one `weed shell` running the commands, its output into file. It runs
 # under timeout(1), which both images carry (busybox's in the SeaweedFS image), and each one runs
-# after registered below has seen a volume server, where it is quick: in each of CI run
-# 44425048628's four shard legs every shell took under 0.2 s by the master's log, and with the
+# after registered below has seen a volume server, where it is quick: in each of CI's four shard
+# legs every shell took under 0.2 s by the master's log, and with the
 # store held to a tenth of a CPU on a dev box the slowest took 1.8 s. A shell still running at 60 s
 # is talking to a store that stopped answering, and 60 s fails it by name a minute in, rather than
 # at the shard job's timeout-minutes or go test's -timeout. It is ended by KILL: weed shell catches

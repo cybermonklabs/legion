@@ -2557,8 +2557,6 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
-# The shard job's step after its browser step, which runs the file store's one-collection
-# script's check over the whole run.
 BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"

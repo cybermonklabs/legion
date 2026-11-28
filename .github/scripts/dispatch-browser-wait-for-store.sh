@@ -1,10 +1,5 @@
 #!/bin/sh
 # The readiness wait for the S3-compatible server the shard job starts for its stacks' uploads.
-# Once the S3 port answers, it grows the store's one collection before anything is written
-# (packages/envoy/internal/tests3/one-collection.sh prepare), makes the bucket, writes one object,
-# reads it back and deletes it, then checks that no write grew the store (one-collection.sh
-# check). For whichever of those did not happen it prints an ::error:: line and the server's own
-# log, and exits 1.
 #
 # Who runs it: the step "Wait for the S3-compatible server" of
 # .github/workflows/dispatch-browser.yaml's shard job;
@@ -19,12 +14,9 @@
 # took and did not answer within it fails the step at once, by name; a store that is still
 # starting refuses the connection at once instead, which the waits try again a second later. Each
 # wait counts seconds, not tries, since a try can take its whole bound, and ends the step by name
-# once its deadline passes. packages/envoy's TestEveryWaitAndCheckOfTheScriptHasACase
-# (internal/tests3/storesteps_test.go) parses this file as POSIX shell and holds it to those rules.
-# It fails on a command off its list (wget, tail, weed shell, .), a curl but s3's (-q: no .curlrc;
-# -g: no URL lists; --proto =http: no file://, which --max-time does not end), an s3 call of 0
-# seconds or with more than -o, -X, --data-binary of literal text and one URL, a wait but an until
-# right after its deadline, or shell it cannot read.
+# once its deadline passes. packages/envoy's TestTheStoreStepsRunTheRuleWholeUnderTheirBounds
+# (internal/tests3/storesteps_test.go) holds its first statement to `set -eu`, each
+# one-collection.sh line to a statement of its own and the S3 port's wait to portDeadline.
 #
 # Run from the repository's root, with $RUNNER_TEMP set:
 #   .github/scripts/dispatch-browser-wait-for-store.sh
@@ -49,7 +41,7 @@ s3() {
 # does. They are the shard job's budget rule over the slowest store start read in CI, 66.2 s
 # (.github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object),
 # and packages/envoy/internal/tests3/seaweedfs.go's portDeadline, the Go tests' bound for the same
-# start, which TestEveryWaitAndCheckOfTheScriptHasACase holds these seconds to.
+# start, which TestTheStoreStepsRunTheRuleWholeUnderTheirBounds holds these seconds to.
 deadline=$(( $(date +%s) + 120 ))
 until s3 10 "the S3 port's first request" -o /dev/null http://127.0.0.1:18333/; do
   [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store's S3 port did not answer within two minutes"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
@@ -58,8 +50,6 @@ done
 packages/envoy/internal/tests3/one-collection.sh prepare dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
 store=http://127.0.0.1:18333/dispatch-e2e-files
 s3 10 "the bucket" -X PUT -o /dev/null -- "$store" || { echo "::error::the file store made no bucket"; cat "$RUNNER_TEMP/weed.log"; exit 1; }
-# The write is retried: the bucket exists as soon as the filer answers, while the
-# volume server the object lands in can still be coming up behind it.
 deadline=$(( $(date +%s) + 60 ))
 until s3 15 "the readiness object" -X PUT --data-binary ready -o /dev/null -- "$store/readiness"; do
   [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the file store took no object"; cat "$RUNNER_TEMP/weed.log"; exit 1; }

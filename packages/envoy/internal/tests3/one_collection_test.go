@@ -104,7 +104,7 @@ var storeCases = []storeCase{{
 	// A master that takes each request and never answers, as a stopped one does, with the wait's
 	// bounds cut to 3 s of waiting and 5 s a request, and each request numbered in the status file
 	// the failure prints, which each try writes anew: the first request ends at its bound, and the
-	// wait by name after it, so the file shows try 1. Counting tries, as the wait did before, it
+	// wait by name after it, so the file shows try 1. Counting tries, it
 	// would end after try 3; with the request's bound removed it would wait for ever and meet
 	// runScript's deadline.
 	name: "a master that never answers: prepare fails at the end of its wait for a volume server",
