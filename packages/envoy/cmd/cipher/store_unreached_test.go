@@ -163,7 +163,7 @@ func zeroAddressesUnreached() unreachedTarget {
 // not printed. Control: Secret Manager's own Unavailable, with a made-up secret in its message,
 // prints as its answer.
 func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useLentGCPAccessToken, gcpUserinfo set at secret_gcp_test.go:551).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseLentAccessToken, t.Setenv at use.go:206).
 	planted := "hunter2pw-" + "unavailable-" + "6d2c"
 	forbidden := []string{planted, "connection error", "transport:", "desc =", "127.0.0.1", "resolver error", "zero addresses"}
 	for _, row := range []struct {
@@ -233,7 +233,7 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 // ends the call (its context is cancelled once that attempt returns), so a retry is counted, not
 // timed, and a row ends as soon as it has its answer.
 func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
-	// Not parallel: its interceptor sets environment variables of the whole process
+	// Not parallel: it sets environment variables of the whole process (main.gcpInterceptor, gcptest.UseLentAccessToken, t.Setenv at use.go:206); it signals the test process or changes its signal handling (main.gcpInterceptor, main.openSecretBackend, main.runChild, main.watchSignalsWhileChildRuns, signal.Notify at children.go:120); it sets a package variable the package's other tests read (main.gcpInterceptor, main.openSecretBackend, main.runChild, runningChildren set at children.go:78).
 	// (main.gcpInterceptor, gcptest.UseNoADC, t.Setenv at internal/cipher/secretstore/gcp/gcptest/use.go:188).
 	attempts := func(t *testing.T, to unreachedTarget) (int32, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

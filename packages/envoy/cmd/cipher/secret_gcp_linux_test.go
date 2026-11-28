@@ -57,7 +57,7 @@ const gcloudPidName = "gcloud.pid"
 // runChild goes on; at childWaited the stub exits at once, leaving its child holding its
 // output (TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild).
 func TestGcloudSignInSignalHelper(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_linux_test.go:408); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (onGcloudStep set at secret_gcp_linux_test.go:395).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_linux_test.go:99); it sets a package variable the package's other tests read (onChildStep set at secret_gcp_linux_test.go:86).
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
@@ -296,7 +296,7 @@ func TestGcloudSignInSignalledAtGcloudsStartOrEndKillsGcloudsChild(t *testing.T)
 // replaced, so no signal reaches any process: a real kill of a reaped gcloud's pid could reach
 // another process given that pid since. The live tests above drive the real kill.
 func TestChildCancelOfAGroupGoneAlreadyAnswersProcessDone(t *testing.T) {
-	// Not parallel: it sets a package variable the package's other tests read (signalGroup set at secret_gcp_linux_test.go:656).
+	// Not parallel: it sets a package variable the package's other tests read (signalGroup set at secret_gcp_linux_test.go:301).
 	restore := signalGroup
 	t.Cleanup(func() { signalGroup = restore })
 	for _, row := range []struct{ answer, want error }{

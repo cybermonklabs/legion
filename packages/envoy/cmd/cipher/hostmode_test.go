@@ -39,7 +39,7 @@ import (
 // to, cannot change the answer, and the state directory and the broker URL are the test's own, so
 // no sign-in, machine cache or broker of the machine running it can either.
 func TestBuildSignerSelectsMode(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:44); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:44).
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -101,7 +101,7 @@ func isolateChain(t *testing.T) {
 // enrollment.error, so a caller sees why enrollment failed rather than a bare "no such file";
 // with no enrollment.error file, the message is the bare missing-file error.
 func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:109); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:109).
 	dir := newKeyDir(t)
 	if err := os.Remove(filepath.Join(dir, "enrollment")); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 // socket at $XDG_RUNTIME_DIR/agent-secrets/helper.sock, and falls back to neither when its file
 // is not there.
 func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:134); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:134).
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -480,7 +480,7 @@ func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
 // TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity proves sign's default path signs a real,
 // verifiable proof for the box's own enrollment id, without making a broker call.
 func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:485); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:485).
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -522,7 +522,7 @@ func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 // key for a caller-supplied id instead of the box's own — the deliberate cross-enrollment
 // substitution the broker must refuse.
 func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:527); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:527).
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -564,7 +564,7 @@ func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 // TestSignEnrollmentRefusedInHelperMode covers "--enrollment works only with a key dir; the
 // helper signs only its own enrollment".
 func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:568); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:568).
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
 	var stdout, stderr bytes.Buffer
@@ -589,7 +589,7 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
 func TestIdentity(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.identityCases, t.Setenv at hostmode_test.go:756); it signals the test process or changes its signal handling (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.identityCases, t.Setenv at hostmode_test.go:756); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
@@ -645,7 +645,7 @@ func TestIdentity(t *testing.T) {
 // A process holding only a machine session, in the machine cache or in the key dir where a client
 // before #4143 kept one, answers 1.
 func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:665); it signals the test process or changes its signal handling (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:665).
 	cases := append(identityCases(),
 		identityCase{name: "only a machine cache", setup: func(t *testing.T, p identityRowPaths) {
 			writeSessionFiles(t, filepath.Join(p.state, "agent-secrets", "machine"), "cached-enrollment")

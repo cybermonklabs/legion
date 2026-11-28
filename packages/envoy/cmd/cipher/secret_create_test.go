@@ -69,7 +69,7 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 // call, it says that the store may hold the secret or not and names the command that says which.
 // Each exits 1 well before the store would answer. It runs on every store the registry holds.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, b := range backends.All() {
 		store := b.ID()
 		t.Run(store, func(t *testing.T) {
@@ -167,7 +167,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 // nothing was stored, so it says the store may hold the secret, with its value, and names `secret
 // show`. A store that refuses the one attempt it sees says nothing was stored. Each exits 1.
 func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		name      string
 		dropFirst bool
@@ -245,7 +245,7 @@ func (f failedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Creat
 // hold the secret with its value, or nothing, and names `secret show NAME`, which tells them apart.
 // Each exits 1.
 func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	// The two facts the refusal tells apart: a definite refusal says nothing was stored; any other
 	// says the store may hold the secret and names the command that tells.
 	const nothing = "nothing was stored"
@@ -298,7 +298,7 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 // naming the command that tells which. The cleanup is run here as the signal would run it, right
 // after the store's answer.
 func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.runChild, main.watchSignalsWhileChildRuns, signal.Notify at children.go:120); it sets a package variable the package's other tests read (main.openSession, main.openSecretBackend, main.runChild, runningChildren set at children.go:78).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
@@ -325,7 +325,7 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 // whether a failed CreateSecret made the secret carries the AWS_PROFILE prefix the create ran
 // under, so it reads the store as the identity that wrote to it.
 func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:309); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:332); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
@@ -343,7 +343,7 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 // a create given that deadline refuses the value, whenever it comes - a value piped in at once is
 // still stored on AWS.
 func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (valueReadWindow set at secret_create_test.go:325).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (valueReadWindow set at secret_create_test.go:348).
 	restore := valueReadWindow
 	valueReadWindow = time.Nanosecond
 	t.Cleanup(func() { valueReadWindow = restore })

@@ -95,7 +95,7 @@ func useRigSession(t *testing.T, rig *ciphertest.Rig) {
 // TestSecretCreateIsServedByTheBrokerAtOnce drives a create end to end: the CLI writes to the
 // store and the broker serves the secret on its very next read, no reload.
 func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:42); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (awsClients set at secret_e2e_test.go:45).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:101); it sets a package variable the package's other tests read (secretStdin set at secret_e2e_test.go:104).
 	onE2EStores(t, func(t *testing.T, store string) {
 		rig, _ := e2eRig(t, store)
 		t.Setenv("AGENT_SECRETS_URL", rig.URL)
@@ -117,7 +117,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 // moment the CLI deletes it, and serves it again the moment the CLI restores it, each on the
 // CLI's own reread; a retag the broker would refuse is reported, and exits 1.
 func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:67); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:123).
 	onE2EStores(t, func(t *testing.T, store string) {
 		rig, put := e2eRig(t, store)
 		t.Setenv("AGENT_SECRETS_URL", rig.URL)
@@ -152,7 +152,7 @@ func TestSecretDeleteAndRestoreAreServedByTheBrokerAtOnce(t *testing.T) {
 // rereads the name after that answer and serves the new secret, with no reload. The line it
 // prints about the unchecked view is TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned's.
 func TestASecretWriteWithNoBrokerIdentityIsStillServedAtOnce(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:101); it signals the test process or changes its signal handling (ciphertest.NewRig, api.Register, api.routes, (*server).listLauncherCredentials, (*server).machineLoginsOwnOnly, projectaccess.Restricted, (*Client).MemberKind, (*Client).askKind, (*Client).readKind, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_e2e_test.go:158); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	onE2EStores(t, func(t *testing.T, store string) {
 		rig, _ := e2eRig(t, store)
 		t.Setenv("AGENT_SECRETS_URL", rig.URL)

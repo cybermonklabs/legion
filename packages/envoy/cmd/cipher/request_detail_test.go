@@ -17,7 +17,7 @@ import (
 // answers every denial) decodes as nil rather than as an empty sentence no line could tell from a
 // real one.
 func TestTheClientDecodesARefusalsDetail(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67).
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	c, signer, _, _ := renewalSession(t, broker.URL)

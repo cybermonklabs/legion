@@ -693,7 +693,7 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 // cache planted in the test process's own home and state directory, as on a developer's machine
 // where someone ran `agent-secrets login`: the binary runAgentSecrets starts reads none of them.
 func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.plantHostSignIn, t.Setenv at source_test.go:742).
+	// Not parallel: it sets environment variables of the whole process (main.plantHostSignIn, t.Setenv at source_test.go:754).
 	binary := buildAgentSecrets(t)
 	socket, _ := fakeHelper(t, helper.Response{
 		Code:  helper.CodeSign,

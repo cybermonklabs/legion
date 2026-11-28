@@ -116,7 +116,7 @@ func firstDifference(got, want string) string {
 // TestProfileRefusalRecordedOnMain: a secret form given --profile exits 2 and prints, byte for
 // byte, the refusal main printed, which names the variables each store's own tools read.
 func TestProfileRefusalRecordedOnMain(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv at store_words_recorded_test.go:120); it sets a package variable the package's other tests read (main.loadClientConfig through main.run, clientConfig set at config.go:98).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_words_recorded_test.go:120); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (clientConfig set at store_words_recorded_test.go:121).
 	t.Setenv("HOME", t.TempDir())
 	t.Cleanup(func() { clientConfig = nil })
 	var stdout, stderr bytes.Buffer

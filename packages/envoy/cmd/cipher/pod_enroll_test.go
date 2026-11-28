@@ -374,7 +374,7 @@ func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *te
 // into enrollment.error beside the key, and a later `agent-secrets` call says what the broker
 // said. A re-run that succeeds takes that file away again.
 func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:404); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:404).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	out := t.TempDir()

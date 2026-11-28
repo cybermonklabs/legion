@@ -257,7 +257,7 @@ func forceMetadataMachine(t *testing.T) {
 // AGENT_SECRETS_SESSION — which is unset on most boxes, and on the rest is the name this machine
 // trades its own identity under.
 func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:269); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:271).
 	const person = "ada@example.com"
 	for _, machineSession := range []string{"", "machine-of-this-box"} {
 		name := "with AGENT_SECRETS_SESSION unset"
@@ -302,7 +302,7 @@ func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 // on that person's own list. The box registers the session again under the same box key
 // instead, once, and writes the fresh id into the record it already has.
 func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:308); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:310).
 	const person = "ada@example.com"
 	broker := newLoginBroker(t)
 	issuer := loginIssuer(t, person)
@@ -528,7 +528,7 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 // a new sign-in on the box makes a second box key and changes nothing; and a broker that answers
 // 503 names none either, since the next trade may be served.
 func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:423); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:554).
 	const held = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
 	for _, tc := range []struct {
 		name   string
@@ -589,7 +589,7 @@ func TestASignInsFailedTradeNamesOnlyTheCureOfItsClass(t *testing.T) {
 // carries the metadata server's identity token as its actor. A broker that names no exchange
 // audience is refused naming that, since a sign-in has no machine to act on.
 func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:476); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (clientConfig set at login_test.go:482).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at login_test.go:607); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (clientConfig set at login_test.go:613).
 	for _, row := range []struct {
 		name     string
 		audience string

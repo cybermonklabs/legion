@@ -112,7 +112,7 @@ func refuseValueReads(t *testing.T) {
 func alwaysServed(name string) Reread { return Reread{Name: name, Served: true} }
 
 func TestGCPSecretCreateShowSetRetagDeleteRestoreLifecycle(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
@@ -245,7 +245,7 @@ func holdScratchTest(f *gcptest.FakeSecretManager) string {
 // that login. Where the store's IAM refuses the identity (PermissionDenied), the refusal (exit 1)
 // names its source and principal, and nothing changes.
 func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, kind := range machineADCKinds {
 		t.Run(cmp.Or(kind, "metadata server"), func(t *testing.T) {
 			fake := gcptest.NewFakeSecretManager()
@@ -314,7 +314,7 @@ func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
 // delete then restore each write, every Secret Manager call carrying the lent token, and the
 // broker is asked to reread each.
 func TestGCPSecretWritesUnderALentTokenWithoutAnEmailScope(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useCloudPlatformToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useCloudPlatformToken, gcpUserinfo set at secret_gcp_test.go:569).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseCloudPlatformToken, t.Setenv at use.go:220); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		name  string
 		stdin string
@@ -362,7 +362,7 @@ func TestGCPSecretWritesUnderALentTokenWithoutAnEmailScope(t *testing.T) {
 // email scope, so create and retag refuse it (exit 2), naming the lent token and --owner <email>,
 // before the value is read and with nothing written.
 func TestGCPSecretOwnerMeUnderALentTokenWithoutAnEmailScopeIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useCloudPlatformToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseCloudPlatformToken, t.Setenv at use.go:220); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
 	for _, args := range [][]string{{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, {"retag", "SCRATCH_TEST", "--owner", "me"}} {
 		t.Run(args[0], func(t *testing.T) {
 			fake := gcptest.NewFakeSecretManager()
@@ -394,7 +394,7 @@ func TestGCPSecretOwnerMeUnderALentTokenWithoutAnEmailScopeIsRefused(t *testing.
 // an email scope - creates a secret for its person and gives one to another, every call under the
 // lent token.
 func TestGCPSecretOwnerNamedByEmail(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useCloudPlatformToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useCloudPlatformToken, gcpUserinfo set at secret_gcp_test.go:569).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseCloudPlatformToken, t.Setenv at use.go:220); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseCloudPlatformToken(t)
@@ -427,7 +427,7 @@ func TestGCPSecretOwnerNamedByEmail(t *testing.T) {
 // credential - Application Default Credentials GOOGLE_APPLICATION_CREDENTIALS names, a person's
 // own Application Default Credentials, or, with none, a gcloud login - with gcloud never run.
 func TestGCPSecretALentTokenOutranksEveryOtherCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		name string
 		use  func(t *testing.T)
@@ -474,7 +474,7 @@ func TestGCPSecretALentTokenOutranksEveryOtherCredential(t *testing.T) {
 // holds, with no token lent and no Secret Manager call - never run as another login, though gcloud
 // holds only one.
 func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1137); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:494); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	several := []string{machineEmail, "ada@example.com", "grace@example.com"}
 	for _, row := range []struct {
 		name, named, want string
@@ -536,7 +536,7 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 // command prints the token in the private format, which bypasses gcloud's log file, and clears
 // none of gcloud's own auth properties.
 func TestGCPSecretGcloudRunsWithItsOwnSettingsAndNoLogs(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1188); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:545); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	t.Run("the caller's settings, and no logs", func(t *testing.T) {
 		fake := gcptest.NewFakeSecretManager()
 		gcptest.UseFake(t, fake)
@@ -610,7 +610,7 @@ func requireGcloudRuns(t *testing.T, gcloud gcptest.GcloudStub, want map[string]
 // CLOUDSDK_CORE_ACCOUNT that chose the gcloud login, shell-quoted, so running it picks the same
 // login among several; with a single login it chose none, and the command carries none.
 func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1275); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_gcp_test.go:1278).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:632); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_gcp_test.go:635).
 	for _, row := range []struct {
 		name     string
 		accounts []string
@@ -689,7 +689,7 @@ func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
 // against gcp.GcloudSettingsDeadline where the read hangs, and against no deadline where it fails,
 // less the time this process was held up (requireOnTime).
 func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGcloudThatAnswers, main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGcloudThatAnswers, main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, mode := range []string{"fail", "hang"} {
 		t.Run(mode, func(t *testing.T) {
 			fake := gcptest.NewFakeSecretManager()
@@ -722,7 +722,7 @@ func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
 // refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
 // before any Secret Manager call, timed against that deadline (requireOnTime).
 func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGcloudThatAnswers, main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStoreCallDeadline, storeCallDeadline set at secret_create_test.go:36); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
@@ -744,7 +744,7 @@ func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testi
 // Application Default Credentials and GOOGLE_APPLICATION_CREDENTIALS is unset, every form, a read
 // included, runs under the gcloud login.
 func TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseNoADC(t)
@@ -784,7 +784,7 @@ func TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin(t *testi
 // Default Credentials, and no gcloud login either, a read is refused (exit 1), naming the sources
 // it tried, before any Secret Manager call.
 func TestGCPSecretWithNoCredentialAtAllIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311).
 	for _, row := range []struct {
 		name   string
 		gcloud func(t *testing.T)
@@ -814,7 +814,7 @@ func TestGCPSecretWithNoCredentialAtAllIsRefused(t *testing.T) {
 // token whose account Google's userinfo endpoint names creates the secret and supplies its
 // --owner me email.
 func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useLentGCPAccessToken, gcpUserinfo set at secret_gcp_test.go:551).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseLentAccessToken, t.Setenv at use.go:206); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseNoADC(t)
@@ -840,7 +840,7 @@ func TestGCPSecretCreateWithLentPersonsAccessToken(t *testing.T) {
 // naming the account and --owner <email>, before the value is read and with nothing written: a
 // service account names no person.
 func TestGCPSecretOwnerMeUnderAServiceAccountIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1521); it signals the test process or changes its signal handling ((gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_test.go:1524).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:848); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseIdentity(t, "service_account", machineEmail)
@@ -872,7 +872,7 @@ func TestGCPSecretOwnerMeUnderAServiceAccountIsRefused(t *testing.T) {
 // owner: --owner me is refused (exit 2), naming --owner <email>, before a value is read or
 // anything is written.
 func TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1555); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:880); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseNoADC(t)
@@ -893,7 +893,7 @@ func TestGCPSecretLentTokenWithNoUserinfoEmailIsRefused(t *testing.T) {
 // gcloud holds a person's login: a file there that cannot be loaded is refused before any Secret
 // Manager call, and a write runs under a machine's credentials named there, with gcloud never run.
 func TestGCPSecretUnderGoogleApplicationCredentialsNeverAsksGcloud(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1577); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:902); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	t.Run("a file that cannot be loaded", func(t *testing.T) {
 		fake := gcptest.NewFakeSecretManager()
 		gcptest.UseFake(t, fake)
@@ -937,7 +937,7 @@ func TestGCPSecretUnderGoogleApplicationCredentialsNeverAsksGcloud(t *testing.T)
 // Credentials (a laptop's) write as they always have, every call under them, with gcloud never
 // run, though it holds another person's login.
 func TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcloud := gcptest.UseGcloud(t, "grace@example.com")
@@ -964,7 +964,7 @@ func TestGCPSecretWriteUnderAPersonsADCNeverAsksGcloud(t *testing.T) {
 // beside the machine's own identity, it runs under that login, the active gcloud account, which
 // R1 puts before the metadata server.
 func TestGCPSecretListSucceedsWithoutUserinfoScope(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_test.go:1648).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseGcloud, t.Setenv at use.go:311).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcloud := gcptest.UseGcloud(t, "ada@example.com")
@@ -990,7 +990,7 @@ func TestGCPSecretListSucceedsWithoutUserinfoScope(t *testing.T) {
 // annotation it does not know about (an UpdateSecret whose mask names "annotations" replaces the
 // whole map unless retag reads and merges the current one first).
 func TestGCPSecretRetagKeepsUnrelatedAnnotations(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
@@ -1019,7 +1019,7 @@ func TestGCPSecretRetagKeepsUnrelatedAnnotations(t *testing.T) {
 
 // TestGCPSecretOwnerMeIsTheSignInEmailLowercased: --owner me is the userinfo email, lowercased.
 func TestGCPSecretOwnerMeIsTheSignInEmailLowercased(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	gcptest.UseFake(t, gcptest.NewFakeSecretManager())
 	gcptest.UseIdentity(t, "authorized_user", "Ada@Example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
@@ -1037,7 +1037,7 @@ func TestGCPSecretOwnerMeIsTheSignInEmailLowercased(t *testing.T) {
 // TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne: retag with only --tier keeps the held owner,
 // sending both as one UpdateSecret call (the annotations map is written whole).
 func TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	gcptest.UseFake(t, gcptest.NewFakeSecretManager())
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
@@ -1059,7 +1059,7 @@ func TestGCPSecretRetagOnlyNamedFieldReplacesHeldOne(t *testing.T) {
 // person's change to a shared secret's annotations; the CLI prints GCP's refusal and says whose
 // change it is.
 func TestGCPSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
@@ -1088,7 +1088,7 @@ func TestGCPSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T)
 // TestGCPSecretListShowsOwnerTierAndValue: list shows every secret under the prefix, its owner,
 // tier and whether it has a value, never the value.
 func TestGCPSecretListShowsOwnerTierAndValue(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	gcptest.UseFake(t, gcptest.NewFakeSecretManager())
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
@@ -1112,7 +1112,7 @@ func TestGCPSecretListShowsOwnerTierAndValue(t *testing.T) {
 // TestGCPSecretReadsRefuseBadSettings: an invalid kms_key_name is refused before any GCP call.
 // TestCheckSettingsKMSKeyName covers the other checkSettingsKMSKeyName refusals directly.
 func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
+	// Not parallel: it sets environment variables of the whole process (gcptest.UseIdentity, t.Setenv at use.go:123).
 	gcptest.UseFake(t, gcptest.NewFakeSecretManager())
 	gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, Settings{
@@ -1133,7 +1133,7 @@ func TestGCPSecretReadsRefuseBadSettings(t *testing.T) {
 // TestGCPSecretChosenConfigurationNamesAGcloudLogin: CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud
 // configuration, and a form runs under that configuration's login, though another is active.
 func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1852); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1140).
 	fake := gcptest.NewFakeSecretManager()
 	gcptest.UseFake(t, fake)
 	useGcloudConfigurations(t, "box", orderConfigurations)
@@ -1158,7 +1158,7 @@ func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 // only once it is unset, and the advice says so. A create that IAM lets make the secret but not
 // add its value says the same.
 func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1884); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_test.go:1924).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1172); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	const (
 		later       = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, person)"
 		lent        = "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
@@ -1245,7 +1245,7 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 // identity. No source makes a userinfo call to learn a principal, and every row reaches a store
 // call, which is what signing in proves.
 func TestGCPSecretRefusalNamesThePrincipalOfEachSource(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1973); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcpMetadataPrincipal set at secret_gcp_test.go:1977).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_test.go:1259); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	const (
 		dev   = "dev-box@acme.iam.gserviceaccount.com"
 		robot = "robot@acme.iam.gserviceaccount.com"

@@ -50,7 +50,7 @@ import (
 // CreateSecret has made the secret, SIGNALLED <signal> each time it receives a signal it does not
 // ignore, REREAD <name> at each broker reread, and RETURNED <exit code> when the create returns.
 func TestCreateSignalHelper(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (a signal to this process (unix.Kill) at secret_create_signal_linux_test.go:70); it sets a package variable the package's other tests read (storeCallDeadline set at secret_create_signal_linux_test.go:56).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it signals the test process or changes its signal handling (a signal to this process (unix.Kill) at secret_create_signal_linux_test.go:76); it sets a package variable the package's other tests read (secretStdin set at secret_create_signal_linux_test.go:140).
 	if os.Getenv("AGENT_SECRETS_CREATE_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

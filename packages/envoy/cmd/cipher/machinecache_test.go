@@ -20,7 +20,7 @@ import (
 // would trade and enroll again. The machine source refuses that before any trade, naming the
 // identity it found.
 func TestAMachineWithNowhereToKeepItsSessionTradesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at machinecache_test.go:28); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (passwdHome set at machinecache_test.go:26).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at machinecache_test.go:28); it sets a package variable the package's other tests read (passwdHome set at machinecache_test.go:26).
 	isolateChain(t)
 	original := passwdHome
 	passwdHome = func() string { return "" }

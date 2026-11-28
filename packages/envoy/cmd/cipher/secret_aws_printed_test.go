@@ -234,7 +234,7 @@ func TestAnAWSProfileTheConfigDoesNotHoldIsNotPrinted(t *testing.T) {
 // request's class or AWS's error code. The STS row is the control: AWS's code, which the server
 // wrote beside the echoed secret, still prints, so the check sees what AWS answered.
 func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:293).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:267).
 	secret := "hunter2pw-" + "awssignin-" + "5c2e"
 	user := "tokuser" + "7d2a"
 	closing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -464,7 +464,7 @@ func useSSOProfile(t *testing.T, legacy bool, token map[string]string, ssoURL st
 // session nor as a sign-in with no role. Each server writes a made-up secret in its message. The
 // expired rows are the controls: the check sees an expired session where there is one.
 func TestAnIAMIdentityCenterFailureIsSaidOnlyWhereTheSDKOrIAMIdentityCenterSaysIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:516); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_aws_printed_test.go:490).
 	planted := "hunter2pw-" + "ssoecho-" + "2b7e"
 	const expired = "the IAM Identity Center (SSO) session has expired or is invalid"
 	cachedToken := func(expiresAt string) map[string]string {

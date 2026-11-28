@@ -22,7 +22,7 @@ import (
 // for a secret carrying none, so a census of the tagged secrets counts the rows where it is not
 // null.
 func TestRetagWritesAndRemovesProjectChannels(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, "xoxb-stored")
 		if _, stderr, code := runSecret("create", "SLACK_TOKEN", "--owner", "ada@example.com", "--tier", "agent", "--project-channels", "slack"); code != 0 {

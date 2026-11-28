@@ -303,7 +303,7 @@ func TestTheBrokersValuesPrintNothingBesideACredentialedAddress(t *testing.T) {
 // broker made, prints as it came where it holds no control character and Go-quoted where it holds
 // one. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for register.
 func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:309); it signals the test process or changes its signal handling (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.login, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at broker_values_line_test.go:309).
 	t.Run("enroll", func(t *testing.T) {
 		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"enroll-session-key": {OK: true, EnrollmentID: forged}})
 		t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)

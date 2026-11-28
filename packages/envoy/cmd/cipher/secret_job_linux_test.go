@@ -259,7 +259,7 @@ func TestPromptJobInheritedIgnoredStopStaysIgnored(t *testing.T) {
 }
 
 func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.typeAtPromptInWrites, main.stopReaderFirst, readTerminal set at secret_tty_linux_test.go:169).
+	// Not parallel: it signals the test process or changes its signal handling (main.typeAtPromptInWrites, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.typeAtPromptInWrites, main.stopReaderFirst, readTerminal set at secret_tty_linux_test.go:172).
 	for _, control := range []string{"\x00", "\t", "\x01", "\x7f"} {
 		controller, terminal, got := typeAtPromptInWrites(t, 300*time.Millisecond,
 			"\x1b[200~prefix"+control, "private-tail\n\x1b[201~")

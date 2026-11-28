@@ -37,7 +37,7 @@ import (
 // enroll, recorded in enrollment.error. A file that holds a token enrols, and the renewal command
 // the enrolment prints names that file.
 func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:55); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:858); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:56); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:882).
 	const pasted = "hunter2pw-podtoken-7f3c91"
 	blankDir := filepath.Join(t.TempDir(), "hunter2pw-tokendir-0d4e55")
 	if err := os.MkdirAll(blankDir, 0o700); err != nil {
@@ -109,7 +109,7 @@ func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
 // directory's path nor the key's bytes are printed or recorded in enrollment.error. A key.pem
 // that holds a key is still the key the enrolment keeps.
 func TestKeyPemInTheOutDirectoryIsNamedByItsFlagNeverItsPath(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:152).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:153).
 	const secret = "hunter2pw-outdir-3a9e42"
 	leaked := []string{secret, "hunter2pw-keybytes-1e8f60", "x509:", "asn1:"}
 	for _, row := range []struct {
@@ -193,7 +193,7 @@ func TestKeyPemInTheOutDirectoryIsNamedByItsFlagNeverItsPath(t *testing.T) {
 // JSON, is refused in fixed text naming --pod-token-file, never in the decoder's words about the
 // token, and the token is not printed. A token whose claims name a pod still enrols.
 func TestPodTokenClaimsThatCannotBeReadSayFixedText(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:207).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:208).
 	enc := base64.RawURLEncoding
 	header := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
 	for _, row := range []struct {
@@ -233,7 +233,7 @@ func TestPodTokenClaimsThatCannotBeReadSayFixedText(t *testing.T) {
 // WordsNotPrinted beside one that carries a credential, where whoever answers can repeat that
 // credential in any text of its answer. The credential itself is never printed or recorded.
 func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:264).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:265).
 	const credential = "tokuser9f3:hunter2pw-broker-2c6d"
 	for _, route := range []string{"/v1/launcher-credentials/token", "/v1/enrollments"} {
 		for _, clean := range []bool{false, true} {
@@ -305,7 +305,7 @@ func TestAPodBrokerAnswerItCannotReadPrintsThroughWords(t *testing.T) {
 // directory's path. A directory that takes the record holds the refusal, with no such line: the
 // control.
 func TestARefusalThatCannotBeRecordedNamesTheDirectoryByItsFlag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:326).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:327).
 	const secret = "hunter2pw-recorddir-5c2a71"
 	for _, blocked := range []bool{true, false} {
 		name := "a directory where the record goes"
@@ -352,7 +352,7 @@ func TestARefusalThatCannotBeRecordedNamesTheDirectoryByItsFlag(t *testing.T) {
 // directory's path. An earlier refusal that can be removed is removed, with no such line: the
 // control.
 func TestAnEarlierRefusalThatCannotBeRemovedNamesTheDirectoryByItsFlag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:379).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:380).
 	const secret = "hunter2pw-removedir-8e6b14"
 	for _, blocked := range []bool{true, false} {
 		name := "a directory that is not empty where the earlier refusal is"
