@@ -8,6 +8,12 @@ body: |-
     Each of these answers names the current look and records nothing. A step's completion that
     gives lookId gets CHECK_LOOK_ID_UNEXPECTED. The daemon API contract entry 20261127185859
     (report-gives-its-look-id) pairs the daemon with both plugins.
+    A look's task now ends when its look ends, and the daemon sends no task of a look that has
+    ended. A check outlives a child's re-entry: it closes not_run when a later merge's
+    check replaces it, or when the run leaves with no merge. At boot the daemon gives each open look
+    that has no id an id and a new task of that look. The operator's claim view withholds a look's
+    id. docs/kubernetes.md, "Rolling back the release whose look report gives its look id", gives
+    the way back.
 time: 2026-11-27T19:01:20Z
 custom:
     Issue: report-gives-its-look-id

@@ -1,0 +1,33 @@
+# A copy of the way back of the release whose look report gives its look id, as
+# docs/kubernetes.md carries it under "Rolling back the release whose look report gives its look
+# id": the content of the fenced block that holds
+# `delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look'`, in the guide's
+# own bytes and none of the prose around it, `<PROJECT>` standing for the key of the project that
+# rolls back.
+#
+# The guide answers for the block in two halves. This package's
+# TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain runs this copy over
+# queued rows and production checks of two projects; packages/daemon/internal/textcheck's
+# TestTheLookIDWayBackExtractIsTheGuidesBlock holds this copy to the guide's fenced block. The
+# split keeps the guide out of this package's CI filter, as the step variant's way back does
+# (step_variant_way_back_extract.txt): an edit to the guide alone starts the text-check run rather
+# than every Go lane.
+
+begin;
+-- The look id and the reissue mark on each supervise row one project still has queued.
+update outbox set payload = payload - 'lookId' - 'lookReissue'
+where kind = 'supervise' and (payload ? 'lookId' or payload ? 'lookReissue')
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The end of a look's task, on each supervise row one project still has queued.
+delete from outbox where kind = 'supervise' and payload->>'op' = 'retire_look'
+  and split_part(issue, '-', 1) = '<PROJECT>';
+-- The open check of each child of one project that runs again.
+update production_checks as c set closed_at = now(), outcome = 'not_run', look_open = false
+from issues as i
+where c.issue = i.key and c.closed_at is null
+  and i.project = '<PROJECT>' and i.key <> i.tree
+  and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done');
+-- The generation each check of one project opened in.
+update production_checks set opened_generation = null
+where opened_generation is not null and project = '<PROJECT>';
+commit;
