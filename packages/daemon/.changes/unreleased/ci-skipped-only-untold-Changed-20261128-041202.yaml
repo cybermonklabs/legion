@@ -1,11 +1,11 @@
 kind: Changed
 body: |-
-    A CI settlement of a pull request's head whose only change since the one last told for that head
-    is check runs new to the head and concluded skipped now tells no role and wakes no released pod.
-    Every review starts a Large PR lanes run whose jobs skip, so each review sent the architect, the
-    phase holder and the implementer one more "CI settled" message, or woke the released phase
-    worker with it; the settlement is still recorded, and the next one told names those checks with
-    the rest.
+    A CI settlement of a pull request's head whose only change since the one standing for that head
+    is runs of checks concluded skipped, each new to the head or a newer run of its name, now tells
+    no role and wakes no released pod. Every review, each reply to a review thread among them,
+    starts a Large PR lanes run whose jobs skip, so each sent the architect, the phase holder and
+    the implementer one more "CI settled" message, or woke the released phase worker with it; the
+    settlement is still recorded, and the next one told names those checks with the rest.
 time: 2026-11-28T04:12:02Z
 custom:
     Issue: INFRA-6293

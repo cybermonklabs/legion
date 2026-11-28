@@ -2098,9 +2098,11 @@ Two workflows make it:
   approval it runs for).
   Every other review's run is decided by the `if:`s, from the event alone, before any runner
   starts, and leaves three skipped check runs, `lead`, `approval` and the hold named by its
-  expression's text, and none named ci-ok. Each is a check name new to the head, so the head
-  settles again, and the Legion daemon tells no role of a settlement whose only change is such new
-  skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`, dispatch://INFRA-6293).
+  expression's text, and none named ci-ok: names new to the head at its first review, and newer
+  runs of the same names at each later review and each reply to a review thread, so the head
+  settles again each time. The Legion daemon tells no role and wakes no pod of a settlement whose
+  only change is such skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`,
+  `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`, dispatch://INFRA-6293).
   - `lead` decides whether this approval runs the suites or follows the approval-time run
     already at this head: the earliest older run of this workflow at the same head whose ci-ok is
     still open or passed (`.github/scripts/large-pr-lanes.sh lead`). So one approval-time run at

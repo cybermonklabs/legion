@@ -190,20 +190,24 @@ func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
 }
 
 // Every review starts a Large PR lanes run whose three jobs skip on all but a trusted approval of a
-// large pull request, and a settlement whose only change is those check runs, new to the head and
-// skipped, wakes nobody, as it tells nobody (dispatch://INFRA-6293 R6), on the wake rig (LEGION-208
-// implementing, its pull request #42 at head1, its implementer released):
+// large pull request: at a head's first review each is a check name new to the head, and at each
+// later review, and each reply to a review thread, a newer run of the same name. A settlement
+// whose only change is such skipped runs wakes nobody, as it tells nobody (dispatch://INFRA-6293
+// R6), on the wake rig (LEGION-208 implementing, its pull request #42 at head1, its implementer
+// released):
 //
 //   - a settlement of head1 wakes the implementer once;
-//   - with the pod back and released again after that wake, a later settlement of head1 that adds
-//     only lead, approval and the hold, each skipped, queues no start row, records no resume and
-//     queues no role message;
-//   - and a settlement of head1 after it in which build failed wakes the implementer a second
+//   - with the pod back and released again after that wake, (a) a later settlement of head1 that
+//     adds only lead, approval and the hold, each skipped, queues no start row, records no resume
+//     and queues no role message;
+//   - (g) nor does a settlement after it that names the same three under newer run ids;
+//   - and a settlement of head1 after those in which build failed wakes the implementer a second
 //     time, with a task naming head1 and build, so the release did let a wake through and the
 //     skipped runs were turned away by the rule alone.
 //
-// Negative control: without the rule in wakeOnSettlement, the settlement of the skipped runs wakes
-// the implementer a second time.
+// Negative control: without the rule in wakeOnSettlement, the settlement of (a) wakes the
+// implementer a second time; with the rule weighing new names alone, as it did before newer runs
+// of the same names were weighed, the settlement of (g) does.
 func TestASettlementThatOnlyAddsSkippedChecksWakesNobody(t *testing.T) {
 	t.Parallel()
 	rig := newWakeRig(t)
@@ -219,21 +223,34 @@ func TestASettlementThatOnlyAddsSkippedChecksWakesNobody(t *testing.T) {
 	claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "released")
 	told := roleMessageCount(t, rig.pool)
 
-	lanes := laterSettlement("head1", 2)
-	lanes.CheckRuns = append(lanes.CheckRuns, lanesSkipped(2)...)
-	rig.apply("lanes", lanes)
-	if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
-		t.Fatalf("supervise start rows after a settlement that only adds skipped runs = %+v, want none", starts)
-	}
-	if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
-		t.Fatalf("pod resumes after a settlement that only adds skipped runs = %v, want the first wake's alone", resumes)
-	}
-	if got := roleMessageCount(t, rig.pool); got != told {
-		t.Fatalf("a settlement that only adds skipped runs queued %d role messages, want none", got-told)
+	for _, step := range []struct {
+		name       string
+		generation int64
+		// id is the first of the three skipped runs' ids.
+		id int64
+	}{
+		{"(a) a settlement that adds the three skipped runs", 2, 2},
+		{"(g) a settlement that names the same three under newer run ids", 3, 5},
+	} {
+		lanes := laterSettlement("head1", step.generation)
+		lanes.CheckRuns = append(lanes.CheckRuns, lanesSkipped(step.id)...)
+		rig.apply(fmt.Sprintf("lanes-%d", step.generation), lanes)
+		if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+			t.Fatalf("supervise start rows after %s = %+v, want none", step.name, starts)
+		}
+		if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
+			t.Fatalf("pod resumes after %s = %v, want the first wake's alone", step.name, resumes)
+		}
+		if got := roleMessageCount(t, rig.pool); got != told {
+			t.Fatalf("%s queued %d role messages, want none", step.name, got-told)
+		}
+		if pr := probePullRequest(t, rig.pool); pr.Generation != step.generation {
+			t.Fatalf("after %s the pull request keeps generation %d, want %d: the settlement is recorded", step.name, pr.Generation, step.generation)
+		}
 	}
 
-	failed := laterSettlement("head1", 3, "build")
-	failed.CheckRuns = append([]record.AttemptRun{{Name: "build", ID: 5}}, lanesSkipped(2)...)
+	failed := laterSettlement("head1", 4, "build")
+	failed.CheckRuns = append([]record.AttemptRun{{Name: "build", ID: 8}}, lanesSkipped(5)...)
 	rig.apply("failed", failed)
 	if starts := append(ran, wakeStarts(t, rig.pool)...); len(starts) != 2 || starts[1].Role != claim.RoleImplementer ||
 		!strings.Contains(starts[1].Task, "head1") || !strings.Contains(starts[1].Task, "build") {

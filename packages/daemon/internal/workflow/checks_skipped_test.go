@@ -291,15 +291,22 @@ func lanesSkipped(id int64) []record.AttemptRun {
 }
 
 // Every review of a pull request in cybermonklabs/legion starts a Large PR lanes run, and on every
-// review but a trusted approval of a large pull request its three jobs skip, each a check name new
-// to the head, so the head settles again (dispatch://INFRA-6293 R6). A settlement of the head
-// whose only change since the one told is check runs new to the head and concluded skipped tells
-// no role, and is recorded, so the next settlement told names those checks with the rest. Each of
-// these is told to every role: a settlement that adds a skipped run and changes a told run's
-// conclusion; one in which a skipped run replaces a told run of another conclusion; one that adds
-// a new run concluded success, and one that adds a new run concluded failure; and a head's first
-// settlement with skipped runs among its checks, of a head that never settled and of a head a push
-// left after a settlement of the head before it was told.
+// review but a trusted approval of a large pull request its three jobs skip: at a head's first
+// review each is a check name new to the head, and at each later review, and each reply to a
+// review thread, a newer run of the same name, so the head settles again (dispatch://INFRA-6293
+// R6). A settlement of the head whose only change since the one standing is such skipped runs
+// tells no role, and is recorded, so the next settlement told names those checks with the rest:
+//
+//   - (a) one that adds lead, approval and the hold, each new to the head and skipped;
+//   - (g) after (a), one that names the same three under newer run ids.
+//
+// Each of these is told to every role: (b) a settlement that adds a skipped run and changes a told
+// run's conclusion; (c) one in which a skipped run replaces a told run of another conclusion; (d)
+// after (a), one that changes a conclusion, naming every check, the skipped ones included; (e) one
+// that adds a new run concluded success, and one that adds a new run concluded failure; (f) a
+// head's first settlement with skipped runs among its checks, of a head that never settled and of
+// a head a push left after a settlement of the head before it was told; and one that changes a
+// commit status beside new skipped runs.
 func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 	t.Parallel()
 	hold := strconv.Quote(laneHold)
@@ -317,30 +324,54 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		assertRoleMessages(t, pool, "LEGION-208", messages)
 		return pool, engine, messages
 	}
-
-	t.Run("new skipped runs alone tell nobody, and the next settlement told names them", func(t *testing.T) {
-		t.Parallel()
+	// skippedOnce is toldOnce with (a) applied after it: a settlement of head, at generation 2, that
+	// adds beside first the three skipped runs of a review's Large PR lanes run, ids 3 to 5, and
+	// queues no role message.
+	skippedOnce := func(t *testing.T) (*pgxpool.Pool, *Engine, []record.RoleMessage) {
+		t.Helper()
 		pool, engine, messages := toldOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, append(slices.Clone(first), lanesSkipped(3)...)))
 		assertRoleMessages(t, pool, "LEGION-208", messages)
-		pr := recordedPR(t, pool, "LEGION-208")
-		runs := []record.AttemptRun{
-			{Name: laneHold, ID: 5, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
-			{Name: "approval", ID: 4, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
+		return pool, engine, messages
+	}
+	// recordedRuns is the fence the record keeps after a settlement of first and lanesSkipped(id).
+	recordedRuns := func(id int64) []record.AttemptRun {
+		return []record.AttemptRun{
+			{Name: laneHold, ID: id + 2, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
+			{Name: "approval", ID: id + 1, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "build", ID: 1, Head: "head", Conclusion: record.RunSucceeded, GitHubConclusion: "success"},
-			{Name: "lead", ID: 3, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
+			{Name: "lead", ID: id, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "unit", ID: 2, Head: "head", Conclusion: record.RunSucceeded, GitHubConclusion: "success"},
 		}
-		if pr.CheckedHead != "head" || pr.Generation != 2 || !reflect.DeepEqual(pr.CheckRuns, runs) {
-			t.Fatalf("the pull request keeps checked head %q, generation %d, runs %+v; want head, generation 2 and %+v",
-				pr.CheckedHead, pr.Generation, pr.CheckRuns, runs)
+	}
+	assertRecorded := func(t *testing.T, pool *pgxpool.Pool, generation, id int64) {
+		t.Helper()
+		pr := recordedPR(t, pool, "LEGION-208")
+		if runs := recordedRuns(id); pr.CheckedHead != "head" || pr.Generation != generation || !reflect.DeepEqual(pr.CheckRuns, runs) {
+			t.Fatalf("the pull request keeps checked head %q, generation %d, runs %+v; want head, generation %d and %+v",
+				pr.CheckedHead, pr.Generation, pr.CheckRuns, generation, runs)
 		}
-		// The next review's run reports the same three names again, each a newer run skipped.
+	}
+
+	t.Run("(a) new skipped runs alone tell nobody, and are recorded", func(t *testing.T) {
+		t.Parallel()
+		pool, _, _ := skippedOnce(t)
+		assertRecorded(t, pool, 2, 3)
+	})
+
+	t.Run("(g) after (a), the same skipped names under newer run ids tell nobody, and are recorded", func(t *testing.T) {
+		t.Parallel()
+		pool, engine, messages := skippedOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 3, append(slices.Clone(first), lanesSkipped(6)...)))
 		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertRecorded(t, pool, 3, 6)
+	})
 
-		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 4,
-			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 9, "failure")}, lanesSkipped(6)...), "unit"))
+	t.Run("(d) after (a), a changed conclusion is told, naming every check", func(t *testing.T) {
+		t.Parallel()
+		pool, engine, messages := skippedOnce(t)
+		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 3,
+			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 9, "failure")}, lanesSkipped(3)...), "unit"))
 		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: `+hold+
 			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" failure; `+skippedSaid))
 	})
@@ -352,16 +383,16 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		failing []string
 		said    string
 	}{
-		{"a new skipped run beside a told run's new conclusion is told",
+		{"(b) a new skipped run beside a told run's new conclusion is told",
 			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 6, "failure")}, skippedRun("lead", 3)), []string{"unit"},
 			`CI settled at head: "build" success, "lead" skipped, "unit" failure; ` + skippedSaid},
-		{"a skipped run that replaces a told run of another conclusion is told",
+		{"(c) a skipped run that replaces a told run of another conclusion is told",
 			[]record.AttemptRun{skippedRun("build", 6), wordedRun("unit", 2, "success")}, nil,
 			`CI settled at head: "build" skipped, "unit" success; ` + skippedSaid},
-		{"a new run concluded success is told",
+		{"(e) a new run concluded success is told",
 			append(slices.Clone(first), wordedRun("lint", 3, "success")), nil,
 			`CI settled at head: "build" success, "lint" success, "unit" success`},
-		{"a new run concluded failure is told",
+		{"(e) a new run concluded failure is told",
 			append(slices.Clone(first), wordedRun("lint", 3, "failure")), []string{"lint"},
 			`CI settled at head: "build" success, "lint" failure, "unit" success`},
 	} {
@@ -373,7 +404,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		})
 	}
 
-	t.Run("a head's first settlement with skipped runs is told", func(t *testing.T) {
+	t.Run("(f) a head's first settlement with skipped runs is told", func(t *testing.T) {
 		t.Parallel()
 		pool := migratedPool(t)
 		seedSettlingRound(t, pool)
@@ -382,13 +413,27 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 			`CI settled at head: `+hold+` skipped, "approval" skipped, "lead" skipped; `+skippedSaid))
 	})
 
-	t.Run("the first settlement of the head a push left is told, whatever the head before said", func(t *testing.T) {
+	t.Run("(f) the first settlement of the head a push left is told, whatever the head before said", func(t *testing.T) {
 		t.Parallel()
 		pool, engine, messages := toldOnce(t)
 		applyRefusingNothing(t, pool, engine, syncedTo("next"), settledRunsAt("next", 1,
 			append([]record.AttemptRun{wordedRun("build", 11, "success"), wordedRun("unit", 12, "success")}, lanesSkipped(13)...)))
 		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at next: `+hold+
 			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" success; `+skippedSaid))
+	})
+
+	t.Run("a changed commit status beside new skipped runs is told", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		seedSettlingRound(t, pool)
+		engine := mergingEngine()
+		applyRefusingNothing(t, pool, engine, naming(settledRunsAt("head", 1, first), status("deploy", "success", 1)))
+		messages := tell(t, nil, firstSaid+`; commit statuses: "deploy" success`)
+		assertRoleMessages(t, pool, "LEGION-208", messages)
+		applyRefusingNothing(t, pool, engine,
+			naming(settledRunsAt("head", 2, append(slices.Clone(first), lanesSkipped(3)...)), status("deploy", "failure", 2)))
+		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: `+hold+
+			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" success; commit statuses: "deploy" failure; `+skippedSaid))
 	})
 }
 
