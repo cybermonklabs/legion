@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The store census's node-side read (`nodeDifferences` in `graphcensus`) was planned as a nested
+  loop that read every row once for each node, when the table statistics predated a bulk write. On a
+  document of 2,002 blocks that took 3.9 s in a build Job, and it stalled a CI test for 20 minutes.
+  The census's node-side comparison now reads each side once, and the census compiles no statement
+  with JIT.
+time: 2026-11-25T01:01:06Z
+custom:
+  Issue: INFRA-1098

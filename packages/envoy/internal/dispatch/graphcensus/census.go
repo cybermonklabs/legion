@@ -584,8 +584,9 @@ func readNames(ctx context.Context, tx pgx.Tx, kind, names string) ([]string, er
 
 // StoreCensus reads the node and tuple store against the tables that project it, in one
 // read-only repeatable-read transaction on a connection of its own. It writes nothing: the
-// transaction is read only, and every statement it runs is a select, but for the savepoint the
-// growth pass reads the store's type nodes in (installStoreBlockSchema).
+// transaction is read only, and every statement it runs is a select, but for the `set local jit =
+// off` it opens with and the savepoint the growth pass reads the store's type nodes in
+// (installStoreBlockSchema).
 //
 // A difference is reported by its cause and by the row it was found at, in both directions: a
 // projection row naming no node, naming a node the store does not hold or naming one it holds
@@ -621,6 +622,12 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 		return nil, fmt.Errorf("open the census snapshot: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// No statement of the census is JIT-compiled: each kind is one statement of a few dozen
+	// subplans that runs once, and a Postgres built with JIT spends seconds compiling it as soon
+	// as a table's statistics count its rows.
+	if _, err := tx.Exec(ctx, `set local jit = off`); err != nil {
+		return nil, fmt.Errorf("turn JIT off for the census snapshot: %w", err)
+	}
 	report := &StoreReport{}
 	// The store is looked up before any kind is read, so a database the store does not exist in
 	// answers that rather than failing at the first statement that names graph_nodes.
@@ -768,16 +775,30 @@ func rowDifferences(held projection) string {
 
 // nodeDifferences reads the store against the row side: every node of the kind not gone that no
 // row projects, named with the state it is at, so a live one reads as `a live node no row
-// projects`.
+// projects`. The two sides meet in one sorted pass, never in a join. Postgres plans a join of
+// them from each side's estimated rows. Where the statistics count no row of a side that holds
+// thousands (a table a bulk write has just filled, before autovacuum reads it again), the planner
+// reads one side once for each row of the other. The census of a document of 2,002 blocks took
+// 3.9 s that way in a build Job and 0.08 s in one pass; on CI's runner a test that takes that
+// census stalled for 20 minutes.
 func nodeDifferences(held projection) string {
 	return `
 		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
 		       || ' node no row projects',
 		       '` + held.nodeKind + ` ' || node.id
-		from (` + presentNodes(held) + `) node (id, digest, state)
-		where not exists (
-			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
-			where row.node_kind = '` + held.nodeKind + `' and row.node_address = node.id)
+		from (
+			select side.row_side, side.id, side.state,
+			       bool_or(side.row_side) over (partition by side.id) as projected
+			from (
+				select false, id, state
+				from (` + presentNodes(held) + `) present (id, digest, state)
+				union all
+				select true, node_address, null
+				from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
+				where row.node_kind = '` + held.nodeKind + `'
+			) side (row_side, id, state)
+		) node
+		where not node.row_side and not node.projected
 		order by 2`
 }
 
