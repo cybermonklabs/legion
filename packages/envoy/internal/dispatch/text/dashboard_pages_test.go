@@ -12,6 +12,7 @@ import (
 // readers through the shared table.
 func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument(t *testing.T) {
 	const server = "https://dispatch.test"
+	origins := NewOrigins(server)
 	issue := Ref{Kind: "issue", IssueKey: "CORE-1", ID: "CORE-1"}
 	notes := Ref{Kind: "artifact", IssueKey: "CORE-1", ID: "notes-md"}
 	for _, test := range []struct {
@@ -41,7 +42,7 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		{server + "/issues/CORE-1/artifact/notes-md?v=2", notes},
 		{server + "/issues/CORE-1/artifacts/notes-md", notes},
 	} {
-		if got, ok := ParseRef(test.value, server); !ok || got != test.want {
+		if got, ok := ParseRef(test.value, origins); !ok || got != test.want {
 			t.Errorf("ParseRef(%q) = %#v, %v, want %#v", test.value, got, ok, test.want)
 		}
 	}
@@ -51,7 +52,7 @@ func TestATabsPageAndReferenceNameItsIssueAndEachDocumentSegmentNamesTheDocument
 		server + "/issues/CORE-1/artifactz/notes-md",
 		"dispatch://CORE-1/settings",
 	} {
-		if got, ok := ParseRef(value, server); ok {
+		if got, ok := ParseRef(value, origins); ok {
 			t.Errorf("ParseRef(%q) = %#v, want no reference", value, got)
 		}
 	}

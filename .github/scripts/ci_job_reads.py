@@ -629,6 +629,25 @@ def go_notices_runs():
     return out
 
 
+RELEASE_PATHS_STEP = "Check the legion release's version paths cover every package the binary links"
+RELEASE_PATHS_CHECK = ".github/scripts/check-legion-release-paths.sh"
+RELEASE_BUILD_LEGION = ".github/scripts/release-build-legion.sh"
+
+
+def legion_release_paths_runs():
+    """The go list lint's release-path check runs for each legion target: the line is
+    release-build-legion.sh's list mode, which the check runs with -deps over ./cmd/legion, with
+    the environment that script's build gives the target."""
+    started_by = at("lint", RELEASE_PATHS_STEP)
+    out = []
+    for target in targets(GO_TARGETS, "legion"):
+        goos, goarch = target.split("/")
+        out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
+                              started_by, DAEMON, ["./cmd/legion"], mode="build",
+                              env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -788,7 +807,8 @@ CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./interna
 
 def ceiling_run(job, workflow=""):
     """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
-    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml;
+    dispatch-two-builds-same's, in ci-job-dispatch-two-builds.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
@@ -2542,6 +2562,17 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
+# ci-caches.yaml's fill of the go-browser-binaries family, which rule 25 of check-ci-filters.sh
+# holds: each entry is (the fill's job, the workflow and the job whose restore it fills, the
+# directory both run in, and the step pairs, each (the reader's step, the fill's step, the text
+# both run)). The texts are the ones the binaries job's own Exact entries (the dispatch_browser
+# gate's pinned_step calls below) pin, so the fill and the job run one text, which the cache keys
+# of the objects both make are computed from.
+BINARIES_FILL_JOB = "browser-binaries"
+BINARIES_FILLS = [(BINARIES_FILL_JOB, BROWSER_SITE, BROWSER_BINARIES, ENVOY, [
+    (BROWSER_BINARIES_STEP, f"{BROWSER_BINARIES_STEP}, as the binaries job does", BROWSER_BINARIES_SCRIPT),
+    (BROWSER_CONNECTIONS_STEP, f"{BROWSER_CONNECTIONS_STEP}, as the binaries job does", BROWSER_CONNECTIONS_SCRIPT),
+])]
 BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
@@ -2591,7 +2622,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run

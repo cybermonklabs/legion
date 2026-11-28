@@ -148,8 +148,9 @@ func warnings(t *testing.T) func() []map[string]any {
 }
 
 // A bearer that matches a value after the first is logged with the rightmost X-Forwarded-For
-// address, the User-Agent and the path, once per address and User-Agent every ten minutes; the
-// first value is never logged, and no line holds a token.
+// address, or with the caller address the router resolved for the request where it resolved one
+// (WithForwardedAddress), the User-Agent and the path, once per address and User-Agent every ten
+// minutes; the first value is never logged, and no line holds a token.
 func TestAPreviousTokenIsLoggedOncePerCallerEveryTenMinutes(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		logged := warnings(t)
@@ -214,7 +215,24 @@ func TestAPreviousTokenIsLoggedOncePerCallerEveryTenMinutes(t *testing.T) {
 		authenticate("/api/v1/whoami", "203.0.113.7", "agent/1", "old-token")
 		lineCount(5, "the same caller ten minutes on")
 		authenticate("/api/v1/whoami", "203.0.113.7", "agent/1", "new-token")
-		lines := lineCount(5, "the first value ten minutes on")
+		lineCount(5, "the first value ten minutes on")
+
+		// The router resolves a request's caller address once, here the client a trusted proxy
+		// appended second from the right, and the line takes it rather than reading the header
+		// for itself: the rightmost entry, the proxy's forwarding rule, is a caller logged within
+		// the window, so a line that read it would not be written.
+		resolved := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+		resolved.RemoteAddr = "192.0.2.4:51000"
+		resolved.Header.Set("X-Forwarded-For", "198.51.100.9, 203.0.113.20, 203.0.113.7")
+		resolved.Header.Set("User-Agent", "agent/1")
+		resolved = resolved.WithContext(WithForwardedAddress(resolved.Context(), "203.0.113.20"))
+		if !MatchesSharedAgentToken(resolved, "old-token", tokens) {
+			t.Fatal("a request the router resolved, with old-token, was refused")
+		}
+		lines := lineCount(6, "a request the router resolved")
+		if lines[5]["address"] != "203.0.113.20" {
+			t.Errorf("a request the router resolved as 203.0.113.20 logged address %v, want the resolved 203.0.113.20", lines[5]["address"])
+		}
 
 		encoded, err := json.Marshal(lines)
 		if err != nil {

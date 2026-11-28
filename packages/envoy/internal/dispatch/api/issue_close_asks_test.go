@@ -566,7 +566,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour})
+	documentService := docs.New(docs.Deps{Store: second, Events: broker, Origins: testOrigins, Settle: time.Hour})
 	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store:       second,

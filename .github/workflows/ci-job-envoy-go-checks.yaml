@@ -110,14 +110,73 @@ jobs:
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
         working-directory: packages/envoy
-      # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
-      # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale, so the
-      # locale is generated first, inside the same pooled command.
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
-        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/autodeploy_test.sh bash -c 'sudo locale-gen en_US.UTF-8 && bash deploy/scripts/autodeploy_test.sh'
+      # The deploy tests' URL cases run under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past
+      # ASCII, to hold the deployer's URL grammar to ASCII; their groups refuse to run without that
+      # locale. This step runs the same test as url_locale_control in
+      # deploy/scripts/autodeploy_test.sh, which must stay the same as it, and generates the locale
+      # only where that test fails, so one condition decides both, and on ubuntu-24.04 it did not
+      # fail: probe run 46134562966 found `en_US.utf8` in `locale -a` before any locale-gen, where
+      # at d519fc9a the harness's pooled command ran `sudo locale-gen` first in every run, 3.3 to
+      # 5.9 s inside its pool entry. A plain step, not pooled, after the four longest harnesses are
+      # queued, so no slot waits on it.
+      - name: Generate en_US.UTF-8 where the runner lacks it, for the deploy tests' URL cases
+        run: LC_ALL=en_US.UTF-8 bash -c '[[ "ä" =~ ^[a-z]$ ]]' 2>/dev/null || sudo locale-gen en_US.UTF-8
+      # The last group of the env cases pulled this image inside its own pool entry at d519fc9a
+      # (2.6 to 3.9 s); pulled once here, after the four longest harnesses hold every slot, no
+      # harness waits on it. No continue-on-error: a failed pull is this repository's fault and
+      # must be seen.
+      - name: Pull the Compose 2.12.2 image the deploy tests take
+        run: . deploy/scripts/compose-2.12.2_test.sh && pull_compose_2_12
         working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
+      # dev-stack.test.sh and autodeploy_test.sh each run in parts, each part a pool entry of its
+      # own named for its harness and its part. dev-stack.test.sh has two, each starting the stacks
+      # it reads: `stops`, its cases (a) to (v), and `options`, (h) to (p), named
+      # `scripts/dev-stack.test.sh <part>`. Its whole entry took 73.4 s of wall time in run
+      # 46140194070 (job 140964381366): its cases (a) to (v) 35.7 s, and (h) to its end 37.7 s.
+      # autodeploy_test.sh runs one group of its cases per run, each from a fresh fixture, named
+      # `deploy/scripts/autodeploy_test.sh <group>`. The whole harness took 153 to 266 s of wall
+      # time as one entry in runs 46133189498 and 46133189517, and each group's cases summed 14.7
+      # to 34.2 s in run 46133189517. The steps stand longest first by their walls in run
+      # 46143522022 (job 140975187870), dev-stack's two parts (45.7 and 43.8 s) and then the groups
+      # (29.5 to 4.0 s), so the shorter ones fill the slots around them.
+      - name: Isolation test for dev-stack.sh, part stops (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh stops' bash scripts/dev-stack.test.sh stops
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh, part options (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh options' bash scripts/dev-stack.test.sh options
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-1' bash deploy/scripts/autodeploy_test.sh env-spellings-1
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-2' bash deploy/scripts/autodeploy_test.sh url-refused-2
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-1' bash deploy/scripts/autodeploy_test.sh url-refused-1
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-writer-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-writer-2' bash deploy/scripts/autodeploy_test.sh env-writer-2
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-2' bash deploy/scripts/autodeploy_test.sh env-spellings-2
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-reads (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-reads' bash deploy/scripts/autodeploy_test.sh env-reads
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group rollback-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh rollback-1' bash deploy/scripts/autodeploy_test.sh rollback-1
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-writer-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-writer-1' bash deploy/scripts/autodeploy_test.sh env-writer-1
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group schema-key (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh schema-key' bash deploy/scripts/autodeploy_test.sh schema-key
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group rollback-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh rollback-2' bash deploy/scripts/autodeploy_test.sh rollback-2
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-accepted (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-accepted' bash deploy/scripts/autodeploy_test.sh url-accepted
         working-directory: packages/envoy
       # The two gate harnesses queue one pool entry per group, named `<harness> <group>`, in the
       # order each harness's --groups prints: longest first by CPU at main, with the numbers over
@@ -158,6 +217,9 @@ jobs:
         working-directory: packages/envoy
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-airlock.test.sh bash scripts/dev-airlock.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for store-live-check.sh (a stub go; no live store and no network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/store-live-check.test.sh bash scripts/store-live-check.test.sh
         working-directory: packages/envoy
       - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
         run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh

@@ -32,7 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
@@ -455,7 +455,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 // placeholder project, so every line that names a source carries a store as a deployed broker's
 // would.
 var fakeSettings = Settings{
-	Store:         secrets.StoreGCP,
+	Store:         gcp.Name,
 	SecretsPrefix: "projects/000000000000/secrets/agent-secrets-",
 	KMSKeyName:    "projects/000000000000/locations/global/keyRings/example/cryptoKeys/agent-secrets",
 	GCPProject:    "000000000000",
@@ -1370,7 +1370,7 @@ func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string)
 		writePendingMarker(t, keyDir, 0)
 		data, err := os.ReadFile(filepath.Join(fixture, name))
 		if err == nil {
-			err = writeFileAtomic(filepath.Join(keyDir, name), data, 0o600)
+			err = writeFileAtomic(filepath.Join(keyDir, name), data)
 		}
 		if err != nil {
 			t.Fatal(err)
