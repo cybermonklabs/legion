@@ -51,25 +51,22 @@ var openScheme = scheme{
 
 // openSet is what Open's template is made of: its scheme, the function that answers the digest
 // that names it, and the migrate that brings a build of it to its schema. Production's are
-// openScheme, templateDigest and migrateWithThisTree. Only storetest's own TestMain changes them,
-// in a copy of its test binary that a row starts with STORETEST_OPEN_SET (storetest_test.go), so
-// the row's copies make, find and sweep templates of the row's own and never a real one.
+// openScheme, templateDigest, run once in the process (sync.OnceValues), and migrateWithThisTree.
+// Only storetest's own TestMain changes them, in a copy of its test binary that a row starts with
+// STORETEST_OPEN_SET (storetest_test.go), so the row's copies make, find and sweep templates of the
+// row's own and never a real one.
 var openSet = struct {
 	scheme  scheme
 	digest  func() (string, error)
 	migrate func(databaseURL string) error
-}{openScheme, templateDigest, migrateWithThisTree}
+}{openScheme, sync.OnceValues(templateDigest), migrateWithThisTree}
 
 // templateForm names each step storetest adds to Open's template outside the migrations, one a
 // line, in the order it runs them, so a change to one of them moves the template's name
 // (templateDigest) as a change to a migration file does, and a server never hands a binary a
-// template built with other steps. A step storetest adds to the template is added here: the
-// constant that holds its text, after a newline.
-const templateForm = templateWithoutJIT + "\n" + embeddingsStatistics
-
-// templateWithoutJIT is the step that turns JIT off on the template's build (testdb.WithoutJIT),
-// with the build's name left out.
-const templateWithoutJIT = "alter database <template> set jit = off"
+// template built with other steps. A step storetest adds to the template is added here: its
+// statement, after a newline, with the build's name written <template> where it takes one.
+var templateForm = testdb.WithoutJIT("<template>") + "\n" + embeddingsStatistics
 
 // templateDigest is the digest that names Open's template in production: the SHA-256, in hex, of
 // the embedded migrations' digest (store.MigrationsDigest), a zero byte and templateForm. It covers
@@ -140,23 +137,18 @@ type templateConn struct {
 	held map[string]bool
 }
 
-// openTemplateConn opens a template connection on the server raw names, its connect bounded by end
+// openTemplateConn opens a template connection on server, its connect bounded by end
 // (testdb.WithConnectEnd), or by testdb.NoDeadlineConnectTimeout without bounded.
-func openTemplateConn(raw string, end time.Time, bounded bool) (*templateConn, error) {
-	server, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's error, and the error it wraps, can quote the URL's password.
-		return nil, errors.New("the server's URL does not parse")
-	}
-	conn, err := connectTemplate(*server, end, bounded)
+func openTemplateConn(server url.URL, end time.Time, bounded bool) (*templateConn, error) {
+	conn, err := connectTemplate(server, end, bounded)
 	if err != nil {
 		return nil, err
 	}
-	return &templateConn{server: *server, conn: conn, held: map[string]bool{}}, nil
+	return &templateConn{server: server, conn: conn, held: map[string]bool{}}, nil
 }
 
 // connectTemplate opens the connection a templateConn holds: to server's postgres database, named
-// templateApplicationName, its connect bounded by end.
+// templateApplicationName of this process, its connect bounded by end.
 func connectTemplate(server url.URL, end time.Time, bounded bool) (*pgx.Conn, error) {
 	connect, err := testdb.WithConnectEnd(databaseURL(server, "postgres"), end, bounded)
 	if err != nil {
@@ -166,7 +158,7 @@ func connectTemplate(server url.URL, end time.Time, bounded bool) (*pgx.Conn, er
 	if err != nil {
 		return nil, fmt.Errorf("parse the template connection's URL: %w", err)
 	}
-	config.RuntimeParams["application_name"] = templateApplicationName()
+	config.RuntimeParams["application_name"] = templateApplicationName(os.Getpid())
 	conn, err := pgx.ConnectConfig(context.Background(), config)
 	if err != nil {
 		return nil, fmt.Errorf("open the template connection: %w", err)
@@ -174,10 +166,10 @@ func connectTemplate(server url.URL, end time.Time, bounded bool) (*pgx.Conn, er
 	return conn, nil
 }
 
-// templateApplicationName is the application_name of this test binary's template connection:
-// "storetest template" and the binary's pid, which no other process on the machine holds.
-func templateApplicationName() string {
-	return "storetest template " + strconv.Itoa(os.Getpid())
+// templateApplicationName is the application_name of the template connection of the test binary
+// whose pid is pid: "storetest template" and the pid, which no other process on the machine holds.
+func templateApplicationName(pid int) string {
+	return "storetest template " + strconv.Itoa(pid)
 }
 
 // reconnectWhereLost opens c's connection again where it is closed or does not answer a ping
@@ -288,8 +280,8 @@ func (c *templateConn) buildUnderLock(s scheme, name, login string, migrate func
 		return false, err
 	}
 	defer func() {
-		if _, unlockErr := c.conn.Exec(context.Background(), "select pg_advisory_unlock(hashtext($1), 0)", s.buildClass); unlockErr != nil {
-			err = errors.Join(err, fmt.Errorf("release the template build lock %s: %w", buildLock(s), unlockErr))
+		if unlockErr := c.releaseBuildLock(s); unlockErr != nil {
+			err = errors.Join(err, unlockErr)
 		}
 	}()
 	if found, err := c.exists(name); err != nil || found {
@@ -339,6 +331,22 @@ func buildLock(s scheme) string {
 	return "pg_advisory_lock(hashtext('" + s.buildClass + "'), 0)"
 }
 
+// buildLockTake and buildLockRelease take and release a scheme's build lock, whose class is their
+// one parameter: the build's (waitForBuildLock, releaseBuildLock), and a row's that holds the lock
+// itself.
+const (
+	buildLockTake    = "select pg_advisory_lock(hashtext($1), 0)"
+	buildLockRelease = "select pg_advisory_unlock(hashtext($1), 0)"
+)
+
+// releaseBuildLock releases s's build lock on c.
+func (c *templateConn) releaseBuildLock(s scheme) error {
+	if _, err := c.conn.Exec(context.Background(), buildLockRelease, s.buildClass); err != nil {
+		return fmt.Errorf("release the template build lock %s: %w", buildLock(s), err)
+	}
+	return nil
+}
+
 // waitForBuildLock takes s's build lock on c, its wait bounded by end where bounded
 // (serverTemplate). The bound is the connection's lock_timeout, set for the wait alone, which
 // fails the statement and leaves the connection open: a context's end would close it, since pgx
@@ -356,12 +364,12 @@ func (c *templateConn) waitForBuildLock(s scheme, end time.Time, bounded bool) e
 		}
 	}
 	began := time.Now()
-	_, err := c.conn.Exec(ctx, "select pg_advisory_lock(hashtext($1), 0)", s.buildClass)
+	_, err := c.conn.Exec(ctx, buildLockTake, s.buildClass)
 	waited := time.Since(began)
 	if bounded {
 		if _, resetErr := c.conn.Exec(ctx, "reset lock_timeout"); resetErr != nil && err == nil {
 			// The lock is held: release it, since no build follows.
-			_, _ = c.conn.Exec(ctx, "select pg_advisory_unlock(hashtext($1), 0)", s.buildClass)
+			_ = c.releaseBuildLock(s)
 			err = fmt.Errorf("reset lock_timeout after the wait: %w", resetErr)
 		}
 	}
@@ -515,30 +523,29 @@ func findOrMakeOpen(end time.Time, bounded bool) (name string, made bool, host s
 	if !set {
 		return "", false, "", errors.New(DatabaseURLEnv + " is unset")
 	}
-	if server, parseErr := url.Parse(raw); parseErr == nil {
-		host = server.Host
-	}
-	c, err := templateConnection(raw, end, bounded)
+	// serverFromEnv refused a URL that does not parse.
+	server, _ := url.Parse(raw)
+	c, err := templateConnection(*server, end, bounded)
 	if err != nil {
-		return "", false, host, err
+		return "", false, server.Host, err
 	}
 	digest, err := openSet.digest()
 	if err != nil {
-		return "", false, host, err
+		return "", false, server.Host, err
 	}
 	name, made, _, err = serverTemplate(c, openSet.scheme, digest, openSet.migrate, end, bounded)
-	return name, made, host, err
+	return name, made, server.Host, err
 }
 
-// templateConnection answers the process's template connection (openConn): opened on raw where
+// templateConnection answers the process's template connection (openConn): opened on server where
 // none is yet, and opened again where it was lost.
-func templateConnection(raw string, end time.Time, bounded bool) (*templateConn, error) {
+func templateConnection(server url.URL, end time.Time, bounded bool) (*templateConn, error) {
 	openConn.Lock()
 	defer openConn.Unlock()
 	if openConn.conn != nil {
 		return openConn.conn, openConn.conn.reconnectWhereLost(end, bounded)
 	}
-	c, err := openTemplateConn(raw, end, bounded)
+	c, err := openTemplateConn(server, end, bounded)
 	if err != nil {
 		return nil, err
 	}
@@ -572,9 +579,13 @@ func listSharedTemplates(bound time.Time) {
 		return
 	}
 	slices.Sort(names)
-	listed := "none"
-	if len(names) > 0 {
-		listed = strings.Join(names, ", ")
+	fmt.Fprintf(os.Stderr, "storetest: shared templates on %s after this binary's tests: %s\n", c.server.Host, namesOrNone(names))
+}
+
+// namesOrNone is names, ", "-joined, or "none".
+func namesOrNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
 	}
-	fmt.Fprintf(os.Stderr, "storetest: shared templates on %s after this binary's tests: %s\n", c.server.Host, listed)
+	return strings.Join(names, ", ")
 }

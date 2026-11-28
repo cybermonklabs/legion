@@ -149,13 +149,13 @@ func currentLogin(t *testing.T, conn *pgx.Conn) string {
 	return login
 }
 
-// createRowDatabase makes, on conn, a database named name by hand, as a file copy of template1 that
-// runs with JIT off, as every database a test makes is (docs/testing.md, "A database a Go test
-// creates").
+// createRowDatabase makes, on conn, a database named name by hand, as a file copy of template1
+// (cloneStatement) that runs with JIT off, as every database a test makes is (docs/testing.md, "A
+// database a Go test creates").
 func createRowDatabase(t *testing.T, conn *pgx.Conn, name string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := conn.Exec(ctx, "create database "+pgx.Identifier{name}.Sanitize()+" strategy file_copy"); err != nil {
+	if _, err := conn.Exec(ctx, cloneStatement(name, emptyTemplate)); err != nil {
 		t.Fatalf("make the database %s by hand: %v", name, err)
 	}
 	if _, err := conn.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
@@ -170,7 +170,7 @@ func createRowDatabase(t *testing.T, conn *pgx.Conn, name string) {
 func cloneRowTemplate(t *testing.T, conn *pgx.Conn, s scheme, template string) string {
 	t.Helper()
 	ctx := context.Background()
-	clone := s.prefix + "clone_" + randomHex(t, 8)
+	clone := randomName(t, s.prefix+"clone_")
 	if _, err := conn.Exec(ctx, cloneStatement(clone, template)); err != nil {
 		t.Fatalf("clone the template %s: %v", template, err)
 	}
@@ -180,12 +180,12 @@ func cloneRowTemplate(t *testing.T, conn *pgx.Conn, s scheme, template string) s
 	return clone
 }
 
-// rowTemplateConn opens a template connection on the server raw names (openTemplateConn), its
-// connect bounded by t's connect end, and closes it when t ends: one process's, to Postgres.
-func rowTemplateConn(t *testing.T, raw string) *templateConn {
+// rowTemplateConn opens a template connection on server (openTemplateConn), its connect bounded by
+// t's connect end, and closes it when t ends: one process's, to Postgres.
+func rowTemplateConn(t *testing.T, server url.URL) *templateConn {
 	t.Helper()
 	end, bounded := testdb.ConnectEnd(t)
-	c, err := openTemplateConn(raw, end, bounded)
+	c, err := openTemplateConn(server, end, bounded)
 	if err != nil {
 		t.Fatalf("open a template connection: %v", err)
 	}
@@ -261,11 +261,11 @@ func holdBuildLock(t *testing.T, s scheme) (release func()) {
 		t.Fatalf("open the connection that holds the build lock: %v", err)
 	}
 	testcleanup.Add(t, func() { _ = holder.Close(context.Background()) })
-	if _, err := holder.Exec(ctx, "select pg_advisory_lock(hashtext($1), 0)", s.buildClass); err != nil {
+	if _, err := holder.Exec(ctx, buildLockTake, s.buildClass); err != nil {
 		t.Fatalf("take the build lock %s: %v", buildLock(s), err)
 	}
 	return func() {
-		if _, err := holder.Exec(context.Background(), "select pg_advisory_unlock(hashtext($1), 0)", s.buildClass); err != nil {
+		if _, err := holder.Exec(context.Background(), buildLockRelease, s.buildClass); err != nil {
 			t.Fatalf("release the build lock %s: %v", buildLock(s), err)
 		}
 	}
@@ -307,32 +307,23 @@ func buildLockOf(t *testing.T, conn *pgx.Conn, s scheme, pid int) buildLockState
 	return buildLockState{granted: granted, queued: !granted, inPostgres: inPostgres}
 }
 
-// namesOrNone is names, ", "-joined, or "none".
-func namesOrNone(names []string) string {
-	if len(names) == 0 {
-		return "none"
-	}
-	return strings.Join(names, ", ")
-}
-
 // TestAnotherMigrationSetMakesATemplateOfItsOwn: a process whose migrations differ from those a
 // server's template was made of makes a template of its own beside it and leaves the other one
 // (R1: "A test process whose migrations differ … makes a template of its own"). One connection
-// makes set D1's template and keeps its hold, as a running process does; a second connection asks
-// for set D2 and must make a second template, whose name, written by the one function that names
-// them (templateName), differs from D1's in its digest part alone, sweep nothing, and leave D1's on
-// the server.
+// makes the first set's template and keeps its hold, as a running process does; a second
+// connection asks for the second set and must make a second template, whose name, written by the
+// one function that names them (templateName), differs from the first set's in its digest part
+// alone, sweep nothing, and leave the first set's on the server.
 func TestAnotherMigrationSetMakesATemplateOfItsOwn(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
 	login := currentLogin(t, admin)
-	raw := shared.server.String()
 	first, second := rowDigest(t), rowDigest(t)
-	firstName := makeRowTemplate(t, rowTemplateConn(t, raw), s, first)
-	secondName, made, swept := askRowTemplate(t, rowTemplateConn(t, raw), s, second)
+	firstName := makeRowTemplate(t, rowTemplateConn(t, shared.server), s, first)
+	secondName, made, swept := askRowTemplate(t, rowTemplateConn(t, shared.server), s, second)
 	if !made {
-		t.Fatalf("set D2's template %s was found, not made, beside set D1's %s", secondName, firstName)
+		t.Fatalf("the second set's template %s was found, not made, beside the first set's %s", secondName, firstName)
 	}
 	if firstName != s.templateName(first, login) || secondName != s.templateName(second, login) {
 		t.Fatalf("the templates are %s and %s; want %s and %s, named by their digests and the login %q", firstName, secondName, s.templateName(first, login), s.templateName(second, login), login)
@@ -342,69 +333,69 @@ func TestAnotherMigrationSetMakesATemplateOfItsOwn(t *testing.T) {
 		t.Fatalf("the templates %s and %s do not differ in their digest part alone", firstName, secondName)
 	}
 	if len(swept) != 0 {
-		t.Fatalf("set D2's build swept %s while a connection held set D1's template %s", namesOrNone(swept), firstName)
+		t.Fatalf("the second set's build swept %s while a connection held the first set's template %s", namesOrNone(swept), firstName)
 	}
 	if held := rowDatabases(t, admin, s.prefix); !slices.Equal(held, []string{firstName, secondName}) && !slices.Equal(held, []string{secondName, firstName}) {
 		t.Fatalf("the server holds %s under the row's prefix; want both templates, %s and %s", namesOrNone(held), firstName, secondName)
 	}
-	t.Logf("set D1's template %s stays beside set D2's %s", firstName, secondName)
+	t.Logf("the first set's template %s stays beside the second set's %s", firstName, secondName)
 }
 
 // TestATemplateAProcessHoldsIsNotSwept: a template is never dropped while a test process may still
 // clone it (R1), and a sweep is what drops one (D5). Three sets of one scheme, each made by a
-// connection of its own: set D1's, whose connection keeps its hold, as a running process does;
-// set D0's, whose connection then closes, as a process that exits does, so no process holds it
-// (D1's is made first, since each build sweeps); and set D2's, which sweeps. The sweep must drop
-// D0's alone, which shows it ran, and leave D1's, which a clone of then succeeds.
+// connection of its own: the held set's, whose connection keeps its hold, as a running process
+// does; the unheld set's, whose connection then closes, as a process that exits does, so no process
+// holds it (the held set's is made first, since each build sweeps); and the next set's, which
+// sweeps. The sweep must drop the unheld set's template alone, which shows it ran, and leave the
+// held set's, which a clone of then succeeds.
 func TestATemplateAProcessHoldsIsNotSwept(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
-	raw := shared.server.String()
-	held := makeRowTemplate(t, rowTemplateConn(t, raw), s, rowDigest(t))
-	gone := rowTemplateConn(t, raw)
+	held := makeRowTemplate(t, rowTemplateConn(t, shared.server), s, rowDigest(t))
+	gone := rowTemplateConn(t, shared.server)
 	unheld := makeRowTemplate(t, gone, s, rowDigest(t))
 	closeAndAwaitEnd(t, admin, gone)
-	next, made, swept := askRowTemplate(t, rowTemplateConn(t, raw), s, rowDigest(t))
+	next, made, swept := askRowTemplate(t, rowTemplateConn(t, shared.server), s, rowDigest(t))
 	if !made {
-		t.Fatalf("set D2's template %s was found, not made", next)
+		t.Fatalf("the next set's template %s was found, not made", next)
 	}
 	if !slices.Equal(swept, []string{unheld}) {
-		t.Fatalf("set D2's build swept %s; want %s alone, the template no connection holds, and not %s, which one holds", namesOrNone(swept), unheld, held)
+		t.Fatalf("the next set's build swept %s; want %s alone, the template no connection holds, and not %s, which one holds", namesOrNone(swept), unheld, held)
 	}
 	if !databaseExists(t, admin, held) {
-		t.Fatalf("the template %s, which a connection holds, is gone after set D2's build", held)
+		t.Fatalf("the template %s, which a connection holds, is gone after the next set's build", held)
 	}
 	clone := cloneRowTemplate(t, admin, s, held)
-	t.Logf("set D2's build swept %s and left %s, which a connection holds and which %s then cloned", unheld, held, clone)
+	t.Logf("the next set's build swept %s and left %s, which a connection holds and which %s then cloned", unheld, held, clone)
 }
 
 // TestATemplateNoProcessHoldsIsSweptByTheNextBuild: a server that outlives runs keeps the templates
-// in use plus the newest (D5). The connection that made set D1's template closes, as a process
-// that exits does; once its backend has let its locks go, a build of set D2 by another connection
-// must drop D1's template, report it among the swept, and leave D2's.
+// in use plus the newest (D5). The connection that made the first set's template closes, as a
+// process that exits does; once its backend has let its locks go, a build of the second set by
+// another connection must drop the first set's template, report it among the swept, and leave the
+// second set's.
 func TestATemplateNoProcessHoldsIsSweptByTheNextBuild(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
-	raw := shared.server.String()
-	gone := rowTemplateConn(t, raw)
+	gone := rowTemplateConn(t, shared.server)
 	first := makeRowTemplate(t, gone, s, rowDigest(t))
 	closeAndAwaitEnd(t, admin, gone)
-	second, made, swept := askRowTemplate(t, rowTemplateConn(t, raw), s, rowDigest(t))
+	second, made, swept := askRowTemplate(t, rowTemplateConn(t, shared.server), s, rowDigest(t))
 	if !made {
-		t.Fatalf("set D2's template %s was found, not made", second)
+		t.Fatalf("the second set's template %s was found, not made", second)
 	}
 	if !slices.Equal(swept, []string{first}) {
-		t.Fatalf("set D2's build swept %s; want %s, the template no connection holds", namesOrNone(swept), first)
+		t.Fatalf("the second set's build swept %s; want %s, the template no connection holds", namesOrNone(swept), first)
 	}
 	if databaseExists(t, admin, first) {
-		t.Fatalf("the template %s is still on the server, though set D2's build reports it swept", first)
+		t.Fatalf("the template %s is still on the server, though the second set's build reports it swept", first)
 	}
 	if !databaseExists(t, admin, second) {
-		t.Fatalf("set D2's template %s is not on the server", second)
+		t.Fatalf("the second set's template %s is not on the server", second)
 	}
-	t.Logf("set D2's build made %s and swept %s", second, first)
+	t.Logf("the second set's build made %s and swept %s", second, first)
 }
 
 // TestAnUnfinishedBuildIsSweptUnderTheLock: builds happen only under the build lock, so a build of
@@ -416,11 +407,11 @@ func TestAnUnfinishedBuildIsSweptUnderTheLock(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
-	dead := s.buildPrefix(currentLogin(t, admin)) + randomHex(t, 8)
-	others := s.buildPrefix("another login, whose builds are its own to drop") + randomHex(t, 8)
+	dead := randomName(t, s.buildPrefix(currentLogin(t, admin)))
+	others := randomName(t, s.buildPrefix("another login, whose builds are its own to drop"))
 	createRowDatabase(t, admin, dead)
 	createRowDatabase(t, admin, others)
-	name := makeRowTemplate(t, rowTemplateConn(t, shared.server.String()), s, rowDigest(t))
+	name := makeRowTemplate(t, rowTemplateConn(t, shared.server), s, rowDigest(t))
 	if databaseExists(t, admin, dead) {
 		t.Fatalf("the build of this login's %s, which no maker holds the build lock for, is still on the server after the build of %s", dead, name)
 	}
@@ -440,10 +431,9 @@ func TestAFoundTemplateIsUsedWithoutTheLock(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	rowAdmin(t, s)
-	raw := shared.server.String()
 	digest := rowDigest(t)
-	name := makeRowTemplate(t, rowTemplateConn(t, raw), s, digest)
-	looker := rowTemplateConn(t, raw)
+	name := makeRowTemplate(t, rowTemplateConn(t, shared.server), s, digest)
+	looker := rowTemplateConn(t, shared.server)
 	holdBuildLock(t, s)
 	var found string
 	var made bool
@@ -474,7 +464,9 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 	admin := rowAdmin(t, s)
 	elsewhere := s.prefix + "elsewhere"
 	createRowDatabase(t, admin, elsewhere)
-	c := rowTemplateConn(t, databaseURL(shared.server, elsewhere))
+	server := shared.server
+	server.Path = "/" + elsewhere
+	c := rowTemplateConn(t, server)
 	pid := int(c.conn.PgConn().PID())
 	release := holdBuildLock(t, s)
 	type answer struct {
@@ -524,7 +516,7 @@ func TestASecondLoginMakesAndCopiesItsOwnTemplate(t *testing.T) {
 	ctx := context.Background()
 	first := currentLogin(t, admin)
 	digest := rowDigest(t)
-	firstName := makeRowTemplate(t, rowTemplateConn(t, shared.server.String()), s, digest)
+	firstName := makeRowTemplate(t, rowTemplateConn(t, shared.server), s, digest)
 	role := "storetest_row_" + randomHex(t, 4)
 	password := randomHex(t, 16)
 	if _, err := admin.Exec(ctx, "create role "+role+" login createdb password '"+password+"'"); err != nil {
@@ -554,7 +546,7 @@ func TestASecondLoginMakesAndCopiesItsOwnTemplate(t *testing.T) {
 	}
 	server := shared.server
 	server.User = url.UserPassword(role, password)
-	second := rowTemplateConn(t, server.String())
+	second := rowTemplateConn(t, server)
 	secondName, made, swept := askRowTemplate(t, second, s, digest)
 	if want := s.templateName(digest, role); secondName != want || secondName == firstName || !made {
 		t.Fatalf("the login %s answered the template %s, made %t; want %s, made, beside the login %s's %s", role, secondName, made, want, first, firstName)
@@ -585,7 +577,7 @@ func TestAWaitForTheTemplateLockEndsByItsEnd(t *testing.T) {
 	t.Parallel()
 	s := rowScheme(t)
 	admin := rowAdmin(t, s)
-	c := rowTemplateConn(t, shared.server.String())
+	c := rowTemplateConn(t, shared.server)
 	holdBuildLock(t, s)
 	digest := rowDigest(t)
 	var err error

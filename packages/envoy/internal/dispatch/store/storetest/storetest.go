@@ -251,8 +251,8 @@ func ready(t testing.TB) {
 	}
 }
 
-// serverFromEnv reads DISPATCH_TEST_DATABASE_URL for ready, eagerServer and resolveOpen: raw is its
-// value, set is whether it names one, and err, where it does not parse, is a fixed text that
+// serverFromEnv reads DISPATCH_TEST_DATABASE_URL for ready, eagerServer and findOrMakeOpen: raw is
+// its value, set is whether it names one, and err, where it does not parse, is a fixed text that
 // carries nothing of the URL. url.Parse's error quotes the URL, and even the error it wraps can (an
 // invalid port's quotes what follows the authority's last colon, which for a password holding an
 // unescaped '#', '/' or '?' is the password's first part).
@@ -413,9 +413,19 @@ type templateDatabase struct {
 	once sync.Once
 	name string
 	err  error
-	// server marks Open's template, the server's, which every test process of the server and login
-	// clones, so Run never drops it.
-	server bool
+}
+
+// templateEntry is the entry of key in templates, made where none is yet: the one place an entry
+// is made, for makeOpen and makeTemplate.
+func templateEntry(key string) *templateDatabase {
+	templates.Lock()
+	defer templates.Unlock()
+	entry := templates.byKey[key]
+	if entry == nil {
+		entry = &templateDatabase{}
+		templates.byKey[key] = entry
+	}
+	return entry
 }
 
 // emptyTemplate is the database each build of Open's template (serverTemplate), each OpenFrom
@@ -509,16 +519,10 @@ func openTemplate(t testing.TB, key string, maker, again func(end time.Time, bou
 // makeOpen answers Open's template, the server's, which it resolves once in the test binary
 // (resolveOpen) where no caller has: Run does before the tests wherever a test could ask
 // (eagerServer), under TestMain's connect end, so a test finds it resolved; were none to have, the
-// first test that asks would, under its own. It is the one place Open's entry is made, for Open,
-// makeFilled and Run, and the one that marks it the server's, so Run leaves it on the server.
+// first test that asks would, under its own. Its entry is openKey's, for Open, makeFilled and Run,
+// which Run leaves on the server.
 func makeOpen(end time.Time, bounded bool) (string, error) {
-	templates.Lock()
-	entry := templates.byKey[openKey]
-	if entry == nil {
-		entry = &templateDatabase{server: true}
-		templates.byKey[openKey] = entry
-	}
-	templates.Unlock()
+	entry := templateEntry(openKey)
 	entry.once.Do(func() { entry.name, entry.err = resolveOpen(end, bounded) })
 	return entry.name, entry.err
 }
@@ -643,13 +647,7 @@ func templateSessions(connection *pgxpool.Conn, template string) ([]templateSess
 // the error a fill that ended its test leaves. A caller after the maker gets what the maker got:
 // the template's database, or why it could not be made.
 func makeTemplate(key string, end time.Time, bounded bool, from string, again func() (string, error), step string, fill func(name, databaseURL string) error) (string, error) {
-	templates.Lock()
-	entry := templates.byKey[key]
-	if entry == nil {
-		entry = &templateDatabase{}
-		templates.byKey[key] = entry
-	}
-	templates.Unlock()
+	entry := templateEntry(key)
 	entry.once.Do(func() {
 		// Set first, and cleared only once fill returns, so a fill that ends its test
 		// (t.Fatal) leaves a template no later test clones.
@@ -884,8 +882,8 @@ func runPackage(run func() int, filled []Filled) int {
 	if shared.admin != nil {
 		templates.Lock()
 		names := make([]string, 0, len(templates.byKey))
-		for _, entry := range templates.byKey {
-			if entry.name != "" && !entry.server {
+		for key, entry := range templates.byKey {
+			if entry.name != "" && key != openKey {
 				names = append(names, entry.name)
 			}
 		}

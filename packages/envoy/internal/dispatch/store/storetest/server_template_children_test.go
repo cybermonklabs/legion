@@ -1,7 +1,6 @@
 package storetest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,9 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -49,32 +46,15 @@ var cloneLine = regexp.MustCompile(`storetest: (dispatch_test_[0-9a-f]+) cloned 
 // and port, and the databases under the copy's scheme's prefix.
 var sharedTemplatesLine = regexp.MustCompile(`storetest: shared templates on (\S+) after this binary's tests: (.*)`)
 
-// copyOutput is what a copy writes to stdout and to stderr, in one buffer, in the order it wrote
-// it: exec hands the copy one pipe for both where they are the same writer, so TestMain's line on
-// stderr and testing's === RUN on stdout keep the copy's order. A row reads it while the copy runs,
-// so it is locked.
-type copyOutput struct {
-	mu      sync.Mutex
-	written bytes.Buffer
-}
-
-func (o *copyOutput) Write(p []byte) (int, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.written.Write(p)
-}
-
-func (o *copyOutput) String() string {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.written.String()
-}
-
 // rowChild is a copy of this test binary a row started (startRowChild).
 type rowChild struct {
-	name   string
-	cmd    *exec.Cmd
-	output copyOutput
+	name string
+	cmd  *exec.Cmd
+	// output is what the copy writes to stdout and to stderr, in the order it wrote it: one writer
+	// for both, so exec hands the copy one pipe for them, and TestMain's line on stderr and
+	// testing's === RUN on stdout keep the copy's order. A row reads it while the copy runs, so it
+	// is locked (LockedLog).
+	output LockedLog
 	// exited is closed once the copy has exited, with err its exit's error.
 	exited chan struct{}
 	err    error
@@ -156,8 +136,7 @@ func (c *rowChild) report() string {
 }
 
 // templateBackend answers the pid of the copy's template connection, read on conn by its
-// application_name ("storetest template <the copy's pid>", templateApplicationName), and false
-// while the copy has none.
+// application_name (templateApplicationName of the copy's pid), and false while the copy has none.
 func (c *rowChild) templateBackend(t *testing.T, conn *pgx.Conn) (int, bool) {
 	t.Helper()
 	pids, err := templateBackendsOf(conn, c.cmd.Process.Pid)
@@ -171,9 +150,9 @@ func (c *rowChild) templateBackend(t *testing.T, conn *pgx.Conn) (int, bool) {
 }
 
 // templateBackendsOf lists the backends whose application_name is the template connection's of the
-// process pid.
+// process pid (templateApplicationName).
 func templateBackendsOf(conn *pgx.Conn, pid int) ([]int, error) {
-	rows, err := conn.Query(context.Background(), "select pid from pg_stat_activity where application_name = $1", "storetest template "+strconv.Itoa(pid))
+	rows, err := conn.Query(context.Background(), "select pid from pg_stat_activity where application_name = $1", templateApplicationName(pid))
 	if err != nil {
 		return nil, err
 	}
@@ -461,15 +440,16 @@ func TestACloneAfterItsHoldIsLostRemakesASweptTemplateChild(t *testing.T) {
 // process may still clone it (R1), and a process whose hold was lost with its template connection
 // resolves the template again before it next copies it (D4): Open's clone, and a Filled's
 // template, a copy of Open's, each in a subtest of its own, with a set and a copy of its own. Copy
-// A makes the set's template D in its TestMain and clones it in its first test, then waits on a
-// gate file in its second. Once A's clone line is written, the row ends A's template connection
+// A makes the set's template in its TestMain and clones it in its first test, then waits on a gate
+// file in its second. Once A's clone line is written, the row ends A's template connection
 // (pg_terminate_backend of the backend named "storetest template <A's pid>"), as a lost connection
-// ends, waits until its backend has let its locks go, and builds set D2 of the same scheme on a
-// template connection of its own, which must sweep D, which no process holds now; D is then gone.
-// The row writes the gate: A's second test, which opens a store of the subtest's kind, must pass,
-// A must have written a second made line for D, and its second clone line, after it, must name D
-// (Open) or a template of A's own other than D (OpenFilled). Without the re-resolve the second
-// copy of D fails on 3D000.
+// ends, waits until its backend has let its locks go, and builds the other set of the same scheme
+// on a template connection of its own, which must sweep the set's template, which no process holds
+// now; the set's template is then gone. The row writes the gate: A's second test, which opens a
+// store of the subtest's kind, must pass, A must have written a second made line for the set's
+// template, and its second clone line, after it, must name the set's template (Open) or a template
+// of A's own other than it (OpenFilled). Without the re-resolve the second copy of the set's
+// template fails on 3D000.
 //
 // It does not take t.Parallel, and nor do its subtests: they act between their copies' events
 // rather than only waiting on them.
@@ -505,9 +485,9 @@ func cloneAfterTheHoldIsLost(t *testing.T, step string) {
 		t.Fatalf("end copy A's template connection, backend %d: %t, %v", pids[0], ended, err)
 	}
 	awaitBackendEnd(t, admin, pids[0], "copy A's template connection")
-	other, made, swept := askRowTemplate(t, rowTemplateConn(t, shared.server.String()), s, rowDigest(t))
+	other, made, swept := askRowTemplate(t, rowTemplateConn(t, shared.server), s, rowDigest(t))
 	if !made || !slices.Equal(swept, []string{template}) {
-		t.Fatalf("set D2's template %s, made %t, swept %s; want it made, sweeping %s, which no process holds\n%s", other, made, namesOrNone(swept), template, a.report())
+		t.Fatalf("the other set's template %s, made %t, swept %s; want it made, sweeping %s, which no process holds\n%s", other, made, namesOrNone(swept), template, a.report())
 	}
 	if databaseExists(t, admin, template) {
 		t.Fatalf("the template %s is still on the server after the sweep that reports it swept", template)
@@ -545,5 +525,5 @@ func cloneAfterTheHoldIsLost(t *testing.T, step string) {
 	if !databaseExists(t, admin, template) {
 		t.Fatalf("the template %s, which copy A made again, is not on the server", template)
 	}
-	t.Logf("copy A lost its hold on %s, which set D2's build swept, and made it again for its %s, which cloned %s", template, step, clones[1].template)
+	t.Logf("copy A lost its hold on %s, which the other set's build swept, and made it again for its %s, which cloned %s", template, step, clones[1].template)
 }
