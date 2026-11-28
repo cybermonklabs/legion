@@ -220,6 +220,13 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
 }
 
+// IsRequest reports whether p is a request pool (OpenRequestPool), whose statements run as
+// dispatch_app under the viewer the context carries; the system pool, which Open opens, is not.
+func (p *Pool) IsRequest() bool {
+	// INFRA-6168 scaffold: work step 2
+	panic(errRequestPoolNotBuilt)
+}
+
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
 // max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
 // blocked writer is all it takes to starve everything else: with four writers parked on one

@@ -94,6 +94,40 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	return &Store{Pool: NewPool(pool)}, nil
 }
 
+// OpenRequestPool opens the request pool beside system, after Migrate has run on system: a pool
+// copied from system's configuration whose every connection scans timestamptz in UTC and runs as
+// dispatch_app (set role), and which hands out no side pool (ErrRequestPoolRefuses). Before it
+// answers, it reads the role's facts on one of its connections (readRequestRoleFacts) and refuses,
+// closing the pool, unless checkRequestRole passes them (plan D1).
+func OpenRequestPool(ctx context.Context, system *Pool) (*Pool, error) {
+	// INFRA-6168 scaffold: work step 2
+	return nil, errRequestPoolNotBuilt
+}
+
+// requestRoleFacts are what the boot check reads of the role a connection of the request pool
+// runs as: current_user, its rolsuper and rolbypassrls, and whether it owns any table of schema
+// public.
+type requestRoleFacts struct {
+	role                            string
+	superuser, bypassRLS, ownsTable bool
+}
+
+// readRequestRoleFacts reads requestRoleFacts of the role q runs as.
+func readRequestRoleFacts(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}) (requestRoleFacts, error) {
+	// INFRA-6168 scaffold: work step 2
+	return requestRoleFacts{}, errRequestPoolNotBuilt
+}
+
+// checkRequestRole refuses, naming the fact, a request role that is not dispatch_app, is a
+// superuser, is BYPASSRLS or owns a table of schema public: under any of them row security would
+// not hold the request's statements (plan D1).
+func checkRequestRole(facts requestRoleFacts) error {
+	// INFRA-6168 scaffold: work step 2
+	return errRequestPoolNotBuilt
+}
+
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone
 // the host runs in. pgx builds a scanned timestamptz with time.Unix, which carries time.Local,
 // and time.Time marshals JSON in the zone it carries - so one instant left Dispatch as

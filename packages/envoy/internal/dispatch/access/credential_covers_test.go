@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -66,24 +67,28 @@ func TestACredentialOfNoPersonSeesThePrivateProjectsItLists(t *testing.T) {
 	}
 }
 
-// TestTheListRuleIsOneInGoAndSQL: the list rule's Go form (CredentialCovers, through
-// Credential.Sees) and its SQL form (VisibleProjectsSQL, through Resolve) answer alike over every
-// combination: a full member, a restricted member and no person; a browser and an agent token;
-// every list of the four projects, none included; each project public or private, and seen by the
-// person or not. full@ is a full member PUBSEEN and PRIVSEEN name; restricted@ is a restricted
-// member PUBSEEN and PRIVSEEN name; PUBUNSEEN and PRIVUNSEEN name nobody. Each caller's Sees is
-// also held to the rule's stated answer for the combinations the forms could agree on wrongly: a
-// full member's token sees the public projects whatever it lists and only the private ones it
-// lists; a restricted member's token is held to its list, or with none to the public projects its
-// person sees; a credential of no person sees the public projects and the private ones it lists.
-// With no private project a full member's list decides nothing it reads (R9): each of its tokens
-// sees what its token listing none sees. Resolve still answers a personal token's list as Lists,
-// which is new with private projects, and no Lists for a full member's broker token, whose list it
-// answered as none before (R9); a restricted member's list holds in every state.
+// TestTheListRuleIsOneInGoAndSQL (plan D8, R1): the list rule is one formula, which its Go form
+// (Credential.Sees, through CredentialCovers) and its SQL form (VisibleProjectsSQL, through
+// Resolve) both answer: a caller sees project P when its person sees P and P is public, or its
+// list names P, or it is the person's browser; a caller of no person sees P when P is public or its
+// list names P. A list narrows private projects only, a limited member's as well as a full
+// member's. A person sees P when P's owner is the person, P's access list names the person, P's
+// list names a group the person is a member of (a limited member too), or P is public and the
+// person is a full member, so a limited member sees no public project whose list does not name it,
+// whatever its credential lists (the architect's ruling on departure 6).
+//
+// The callers: the browser of a full member (full@) and of a limited member (restricted@), each's
+// personal token and broker token, a broker token of a person no people row holds (newbie@, whom
+// the broker signs in as a full member), and a token of no person; each token with every list of
+// none, one and two of the five projects. PUBSEEN and PRIVSEEN name full@ and restricted@,
+// PRIVGROUP names the group crew, whose members they both are, and PUBUNSEEN and PRIVUNSEEN name
+// nobody. What each person sees is stated here, apart from both forms, and both forms are held to
+// the formula over it. With no private project no list decides anything a caller reads: each
+// caller sees what its person sees, and Resolve still answers Lists as before (R9).
 func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
-	const full, restricted = "full@example.com", "restricted@other.example"
+	const full, restricted, newbie = "full@example.com", "restricted@other.example", "newbie@example.com"
 	if _, err := database.Pool.Exec(ctx, `
 		insert into people (email, member_kind) values
 			('olga@example.com', 'full'), ('full@example.com', 'full'), ('restricted@other.example', 'restricted');
@@ -91,67 +96,78 @@ func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 			('PUBSEEN', 'Public seen', 'olga@example.com', 'public'),
 			('PUBUNSEEN', 'Public unseen', 'olga@example.com', 'public'),
 			('PRIVSEEN', 'Private seen', 'olga@example.com', 'private'),
-			('PRIVUNSEEN', 'Private unseen', 'olga@example.com', 'private');
+			('PRIVUNSEEN', 'Private unseen', 'olga@example.com', 'private'),
+			('PRIVGROUP', 'Private through a group', 'olga@example.com', 'private');
+		insert into access_groups (name, owner) values ('crew', 'olga@example.com');
+		insert into access_group_members (group_name, person) values ('crew', 'full@example.com'), ('crew', 'restricted@other.example');
 		insert into project_access (project_key, principal_kind, principal, added_by) values
 			('PUBSEEN', 'person', 'full@example.com', '{"kind":"user","id":"olga@example.com"}'),
 			('PUBSEEN', 'person', 'restricted@other.example', '{"kind":"user","id":"olga@example.com"}'),
 			('PRIVSEEN', 'person', 'full@example.com', '{"kind":"user","id":"olga@example.com"}'),
-			('PRIVSEEN', 'person', 'restricted@other.example', '{"kind":"user","id":"olga@example.com"}');
+			('PRIVSEEN', 'person', 'restricted@other.example', '{"kind":"user","id":"olga@example.com"}'),
+			('PRIVGROUP', 'group', 'crew', '{"kind":"user","id":"olga@example.com"}');
 	`); err != nil {
 		t.Fatalf("seed the combinations: %v", err)
 	}
-	projects := []string{"PRIVSEEN", "PRIVUNSEEN", "PUBSEEN", "PUBUNSEEN"}
-	private := map[string]bool{"PRIVSEEN": true, "PRIVUNSEEN": true, "PUBSEEN": false, "PUBUNSEEN": false}
-	var lists [][]string
-	for mask := range 1 << len(projects) {
-		var list []string
-		for i, project := range projects {
-			if mask&(1<<i) != 0 {
-				list = append(list, project)
-			}
+	projects := []string{"PRIVGROUP", "PRIVSEEN", "PRIVUNSEEN", "PUBSEEN", "PUBUNSEEN"}
+	private := map[string]bool{"PRIVGROUP": true, "PRIVSEEN": true, "PRIVUNSEEN": true, "PUBSEEN": false, "PUBUNSEEN": false}
+	// What each person sees, by the person rule.
+	personSees := map[string][]string{
+		full:       {"PRIVGROUP", "PRIVSEEN", "PUBSEEN", "PUBUNSEEN"},
+		restricted: {"PRIVGROUP", "PRIVSEEN", "PUBSEEN"},
+		newbie:     {"PUBSEEN", "PUBUNSEEN"},
+	}
+	lists := [][]string{nil}
+	for i, first := range projects {
+		lists = append(lists, []string{first})
+		for _, second := range projects[i+1:] {
+			lists = append(lists, []string{first, second})
 		}
-		lists = append(lists, list)
 	}
 	type caller struct {
-		name       string
-		actor      model.Actor
-		person     string
-		restricted bool
-		listed     []string
+		name                string
+		actor               model.Actor
+		person              string
+		browser, restricted bool
+		broker              bool
+		listed              []string
+	}
+	broker := func(person string, list []string) model.Actor {
+		session := "ses_broker_" + strings.Split(person, "@")[0]
+		return model.Actor{Kind: "session", ID: session, Owner: new(person),
+			Credential: &model.Credential{Scopes: model.Scopes, Session: session, Projects: list}}
 	}
 	var callers []caller
 	for _, person := range []string{full, restricted} {
-		callers = append(callers, caller{person + "'s browser", cookie(person), person, person == restricted, nil})
-		for _, list := range lists {
-			callers = append(callers, caller{fmt.Sprintf("%s's token listing %v", person, list), personalToken(person, list...), person, person == restricted, list})
-		}
+		callers = append(callers, caller{name: person + "'s browser", actor: cookie(person), person: person, browser: true, restricted: person == restricted})
 	}
 	for _, list := range lists {
-		callers = append(callers, caller{fmt.Sprintf("a token of no person listing %v", list),
-			model.Actor{Service: new("system:serviceaccount:legion:worker"), Credential: &model.Credential{Projects: list}}, "", false, list})
+		for _, person := range []string{full, restricted} {
+			callers = append(callers,
+				caller{name: fmt.Sprintf("%s's personal token listing %v", person, list), actor: personalToken(person, list...), person: person, restricted: person == restricted, listed: list},
+				caller{name: fmt.Sprintf("%s's broker token listing %v", person, list), actor: broker(person, list), person: person, restricted: person == restricted, broker: true, listed: list})
+		}
+		callers = append(callers,
+			caller{name: fmt.Sprintf("%s's broker token listing %v", newbie, list), actor: broker(newbie, list), person: newbie, broker: true, listed: list},
+			caller{name: fmt.Sprintf("a token of no person listing %v", list),
+				actor: model.Actor{Service: new("system:serviceaccount:legion:worker"), Credential: &model.Credential{Projects: list}}, listed: list})
 	}
-	personSees := map[string][]string{}
 	for _, person := range []string{full, restricted} {
 		viewer, err := Resolve(ctx, database.Pool, cookie(person))
 		if err != nil {
 			t.Fatalf("Resolve %s's browser: %v", person, err)
 		}
-		personSees[person] = viewer.Sees
-	}
-	// The rule's stated answer, written apart from both forms.
-	want := func(c caller, project string) bool {
-		listed := slices.Contains(c.listed, project)
-		switch {
-		case c.actor.Kind == "user":
-			return slices.Contains(personSees[c.person], project)
-		case c.person == "":
-			return !private[project] || listed
-		case !slices.Contains(personSees[c.person], project):
-			return false
-		case c.restricted && len(c.listed) > 0:
-			return listed
+		if !slices.Equal(viewer.Sees, personSees[person]) {
+			t.Errorf("%s sees %v, want %v: the person rule admits a limited member through a group as through a direct listing, and a public project only to a full member or a person its list names",
+				person, viewer.Sees, personSees[person])
 		}
-		return !private[project] || listed
+	}
+	// The formula, written apart from both forms.
+	want := func(c caller, project string) bool {
+		if c.person != "" && !slices.Contains(personSees[c.person], project) {
+			return false
+		}
+		return !private[project] || slices.Contains(c.listed, project) || c.browser
 	}
 	compared := 0
 	for _, c := range callers {
@@ -160,9 +176,9 @@ func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 			t.Fatalf("%s: Resolve: %v", c.name, err)
 		}
 		if viewer.Open == c.restricted {
-			t.Errorf("%s: Resolve answers open %t, want %t: a viewer is open when it is not a restricted member's", c.name, viewer.Open, !c.restricted)
+			t.Errorf("%s: Resolve answers open %t, want %t: a viewer is open when it is not a limited member's", c.name, viewer.Open, !c.restricted)
 		}
-		cred := Credential{Listed: c.listed, Person: c.person != "", Browser: c.actor.Kind == "user", Restricted: c.restricted, PersonSees: personSees[c.person]}
+		cred := Credential{Listed: c.listed, Person: c.person != "", Browser: c.browser, PersonSees: personSees[c.person]}
 		for _, project := range projects {
 			compared++
 			goForm, sqlForm := cred.Sees(project, private[project]), slices.Contains(viewer.Sees, project)
@@ -173,50 +189,48 @@ func TestTheListRuleIsOneInGoAndSQL(t *testing.T) {
 				t.Errorf("%s, %s (private %t): Go %t, SQL %t, the rule says %t", c.name, project, private[project], goForm, sqlForm, w)
 			}
 		}
+		if c.restricted && slices.Contains(viewer.Sees, "PUBUNSEEN") {
+			t.Errorf("%s sees PUBUNSEEN, a public project whose access list does not name the limited member: an open viewer's public arm must not pass a limited member's credential", c.name)
+		}
 	}
-	if wantCompared := (2*(1+len(lists)) + len(lists)) * len(projects); compared != wantCompared {
+	if wantCompared := (2 + 6*len(lists)) * len(projects); compared != wantCompared {
 		t.Fatalf("compared %d answers, want %d: not every combination was read", compared, wantCompared)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `update projects set visibility = 'public'`); err != nil {
 		t.Fatalf("make every project public: %v", err)
 	}
-	unlisted := map[string]model.Viewer{}
-	for _, c := range callers {
-		if c.actor.Kind != "user" && len(c.listed) == 0 {
-			viewer, err := Resolve(ctx, database.Pool, c.actor)
-			if err != nil {
-				t.Fatalf("%s: Resolve: %v", c.name, err)
-			}
-			unlisted[c.person] = viewer
-		}
+	// With no private project a person sees what it saw and each public project a full member
+	// sees; no list decides anything.
+	publicSees := map[string][]string{
+		full:       projects,
+		restricted: {"PRIVGROUP", "PRIVSEEN", "PUBSEEN"},
+		newbie:     projects,
+		"":         projects,
 	}
 	for _, c := range callers {
-		if c.actor.Kind == "user" || len(c.listed) == 0 {
-			continue
-		}
 		viewer, err := Resolve(ctx, database.Pool, c.actor)
 		if err != nil {
-			t.Fatalf("%s: Resolve: %v", c.name, err)
+			t.Fatalf("with no private project, %s: Resolve: %v", c.name, err)
 		}
-		switch {
-		case !slices.Equal(viewer.Lists, c.listed):
-			t.Errorf("with no private project, %s resolves Lists %v, want its list %v: a token that is no broker token's is answered its list in every state", c.name, viewer.Lists, c.listed)
-		case !c.restricted && !slices.Equal(viewer.Sees, unlisted[c.person].Sees):
-			t.Errorf("with no private project, %s resolves %+v, want what its token listing none sees, %v (R9)", c.name, viewer, unlisted[c.person].Sees)
+		if !slices.Equal(viewer.Sees, publicSees[c.person]) {
+			t.Errorf("with no private project, %s sees %v, want what its person sees, %v: no list decides anything (R9)", c.name, viewer.Sees, publicSees[c.person])
 		}
-		if c.person == "" || c.restricted {
-			continue
+		cred := Credential{Listed: c.listed, Person: c.person != "", Browser: c.browser, PersonSees: publicSees[c.person]}
+		for _, project := range projects {
+			if got, w := cred.Sees(project, false), slices.Contains(publicSees[c.person], project); got != w {
+				t.Errorf("with no private project, %s, %s: Credential.Sees = %t, want %t", c.name, project, got, w)
+			}
 		}
-		broker := model.Actor{Kind: "session", ID: "ses_broker", Owner: new(c.person),
-			Credential: &model.Credential{Scopes: model.Scopes, Session: "ses_broker", Projects: c.listed}}
-		brokered, err := Resolve(ctx, database.Pool, broker)
-		if err != nil {
-			t.Fatalf("%s's broker token listing %v: Resolve: %v", c.person, c.listed, err)
+		// Lists: every credential's list but a broker token's, which is answered only while some
+		// project is private or its person is a limited member, as before projects could be
+		// private (R9).
+		var wantLists []string
+		if !c.browser && len(c.listed) > 0 && (!c.broker || c.restricted) {
+			wantLists = c.listed
 		}
-		if brokered.Lists != nil || !slices.Equal(brokered.Sees, unlisted[c.person].Sees) {
-			t.Errorf("with no private project, %s's broker token listing %v resolves %+v, want what its token listing none sees, %v, and no Lists (R9)",
-				c.person, c.listed, brokered, unlisted[c.person].Sees)
+		if !slices.Equal(viewer.Lists, wantLists) {
+			t.Errorf("with no private project, %s resolves Lists %v, want %v", c.name, viewer.Lists, wantLists)
 		}
 	}
 }

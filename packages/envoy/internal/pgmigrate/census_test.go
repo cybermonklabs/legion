@@ -54,6 +54,17 @@ func TestTouchedTablesFindsEveryStatementFormTheMigrationsUse(t *testing.T) {
 		"create function h() returns void language sql as 'delete from things';":                                                   nil,
 		"insert into notes (body) values ('update things set kind = null -- or /* */');":                                           {"notes"},
 		"do language plpgsql $body$ begin update things set kind = 'x'; end $body$;":                                               {"things"},
+		// A policy locks the table it is on (plan D7's row-security migrations); a table its
+		// expressions read is only read, and the command words of for update or for delete name
+		// no table.
+		"create policy viewer on issues for all to public using (not dispatch_request_role() or dispatch_sees_project(project_key)) with check (not dispatch_request_role() or dispatch_sees_project(project_key));": {"issues"},
+		"CREATE POLICY \"viewer\" ON public.\"comments\" USING (exists (select 1 from issues i where i.key = issue_key));":                                                                                           {"comments"},
+		"create policy p on refs for update to public using (true);":      {"refs"},
+		"create policy p on refs as restrictive for delete using (true);": {"refs"},
+		// alter view names the view it alters (graph_edges' security_invoker): a view is no table
+		// the size rule reads, and its base tables are not altered.
+		"alter view public.graph_edges set (security_invoker = on);":          {"graph_edges"},
+		"ALTER VIEW IF EXISTS \"graph_edges\" SET (security_invoker = true);": {"graph_edges"},
 	} {
 		if got := TouchedTables(sql); !slices.Equal(got, want) {
 			t.Errorf("TouchedTables(%q) = %v, want %v", sql, got, want)
