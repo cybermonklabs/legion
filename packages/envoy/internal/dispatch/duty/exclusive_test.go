@@ -105,7 +105,13 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 			<-finish
 		})
 	}()
-	<-inside
+	defer func() {
+		close(finish)
+		if !testwait.Receive(t, "the first caller to report whether it ran its pass", first) {
+			t.Error("the first caller did not take the lease")
+		}
+	}()
+	testwait.Receive(t, "the first caller to enter its pass", inside)
 
 	secondRan := false
 	if duty.Exclusive(ctx, nil, leases, "compaction", time.Time{}, 0, func(context.Context) { secondRan = true }) {
@@ -113,10 +119,6 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 	}
 	if secondRan {
 		t.Error("the second caller ran its pass while the first was inside its own")
-	}
-	close(finish)
-	if !<-first {
-		t.Error("the first caller did not take the lease")
 	}
 }
 
@@ -194,14 +196,14 @@ func TestExclusiveTakesALeaseWhoseHolderDiedWithoutUnlocking(t *testing.T) {
 // blocking pg_advisory_lock, unlocked again at once - is exactly that wait, and needs no polling.
 func waitForRelease(t *testing.T, database *store.Store, name string) {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	waiter, err := database.Pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire a connection to wait on the lease: %v", err)
 	}
 	defer waiter.Release()
 	if _, err := waiter.Exec(ctx, `select pg_advisory_lock($1, hashtext($2))`, duty.LeaseNamespace, name); err != nil {
-		t.Fatalf("wait for the dead holder's lease: %v", err)
+		t.Fatalf("wait for the dead holder's %q lease: %v", name, err)
 	}
 	var freed bool
 	if err := waiter.QueryRow(ctx, duty.FreeLease, duty.LeaseNamespace, name).Scan(&freed); err != nil || !freed {
@@ -224,12 +226,12 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	const period = time.Hour
 
 	ran := false
-	if !duty.Exclusive(ctx, nil, leases, name, time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, nil, leases, name, tickDue, period, func(context.Context) { ran = true }) || !ran {
 		t.Fatal("the first process's pass did not run")
 	}
 
 	otherRan := false
-	if duty.Exclusive(ctx, nil, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) {
+	if duty.Exclusive(ctx, nil, otherLeases, name, tickDue, period, func(context.Context) { otherRan = true }) {
 		t.Error("the second process took the pass inside a period the first one had served")
 	}
 	if otherRan {
@@ -239,7 +241,7 @@ func TestExclusiveSkipsASecondProcessInsideThePeriod(t *testing.T) {
 	// The recorded pass moved back is the period having run out, which no test waits an hour
 	// for: the repository's other claim rows age their row the same way rather than sleeping.
 	movePassBack(t, database, name, 2*period)
-	if !duty.Exclusive(ctx, nil, otherLeases, name, time.Now(), period, func(context.Context) { otherRan = true }) || !otherRan {
+	if !duty.Exclusive(ctx, nil, otherLeases, name, tickDue, period, func(context.Context) { otherRan = true }) || !otherRan {
 		t.Error("no pass ran once the recorded one was older than the period")
 	}
 }
@@ -258,7 +260,7 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 
 	stopping, stop := context.WithCancel(context.Background())
 	cut := false
-	if duty.Exclusive(stopping, nil, leases, name, time.Now(), period, func(context.Context) {
+	if duty.Exclusive(stopping, nil, leases, name, tickDue, period, func(context.Context) {
 		cut = true
 		// The shutdown lands while the pass is still working, as a SIGTERM does.
 		stop()
@@ -270,7 +272,7 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 	}
 
 	ran := false
-	if !duty.Exclusive(context.Background(), nil, leases, name, time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(context.Background(), nil, leases, name, tickDue, period, func(context.Context) { ran = true }) || !ran {
 		t.Error("the next tick skipped a period the cut-short pass never served")
 	}
 }
@@ -404,11 +406,11 @@ func TestExclusiveAPeriodHoldsBackOnlyItsOwnLoop(t *testing.T) {
 	ctx := context.Background()
 	const period = time.Hour
 
-	if !duty.Exclusive(ctx, nil, leases, "document-compaction", time.Now(), period, func(context.Context) {}) {
+	if !duty.Exclusive(ctx, nil, leases, "document-compaction", tickDue, period, func(context.Context) {}) {
 		t.Fatal("the first loop's pass did not run")
 	}
 	ran := false
-	if !duty.Exclusive(ctx, nil, leases, "webhook-redelivery", time.Now(), period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, nil, leases, "webhook-redelivery", tickDue, period, func(context.Context) { ran = true }) || !ran {
 		t.Error("a loop's pass was refused by another loop's period")
 	}
 }
@@ -430,11 +432,11 @@ func TestExclusiveDoesNotLockOutALoopWhosePeriodGrows(t *testing.T) {
 	const step, interval = 2 * time.Second, 5 * time.Minute
 
 	stepped := false
-	if !duty.Exclusive(ctx, nil, leases, name, time.Now(), step, func(context.Context) { stepped = true }) || !stepped {
+	if !duty.Exclusive(ctx, nil, leases, name, tickDue, step, func(context.Context) { stepped = true }) || !stepped {
 		t.Fatal("the drift step's own pass did not run, so this row measures nothing")
 	}
 	ran := false
-	if !duty.Exclusive(ctx, nil, leases, name, time.Now(), interval, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, nil, leases, name, tickDue, interval, func(context.Context) { ran = true }) || !ran {
 		t.Error("the loop's full-interval tick was refused by the pass its own shorter-period tick recorded; no later tick of that loop can ever run")
 	}
 }
@@ -444,7 +446,8 @@ func TestExclusiveDoesNotLockOutALoopWhosePeriodGrows(t *testing.T) {
 // run that loop once per its own period, never once per tick. Here both processes tick every half
 // minute, more often than either period, as the out-of-phase replicas of a build do between them,
 // and ten minutes pass with no wait: each time the simulated clock passes a period's boundary, the
-// passes recorded at that period are moved back one period, the move movePassBack makes.
+// passes recorded at that period are moved back one period by crossBoundary. All ticks use the same
+// due time, so only those moves make a new period eligible.
 func TestExclusiveRunsEachPeriodOfOneLeaseOncePerItsOwnPeriod(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -455,7 +458,6 @@ func TestExclusiveRunsEachPeriodOfOneLeaseOncePerItsOwnPeriod(t *testing.T) {
 	const short, long = time.Minute, 5 * time.Minute
 	const tick, span = 30 * time.Second, 10 * time.Minute
 
-	stillInTheMinute := clearOfTheMinute(t, database, 15*time.Second)
 	// Runs counted by the index of the period they fell in, on the simulated clock.
 	shortRuns, longRuns := map[int]int{}, map[int]int{}
 	for elapsed := time.Duration(0); elapsed <= span; elapsed += tick {
@@ -465,10 +467,9 @@ func TestExclusiveRunsEachPeriodOfOneLeaseOncePerItsOwnPeriod(t *testing.T) {
 		if elapsed > 0 && elapsed%long == 0 {
 			crossBoundary(t, database, name, long)
 		}
-		duty.Exclusive(ctx, nil, leases, name, time.Now(), short, func(context.Context) { shortRuns[int(elapsed/short)]++ })
-		duty.Exclusive(ctx, nil, otherLeases, name, time.Now(), long, func(context.Context) { longRuns[int(elapsed/long)]++ })
+		duty.Exclusive(ctx, nil, leases, name, tickDue, short, func(context.Context) { shortRuns[int(elapsed/short)]++ })
+		duty.Exclusive(ctx, nil, otherLeases, name, tickDue, long, func(context.Context) { longRuns[int(elapsed/long)]++ })
 	}
-	stillInTheMinute()
 
 	for index := 0; index <= int(span/short); index++ {
 		if runs := shortRuns[index]; runs != 1 {
@@ -494,12 +495,12 @@ func TestExclusiveCountsThePreviousBuildsPassAtItsOwnPeriod(t *testing.T) {
 	const name = "document-compaction"
 	const period, other = time.Hour, 5 * time.Minute
 
-	recordAsThePreviousBuild(t, database, name, period)
-	if !duty.Exclusive(ctx, nil, leases, name, time.Now(), other, func(context.Context) {}) {
+	recordAsThePreviousBuild(t, database, name, tickDue, period)
+	if !duty.Exclusive(ctx, nil, leases, name, tickDue, other, func(context.Context) {}) {
 		t.Fatal("a tick at another period was refused, so this row measures nothing")
 	}
 	ran := false
-	if duty.Exclusive(ctx, nil, leases, name, time.Now(), period, func(context.Context) { ran = true }) || ran {
+	if duty.Exclusive(ctx, nil, leases, name, tickDue, period, func(context.Context) { ran = true }) || ran {
 		t.Error("this build ran a pass inside a period the previous build had served at the same period")
 	}
 }
@@ -514,10 +515,10 @@ func TestExclusiveRecordsAPassThePreviousBuildReadsAtTheSamePeriod(t *testing.T)
 	const name = "architecture-import"
 	const period = time.Hour
 
-	if !duty.Exclusive(context.Background(), nil, leases, name, time.Now(), period, func(context.Context) {}) {
+	if !duty.Exclusive(context.Background(), nil, leases, name, tickDue, period, func(context.Context) {}) {
 		t.Fatal("the pass did not run, so this row measures nothing")
 	}
-	if !servedForThePreviousBuild(t, database, name, period) {
+	if !servedForThePreviousBuild(t, database, name, tickDue, period) {
 		t.Error("the previous build reads the period this build served as unserved, so it runs the pass again")
 	}
 }
@@ -532,10 +533,10 @@ func TestExclusiveNeitherWaitsOnNorOverwritesThePreviousBuildsPassAtAnotherPerio
 	const name = "reference-excerpts"
 	const previous, own = 5 * time.Minute, time.Minute
 
-	recordAsThePreviousBuild(t, database, name, previous)
+	recordAsThePreviousBuild(t, database, name, tickDue, previous)
 	boundary, periodNS := previousBuildsRow(t, database, name)
 	ran := false
-	if !duty.Exclusive(context.Background(), nil, leases, name, time.Now(), own, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(context.Background(), nil, leases, name, tickDue, own, func(context.Context) { ran = true }) || !ran {
 		t.Error("the previous build's pass at another period held this build's tick back")
 	}
 	afterBoundary, afterPeriodNS := previousBuildsRow(t, database, name)
@@ -559,20 +560,20 @@ const (
 )
 
 // recordAsThePreviousBuild records a pass of name at period as the previous build records one.
-func recordAsThePreviousBuild(t *testing.T, database *store.Store, name string, period time.Duration) {
+func recordAsThePreviousBuild(t *testing.T, database *store.Store, name string, due time.Time, period time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), previousBuildRecordPass,
-		name, duty.PeriodBoundary(time.Now(), period), period.Nanoseconds()); err != nil {
+		name, duty.PeriodBoundary(due, period), period.Nanoseconds()); err != nil {
 		t.Fatalf("record a %s pass as the previous build: %v", name, err)
 	}
 }
 
 // servedForThePreviousBuild is whether the previous build finds name's period served at period.
-func servedForThePreviousBuild(t *testing.T, database *store.Store, name string, period time.Duration) bool {
+func servedForThePreviousBuild(t *testing.T, database *store.Store, name string, due time.Time, period time.Duration) bool {
 	t.Helper()
 	var served bool
 	if err := database.Pool.QueryRow(context.Background(), previousBuildReadPeriod,
-		name, period.Nanoseconds(), duty.PeriodBoundary(time.Now(), period)).Scan(&served); err != nil {
+		name, period.Nanoseconds(), duty.PeriodBoundary(due, period)).Scan(&served); err != nil {
 		t.Fatalf("read the %s period as the previous build: %v", name, err)
 	}
 	return served
@@ -654,37 +655,6 @@ func crossBoundary(t *testing.T, database *store.Store, name string, period time
 	}
 }
 
-// clearOfTheMinute waits, when the database clock is within margin of its next minute, until that
-// minute has begun. It returns a check that fails the test when the clock is in another minute by
-// then. A test that moves boundaries stands in for the clock, and a real boundary passed during the
-// test would be one more move than the test counts.
-func clearOfTheMinute(t *testing.T, database *store.Store, margin time.Duration) func() {
-	t.Helper()
-	ctx := context.Background()
-	var left float64
-	if err := database.Pool.QueryRow(ctx,
-		`select (60 - mod(extract(epoch from now())::numeric, 60))::float8`).Scan(&left); err != nil {
-		t.Fatalf("read the database clock: %v", err)
-	}
-	if remaining := time.Duration(left * float64(time.Second)); remaining < margin {
-		time.Sleep(remaining + 100*time.Millisecond)
-	}
-	minute := func() time.Time {
-		var at time.Time
-		if err := database.Pool.QueryRow(ctx, `select date_trunc('minute', now())`).Scan(&at); err != nil {
-			t.Fatalf("read the database clock: %v", err)
-		}
-		return at
-	}
-	began := minute()
-	return func() {
-		t.Helper()
-		if ended := minute(); !ended.Equal(began) {
-			t.Fatalf("the database clock passed a minute boundary during the test (%s to %s), so the moved boundaries do not stand for the clock; run it again", began, ended)
-		}
-	}
-}
-
 // recordedPasses is how many passes duty_passes holds for name.
 func recordedPasses(t *testing.T, database *store.Store, name string) int {
 	t.Helper()
@@ -707,19 +677,20 @@ func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
 	const name = "ci-reconcile"
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)
+	elsewhereLeases := leasesOf(t, elsewhere)
 	taken, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), nil, leasesOf(t, elsewhere), name, time.Time{}, 0, func(context.Context) {
+		duty.Exclusive(t.Context(), nil, elsewhereLeases, name, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	<-taken
 	defer func() {
 		close(release)
-		<-done
+		testwait.Receive(t, "the other database's lease call to return after releasing its pass", done)
 	}()
+	testwait.Receive(t, "the other database's caller to take the lease and enter its pass", taken)
 
 	if held, err := duty.LeaseHeld(t.Context(), elsewhere.Pool, name); err != nil || !held {
 		t.Fatalf("the lease reads as held = %v in the database whose session holds it: %v", held, err)

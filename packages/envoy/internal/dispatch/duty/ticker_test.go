@@ -76,7 +76,13 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 				}()
 				time.Sleep(6 * interval)
 				cancel()
-				<-done
+				// A blocking receive would let a loop that ignored cancellation keep ticking.
+				synctest.Wait()
+				select {
+				case <-done:
+				default:
+					t.Fatal("RunJittered had not returned once its context ended")
+				}
 
 				at := passes.times()
 				if len(at) < 6 {

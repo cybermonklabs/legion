@@ -58,7 +58,12 @@ func TestTheFiveMinuteReadsWaitAtMostFiveMinutesBetweenPasses(t *testing.T) {
 						}()
 						time.Sleep(20 * loop.interval)
 						cancel()
-						<-done
+						synctest.Wait()
+						select {
+						case <-done:
+						default:
+							t.Fatal("RunJittered had not returned once its context ended")
+						}
 
 						at := passes.times()
 						if len(at) < 10 {

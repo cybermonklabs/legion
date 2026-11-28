@@ -39,10 +39,16 @@ func runLoop(loop duty.WokenLoop, exclusive duty.ExclusiveFunc) (cancel context.
 	return cancel, finished
 }
 
-// stop cancels the loop and waits for it to return.
-func stop(cancel context.CancelFunc, done <-chan struct{}) {
+// stop checks that WokenLoop returns after cancellation without another wake or tick.
+func stop(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
 	cancel()
-	<-done
+	synctest.Wait()
+	select {
+	case <-done:
+	default:
+		t.Fatal("WokenLoop had not returned once its context ended")
+	}
 }
 
 // wantPassesAt fails unless the passes started exactly offsets after start, and no other pass did.
@@ -84,7 +90,7 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0)
 	})
 }
@@ -115,7 +121,7 @@ func TestAWokenLoopReportsIdleOnlyWithNothingOwedOrDue(t *testing.T) {
 		time.Sleep(time.Minute)
 		signal(wake)
 		time.Sleep(time.Minute)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute)
 		var reported []time.Duration
 		for _, at := range idles.times() {
@@ -150,7 +156,7 @@ func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
 
 		signal(wake)
 		synctest.Wait()
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 20*time.Second)
 	})
 }
@@ -178,11 +184,17 @@ func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
 				return time.Time{}
 			},
 		}, noLease(t))
-		<-inside
+		defer cancel()
+		synctest.Wait()
+		select {
+		case <-inside:
+		default:
+			t.Fatal("WokenLoop had not entered its first pass")
+		}
 		signal(wake)
 		close(release)
 		time.Sleep(time.Minute)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second)
 	})
 }
@@ -206,7 +218,7 @@ func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 30*time.Second)
 	})
 }
@@ -238,7 +250,7 @@ func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
 		time.Sleep(10 * time.Second)
 		signal(wake)
 		time.Sleep(2 * time.Hour)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, 70*time.Second)
 	})
 }
@@ -263,7 +275,7 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 10*time.Second)
 	})
 }
@@ -315,7 +327,7 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, lease.exclusive)
 		time.Sleep(time.Hour)
-		stop(cancel, done)
+		stop(t, cancel, done)
 
 		lease.mu.Lock()
 		defer lease.mu.Unlock()

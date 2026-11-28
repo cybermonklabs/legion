@@ -91,7 +91,12 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 		// which no tick is due, so the cancel races nothing.
 		time.Sleep((periods-1)*interval + interval/2)
 		stop()
-		<-done
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("RunLeasedUnderGate had not returned once its context ended")
+		}
 
 		served := gate.periods()
 		first := duty.PeriodBoundary(booted, interval)
