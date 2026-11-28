@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A role message the listener would keep for the role's next holder is refused with nothing sent
+  while the deployed `ENVOY_NOTIFICATIONS` stream, as the listener last read its subjects, does not
+  capture the role's kept lane `notifications.envoy.kept.role.<role>` (a hub move's quiesce narrows
+  it). A `POST /v1/messages/publish` to a role with no live holder, and a `POST /v1/messages/send`
+  marked with a role whose claim names another session or none, now get the `503` with
+  `Retry-After: 1` whose `error` starts `envoy: the message was not sent, and may be sent again
+  later: `, and the request line records `subject_not_deployed`. The listener asks before it reports
+  the role's wake, so it reports no wake, keeps nothing and charges the sender limit nothing. Before,
+  the keep's publish went to a subject no stream stored or answered, so after the keep's two
+  seconds the role publish got the `404` that says nothing was kept and the marked send the `503`
+  that says the bus did not answer, each after a wake that cost the sender one.
+  `bus.Client.PublishStoredAck`, and `PublishStoredAs` through it, now refuse such a subject with
+  `bus.ErrSubjectNotDeployed` before anything is sent, as `PublishAckWithin` and `PublishRetained`
+  already did. So the sweep's repeated wake report and a dropped copy's dead letter send nothing to a
+  subject the stream does not capture: the next sweep raises the wake again while a kept copy still
+  wakes the role, and the walk that takes over the dead letter's claim sends the dead letter again.
+time: 2026-11-28T09:06:32.000000000Z
+custom:
+    Issue: pr2230

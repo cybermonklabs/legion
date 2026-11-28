@@ -218,7 +218,11 @@ func sweptRoleWakeID(role string, now time.Time) string {
 // made from that key (keyedEventID), so the stream stores one report for a role in each interval
 // across every listener. A listener whose report the stream already held logs it as already
 // stored and not as published, so a count of published lines is a count of stored reports. A
-// report that did not reach the stream is logged and not retried: the next sweep raises it again.
+// report that did not reach the stream is logged and not retried: the next sweep raises it again
+// while no live session holds the role and its kept lane still holds a copy that wakes it
+// (raiseKeptRoleWake, keptLaneWakesItsRole). A report the bus refuses before it sends anything,
+// because the deployed stream, as the listener's client last read its subjects, does not capture
+// bus.LegionWakeTopic (bus.ErrSubjectNotDeployed, bus.Client.PublishStoredAck), is such a report.
 func publishSweptRoleWake(lifetime context.Context, client *bus.Client, logger *logging.Logger, role string, now time.Time) {
 	if client == nil {
 		return

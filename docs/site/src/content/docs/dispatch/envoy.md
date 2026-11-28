@@ -240,8 +240,16 @@ behind refuses no message a live holder can take. The one publish that names no 
 and is kept is a role publish that names the Dispatch post it delivers (`dispatch_post`). The
 listener takes that field from Dispatch's own verified principal alone (`ENVOY_DISPATCH_PRINCIPAL`)
 and refuses it `403` from every other caller. That copy gets no dead letter, since the listener
-stores an expiry notice for Dispatch instead (below). If the holder does not take the message's
-delivery mode, the refusal is
+stores an expiry notice for Dispatch instead (below). The one failed keep that is not a `404` is a
+keep while the stream, as the listener last read its subjects, does not capture the role's kept
+lane `notifications.envoy.kept.role.<role>`, as during a hub move's quiesce: the listener sends
+nothing and answers the `503` with `Retry-After: 1` that says the message was not sent and may be
+sent again later, which costs the sender nothing. It asks before it raises the role's wake report,
+so a refusal it finds then raises none. A send that Dispatch marks with a role, which the listener
+would keep, is answered the same way. The same message sent again is kept once the stream captures
+the kept lane again and the listener has read that. A dead letter the stream refuses so is sent
+again by a later walk, and a repeated wake report by the next sweep. If the holder does not take
+the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is
 `504` naming the holder, with the reason `delivery_failed`, and that message is not kept: send it
 again, and the listener reads the holder again. A forward stored so long after the listener read

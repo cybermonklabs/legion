@@ -53,15 +53,18 @@ func awaitDeployedCapture(t *testing.T, client *Client, topic string, captures b
 
 // A topic this build stores, which the deployed stream does not capture, is sent nowhere: each of
 // Publish, PublishWithin, PublishReportingDuplicate, PublishReportingDuplicateWithin and
-// PublishAckWithin, which the other four go through, and PublishRetained, which the listener hands
-// a stopped Legion agent's message to its daemon with, returns an error wrapping
+// PublishAckWithin, which the other four go through, PublishRetained, which the listener hands a
+// stopped Legion agent's message to its daemon with, PublishStoredAck, which the listener keeps a
+// role message on its role's kept lane with, and PublishStoredAs, which goes through
+// PublishStoredAck and sends a dropped copy's dead letter, returns an error wrapping
 // ErrSubjectNotDeployed that names the stream and the topic, and neither a core subscriber of the
-// topic nor the stream receives anything. Before the refusal each of the first five went out over
-// core NATS, the subscriber was handed it, nothing stored it, and the publish answered nil: the
-// send route's 200 for a message nobody received. PublishRetained judged a topic by the subjects
-// this build compiles, so it sent its publish over JetStream: the subscriber was handed the
-// publish's request, no stream stored or answered it, and once its 5 s bound ran out it failed as
-// one the stream may hold (ErrUnacknowledged).
+// topic nor the stream receives anything. A role's kept lane is among the topics. Before the
+// refusal each of the first five went out over core NATS, the subscriber was handed it, nothing
+// stored it, and the publish answered nil: the send route's 200 for a message nobody received.
+// PublishRetained judged a topic by the subjects this build compiles, and PublishStoredAck and
+// PublishStoredAs judged no capture at all, so each sent its publish over JetStream: the
+// subscriber was handed the publish's request, no stream stored or answered it, and once its 5 s
+// bound ran out it failed as one the stream may hold (ErrUnacknowledged).
 //
 // The subscriber holds notifications.>, so it receives a core publish of any of these topics and
 // the request of a JetStream publish too: its silence in step 2 is no blindness, which step 3 shows
@@ -77,6 +80,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	const session = "ses_a"
 	agentTopic := contracts.AgentTopicPrefix + session
 	handoffTopic := "notifications.legion.infra.agents." + session
+	keptLane := KeptRoleSubject("reviewer")
 
 	original := narrowStreamAsTheQuiesce(t, js)
 	awaitDeployedCapture(t, client, agentTopic, false)
@@ -126,10 +130,17 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 			_, err := client.PublishRetained(context.Background(), item.Topic, []byte(`{}`), item.DedupeKey)
 			return err
 		}},
+		{"PublishStoredAck", func(item contracts.Envelope) error {
+			_, err := client.PublishStoredAck(context.Background(), item.Topic, item, item.DedupeKey)
+			return err
+		}},
+		{"PublishStoredAs", func(item contracts.Envelope) error {
+			return client.PublishStoredAs(context.Background(), item.Topic, item, item.DedupeKey)
+		}},
 	}
 	// Step 1: every publish function refuses every topic this build stores.
 	for _, publish := range publishes {
-		for _, topic := range []string{agentTopic, "notifications.team.t", ExceptionTopicPrefix + agentTopic, handoffTopic} {
+		for _, topic := range []string{agentTopic, "notifications.team.t", ExceptionTopicPrefix + agentTopic, handoffTopic, keptLane} {
 			err := publish.publish(envelope(topic, publish.name+"-"+topic))
 			if !errors.Is(err, ErrSubjectNotDeployed) {
 				t.Errorf("%s of %s: %v, want ErrSubjectNotDeployed", publish.name, topic, err)
@@ -176,32 +187,36 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	}
 
 	// Step 4: once the stream captures the topics again and the client has read that, a publish of
-	// the agent topic is stored, once, and so is a hand-off's (PublishRetained).
+	// the agent topic is stored, once, and so is a hand-off's (PublishRetained) and a keep's on the
+	// kept lane (PublishStoredAck).
 	original.Metadata = deployedStream(t, js).Config.Metadata
 	if _, err := js.UpdateStream(&original); err != nil {
 		t.Fatalf("restore the stream's subjects: %v", err)
 	}
 	awaitDeployedCapture(t, client, agentTopic, true)
 	awaitDeployedCapture(t, client, handoffTopic, true)
-	restored := envelope(agentTopic, "restored")
-	if _, err := client.PublishAckWithin(context.Background(), restored); err != nil {
+	awaitDeployedCapture(t, client, keptLane, true)
+	storedOnce := func(topic string) {
+		t.Helper()
+		info, err := js.StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: topic})
+		if err != nil {
+			t.Fatalf("read the stream: %v", err)
+		}
+		if got := info.State.Subjects[topic]; got != 1 {
+			t.Fatalf("the stream holds %d messages on %s after the restore, want 1", got, topic)
+		}
+	}
+	if _, err := client.PublishAckWithin(context.Background(), envelope(agentTopic, "restored")); err != nil {
 		t.Fatalf("publish of %s after the restore: %v", agentTopic, err)
 	}
-	info, err := js.StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: agentTopic})
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
-	}
-	if got := info.State.Subjects[agentTopic]; got != 1 {
-		t.Fatalf("the stream holds %d messages on %s after the restore, want 1", got, agentTopic)
-	}
+	storedOnce(agentTopic)
 	if _, err := client.PublishRetained(context.Background(), handoffTopic, []byte(`{}`), "handoff.restored"); err != nil {
 		t.Fatalf("PublishRetained of %s after the restore: %v", handoffTopic, err)
 	}
-	info, err = js.StreamInfo(Stream, &nats.StreamInfoRequest{SubjectsFilter: handoffTopic})
-	if err != nil {
-		t.Fatalf("read the stream: %v", err)
+	storedOnce(handoffTopic)
+	kept := envelope(contracts.RoleTopicPrefix+"reviewer", "kept-restored")
+	if _, err := client.PublishStoredAck(context.Background(), keptLane, kept, KeptMsgID(kept.DedupeKey, "reviewer")); err != nil {
+		t.Fatalf("PublishStoredAck of %s after the restore: %v", keptLane, err)
 	}
-	if got := info.State.Subjects[handoffTopic]; got != 1 {
-		t.Fatalf("the stream holds %d messages on %s after the restore, want 1", got, handoffTopic)
-	}
+	storedOnce(keptLane)
 }

@@ -46,8 +46,8 @@ const (
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
 	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed - answered 404
-	// (roleSend.noHolder).
+	// keep: false, a role token no claim can name, or a keep that failed other than one the bus
+	// refused before it sent anything (keepNotSent) - answered 404 (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
 	// sendDeliveryFailed is a recipient the stream stored no forward for: none live to forward to,
@@ -59,8 +59,9 @@ const (
 	// kept lane instead of refusing it, answered 202 (roleSend.kept).
 	sendKept sendOutcome = sendOutcome(roleKeptDeliveryStatus)
 	// sendFailed is a send refused as requestRecord.refuseBusUnavailable maps it (a forward or
-	// publish NATS refuses or the grant denies), or a role send whose first resolution of the
-	// holder failed, answered as GET /v1/roles/<role> answers it.
+	// publish NATS refuses or the grant denies, or a keep the bus refused before it sent anything,
+	// keepNotSent), or a role send whose first resolution of the holder failed, answered as GET
+	// /v1/roles/<role> answers it.
 	sendFailed sendOutcome = "failed"
 	// sendHandedOff is a role send with no live holder that the daemon of the role's newest Legion
 	// session took (roleSend.noHolder, handOffToLegion), answered 200 with that session as
@@ -157,8 +158,9 @@ func forwardRequest(item contracts.Envelope) string {
 // The mark of a forward that may have been stored stands whatever the send answers next
 // (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
 // lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
-// mark alone, and every other answer marks nothing, so where no forward may have been stored the
-// route's deferred settle gives the take back.
+// mark alone, and so is a keep the bus refused before it sent anything (keepNotSent); every other
+// answer marks nothing, so where no forward may have been stored the route's deferred settle gives
+// the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord
@@ -409,6 +411,15 @@ func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 // and a sender that publishes again after the 404 gives the role's next holder the message once
 // more, which at-least-once delivery allows.
 //
+// The one keep that fails without that 404 is a keep the bus refuses before it sends anything,
+// because the deployed stream, as the listener's client last read its subjects, does not capture
+// the role's kept lane (bus.ErrSubjectNotDeployed), as during a hub move's quiesce. It is asked
+// before the wake (keptLaneRefusal) and answered the not-sent 503 recorded subject_not_deployed,
+// with no wake, no refusal exception and no charge (keepNotSent). A keep whose own publish
+// (bus.Client.PublishStoredAck) the bus refuses so, after a narrowing the client read since that
+// question, is answered the same 503 and costs nothing, though its wake has gone out
+// (senderCharge.published).
+//
 // A send whose keep would tell nobody (keepTellsNobody: no source session, and no Dispatch post
 // delivered) keeps nothing and gets that same 404, with the same reason, holder fields and
 // exception, its error naming the role and saying that nothing was kept and why
@@ -424,16 +435,16 @@ func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 // delivery's attempt, recorded queued until then, as undelivered.
 //
 // It is also the one place a message to a Legion role of a released issue pod that no daemon
-// answers for is seen at all, so once nothing was handed off it raises the wake report beside the
-// answer, before either answer and waiting for neither (reportRoleWake). Both answers need it: a
-// message kept for the role's next holder waits, for one hour at most, until a live session holds
-// the role again, and a publish with keep: false keeps nothing and is still answered 404, so only
-// the wake brings the released pod back to claim the role, drain what was kept for it
-// (drainKeptRole) and take the sender's next attempt. The report names the role and nothing else;
-// which daemon owns it, and whether any claim of that role is released, is for the daemons to
-// decide, and a daemon acts on it only for a released claim of its own, so for a role whose
-// newest agent is not released the wake raised after the hand-off rather than before it changes
-// nothing.
+// answers for is seen at all, so once nothing was handed off, and no keep was refused before it,
+// it raises the wake report beside the answer, before either answer and waiting for neither
+// (reportRoleWake). Both answers need it: a message kept for the role's next holder waits, for one
+// hour at most, until a live session holds the role again, and a publish with keep: false keeps
+// nothing and is still answered 404, so only the wake brings the released pod back to claim the
+// role, drain what was kept for it (drainKeptRole) and take the sender's next attempt. The report
+// names the role and nothing else; which daemon owns it, and whether any claim of that role is
+// released, is for the daemons to decide, and a daemon acts on it only for a released claim of its
+// own, so for a role whose newest agent is not released the wake raised after the hand-off rather
+// than before it changes nothing.
 func (s *roleSend) noHolder(result roles.Resolution) {
 	handed, duplicate, err := s.d.handoff.handOffForRequest(s.ctx, legionHandoffTarget{
 		roleToken: s.role, optedOut: s.optedOut, confirmMiss: s.missConfirmed,
@@ -448,15 +459,30 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		s.settle(sendHandedOff)
 		return
 	}
+	keepable := s.keep && roleKeepable(result)
+	tellsNobody := keepable && s.keepTellsNobody()
+	if keepable && !tellsNobody {
+		if refusal := keptLaneRefusal(*s.d.delivery, s.role); refusal != nil {
+			s.keepNotSent(refusal)
+			return
+		}
+	}
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
-	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
+	// The wake is what this message costs its sender, whether it is kept or answered 404 below,
+	// but for a keep the bus refused before it sent anything.
 	s.record.charge.woke()
 	refuse := s.record.refuseRoleHolder
-	if s.keep && roleKeepable(result) {
-		if s.keepTellsNobody() {
+	if keepable {
+		if tellsNobody {
 			refuse = s.record.refuseRoleNoSourceSession
 		} else if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
 			s.kept(result, kept)
+			return
+		} else if notSent(err) {
+			// A narrowing the client read after keptLaneRefusal: the keep sent nothing, so it
+			// costs nothing, its wake included.
+			s.record.charge.published(bus.StoredAck{}, err)
+			s.keepNotSent(err)
 			return
 		}
 	}
@@ -468,6 +494,18 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		outcome = sendUnclaimed
 	}
 	s.settle(outcome)
+}
+
+// keepNotSent answers a send whose keep the bus refused before it sent anything, because the
+// deployed stream, as the listener's client last read its subjects, does not capture the role's
+// kept lane (keptLaneRefusal, or the keep's own publish, bus.Client.PublishStoredAck): the not-sent
+// 503 with Retry-After: 1, recorded subject_not_deployed (requestRecord.refuseBusUnavailable,
+// notSent), counted and logged failed. Nothing was refused for the role and nothing was kept, so no
+// refusal exception goes out; the same message sent again is kept once the stream captures the
+// lane again and the listener has read that.
+func (s *roleSend) keepNotSent(err error) {
+	s.record.refuseBusUnavailable(s.w, err)
+	s.settle(sendFailed)
 }
 
 // missConfirmed reports whether the role still has no live holder when its holder is read from the

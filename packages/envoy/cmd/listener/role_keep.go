@@ -677,11 +677,8 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
 // the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	if !roles.ValidClaimKey(role) {
-		return keptRoleCopy{}, errRoleNotKeepable
-	}
-	if cfg.edge != nil {
-		return keptRoleCopy{}, errEdgeKeepsNothing
+	if err := keepsNothing(cfg, role); err != nil {
+		return keptRoleCopy{}, err
 	}
 	kept, err := keepRoleMessage(cfg, role, item)
 	if err != nil {
@@ -689,6 +686,40 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	}
 	startHandover(cfg, role, runKeptRoleDrain)
 	return kept, nil
+}
+
+// keepsNothing is why keepForNextHolder keeps nothing for role at this listener, decided before
+// anything is read or sent: errRoleNotKeepable for a role no claim can be keyed by, and
+// errEdgeKeepsNothing at an edge listener. It is nil where keepForNextHolder publishes the keep.
+func keepsNothing(cfg listenerDeliveryHandlerConfig, role string) error {
+	if !roles.ValidClaimKey(role) {
+		return errRoleNotKeepable
+	}
+	if cfg.edge != nil {
+		return errEdgeKeepsNothing
+	}
+	return nil
+}
+
+// keptLaneRefusal is the refusal that keepForNextHolder's publish of a copy for role would meet
+// before anything is sent: bus.Client.UndeployedRefusal of the role's kept lane
+// (bus.KeptRoleSubject), the verdict bus.Client.PublishStoredAck refuses by. It is an error
+// wrapping bus.ErrSubjectNotDeployed while the deployed stream, as the listener's client last read
+// its subjects, does not capture that lane, as during a hub move's quiesce, and nil otherwise, also
+// for a keep that publishes nothing (keepsNothing). The two give-up paths that answer a sender, the
+// publish route's (roleSend.noHolder) and a role-marked send's (handOffOrKeepRoleSend), ask it
+// before they report the role's wake, and answer a refusal with the not-sent 503 recorded
+// subject_not_deployed (requestRecord.refuseBusUnavailable), with no wake reported and no charge
+// to the sender: a sender sends the message again at Retry-After: 1 for as long as a narrowing
+// lasts, and a wake for each of those sends would bring a pod back for a message nothing kept. A
+// narrowing the client reads after this question and before the keep's publish is refused by the
+// publish itself, which each give-up answers with the same 503 and no charge, though its wake has
+// gone out.
+func keptLaneRefusal(cfg listenerDeliveryHandlerConfig, role string) error {
+	if keepsNothing(cfg, role) != nil {
+		return nil
+	}
+	return cfg.client.UndeployedRefusal(bus.KeptRoleSubject(role))
 }
 
 // errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
@@ -2104,10 +2135,12 @@ type keptCopyPublish struct {
 // past bus.KeptRoleClaimWindow, and that walk publishes again under the same id: one that stopped
 // after the claim and before the publish leaves nothing published, and one that stopped after the
 // publish and before the confirm leaves a copy the stream drops. A publish that failed for a reason
-// that can pass - a stream that is full, a time-out, no responders, a connection lost - is that
-// stop: it is returned with the claim left where it is, and the walk ends as a failed one. A
-// refusal for good (forwardRefused) ends the copy all the same, with one Error line and a count,
-// and is not sent again: nothing a later walk sends would be taken.
+// that can pass - a stream that is full, a time-out, no responders, a connection lost, a subject
+// the deployed stream, as the listener's client last read its subjects, does not capture
+// (bus.ErrSubjectNotDeployed, which the bus answers before it sends anything) - is that stop: it is
+// returned with the claim left where it is, so the copy is not confirmed, and the walk ends as a
+// failed one. A refusal for good (forwardRefused) ends the copy all the same, with one Error line
+// and a count, and is not sent again: nothing a later walk sends would be taken.
 func endKeptCopyWithPublish(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, end keptCopyPublish) (ended, unconfirmed bool, err error) {
 	if err := lane.write(ctx, bus.KeptRoleCursor{Kept: kept, Claiming: stored.Sequence, DeadLetter: end.claim}); err != nil {
 		return false, false, err

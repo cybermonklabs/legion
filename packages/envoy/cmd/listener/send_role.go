@@ -143,7 +143,10 @@ func dispatchFieldRefusal(r *http.Request, dispatchPrincipal, field string) stri
 // Every message that is kept raises the role's wake report first: a role released with its pod is
 // brought back only by the wake, and the daemons decide what a wake of a role whose holder is live
 // means, acting on it only for a released claim of their own. The wake costs the sender one
-// (senderCharge).
+// (senderCharge). Before the wake the route asks whether the bus would refuse the keep before it
+// sent anything, because the deployed stream, as the listener's client last read its subjects,
+// does not capture the role's kept lane (keptLaneRefusal), and answers such a refusal the not-sent
+// 503 recorded subject_not_deployed, with no wake reported and nothing kept or charged.
 func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
@@ -168,6 +171,10 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 			return
 		}
 	}
+	if refusal := keptLaneRefusal(*d.delivery, item.Role); refusal != nil {
+		record.refuseBusUnavailable(w, refusal)
+		return
+	}
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
 	keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
@@ -186,7 +193,10 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 // the bus-unavailable 503, which the sender retries under the same key, and the lane stores that
 // message once (bus.KeptMsgID); a keep whose publish went unacknowledged may have stored the copy,
 // so its 503 says so (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender
-// as a stored one.
+// as a stored one. A keep whose publish the bus refused before it sent anything, because the
+// deployed stream, as the listener's client last read its subjects, does not capture the role's
+// kept lane (bus.ErrSubjectNotDeployed), is the not-sent 503 recorded subject_not_deployed, and
+// costs nothing, the wake reported before it included (senderCharge.published).
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply json.RawMessage) {
 	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)
 	if err != nil {
