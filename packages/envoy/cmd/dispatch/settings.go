@@ -242,6 +242,10 @@ var settings = []setting{
 		Description: "The statement_timeout of a test process's `GET /api/v1/search/coverage` read, in place of the 10 seconds a deployment holds it to; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_COVERAGE_FILL_FAILURES", Required: "no",
 		Description: "How many of a test process's fills of the search coverage counts fail before their first statement, each logged and tried again as a failed fill is; a whole number of 1 or more, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", Default: "`5s`", Required: "no",
+		Description: "The lock timeout of each read a test process booted with `DISPATCH_SEARCH_FILL=off` makes of the tables the keyword fill writes, in place of the five seconds a deployment waits; the statement timeout stays one second past it and the client's deadline four seconds past that, so a lock wait still ends with Postgres's lock timeout and a read that runs on with its statement timeout. A Go duration of at least `1ms`, since the reads send it to Postgres in whole milliseconds and Postgres reads `0ms` as no lock timeout, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HTTP_DRAIN", Default: "`11s`", Required: "no",
+		Description: "How long a test process's shutdown waits for the requests in flight before its document service settles the documents owed with requests still running, in place of the eleven seconds a deployment waits; a positive Go duration of at most `11s`, so the document service's budget after it still ends at least five seconds inside the thirty-second stop grace, for an end-to-end test whose request holds the drain. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is
