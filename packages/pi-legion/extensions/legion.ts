@@ -38,7 +38,12 @@ import {
   restorePhaseStallEntry,
   turnEndOf,
 } from "@legion/pi-shared/phase-stall";
-import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
+import type {
+  AgentEndEvent,
+  CommandContext,
+  PiApi,
+  SessionContext,
+} from "@legion/pi-shared/pi-types";
 import { legionRoleClaimBridge } from "@legion/pi-shared/role-claim-bridge";
 import {
   asyncJobKinds,
@@ -951,6 +956,69 @@ export default function legionExtension(pi: PiApi): void {
     if (assistantRanTool(event.message)) phaseReminder.apply({ kind: "tool-call" });
   });
 
+  // What ends a claimed session's turn for the daemon, done once a turn: by the turn's
+  // `session_stop` pass, or, where the host closed the turn with no pass, by its `agent_end` (both
+  // below). A phase worker settles its reminder first (src/phase-reminder.ts), so the report
+  // carries the wake that settle armed; an architect has no phase of its own to settle, and its
+  // pod is released on the same rule as a worker's, so its turn ends with a report of its own. The
+  // report goes whatever it says: the daemon releases no claim whose last report is older than its
+  // last turn. The answer is the reminder the settle gives as the run's continuation, which only a
+  // `session_stop` pass can hand back to the host.
+  const endTurn = async (
+    context: SessionContext,
+    lastAssistantMessage: unknown
+  ): Promise<string | undefined> => {
+    const reminder = phaseWorkerSession(context)
+      ? await phaseReminder.settle(turnEndOf(lastAssistantMessage))
+      : undefined;
+    await reportActivity(context, { onlyWhenChanged: false });
+    return reminder;
+  };
+
+  // The sessions whose ending turn a `session_stop` pass reports: marked as the pass starts, and
+  // taken off by that turn's `agent_end`, which the host emits only once the pass has returned
+  // (`agent-session.ts:6481-6482` at the pinned tag) and which is the next event of this session
+  // to reach this entry, since the runner hands an extension its events in the order they were
+  // emitted (`extensibility/extensions/runner.ts:2163-2179`). A turn the host closes with no pass
+  // reaches its `agent_end` unmarked: an abort in progress, a disposed session and a prompt
+  // generation that moved return before any handler (`agent-session.ts:7110`), and a reply that
+  // ended on tool calls and a compaction that blocked its own continuation never ask for one
+  // (`:6440-6452`).
+  const reportingStopPasses = new Set<string>();
+
+  /**
+   * The end of a turn the host closed with no `session_stop` pass, made at its `agent_end`: what
+   * that pass does, but for two steps `agent_end` cannot take, since it answers the host nothing
+   * and the host has already ended the run, the daemon's prompt with it.
+   *
+   * - **The cyber_policy ladder.** It climbs a rung only by answering `session_stop` with a
+   *   continuation, which keeps the run and the daemon's prompt open so that the prompt reads the
+   *   last rung's outcome (src/cyber-policy-ladder.ts). Here that prompt's result is already
+   *   written, so no rung is climbed, and the refusal reaches the daemon as the turn's outcome, as
+   *   the ladder's own header says of every turn with no `session_stop`.
+   * - **The phase reminder's continuation.** A phase worker's settle runs here and arms what it
+   *   arms at `session_stop`: the timer after a refused turn, after a WAITING reply, or for a
+   *   reminder after the run's first, whose wake the report then carries. The run's first
+   *   reminder, which the pass would return as the host's continuation, is lost: this entry starts
+   *   no turn of its own in its place, since each road by which the host closes a turn with no
+   *   pass is one where it declined to go on with the run, and a reminder steered in now would
+   *   start the very turn it declined, or land in a newer prompt's run. The settle has counted
+   *   that reminder and armed no timer for it, so the report says no reminder is due, which is
+   *   so: the daemon then does not read the worker's quiet as explained (`ReportExplainsQuiet`),
+   *   and its silence repair is what wakes a worker nothing else does.
+   */
+  const endClosedTurn = async (event: AgentEndEvent, context: SessionContext): Promise<void> => {
+    const reminder = await endTurn(
+      context,
+      event.messages?.findLast((message) => message.role === "assistant")
+    );
+    if (reminder === undefined) return;
+    logger.warn(
+      "legion: the host ended this turn with no session_stop pass, so the phase reminder it earned cannot continue the turn and is not sent",
+      { issue: claimSession.capability(context.sessionManager.getSessionId())?.issue }
+    );
+  };
+
   // Every turn this pane's claim ends, as the daemon counts them: `agent_end` is the one event
   // that says how a turn ended, so it is where the outcome is reported (`src/turn-outcome.ts`).
   // The host does not await this handler and nothing of the turn waits on the report, but the
@@ -964,13 +1032,30 @@ export default function legionExtension(pi: PiApi): void {
     return undefined;
   });
   pi.on("agent_end", async (event, context) => {
+    const sessionID = context.sessionManager.getSessionId();
+    // A subagent's run is no turn of this session's: it takes no mark off and is reported for
+    // nothing here.
+    const subagent = subagentEvent(context);
+    const passReported = !subagent && reportingStopPasses.delete(sessionID);
+    // The host closed the turn — it goes on with nothing, and waits on no background job's
+    // result, which starts the next run and gets the pass the host defers until then — and no
+    // pass reported it.
+    const fallback =
+      !subagent && !passReported && event.willContinue !== true && event.awaitingAsyncWork !== true;
     // With the line session_stop logs, this tells a turn the host closed with no session_stop
-    // pass, which sends no activity report, from one whose pass ran.
+    // pass, which this end reports (`fallback`), from one whose pass ran.
     logger.debug("legion: a turn ended", {
       willContinue: event.willContinue === true,
       awaitingAsyncWork: event.awaitingAsyncWork === true,
+      fallback,
     });
-    await turnOutcomes.report(context.sessionManager.getSessionId(), event);
+    // Side by side: the outcome's send is retried for as long as the daemon restarts, and the
+    // activity report waits on nothing of it. The outcome takes its place in the count before
+    // its first await, as it did when it ran alone.
+    await Promise.all([
+      turnOutcomes.report(sessionID, event),
+      fallback ? endClosedTurn(event, context) : undefined,
+    ]);
   });
 
   // The run is about to settle with nothing left for the host to continue: a turn the daemon
@@ -980,24 +1065,26 @@ export default function legionExtension(pi: PiApi): void {
   // run settles and the daemon sees the turn end (src/phase-reminder.ts).
   pi.on("session_stop", async (event, context) => {
     logger.debug("legion: session_stop ran", { aborted: event.signal.aborted });
+    // An aborted pass (an interrupt, a shutdown) reports nothing, so it leaves the turn unmarked
+    // and the turn's `agent_end` reports it.
     if (event.signal.aborted) return undefined;
+    const sessionID = context.sessionManager.getSessionId();
+    reportingStopPasses.add(sessionID);
     // A cyber_policy refusal climbs the ladder's next rung inside this same turn
     // (src/cyber-policy-ladder.ts), and only a refusal of its last rung settles the turn, which
     // the reminder below then leaves alone, as it leaves every refused turn.
     if (await modelFallbackSession(context)) {
       const rung = await cyberPolicyLadder.settle(event, context);
-      if (rung !== undefined) return rung;
+      if (rung !== undefined) {
+        // A rung reports nothing: the turn it continues into reports as it ends. A continuation
+        // the host drops — an abort, a newer prompt or a dispose while the rung waited, or its cap
+        // (`agent-session.ts:7127-7143`) — ends this turn here instead, for its `agent_end` to
+        // report.
+        reportingStopPasses.delete(sessionID);
+        return rung;
+      }
     }
-    if (!phaseWorkerSession(context)) {
-      // An architect has no phase of its own to settle, and its pod is released on the same rule
-      // as a worker's, so its turn ends with a report of its own.
-      await reportActivity(context, { onlyWhenChanged: false });
-      return undefined;
-    }
-    const reminder = await phaseReminder.settle(turnEndOf(event.last_assistant_message));
-    // After the settle, so the report carries the wake that settle armed: the daemon releases no
-    // claim whose last report is older than its last turn, so this one goes whatever it says.
-    await reportActivity(context, { onlyWhenChanged: false });
+    const reminder = await endTurn(context, event.last_assistant_message);
     return reminder === undefined ? undefined : { continue: true, additionalContext: reminder };
   });
 

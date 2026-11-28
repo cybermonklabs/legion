@@ -2266,6 +2266,149 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(pane.intervals).toEqual([]);
     });
 
+    /** A run's end as `agent_end` carries it, its last reply saying `text`, with the flags the
+     * host sets on an end it goes on from. */
+    const endedOn = (
+      text: string,
+      goesOn: { readonly willContinue?: true; readonly awaitingAsyncWork?: true } = {}
+    ) => ({
+      ...goesOn,
+      messages: [{ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" }],
+    });
+    /** One activity report as the daemon takes it, from a session running no background work. */
+    const reportOf = (pane: ClaimPane, nextReminderAt: string | null) => ({
+      claimToken: pane.claimToken,
+      sessionId: "ses_stall",
+      secret: pane.registration.secret,
+      activity: {
+        at: expect.any(String),
+        backgroundWork: { running: false, kinds: [] },
+        phase: { nextReminderAt },
+      },
+    });
+
+    // INFRA-4115: Oh My Pi closes some turns without calling any `session_stop` handler (3 of 48
+    // in one measurement: an abort in progress, a disposed session or a prompt generation that
+    // moved returns before the handlers run), and such a turn sent no activity report, so the
+    // daemon never saw it end and kept its pod. Red without the report this turn's `agent_end`
+    // sends.
+    test("a turn the host closes with no session_stop pass is reported once, at its agent_end", async () => {
+      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
+      await architect.starts();
+      await architect.arrives(assignment);
+
+      await architect.ends(endedOn("Spec posted."));
+
+      expect(activityReports(architect)).toEqual([reportOf(architect, null)]);
+    });
+
+    // The two paths never both report one turn: the host awaits the `session_stop` pass before it
+    // emits that turn's `agent_end`, which then sends nothing of its own; and the pass's mark is
+    // its own turn's, so the next turn, closed with no pass, is still reported at its end. Red
+    // when `agent_end` ignores the pass, and when the mark outlives its turn.
+    test("a turn its session_stop pass reported is not reported again at its agent_end, and the next turn is judged on its own", async () => {
+      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
+      await architect.starts();
+      await architect.arrives(assignment);
+
+      await architect.settles("Spec posted.");
+      await architect.ends(endedOn("Spec posted."));
+      expect(activityReports(architect)).toEqual([reportOf(architect, null)]);
+
+      await architect.starts();
+      await architect.ends(endedOn("Waves released."));
+      expect(activityReports(architect)).toEqual([
+        reportOf(architect, null),
+        reportOf(architect, null),
+      ]);
+    });
+
+    // An aborted pass (an interrupt, a shutdown) returns before it reports, so it is no pass that
+    // reported its turn: the turn's `agent_end` reports it, once. Red when an aborted pass marks
+    // its turn as reported.
+    test("a turn whose session_stop pass was aborted is reported at its agent_end", async () => {
+      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
+      await architect.starts();
+      const interrupted = new AbortController();
+      interrupted.abort();
+
+      expect(await architect.settles("Spec posted.", interrupted.signal)).toBeUndefined();
+      expect(activityReports(architect)).toEqual([]);
+      await architect.ends(endedOn("Spec posted."));
+
+      expect(activityReports(architect)).toEqual([reportOf(architect, null)]);
+    });
+
+    // An end the host goes on from is no turn's end: a retry or a continuation it has scheduled
+    // (`willContinue`), or a background job's result it waits for (`awaitingAsyncWork`, set with
+    // `willContinue`), whose run gets the `session_stop` pass the host deferred. Nor is a `task`
+    // subagent's run a turn of this session. No pass ran for any of them, and none is reported
+    // here: red when either end, or the subagent's run, sends a report.
+    test("an end the host goes on from, and a subagent's run, send no activity report", async () => {
+      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
+      await architect.starts();
+
+      await architect.ends(endedOn("Retrying.", { willContinue: true }));
+      await architect.ends(
+        endedOn("Waiting on the job.", { willContinue: true, awaitingAsyncWork: true })
+      );
+      await hook(architect.handlers, "agent_end")(endedOn("Found the file."), {
+        ...architect.context,
+        agent: { kind: "sub" },
+      });
+
+      expect(activityReports(architect)).toEqual([]);
+    });
+
+    // A phase worker's turn closed with no pass settles its reminder at its `agent_end`, so the
+    // report carries the wake that settle armed, as the pass's report would: here the quiet wait
+    // a WAITING reply buys. Red when `agent_end` settles nothing, or reports before it settles.
+    test("a phase worker's turn the host closes with no session_stop pass settles at its agent_end, and its report carries the wake that settle armed", async () => {
+      const worker = await bootStalling({});
+      await worker.starts();
+      await worker.arrives(assignment);
+
+      const settledAt = Date.UTC(2026, 10, 28, 9, 30);
+      setSystemTime(new Date(settledAt));
+      try {
+        await worker.ends(endedOn("Pushed.\nWAITING: CI on the pull request"));
+      } finally {
+        setSystemTime();
+      }
+
+      // The boot's resume reminder, made stale by the turn, and the wait the WAITING reply bought.
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
+        DEFAULT_STALL_LIMITS.waitingMs,
+      ]);
+      expect(activityReports(worker)).toEqual([
+        reportOf(worker, new Date(settledAt + DEFAULT_STALL_LIMITS.waitingMs).toISOString()),
+      ]);
+    });
+
+    // The one step of the pass a phase worker's `agent_end` cannot take: the run's first
+    // reminder, which `session_stop` hands the host as the run's continuation. The entry starts no
+    // turn of its own in its place, since the host closed this turn rather than go on with the
+    // run, so the reminder is not sent and a warning says so; no timer is armed for it, and the
+    // report says no reminder is due, which leaves the worker's quiet to the daemon's silence
+    // repair. Red when the entry steers the reminder in, or drops it without a word.
+    test("the reminder that would continue a phase worker's turn closed with no session_stop pass is not sent, and its report names no wake", async () => {
+      const worker = await bootStalling({});
+      await worker.starts();
+      await worker.arrives(assignment);
+
+      const { warnings } = await loggedWarnings(async () => {
+        await worker.ends(endedOn("Pushed."));
+      });
+
+      expect(steered(worker)).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+      expect(warnings).toEqual([
+        { message: expect.stringContaining("no session_stop pass"), context: { issue: "REPO-43" } },
+      ]);
+      expect(activityReports(worker)).toEqual([reportOf(worker, null)]);
+    });
+
     test("the first settle after the assignment is answered by the run's own continuation: name the work the daemon gave, run the legion tool's handoff_complete, or reply WAITING", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
