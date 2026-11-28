@@ -268,6 +268,15 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if log == nil {
 		log = slog.Default()
 	}
+	// RIG PATCH (lane C2 of INFRA-3570's night, not for main): LEGION_RIG_GITHUB_API names the
+	// GitHub REST root the workflow and the App mint call, in place of https://api.github.com, so
+	// `legion start` reaches the rig's GitHub stand-in. legion.yaml has no key for it.
+	if o.githubAPI == "" {
+		o.githubAPI = os.Getenv("LEGION_RIG_GITHUB_API")
+		if o.githubAPI != "" {
+			log.Warn("rig patch: GitHub REST root from LEGION_RIG_GITHUB_API", "githubAPI", o.githubAPI)
+		}
+	}
 	plan, err := prepare(cfg, log, o)
 	if err != nil {
 		return err

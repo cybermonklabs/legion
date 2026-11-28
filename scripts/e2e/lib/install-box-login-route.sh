@@ -156,10 +156,14 @@ stamp_re='^([0-9]+\.[0-9]+\.[0-9]+)-sami\.([0-9]{8}-[0-9]{6})$'
   fail "the operator's $tool is $version, not <base>-sami.YYYYMMDD-HHMMSS, so it cannot be compared with the refresh-race fix ($fix_base-sami.$fix_stamp)"
 base=${BASH_REMATCH[1]}
 stamp=${BASH_REMATCH[2]}
-[ "$base" = "$fix_base" ] ||
-  fail "the operator's $tool is $version, base $base; only base $fix_base is known here, where the refresh-race fix is $fix_base-sami.$fix_stamp; raise fix_base in $0 once base $base is known to carry it"
-[[ ! $stamp < $fix_stamp ]] ||
-  fail "the operator's $tool is $version, older than $fix_base-sami.$fix_stamp, the first build with the refresh-race fix; panes sharing the operator's login on it could disable that login for every session on the box"
+# RIG PATCH (lane C2 of INFRA-3570's night, not for main): a base later than $fix_base is taken
+# as carrying the fix, which every later base was built on; the operator's build is 18.18.6.
+if [ "$base" = "$fix_base" ]; then
+  [[ ! $stamp < $fix_stamp ]] ||
+    fail "the operator's $tool is $version, older than $fix_base-sami.$fix_stamp, the first build with the refresh-race fix; panes sharing the operator's login on it could disable that login for every session on the box"
+elif [ "$(printf '%s\n%s\n' "$fix_base" "$base" | sort -V | head -1)" != "$fix_base" ]; then
+  fail "the operator's $tool is $version, base $base, older than $fix_base, the first base with the refresh-race fix"
+fi
 spec=$tool@$version
 
 dest=$(realpath -m -- "$dest")

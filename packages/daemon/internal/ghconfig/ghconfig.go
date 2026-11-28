@@ -123,8 +123,16 @@ type Rendered struct {
 
 // Render is Rendered for one lease: hosts.yml for token, the fixed config.yml, and the App and
 // expiry carried through for the log.
+//
+// RIG PATCH (lane C2 of INFRA-3570's night, not for main): LEGION_RIG_GH_HTTP_UNIX_SOCKET, when
+// set in the daemon's environment, adds gh's `http_unix_socket` setting to config.yml, so every
+// gh a pane runs reaches the rig's GitHub stand-in over that socket and never github.com.
 func Render(token, app string, expiresAt time.Time) Rendered {
-	return Rendered{Hosts: Hosts(token), Config: Config, App: app, ExpiresAt: expiresAt}
+	config := Config
+	if socket := os.Getenv("LEGION_RIG_GH_HTTP_UNIX_SOCKET"); socket != "" {
+		config += "http_unix_socket: " + socket + "\n"
+	}
+	return Rendered{Hosts: Hosts(token), Config: config, App: app, ExpiresAt: expiresAt}
 }
 
 // Write brings dir, one directory of a gh bundle, to rendered: the directory made 0700 if
