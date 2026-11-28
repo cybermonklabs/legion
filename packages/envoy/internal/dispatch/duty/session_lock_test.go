@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -92,23 +92,28 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 	requireLockFree(t, database.Pool, 7002)
 }
 
-// An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
-// closed: a half-open connection would otherwise hold the caller until TCP gave it up.
+// An unlock that does not answer fails when the caller's clock reaches LeaseCallTimeout. The
+// failed connection is destroyed rather than returned to the pool, and its lock is freed.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
-	// Not parallel: the unlock must give up within LeaseCallTimeout and 10 s more, a ceiling on a
-	// measured span that load could push a correct unlock past.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	conn := heldSessionLock(t, leases, 7003)
 
-	started := time.Now()
-	err := duty.FreeSessionLock(conn, `select pg_advisory_unlock($1) from pg_sleep(60)`, int64(7003))
-	elapsed := time.Since(started)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("FreeSessionLock of an unlock that never answers answered %v, want its deadline", err)
+	fake := clocktest.New(tickDue)
+	answered := make(chan error, 1)
+	go func() {
+		answered <- duty.FreeSessionLockOn(fake, conn, `select pg_advisory_unlock($1) from pg_sleep(60)`, int64(7003))
+	}()
+	fake.AwaitArmedAt(t, "the stalled unlock's deadline", tickDue.Add(duty.LeaseCallTimeout))
+	select {
+	case err := <-answered:
+		t.Fatalf("FreeSessionLockOn returned %v before the unlock's deadline", err)
+	default:
 	}
-	if elapsed < duty.LeaseCallTimeout || elapsed > duty.LeaseCallTimeout+10*time.Second {
-		t.Fatalf("FreeSessionLock returned after %v, want about its %v bound", elapsed, duty.LeaseCallTimeout)
+	fake.Advance(duty.LeaseCallTimeout)
+	if err := testwait.Receive(t, "the stalled unlock to return at its deadline", answered); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("FreeSessionLockOn of an unlock that never answers answered %v, want its deadline", err)
 	}
 	requireConnections(t, leases, 0, 0, "a connection whose unlock reached its bound is closed")
 	requireLockFree(t, database.Pool, 7003)

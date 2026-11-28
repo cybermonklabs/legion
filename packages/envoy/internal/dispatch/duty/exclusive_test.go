@@ -14,7 +14,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// tickDue is the fixed moment for this package's fake clocks and fixed dues. It is a whole hour,
+// so every period of a minute, five minutes or an hour starts there.
+var tickDue = time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
 // storetest.Main.
@@ -577,61 +582,39 @@ func previousBuildsRow(t *testing.T, database *store.Store, name string) (bounda
 // row the previous build keys by the name alone.
 const ofLease = `(lease = $1 or starts_with(lease, $1 || '/'))`
 
-// slowLeases is a lease pool whose every Acquire waits delay first, as a loaded process's tick
-// waits for its lease connection.
-type slowLeases struct {
-	duty.Leases
-	delay time.Duration
-}
-
-func (s slowLeases) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
-	time.Sleep(s.delay)
-	return s.Leases.Acquire(ctx)
-}
-
-// A lone loop's ticks come at least one period apart (RunLeased, RunJittered), and each must run:
-// no other process has served either period. Here the first tick is due 200 ms before a period
-// boundary on this process's clock, the clock Exclusive buckets a due time on, and its lease takes
-// 400 ms, so the query that reads its period runs 200 ms into the next one; the second tick is due
-// exactly one period after the first, the least that spacing allows, and takes its lease at once.
-// Read by the moment its query ran, the late first tick serves the second tick's period and the
-// second is refused - an interval of the loop's work that no process did, which is how
-// TestALoneRunnerMakesAPassOnEveryTick lost one tick in ten. Read by when it was due, each tick
-// serves its own period.
+// Two ticks due one period apart must both run when the first is read after its period ends.
+// The first tick is due just before the current database hour and the second in that hour.
+// Counting the first by the time of the read instead of its due would make the gate refuse the
+// second tick, leaving a period of the loop's work undone.
 func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
-	// Not parallel: its second read must run before the next period boundary, 200 ms after its due
-	// time; load could push it past the boundary and pass a gate that buckets by when the read ran.
+	t.Parallel()
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"
-	const period = time.Second
-	const early, delay = 200 * time.Millisecond, 400 * time.Millisecond
+	const period = time.Hour
+	const early = 200 * time.Millisecond
 
-	due := beforeNextBoundary(t, period, early)
-	time.Sleep(time.Until(due))
-	if !duty.Exclusive(ctx, nil, slowLeases{Leases: leases, delay: delay}, name, due, period, func(context.Context) {}) {
+	due := databasePeriodBoundary(t, database, period).Add(-early)
+	if !duty.Exclusive(ctx, nil, leases, name, due, period, func(context.Context) {}) {
 		t.Fatal("the first tick did not run, so this row measures nothing")
 	}
 	next := due.Add(period)
-	time.Sleep(time.Until(next))
 	ran := false
 	if !duty.Exclusive(ctx, nil, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
-		t.Errorf("the tick due one period after a late one was refused (first due %s, %v before a boundary, its lease %v late); a lone loop lost that period",
-			due.UTC().Format("15:04:05.000"), early, delay)
+		t.Errorf("the tick due %s was refused after the late tick due %s ran; a lone loop lost that period",
+			next.Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
 	}
 }
 
-// beforeNextBoundary is the moment on this process's clock that lies before ahead of a period
-// boundary of that clock - the clock Exclusive buckets a tick's due time on (periodBoundary) - the
-// first such moment still at least 100 ms away.
-func beforeNextBoundary(t *testing.T, period, before time.Duration) time.Time {
+// databasePeriodBoundary returns the start of the database's current period.
+func databasePeriodBoundary(t *testing.T, database *store.Store, period time.Duration) time.Time {
 	t.Helper()
-	due := duty.PeriodBoundary(time.Now(), period).Add(period - before)
-	for time.Until(due) < 100*time.Millisecond {
-		due = due.Add(period)
+	var now time.Time
+	if err := database.Pool.QueryRow(testwait.Context(t), `select now()`).Scan(&now); err != nil {
+		t.Fatalf("read the database clock: %v", err)
 	}
-	return due
+	return duty.PeriodBoundary(now, period)
 }
 
 // movePassBack moves every boundary recorded for name back by age, which is how a period that has
