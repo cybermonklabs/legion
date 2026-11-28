@@ -22,6 +22,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -860,6 +861,16 @@ func airlockProxyURL(release *AirlockRelease) (string, error) {
 // placeholder in them; the nested call then goes to the proxy, which refuses it, and no request of
 // a bound host leaves without the proxy.
 //
+// The cluster API server of the pod the command runs in must not reach the proxy either; the
+// kubelet names it in KUBERNETES_SERVICE_HOST by its ClusterIP. A Service range can be public
+// address space that no fixed entry covers (GKE's default is 34.118.224.0/20), and through the
+// proxy that address is the broker's network's, not the command's: the proxy refuses the broker
+// cluster's own ranges, so without this entry kubectl under a grant gets "Unable to connect to the
+// server: Forbidden". The kubelet writes an IP address there and nothing else, so a value that is
+// no IP address adds nothing: a star or a list would take more than the API server off the proxy.
+// It is held to the bound hosts as every other entry is, and comes last, so every entry before it
+// keeps its place.
+//
 // The inherited list is read as the clients that read it split it, on commas and on white space
 // (Bun's fetch, which `dispatch` runs on, takes `other.test dispatch.example.test` as two
 // entries), so each piece is held to the bound hosts on its own, and the list is written back
@@ -894,6 +905,10 @@ func airlockNoProxy(environ []string, release *AirlockRelease) string {
 	}
 	if host := brokerHostname(envValue(environ, "AGENT_SECRETS_URL")); host != "" && !overlapsBoundHost(host, bound) {
 		entries = append(entries, host)
+	}
+	apiServer := envValue(environ, "KUBERNETES_SERVICE_HOST")
+	if _, err := netip.ParseAddr(apiServer); err == nil && !overlapsBoundHost(apiServer, bound) {
+		entries = append(entries, apiServer)
 	}
 
 	seen := make(map[string]bool, len(entries))

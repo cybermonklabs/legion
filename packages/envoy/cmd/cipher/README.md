@@ -383,7 +383,11 @@ and Dispatch's writes reach the proxy, while the broker's own name stays. The br
 is held to the bound hosts the same way: a broker host that is a bound host, a parent domain of
 one or a name under one is left out, so that bound host's writes still reach the proxy. An entry
 is compared without one trailing dot, its fully qualified spelling, so `dispatch.example.test.` is
-left out as `dispatch.example.test` is. See
+left out as `dispatch.example.test` is. In a Kubernetes pod the list ends with the cluster API
+server's address, the IP address in `KUBERNETES_SERVICE_HOST`, unless the grant binds it: a
+Service range can be public address space (GKE's default is `34.118.224.0/20`) that no private
+range covers, and through the proxy that address is the broker's network's, whose cluster ranges
+the proxy refuses: without the entry, `kubectl` under a grant gets `Forbidden`. See
 [`ci-results.md`](../../../envoy-client/docs/ci-results.md) for the job and broker settings.
 
 ## Install
