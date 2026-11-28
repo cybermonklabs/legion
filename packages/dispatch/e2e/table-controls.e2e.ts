@@ -75,6 +75,31 @@ function keptAgent(
   };
 }
 
+/** The Agents page's round-trip row's sessions, by id: UUIDs, as for the keep row. */
+const ONE = "01a0e812-6243-7000-8000-000000000001";
+const TWO = "01a0e812-6243-7000-8000-000000000002";
+const THREE = "01a0e812-6243-7000-8000-000000000003";
+
+/** A live session of the Agents page's round-trip row, its `last_seen` taken when the row seeds,
+ *  as `keptAgent`'s is. */
+function live(
+  id: string,
+  title: string,
+  machine: string,
+  role: string,
+  silentFor = 5_000
+): FakeSession {
+  return {
+    capabilities: ["aside", "btw"],
+    dir: `/srv/${title.toLowerCase()}`,
+    last_seen: Date.now() - silentFor,
+    machine_id: machine,
+    roles: [role],
+    session_id: id,
+    title,
+  };
+}
+
 /**
  * Five sessions over two machines and three roles, one in each group but Idle, which holds two
  * so a pin has an order to change: the Planner needs the reader (an open ask of its own waits on
@@ -386,6 +411,60 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
     .toEqual([KEPT_AGENT.reviewer, KEPT_AGENT.tester].sort());
 });
 
+// The Agents page's narrowings round-trip through the address: the group, machine and role
+// picked are written to it and read back after a reload, a chip taken off leaves the address with
+// the rest, a link narrows the page with an unknown group dropped, and the picks add no history
+// entry, so Back leaves the page.
+test("the Agents page's group, machine and role round-trip through the address, a reload, a chip and Back", async ({
+  page,
+}) => {
+  await setLiveSessions([
+    live(ONE, "Alpha", "box-1", "planner"),
+    live(TWO, "Bravo", "box-2", "tester"),
+    live(THREE, "Charlie", "box-2", "tester", 60 * 60_000),
+  ]);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Inbox" })).toBeVisible();
+  await page.goto("/agents");
+  const main = page.getByTestId("main-content");
+  const titles = shownAgentRows(page).locator("h2");
+  await expect(titles).toHaveText(["Alpha", "Bravo", "Charlie"]);
+  const params = () => new URL(page.url()).searchParams;
+  const chips = control(controlRow(main), CONTROL.chip);
+
+  await pickAgentFilter(page, "group", "Quiet");
+  await expect(titles, "group Quiet").toHaveText(["Charlie"]);
+  expect(params().get("group"), "?group=").toBe("quiet");
+  await pickAgentFilter(page, "role", "tester");
+  expect(params().get("role"), "?role=").toBe("tester");
+  await pickAgentFilter(page, "machine", "box-2");
+  expect(params().get("machine"), "?machine=").toBe("box-2");
+  await expect(titles).toHaveText(["Charlie"]);
+  await expect(chips).toHaveCount(3);
+
+  await page.reload();
+  await expect(titles, "the narrowing after a reload").toHaveText(["Charlie"]);
+  await expect(chips, "the chips after a reload").toHaveCount(3);
+  await expect(chips.nth(0)).toContainText("Group: Quiet");
+  await expect(chips.nth(1)).toContainText("Machine: box-2");
+  await expect(chips.nth(2)).toContainText("Role: tester");
+
+  await chips.nth(0).click();
+  await expect(titles, "the group chip taken off").toHaveText(["Bravo", "Charlie"]);
+  expect(params().get("group"), "the group chip leaves the address").toBeNull();
+  expect(params().get("role")).toBe("tester");
+  expect(params().get("machine")).toBe("box-2");
+
+  await page.goBack();
+  await expect(page, "Back after the picks leaves the page").toHaveURL(/\/$/);
+
+  await page.goto("/agents?group=bogus,quiet,needs-you");
+  await expect(chips, "an unknown group is dropped").toHaveCount(2);
+  await expect(chips.nth(0), "the groups in the page's order").toContainText("Group: Needs you");
+  await expect(chips.nth(1)).toContainText("Group: Quiet");
+  await expect(titles).toHaveText(["Charlie"]);
+});
+
 // R6 on an issue's Artifacts tab. What the tab offered at the merge base, dccaf8369449
 // (`fork_point(main@origin | @)`), paths under `web/src/`, and how the row drives each:
 // - Field: the one text box, which keeps an artifact whose name or kind holds the words
@@ -531,6 +610,69 @@ test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its s
   await page.goto(`/issues/${issue.key}/artifacts`);
   await expect(rows, "New document's row").toHaveCount(5);
   await expect(rows.nth(1), "New document's row").toContainText("Drafted");
+});
+
+// The Artifacts tab's words round-trip through the address: typed words are written to `?q=`,
+// encoded where they must be, and read back after a reload; a link carrying them opens the tab
+// narrowed; and typing adds no history entry, so Back leaves the tab.
+test("the Artifacts tab's words round-trip through ?q=, a reload, a link and Back", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Artifacts address" });
+  const plan = await createIssueArtifact(issue.key, { content: "# Plan\n", name: "plan.md" });
+  const notes = await createIssueArtifact(issue.key, { content: "# Notes\n", name: "notes.md" });
+  await page.goto(`/issues/${issue.key}`);
+  await expect(page.getByTestId("issue-header")).toBeVisible();
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const main = page.getByTestId("main-content");
+  const rows = main.locator('[data-testid^="artifact-"]');
+  await expect(main.getByTestId(`artifact-${plan.artifact.slug}`)).toBeVisible();
+  const all = await rows.count();
+  const filter = control(controlRow(main), CONTROL.searchBox);
+  const q = () => new URL(page.url()).searchParams.get("q");
+
+  await filter.fill("lan");
+  await expect(rows, "lan narrows to the plan").toHaveCount(1);
+  expect(q(), "the typed words in ?q=").toBe("lan");
+  // A key typed at the start of the words lands there, and the caret stays where it was.
+  await filter.press("Home");
+  await filter.pressSequentially("p");
+  await expect(filter, "a key typed at the caret").toHaveValue("plan");
+  expect(q()).toBe("plan");
+  await filter.pressSequentially("x");
+  await expect(filter, "the caret after the typed key").toHaveValue("pxlan");
+  await filter.press("Backspace");
+  await expect(filter).toHaveValue("plan");
+
+  await page.reload();
+  await expect(filter, "the words after a reload").toHaveValue("plan");
+  await expect(rows, "the narrowing after a reload").toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", `artifact-${plan.artifact.slug}`);
+
+  // Words that the address must encode come back whole.
+  const odd = "a&b #c%25+d";
+  await filter.fill(odd);
+  expect(q(), "encoded words").toBe(odd);
+  await page.reload();
+  await expect(filter, "encoded words after a reload").toHaveValue(odd);
+  await expect(main.getByText("No artifacts match this filter.", { exact: true })).toBeVisible();
+
+  await filter.fill("");
+  expect(q(), "an empty box leaves the address").toBeNull();
+  await expect(rows).toHaveCount(all);
+
+  // A link that carries the words opens the tab narrowed, whatever their case.
+  await page.goto(`/issues/${issue.key}/artifacts?q=NOTES`);
+  await expect(filter).toHaveValue("NOTES");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toHaveAttribute("data-testid", `artifact-${notes.artifact.slug}`);
+
+  // Typing replaces the history entry: Back leaves the tab for the page before it.
+  await filter.fill("note");
+  await filter.fill("no");
+  await page.goBack();
+  await expect(page, "Back after typing").toHaveURL(new RegExp(`/issues/${issue.key}/artifacts$`));
 });
 
 /** The search bar's keep row's seed: four issues and a comment holding `harbour`, over two
