@@ -310,9 +310,10 @@ function sessionOf(requests: readonly Request[]): string {
 // reads 5-6 s) and runs it to its settle, so it needs more than Bun's 5000 ms default in every
 // mode: `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of this
 // file alone takes no worker and keeps 5000 ms. Each case and the afterEach, whose cleanup kills a
-// real Oh My Pi, therefore take that same 300000 ms as a guard of their own, as the cases of
-// `legion-stall-watchdog-omp.test.ts` do; the pane's waits here are the harness's own, not the
-// shared wait, so no case sets a row guard for it.
+// real Oh My Pi, therefore take at least that same 300000 ms as a guard of their own, as the cases
+// of `legion-stall-watchdog-omp.test.ts` do. A case that starts the pane a second time
+// (`pane.resume`) runs two cold panes, and takes 360000 ms. The pane's waits here are the
+// harness's own, not the shared wait, so no case sets a row guard for it.
 const COLD_PANE_GUARD_MS = 300_000;
 
 const cleanup: Cleanup = [];
@@ -1101,7 +1102,7 @@ test.skipIf(skip)(
     );
     expect(reports.at(-1)).toMatchObject({ activity: { phase: { nextReminderAt: null } } });
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 // Both sides on a real Oh My Pi (dispatch://INFRA-2746/spec#b-r3, #b-r5, #b-r8): a role that owes
@@ -1267,7 +1268,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // INFRA-3082's tester and reviewer: a role's completion was taken, STALL-2 moved on to testing,
@@ -1318,7 +1319,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // INFRA-4337's tester: the daemon moves STALL-2 back to implementing while the tester's turn runs
@@ -1370,7 +1371,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // OSSV-732's reviewer: the reviewer reads the change, finds it wrong and sends STALL-2 back to
@@ -1418,7 +1419,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // INFRA-1253's planner, and INFRA-4567's implementer on the other side of the same cause: a role
@@ -1556,7 +1557,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // A role whose completion was taken writes a handoff record of its phase after it, with the
@@ -1599,7 +1600,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // INFRA-4011's planner: STALL-2 stands in implementing, long past its planning. The planner is
@@ -1645,7 +1646,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 /** The both-sides limits with the resume reminder every phase worker's boot arms
@@ -1753,7 +1754,7 @@ test.skipIf(skip)(
       .map((request) => request.body);
     expect(reports.at(-1)).toMatchObject({ activity: { phase: { nextReminderAt: null } } });
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 // L12's control: the same fresh implementer session while the stand-in's record stands in
