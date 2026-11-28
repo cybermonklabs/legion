@@ -6,12 +6,8 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"maps"
 	"net/http"
@@ -357,22 +353,6 @@ func newSpecResultsRig(t *testing.T) *specResultsRig {
 	return newSpecResultsRigOn(t, testServerOptions{})
 }
 
-// specResultsAppKey is the App key of every rig of this file: the PEM text of an RSA-2048 key in
-// the PKCS1 form githubapptest.Key writes, generated once per test binary rather than once per
-// rig. No rig needs a key of its own: the stand-in GitHub mints an installation token for any
-// request to its token route and checks no signature (specGitHub.serve), so the key need only be
-// one the App client parses and signs with. The rigs only read the text, and each server parses
-// it into a key of its own (githubappjwt.ParseKey); signing with one crypto/rsa key from many
-// goroutines at once is safe as well. A failed generation's error is kept and reported by each rig
-// that asks for the key.
-var specResultsAppKey = sync.OnceValues(func() (string, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return "", err
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
-})
-
 // newSpecResultsRigOn is newSpecResultsRig on a server built from serving, for a test that gives
 // the server a store of its own and the rename pairs read from it (renamedRepositoryStore). The
 // project's default repository is set as a person sets it, through PUT
@@ -384,7 +364,7 @@ func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRi
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
 		workflows: map[string]map[string]string{specResultsCommit: {specResultsWorkflowPath: specResultsWorkflow}},
 	}
-	pemText, err := specResultsAppKey()
+	pemText, err := fixtureAppKey()
 	if err != nil {
 		t.Fatalf("generate App key: %v", err)
 	}

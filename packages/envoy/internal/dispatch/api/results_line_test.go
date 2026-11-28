@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"unicode"
 	"unicode/utf8"
@@ -480,15 +481,15 @@ func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 }
 
 // keptKeyFormingWords is every word the rule keeps of those built around the issue key ACME-12
-// with one rune that is neither a letter, a digit nor plain punctuation (and no blank, which ends
-// a word): that rune at the key's start, in its middle and at its end, and beside a plain
-// punctuation rune, each rune beside the next one of the set in turn. Each kept word is named by
-// its rune.
-func keptKeyFormingWords(words lineWords) []string {
+// with one rune from first through last that is neither a letter, a digit nor plain punctuation
+// (and no blank, which ends a word): that rune at the key's start, in its middle and at its end,
+// and beside a plain punctuation rune, each rune beside the next one of the set in turn. Each kept
+// word is named by its rune, in the order of the runes.
+func keptKeyFormingWords(words lineWords, first, last rune) []string {
 	const key = "ACME-12"
 	punctuation := []rune(plainPunctuation)
 	var kept []string
-	for r := rune(0); r <= unicode.MaxRune; r++ {
+	for r := first; r <= last; r++ {
 		if !utf8.ValidRune(r) || unicode.IsSpace(r) || plainWord(string(r), plainPunctuation) {
 			continue
 		}
@@ -502,18 +503,39 @@ func keptKeyFormingWords(words lineWords) []string {
 	return kept
 }
 
+// unicodePlanes is how many planes of 65,536 code points hold every code point, U+0000 through
+// unicode.MaxRune.
+const unicodePlanes = (unicode.MaxRune + 1) >> 16
+
 // Every rune outside the plain set drops a word built around an issue key, wherever it stands in
 // the word, so no rune can split, join, hide or forge a key. The control lets one rune, the
-// zero-width space, back into the set: the property then fails, and names that rune.
+// zero-width space, back into the set: the property then fails, and names that rune. The rule and
+// the control each sweep every code point a plane to a subtest, which run beside each other, since
+// one sweep costs seconds under -race; each joins its planes' kept words in plane order, the order
+// one sweep of every code point keeps them in.
 func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
 	t.Parallel()
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
-	if kept := keptKeyFormingWords(words); len(kept) != 0 {
-		t.Fatalf("the rule keeps %d key-forming words, the first %v", len(kept), kept[:min(len(kept), 5)])
-	}
 	widened := words
 	widened.punctuation += "\u200b"
-	kept := keptKeyFormingWords(widened)
+	var rule, control [unicodePlanes][]string
+	t.Run("planes", func(t *testing.T) {
+		for plane := range unicodePlanes {
+			first, last := plane<<16, plane<<16|0xFFFF
+			t.Run(fmt.Sprintf("rule, plane %02d", plane), func(t *testing.T) {
+				t.Parallel()
+				rule[plane] = keptKeyFormingWords(words, first, last)
+			})
+			t.Run(fmt.Sprintf("control, plane %02d", plane), func(t *testing.T) {
+				t.Parallel()
+				control[plane] = keptKeyFormingWords(widened, first, last)
+			})
+		}
+	})
+	if kept := slices.Concat(rule[:]...); len(kept) != 0 {
+		t.Fatalf("the rule keeps %d key-forming words, the first %v", len(kept), kept[:min(len(kept), 5)])
+	}
+	kept := slices.Concat(control[:]...)
 	if len(kept) == 0 {
 		t.Fatalf("with U+200B let back in the property still holds: it cannot fail")
 	}
@@ -577,18 +599,21 @@ var hostTexts = []struct{ name, text, parsed string }{
 // blockWords drops link text, so the parsed form holds no `www.` host while the raw form keeps it.
 func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
 	t.Parallel()
-	ciHandler, database, fake := resultsGitHubCheckRuns(t)
-	ciIssue := issueInRepository(t, ciHandler, "RESWC", "acme/widgets", "CI hosts")
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	ciIssue := issueInRepository(t, handler, "RESWC", "acme/widgets", "CI hosts")
 	var document strings.Builder
 	for index, host := range hostTexts {
 		fmt.Fprintf(&document, ":::check{#c%d %s}\n%s\n:::\n\n", index+1, ciCheckKept, host.text)
 	}
-	uploadDocument(t, ciHandler, "/api/v1/issues/"+ciIssue.Key, "verification.md", document.String())
+	uploadDocument(t, handler, "/api/v1/issues/"+ciIssue.Key, "verification.md", document.String())
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", ciIssue.Key)
 	fake.set(headCommit, completedRun(31, ciCheckRun, "success"))
-	read := readResults(t, ciHandler, ciIssue.Key)
+	read := readResults(t, handler, ciIssue.Key)
 
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	// The results are recorded on the same server, on an issue of another project in no
+	// repository, created after the read so the CI lines are read as the server stood without it.
+	// The recorded line drops issue keys of RESWC as well as of RESW, and no host text holds
+	// either, so it reads as it would on a server of its own.
 	issue := createInteractionIssue(t, handler, "RESW", "Hosts", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordedPrefix := "- Check k1 (before_merge): pass at " + headCommit + ", recorded by implementer. "
@@ -657,12 +682,12 @@ func earlyStopBody(r *rand.Rand) string {
 }
 
 // wholeTextKept is what lineWords keeps of text when every word is judged: each word drops leaves,
-// joined by single blanks. It shares only drops with keepThrough, so it reads the whole text
-// whatever the early stop does.
-func wholeTextKept(w lineWords, text string) string {
+// joined by single blanks. drops is the line's verdict on a word (lineWords.drops); it is all
+// wholeTextKept shares with keepThrough, so it reads the whole text whatever the early stop does.
+func wholeTextKept(drops func(word string) bool, text string) string {
 	var kept []string
 	for _, word := range strings.Fields(text) {
-		if !w.drops(word) {
+		if !drops(word) {
 			kept = append(kept, word)
 		}
 	}
@@ -671,6 +696,12 @@ func wholeTextKept(w lineWords, text string) string {
 
 // earlyStopBodies is how many bodies TestTheEarlyStopPrintsWhatWholeTextJudgingPrints judges.
 const earlyStopBodies = 50000
+
+// earlyStopShards is how many subtests judge those bodies beside each other, each a run of 200
+// consecutive bodies. Judging every body costs about 45 seconds of CPU under -race, and the
+// package runs eight tests at once (apiTestParallelism), so on four CPUs each runs at about half a
+// CPU: a run of 200 bodies takes about 0.4 s there.
+const earlyStopShards = 250
 
 // The line judges a text's words only until its kept text passes the cut (keepThrough), and the
 // tail it prints, the kept text cut (cut), equals the tail judging the whole text prints
@@ -681,38 +712,87 @@ const earlyStopBodies = 50000
 // the bodies whose tail was cut, and fails on none of either, which would mean it tested nothing.
 // Its control stops judging one rune early (budget 79, as `runes >= budget` would): that tail must
 // differ from the whole text's on some body, which shows the comparison can fail.
+//
+// Whole-text judging reads each word's verdict from a table of drops's verdicts on the tokens of
+// earlyStopTokens, judged once. Every word of a body is one of those tokens, since every separator
+// is blanks alone and no token holds a blank, which the test checks first; and drops reads nothing
+// but the word and the lineWords it is called on, so the table answers what drops would. A word
+// the table lacks is judged by drops and fails the test, since that claim would then be wrong. The
+// bodies are judged in earlyStopShards runs beside each other: one pass draws every body from the
+// generator and keeps its state where each run begins, and each run draws its own bodies again
+// from that state. The counts are totalled once every run is judged, and at most three mismatches
+// are reported across all the runs.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 	t.Parallel()
 	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
-	r := rand.New(rand.NewPCG(4517, 50))
-	var stopped, cut, mismatches, controlMismatches int
-	for range earlyStopBodies {
-		body := earlyStopBody(r)
-		wholeKept := wholeTextKept(words, body)
-		whole := words.cut(wholeKept)
-		stoppedKept := words.keepThrough(body, checkResultReadingRunes)
-		if stoppedKept != wholeKept {
-			stopped++
-		}
-		if strings.HasSuffix(whole, "…") {
-			cut++
-		}
-		if got := words.cut(stoppedKept); got != whole {
-			mismatches++
-			if mismatches <= 3 {
-				t.Errorf("for %q the early stop prints %q, judging the whole text prints %q", body, got, whole)
-			}
-		}
-		if words.cut(words.keepThrough(body, checkResultReadingRunes-1)) != whole {
-			controlMismatches++
+	for _, separator := range earlyStopSeparators {
+		if separator == "" || strings.ContainsFunc(separator, func(r rune) bool { return !unicode.IsSpace(r) }) {
+			t.Fatalf("the separator %q is not blanks alone, so a body's words need not be its tokens", separator)
 		}
 	}
+	verdicts := make(map[string]bool, len(earlyStopTokens))
+	for _, token := range earlyStopTokens {
+		if token == "" || strings.ContainsFunc(token, unicode.IsSpace) {
+			t.Fatalf("the token %q is empty or holds a blank, so a body's words need not be its tokens", token)
+		}
+		verdicts[token] = words.drops(token)
+	}
+
+	source := rand.NewPCG(4517, 50)
+	r := rand.New(source)
+	perShard := (earlyStopBodies + earlyStopShards - 1) / earlyStopShards
+	var starts []rand.PCG
+	for index := range earlyStopBodies {
+		if index%perShard == 0 {
+			starts = append(starts, *source)
+		}
+		earlyStopBody(r)
+	}
+
+	var stopped, cut, mismatches, controlMismatches, unjudged atomic.Int64
+	t.Run("bodies", func(t *testing.T) {
+		for shard, start := range starts {
+			t.Run(fmt.Sprintf("shard %03d of %d", shard+1, len(starts)), func(t *testing.T) {
+				t.Parallel()
+				r := rand.New(&start)
+				judged := func(word string) bool {
+					if drops, ok := verdicts[word]; ok {
+						return drops
+					}
+					if unjudged.Add(1) <= 3 {
+						t.Errorf("a body holds the word %q, which is no token of earlyStopTokens: the table holds no verdict on it", word)
+					}
+					return words.drops(word)
+				}
+				for range min(perShard, earlyStopBodies-shard*perShard) {
+					body := earlyStopBody(r)
+					wholeKept := wholeTextKept(judged, body)
+					whole := words.cut(wholeKept)
+					stoppedKept := words.keepThrough(body, checkResultReadingRunes)
+					if stoppedKept != wholeKept {
+						stopped.Add(1)
+					}
+					if strings.HasSuffix(whole, "…") {
+						cut.Add(1)
+					}
+					if got := words.cut(stoppedKept); got != whole {
+						if mismatches.Add(1) <= 3 {
+							t.Errorf("for %q the early stop prints %q, judging the whole text prints %q", body, got, whole)
+						}
+					}
+					if words.cut(words.keepThrough(body, checkResultReadingRunes-1)) != whole {
+						controlMismatches.Add(1)
+					}
+				}
+			})
+		}
+	})
 	t.Logf("bodies %d: the stop left out a kept word on %d, the tail was cut on %d, mismatches %d; control (budget %d): mismatches %d",
-		earlyStopBodies, stopped, cut, mismatches, checkResultReadingRunes-1, controlMismatches)
-	if stopped == 0 || cut == 0 {
-		t.Fatalf("the stop left out a kept word on %d bodies and the tail was cut on %d: the run tested nothing", stopped, cut)
+		earlyStopBodies, stopped.Load(), cut.Load(), mismatches.Load(), checkResultReadingRunes-1, controlMismatches.Load())
+	if stopped.Load() == 0 || cut.Load() == 0 {
+		t.Fatalf("the stop left out a kept word on %d bodies and the tail was cut on %d: the run tested nothing", stopped.Load(), cut.Load())
 	}
-	if controlMismatches == 0 {
+	if controlMismatches.Load() == 0 {
 		t.Fatalf("a stop one rune early printed the whole text's tail on every body: the comparison cannot fail")
 	}
 }
