@@ -415,6 +415,7 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
 // picked are written to it and read back after a reload, a chip taken off leaves the address with
 // the rest, a link narrows the page with an unknown group dropped, and the picks add no history
 // entry, so Back leaves the page.
+// SLOW(>=2s): three seeded live sessions, the page reloaded once and opened twice more.
 test("the Agents page's group, machine and role round-trip through the address, a reload, a chip and Back", async ({
   page,
 }) => {
@@ -615,6 +616,7 @@ test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its s
 // The Artifacts tab's words round-trip through the address: typed words are written to `?q=`,
 // encoded where they must be, and read back after a reload; a link carrying them opens the tab
 // narrowed; and typing adds no history entry, so Back leaves the tab.
+// SLOW(>=2s): an issue seeded with two documents, the tab reloaded twice and opened by a link.
 test("the Artifacts tab's words round-trip through ?q=, a reload, a link and Back", async ({
   page,
 }) => {
