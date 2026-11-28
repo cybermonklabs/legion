@@ -19,7 +19,7 @@ import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from
  * Delivery follows the first half alone. A comment's role mention goes to the role's holder,
  * live or unresponsive, and fails at once where the role has none: the Go API's
  * `resolveDeliveryTarget`, through the Envoy client's `Role`. A recorded role nobody holds is
- * linked and not told, as the writing box's hint says.
+ * linked and not told.
  *
  * It is a module of its own rather than part of the picker's options, because the renderer reads
  * it too and the options module is the picker's.

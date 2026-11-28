@@ -114,7 +114,7 @@ export function stoppedRoleOptions(
       return {
         capabilities: [],
         // Not running, so a mention of it is refused rather than kept for its next session: the
-        // line says so, as the box's hint does.
+        // line says so.
         detail: `${agent.legion.role} · ${notRunning}`,
         holder: text.sessionText(agent.session_id, storedTitle),
         sessionId: agent.session_id,

@@ -444,16 +444,15 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
  * `issue-page/DecisionActions.tsx` keeps its own: `main`'s are the classes every surface of
  * today's pages draws, and on the new issue page the quote is the page's (`ReplyQuote`'s
  * `palette`), the box the page's field, which keeps `main`'s focus rule, its label the muted
- * grey, and the line under the box and the muted lines the quiet grey, as the ask body's answer
- * box draws them (`AskBody`'s `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the
- * host hands (`RefusableButton`'s `PAGE_LOOKS`).
+ * grey, and the muted lines the quiet grey, as the ask body's answer box draws them (`AskBody`'s
+ * `ON_PAGE`). Send is the page's inside `NoTooltips` whatever the host hands
+ * (`RefusableButton`'s `PAGE_LOOKS`).
  */
 const TONES = {
-  main: { field: undefined, foot: textMutedOnSurfaceMuted, hint: undefined, label: undefined },
+  main: { field: undefined, foot: textMutedOnSurfaceMuted, label: undefined },
   page: {
     field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
     foot: pageQuietText,
-    hint: `text-xs ${pageQuietText}`,
     label: `block text-sm font-medium ${pageMutedText}`,
   },
 } as const;
@@ -535,7 +534,7 @@ export interface OutlineLook {
   readonly kinds: readonly OutlineKind[];
   /** What the form, the field and the list of who the write is delivered to are named by, and
    *  what the field's description says of its keys, in the host's words (`OutlineNames`). With
-   *  none, the composer's own names and the writing list's hint. */
+   *  none, the composer's own names, and the field has no description. */
   readonly names?: OutlineNames;
   /** The words the reference picker in the line draws (`RefPickerWords`). With none, the
    *  picker's own. */
@@ -698,9 +697,9 @@ interface MentionComposerProps {
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
    *  passes it once the composer is on screen, since a field out of sight takes no focus. */
   readonly autoFocus?: boolean;
-  /** Which box of the writing list this mount is: the composer draws the shared field, and the
-   *  field's hint is that box's row for the write the composer is making
-   *  (`DISPATCH_WRITING_BOXES`). The host names it, since one composer serves several boxes. */
+  /** Which box of the writing list this mount is: the composer draws the shared field, which
+   *  reads that box's row for the write the composer is making (`DISPATCH_WRITING_BOXES`). The
+   *  host names it, since one composer serves several boxes. */
   readonly box: DispatchWritingBox;
   /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
    *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
@@ -1545,9 +1544,9 @@ export function MentionComposer({
           ? hostField.ask
           : hostField.comment;
   const title = edit !== undefined ? "Save" : kind === "ask" ? "Ask" : "Send";
-  /** What this composer writes now, which decides which row of the writing list the field's
-   *  hint comes from: the kinds the margin switches between, an edit's save, a direct message
-   *  to one session, a reply inside a message thread, and a comment for everything else. */
+  /** What this composer writes now, which decides which row of the writing list the field reads:
+   *  the kinds the margin switches between, an edit's save, a direct message to one session, a
+   *  reply inside a message thread, and a comment for everything else. */
   const writes: DispatchWriting =
     edit !== undefined
       ? "comment-edit"
@@ -2141,7 +2140,6 @@ export function MentionComposer({
         fieldClassName={tones.field}
         fieldRef={field}
         held={sending}
-        hintClassName={tones.hint}
         inline={inline}
         issueKey={pickerIssue}
         label={bodyLabel}

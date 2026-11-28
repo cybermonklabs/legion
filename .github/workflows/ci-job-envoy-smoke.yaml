@@ -54,6 +54,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # go-envoy-smoke holds what this job's three go commands compile: the smoke test in the root
       # workspace, and envoy-infra's host live tests and plugin in the infra module's go.work, whose
       # dependencies (the Pulumi SDKs among them) took 182 s of the live step to compile from
@@ -148,7 +150,7 @@ jobs:
       # last in run 36508580490), and 2.2–20.7 s across four runs on a devbox at load average
       # 80, so the bound is deliberate headroom, not a build budget.
       - name: Container smoke test (testcontainers)
-        run: go test -tags smoke -v -timeout 5m ./internal/smoke/
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/container-smoke.jsonl" --format standard-verbose --raw-command -- go test -json -tags smoke -v -timeout 5m ./internal/smoke/
         working-directory: packages/envoy
       # The envoy-infra plugin's live tests (packages/envoy/infra/host/live_test.go) apply Pulumi
       # YAML programs with the pinned Pulumi CLI (.github/actions/install-pulumi) against this
@@ -183,7 +185,7 @@ jobs:
       - name: Start the machine watch over the live tests
         run: .github/scripts/disk_watch.py start --path /tmp --state "$RUNNER_TEMP/disk-watch.json"
       - name: Live tests of envoy-infra's host:Listener
-        run: go test -tags pulumilive -v -timeout 15m ./host/
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/pulumi-host-listener.jsonl" --format standard-verbose --raw-command -- go test -json -tags pulumilive -v -timeout 15m ./host/
         working-directory: packages/envoy/infra
         env:
           ENVOY_INFRA_DOCKER_PLUGIN: ${{ steps.docker-plugin.outputs.tarball }}
@@ -207,6 +209,14 @@ jobs:
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
           pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

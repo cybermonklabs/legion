@@ -63,6 +63,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -71,8 +73,16 @@ jobs:
       - name: Two-process tests of the secrets broker
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
+          gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/broker-multiprocess.jsonl" --format standard-verbose --raw-command -- go test -json -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, expect, jest, mock, test } from "bun:test";
-import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -46,8 +45,10 @@ afterEach(() => {
  * its parser takes the text whole (`description_tree_exact`), which `rerender` moves, and every
  * write lands in `onSave`, with the server's text the editor last took in, unanswered unless a
  * test gives `onSave` answers of its own; `madeOn` holds the text each write's edit was made on
- * (`onSave`'s `on`). `imports` is the length of each text the editor took in as markdown
- * (`setMarkdown`), its own parse of a text, which the browser spec counts as a parse of the page
+ * (`onSave`'s `on`). `pickers` holds each reference picker the page hands the editor
+ * (`setReferencePicker`): true for one it hosts, false for none. `imports` is the length of each
+ * text the editor took in as markdown (`setMarkdown`), its own parse of a text, which the browser
+ * spec counts as a parse of the page
  * (`e2e/parse-counting.ts`). A text a test puts in `undrawable` is one the editor cannot take in:
  * `setMarkdown` throws for it, as for a text holding what it may not create yet. `beforeEffects`
  * runs a step in the next commit `rerender` makes, before the editor's effects take in what it
@@ -57,6 +58,7 @@ afterEach(() => {
 function described(description: string, canWrite = true, tree?: DisplayTree, exact?: boolean) {
   const editors = recordedEditors();
   const imports: number[] = [];
+  const pickers: boolean[] = [];
   const undrawable = new Set<string>();
   const createEditor: CreateEditor = async (root, options) => {
     const handle = await editors.runtime.createEditor(root, options);
@@ -65,6 +67,11 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
       if (undrawable.has(markdown)) throw new Error('this editor cannot create node "undrawn" yet');
       imports.push(markdown.length);
       setMarkdown.call(handle, markdown);
+    };
+    const setReferencePicker = handle.setReferencePicker;
+    handle.setReferencePicker = (picker) => {
+      pickers.push(picker !== null);
+      setReferencePicker.call(handle, picker);
     };
     return handle;
   };
@@ -132,6 +139,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
     imports,
     madeOn,
     onSave,
+    pickers,
     rerender: (text: string, writer = canWrite, reading?: DisplayTree, readingExact?: boolean) =>
       view.rerender(page(text, writer, reading, readingExact)),
     scope: within(view.container),
@@ -981,16 +989,15 @@ test("a description is drawn from the tree the priorities read sends", async () 
 });
 
 // A writer's editor hosts the reference picker every box has, under the writing list's row of a
-// priority's description, whose words stand under it; a reader who may not write it has nothing
-// to pick, and reads no such line.
+// priority's description; a reader who may not write it has nothing to pick, and the page hands
+// that reader's editor no picker.
 test("a writer's editor hosts the reference picker under the description's row of the writing list, and a reader's does not", async () => {
-  const hint = dispatchWritingBox("priority-description", "priority-description").hint;
   const writer = described("Speedruns run again.");
   await writer.editor();
-  expect(writer.scope.getByTestId("priority-description-hint").textContent).toBe(hint);
+  await waitFor(() => expect(writer.pickers).toEqual([true]));
   writer.view.unmount();
 
   const reader = described("Speedruns run again.", false);
   await reader.editor();
-  expect(reader.scope.queryByTestId("priority-description-hint")).toBeNull();
+  expect(reader.pickers).toEqual([]);
 });

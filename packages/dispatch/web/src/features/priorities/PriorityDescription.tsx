@@ -30,7 +30,7 @@ import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
 /** The writing list's row of a priority's description, whose picker the editor hosts
- *  (`DocumentRefPicker`): the line under the editor is the row's hint. */
+ *  (`DocumentRefPicker`). */
 const DESCRIPTION_BOX = dispatchWritingBox("priority-description", "priority-description");
 /** The line under a description drawn from the server's reading of it where the server's parser
  *  does not take the description whole. */
@@ -249,8 +249,8 @@ function rest(held: Held, latest: Latest, fail: (failure: Failure) => void): voi
  * box: the editor draws no border, only the focus ring, and its words start where the card's do.
  * An editor the reader writes in hosts the reference picker every box has, as a document's body
  * does (`DocumentRefPicker`), under the writing list's row of a priority's description
- * (`DISPATCH_WRITING_BOXES`, `priority-description`), whose words stand under the editor; the
- * references the text holds are drawn over it as a document's are (`DocumentReferences`).
+ * (`DISPATCH_WRITING_BOXES`, `priority-description`); the references the text holds are drawn
+ * over it as a document's are (`DocumentReferences`).
  *
  * The stored description a reader who may not write it reads is drawn from the tree the server
  * read it into (`descriptionTree`), as every other stored text is, so no such reader's browser
