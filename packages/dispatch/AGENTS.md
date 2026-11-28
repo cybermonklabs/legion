@@ -2,7 +2,7 @@
 
 The React app for Dispatch (`web/`) and its Playwright suite (`e2e/`).
 The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
-`README.md` has the commands, the end-to-end suite and the rules its rows follow, the stubbed layer, the review of each route, and the local instance;
+`README.md` has the commands, the end-to-end suite and the rules its rows follow, what each spec costs the browser lane and how to measure a new one, the stubbed layer, the review of each route, and the local instance;
 `docs/testing.md` at the repository root has the rules a unit test follows.
 
 ## Code (paths under `web/src/`)
