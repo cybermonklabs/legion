@@ -2,7 +2,10 @@
 
 package memory
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // errNoFileLock refuses the memory store's writer on a system without flock. Each agent-secrets
 // run is a process of its own, so a lock held within one process would let two runs read the same
@@ -13,4 +16,4 @@ var errNoFileLock = errors.New("the memory store's writer needs a file lock betw
 func fileLockMissing() error { return errNoFileLock }
 
 // lockFile takes no lock here and answers errNoFileLock.
-func lockFile(string) (unlock func(), err error) { return nil, errNoFileLock }
+func lockFile(context.Context, string) (unlock func(), err error) { return nil, errNoFileLock }

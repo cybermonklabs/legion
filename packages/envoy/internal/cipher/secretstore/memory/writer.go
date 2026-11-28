@@ -212,31 +212,40 @@ func lostAnswer(call string) error {
 }
 
 // edit changes the file under its lock: it reads the secrets, calls change with them, and, when
-// change answers no error, writes them back whole, then has the store read the file again.
-func (w *Writer) edit(change func(secrets []Secret) ([]Secret, error)) error {
-	unlock, err := lockFile(w.path + ".lock")
+// change answers no error, writes them back whole, then has the store read the file again. It
+// waits for the lock only until ctx ends, and checks ctx again before it writes, so a call whose
+// time ran out writes nothing. written reports whether it replaced the file, which it has done
+// whatever it answers after that.
+func (w *Writer) edit(ctx context.Context, change func(secrets []Secret) ([]Secret, error)) (written bool, err error) {
+	unlock, err := lockFile(ctx, w.path+".lock")
 	if err != nil {
-		return fileFailure("lock", w.shown, err)
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return false, fmt.Errorf("lock %s: another writer held it until the call's time ran out, so nothing was written: %w", w.shown, err)
+		}
+		return false, fileFailure("lock", w.shown, err)
 	}
 	defer unlock()
 	data, err := os.ReadFile(w.path)
 	if err != nil {
-		return fileFailure("read", w.shown, err)
+		return false, fileFailure("read", w.shown, err)
 	}
 	secrets, err := parseFile(w.shown, data)
 	if err != nil {
-		return err
+		return false, err
 	}
 	secrets, err = change(secrets)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("write %s: the call's time ran out before the write, so nothing was written: %w", w.shown, err)
 	}
 	if err := writeWhole(w.path, secrets); err != nil {
-		return fileFailure("write", w.shown, err)
+		return false, fileFailure("write", w.shown, err)
 	}
 	w.Store.mu.Lock()
 	defer w.Store.mu.Unlock()
-	return w.Store.follow()
+	return true, w.Store.follow()
 }
 
 // writeWhole writes secrets as path's whole new content: a file beside it, mode 0600, renamed over
@@ -374,7 +383,7 @@ func (c *create) Store(ctx context.Context, value string) error {
 		return err
 	}
 	now := time.Now().UTC()
-	err = c.w.edit(func(secrets []Secret) ([]Secret, error) {
+	_, err = c.w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		if find(secrets, c.id) >= 0 {
 			return nil, heldName(c.id)
 		}
@@ -421,7 +430,7 @@ func (w *Writer) Set(ctx context.Context, id, value string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.edit(func(secrets []Secret) ([]Secret, error) {
+	if _, err := w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		i := find(secrets, id)
 		if i < 0 || secrets[i].DeletedAt != nil {
 			return nil, secretstore.ErrNotFound
@@ -469,7 +478,7 @@ func (w *Writer) writeTags(ctx context.Context, id string, held secretstore.Held
 	if err != nil {
 		return err
 	}
-	if err := w.edit(func(secrets []Secret) ([]Secret, error) {
+	if _, err := w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		i := find(secrets, id)
 		if i < 0 || secrets[i].DeletedAt != nil {
 			return nil, secretstore.ErrNotFound
@@ -501,7 +510,7 @@ func (w *Writer) Delete(ctx context.Context, id string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	now := time.Now().UTC()
-	if err := w.edit(func(secrets []Secret) ([]Secret, error) {
+	if _, err := w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		i := find(secrets, id)
 		if i < 0 || secrets[i].DeletedAt != nil {
 			return nil, secretstore.ErrNotFound
@@ -524,7 +533,7 @@ func (w *Writer) Restore(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.edit(func(secrets []Secret) ([]Secret, error) {
+	if _, err := w.edit(ctx, func(secrets []Secret) ([]Secret, error) {
 		i := find(secrets, id)
 		if i < 0 || secrets[i].DeletedAt == nil {
 			return nil, secretstore.ErrNotFound
