@@ -639,7 +639,7 @@ func TestARowDueLaterRunsWhenItsLanesTimerFires(t *testing.T) {
 	}
 }
 
-// A notice waiting for its architect's ready is released by that ready (releaseReady): the
+// A notice waiting for its architect's ready is released by that ready (releaseReadies): the
 // expedite that makes it due wakes its lane as it commits, and the notice is published with no
 // timer fired — neither the lane's wait for the hour it was due at nor the sweep.
 func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
@@ -665,7 +665,7 @@ func TestAReleasedNoticeRunsOnItsLaneWhenTheReleaseCommits(t *testing.T) {
 		t.Fatalf("delivered %+v before the release, want nothing", delivered)
 	}
 
-	if err := runner.releaseReady(context.Background(), architect); err != nil {
+	if err := releaseReadies(context.Background(), runner, architect); err != nil {
 		t.Fatalf("release the architect's notices: %v", err)
 	}
 	testwait.Eventually(t, "the released notice was published and its lane dropped its wait", func() bool {

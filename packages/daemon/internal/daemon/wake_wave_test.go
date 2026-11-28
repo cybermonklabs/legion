@@ -2424,7 +2424,7 @@ func TestAReadyAndALaterNoticeLeaveThePacedCatchUpWhereTheQueueHoldsIt(t *testin
 		t.Fatalf("make the catch-up of %s wait for its architect's ready: %v", woken, err)
 	}
 
-	if err := runner.releaseReady(ctx, architect); err != nil {
+	if err := releaseReadies(ctx, runner, architect); err != nil {
 		t.Fatalf("release the notices waiting for %s: %v", architect, err)
 	}
 	if after, _ := noticeRowOf(t, pool, woken); !after.nextAt.Equal(catchUp.nextAt) {

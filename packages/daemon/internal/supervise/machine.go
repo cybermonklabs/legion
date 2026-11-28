@@ -1466,8 +1466,9 @@ type Deps struct {
 	// it stood before it, which is why the daemon also posts the end of a turn to an issue's other
 	// claims after the decision (internal/daemon's wakeIssue). So the callback may read the machine,
 	// Claim included. It is called on the goroutine that made the decision, so it returns at once.
-	// The daemon also tells its own hook of each machine it begins to supervise (internal/daemon's
-	// supervisor.add). nil tells no one.
+	// The daemon also tells its own hook of each machine it makes while it runs (internal/daemon's
+	// supervisor.Create), and of none it restores at boot, which is no change of its claim. nil
+	// tells no one.
 	//
 	// The two views are the machine's published views themselves, shared rather than copied, as
 	// Published shares one: publish stores a view built fresh and nothing writes a stored one again.

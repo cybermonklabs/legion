@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -420,60 +421,69 @@ func roleStop(op record.SuperviseOp) bool {
 	return slices.Contains(store.RoleStopOps, string(op))
 }
 
-// readyReleasedLine is the one line a ready's release writes once its transaction commits
-// (releaseReady), naming the claims that said they are ready and the rows it made due.
+// readyReleasedLine is the one line a release of a ready writes once its transaction commits
+// (releaseChanged), naming the claims that said they are ready and the rows waiting for them that
+// it made due.
 const readyReleasedLine = "outbox rows released: their role is ready"
 
-// releaseReady makes due at once every row that waits for one of tokens' claims, each of which has
-// said it is ready (workflow's claimReady, dispatch://INFRA-4131/spec#b-r-wait-ready): a row the
-// gate holds, that waits for the role's launch (launchWait) or that waits for the role's name
-// (record.WaitForClaim), and a row on the capped waits of a refusal while the claim said it was
-// ready (record.WaitForReady), which only a ready makes due. Each row's step goes back to 0, a row
-// a lane holds is marked woken so that its retry makes it due at once, and a catch-up the wake
-// pacing holds to a moment still ahead of now keeps that moment, since its wait is the turn the
-// operator's rate gave it and not the architect being away (record.Store.ExpediteWaits). Once the
-// release commits it writes one line naming the claims and the rows it made due.
+// releaseChanged makes due at once, in a transaction of its own, every row that waits for one of
+// keys, which changes of this daemon's claims made happen (workflow's claimChanged): each claim's
+// own key (record.WaitForClaim), its tree's (record.WaitForTreeClaims), and its ready's where the
+// change was the claim's ready (record.WaitForReady, dispatch://INFRA-4131/spec#b-r-wait-ready and
+// #b-r-wait-event). A ready makes due every row that waits for its claim: a row the gate holds, that
+// waits for the role's launch (launchWait) or for the role's name (record.WaitForClaim), and a row
+// on the capped waits of a refusal while the claim said it was ready (record.WaitForReady), which
+// only a ready makes due. Each row's step goes back to 0, a row a lane holds is marked woken so
+// that its retry makes it due at once, and a catch-up the wake pacing holds to a moment still
+// ahead of now keeps that moment, since its wait is the turn the operator's rate gave it and not
+// the architect being away (record.Store.ExpediteWaits). The transaction owns the commit hooks the
+// expedite registers (projectRecords), so each row's lane is woken once the rows are due.
+//
+// This is the one release of a ready: the end of the ready's decision tells the claim-change hook,
+// and the ready route releases nothing of its own (claimReadyHook), so one ready makes a row due
+// once. Where keys hold a ready, the release writes one line once it commits, naming the claims
+// that said they are ready and the rows waiting for them that it made due (readyReleasedLine).
+// Those rows are made due by a statement of their own, ahead of the rest, so the line names them
+// alone. A claim changes at every turn, so no other change writes a line: each row it makes due
+// writes its wait's lines as it runs (logWait).
 //
 // A row waits for the claim its last run read: a notice for the architect it was routed to then
 // (noticeArchitect), so a notice whose routing moved to another architect since runs at its next
 // step, at most RoleWaitBackoffMost later. A launch says it is ready before its session takes its
-// role's Envoy name, so a row this releases can be refused because no session holds the role; it
-// then waits for that name (roleWaiting.awaitsName), not for another ready.
-func (r *outbox) releaseReady(ctx context.Context, tokens ...claim.Token) error {
-	keys := make([]string, 0, 2*len(tokens))
-	for _, token := range tokens {
-		keys = append(keys, record.WaitForClaim(token), record.WaitForReady(token))
-	}
-	return r.expediteWaits(ctx, keys, func(rows []int64) {
-		r.log.Info(readyReleasedLine, "claims", tokens, "rows", rows)
-	})
-}
-
-// releaseChanged makes due at once every row that waits for one of keys, which a change of one of
-// this daemon's claims made happen (workflow's claimChanged): the claim's own key, its tree's, and
-// its ready's where the change was a ready (dispatch://INFRA-4131/spec#b-r-wait-event), on the same
-// rules as a ready's release (releaseReady). A claim changes at every turn, so this release writes
-// no line of its own: each row it makes due writes its wait's lines as it runs (logWait).
+// role's Envoy name, so a row a ready releases can be refused because no session holds the role;
+// it then waits for that name (roleWaiting.awaitsName), not for another ready.
 func (r *outbox) releaseChanged(ctx context.Context, keys []string) error {
-	return r.expediteWaits(ctx, keys, nil)
-}
-
-// expediteWaits makes due, in a transaction of its own, every row that waits for one of keys
-// (record.Store.ExpediteWaits), and calls released with the rows it made due once that transaction
-// has committed, where it made any and released is set. The transaction owns the commit hooks the
-// expedite registers (projectRecords), so each row's lane is woken once the rows are due.
-func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func(rows []int64)) error {
+	// The claims whose ready is among keys, each read back through its key's one builder
+	// (record.WaitForReady), and the keys of the rows each such ready makes due: its claim's and its
+	// own.
+	var readied []claim.Token
+	var ready []string
+	for _, key := range keys {
+		if token, ok := strings.CutPrefix(key, record.WaitForReady("")); ok {
+			readied = append(readied, claim.Token(token))
+			ready = append(ready, record.WaitForClaim(claim.Token(token)), key)
+		}
+	}
+	changed := keys
+	if len(ready) > 0 {
+		changed = slices.DeleteFunc(slices.Clone(keys), func(key string) bool { return slices.Contains(ready, key) })
+	}
 	now := r.now()
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		due, err := r.records.ExpediteWaits(ctx, tx, keys, now)
-		if err != nil || len(due) == 0 || released == nil {
+		released, err := r.records.ExpediteWaits(ctx, tx, ready, now)
+		if err != nil {
 			return err
 		}
-		ids := make([]int64, len(due))
-		for i, row := range due {
-			ids[i] = row.ID
+		if _, err := r.records.ExpediteWaits(ctx, tx, changed, now); err != nil {
+			return err
 		}
-		store.OnCommit(ctx, func() { released(ids) })
+		if len(released) > 0 {
+			rows := make([]int64, len(released))
+			for i, row := range released {
+				rows[i] = row.ID
+			}
+			store.OnCommit(ctx, func() { r.log.Info(readyReleasedLine, "claims", readied, "rows", rows) })
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("release the outbox rows that wait for %v: %w", keys, err)

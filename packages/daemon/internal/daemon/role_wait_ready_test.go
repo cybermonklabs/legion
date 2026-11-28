@@ -18,46 +18,37 @@ import (
 // claims that said they are ready and the rows it made due (dispatch://INFRA-4131/spec#b-r-wait-ready).
 const wantReadyReleasedLine = "outbox rows released: their role is ready"
 
-// readyHooks is the workflow runtime of h's runner as the daemon builds it for the two hooks a
-// waiting row is released by: the ready route's (claimReady, released by releaseReadied) and,
-// where changes is set, the claims' machines' own (claimChanged, released by releaseChanged),
-// which h's supervisor hands every machine it makes after this call. Neither release runs until
-// the test runs it: loops runs both as the daemon does, and release runs one pass of each.
-func (h *roleWaitHarness) readyHooks(changes bool) *workflowRuntime {
+// readyHooks is the workflow runtime of h's runner as the daemon builds it for the hook a waiting
+// row is released by: the claims' machines' own (claimChanged, released by releaseChanged), which
+// h's supervisor hands every machine it makes after this call. A ready reaches it as every other
+// change of a claim does, at the end of the ready's decision; the ready route's own hook releases
+// nothing (claimReadyHook). No release runs until the test runs it: loops runs it as the daemon
+// does, and release runs one pass of it.
+func (h *roleWaitHarness) readyHooks() *workflowRuntime {
 	h.t.Helper()
-	w := &workflowRuntime{outbox: h.runner, log: quietLogger(), readied: newWakeSet[claim.Token](), changed: newWakeSet[string]()}
-	if changes {
-		h.sup.deps.ClaimChanged = w.claimChanged
-	}
+	w := &workflowRuntime{outbox: h.runner, log: quietLogger(), changed: newWakeSet[string]()}
+	h.sup.deps.ClaimChanged = w.claimChanged
 	return w
 }
 
-// loops runs w's two release loops until the test ends, each on a goroutine of its own under a
-// hold mark of its own, as the workflow runs them.
+// loops runs w's release loop until the test ends, on a goroutine of its own under a hold mark of
+// its own, as the workflow runs it.
 func (h *roleWaitHarness) loops(w *workflowRuntime) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var running sync.WaitGroup
-	for _, loop := range []func(context.Context){w.releaseReadied, w.releaseChanged} {
-		running.Go(func() { loop(store.ForConcurrentWorker(ctx)) })
-	}
+	running.Go(func() { w.releaseChanged(store.ForConcurrentWorker(ctx)) })
 	h.t.Cleanup(func() {
 		cancel()
 		running.Wait()
 	})
 }
 
-// release runs one pass of each of w's two releases over what its hooks recorded since the last
-// pass, on the test's goroutine, as each loop's pass runs it: the rows it makes due are due once it
-// returns, so none of its releases lands inside a run the test makes after it.
+// release runs one pass of w's release over what its hook recorded since the last pass, on the
+// test's goroutine, as the loop's pass runs it: the rows it makes due are due once it returns, so
+// none of its releases lands inside a run the test makes after it.
 func (h *roleWaitHarness) release(w *workflowRuntime) {
 	h.t.Helper()
 	ctx := context.Background()
-	if w.readied.waiting() > 0 {
-		tokens, _ := w.readied.take(ctx)
-		if err := w.outbox.releaseReady(ctx, tokens...); err != nil {
-			h.t.Fatalf("release the rows waiting for %v: %v", tokens, err)
-		}
-	}
 	if w.changed.waiting() > 0 {
 		keys, _ := w.changed.take(ctx)
 		if err := w.outbox.releaseChanged(ctx, keys); err != nil {
@@ -67,17 +58,41 @@ func (h *roleWaitHarness) release(w *workflowRuntime) {
 }
 
 // ready is machine's launch saying it is ready as api's ready route takes it: the machine takes
-// the ready (supervise.RequestReady), and the route hands the claim it left to the workflow's hook
-// (claimReady). It answers the moment of the ready.
-func (h *roleWaitHarness) ready(w *workflowRuntime, machine *supervise.Machine) time.Time {
+// the ready (supervise.RequestReady), whose decision's end tells the claims' change hook, and the
+// route hands the claim it left to its own hook (routeReady). It answers the moment of the ready.
+func (h *roleWaitHarness) ready(machine *supervise.Machine) time.Time {
 	h.t.Helper()
 	c := machine.Claim()
 	if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: c.Token, Generation: c.Generation, Session: c.Session}); err != nil {
 		h.t.Fatalf("the ready of %s's launch %d: %v", c.Token, c.Generation, err)
 	}
 	machine.Wait()
-	w.claimReady(machine.Claim())
+	h.routeReady(machine.Claim())
 	return h.clock.Now()
+}
+
+// routeReady hands c, the claim a ready left, to the ready route's own hook as the daemon wires it
+// for a daemon with no controller keeper (claimReadyHook), as api's ready route does once the
+// machine has taken the ready.
+func (h *roleWaitHarness) routeReady(c supervise.Claim) {
+	if hook := claimReadyHook(nil); hook != nil {
+		hook(c)
+	}
+}
+
+// releaseReadies runs runner's release of the readies of tokens' claims as the daemon runs it,
+// for a test whose claims say nothing themselves: each claim's ready, from a launch that had not
+// said it was ready to that launch ready now, is told to the workflow's claim-change hook
+// (workflowRuntime.claimChanged), which records the claim's key and its ready's, and what it
+// recorded is released in one pass (outbox.releaseChanged), on the caller's goroutine under ctx.
+func releaseReadies(ctx context.Context, runner *outbox, tokens ...claim.Token) error {
+	w := &workflowRuntime{outbox: runner, changed: newWakeSet[string]()}
+	for _, token := range tokens {
+		w.claimChanged(supervise.ClaimView{Claim: supervise.Claim{Token: token, State: supervise.StateRegistered}},
+			supervise.ClaimView{Claim: supervise.Claim{Token: token, State: supervise.StateReady, LastReady: runner.now()}})
+	}
+	keys, _ := w.changed.take(context.Background())
+	return runner.releaseChanged(ctx, keys)
 }
 
 // queueWaiting enqueues a row of h.tc's kind, due at at, that waits for key as a row a run of its
@@ -148,8 +163,9 @@ func resumedReady(t *testing.T, machine *supervise.Machine) {
 }
 
 // S2 (R1): a row of each waiting kind to a role whose claim the daemon does not record publishes
-// nothing; once the claim is made and its first launch says it is ready, the ready route's release
-// makes the row due at once, and the first run after the ready publishes it.
+// nothing; once the claim is made and its first launch says it is ready, the release of the
+// claim's changes, its ready among them, makes the row due at once, and the first run after the
+// ready publishes it.
 func TestRoleWaitNoClaimIsPublishedAtTheFirstReady(t *testing.T) {
 	t.Parallel()
 	for _, tc := range roleWaitCases {
@@ -160,7 +176,7 @@ func TestRoleWaitNoClaimIsPublishedAtTheFirstReady(t *testing.T) {
 			t.Parallel()
 			h := newRoleWaitHarness(t, tc, nil)
 			rig := h.queue()
-			w := h.readyHooks(false)
+			w := h.readyHooks()
 			h.loops(w)
 
 			rig.runTo(5)
@@ -171,7 +187,7 @@ func TestRoleWaitNoClaimIsPublishedAtTheFirstReady(t *testing.T) {
 				c.Session, c.SessionFile = "ses-"+string(tc.role), t.TempDir()+"/session.jsonl"
 			})
 			comesUp(t, machine, false)
-			readyAt := h.ready(w, machine)
+			readyAt := h.ready(machine)
 			dueAtOnce(t, h.pool, rig.id, readyAt, "the row due at its claim's first ready")
 
 			rig.endsAtItsNextRun()
@@ -202,7 +218,7 @@ func TestRoleWaitSuspendedPublishesAtMostOnceUntilTheNextReady(t *testing.T) {
 					t.Parallel()
 					h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
 					rig := h.queue()
-					w := h.readyHooks(false)
+					w := h.readyHooks()
 					h.loops(w)
 					machine := h.claim(supervise.StateSuspended, func(c *supervise.Claim) { c.SuspendedBy = by })
 					// The round passes over a claim suspended by any source but the operator and the
@@ -223,7 +239,7 @@ func TestRoleWaitSuspendedPublishesAtMostOnceUntilTheNextReady(t *testing.T) {
 					}
 
 					resumedReady(t, machine)
-					readyAt := h.ready(w, machine)
+					readyAt := h.ready(machine)
 					dueAtOnce(t, h.pool, rig.id, readyAt, "the row due at the claim's next ready")
 					rig.run()
 					got := publishOffsets(h.publisher.publishes, h.start)
@@ -241,8 +257,9 @@ func TestRoleWaitSuspendedPublishesAtMostOnceUntilTheNextReady(t *testing.T) {
 // a row on the capped waits of a refusal while the claim said it was ready (record.WaitForReady)
 // and a row the gate holds for any change of the claim (record.WaitForClaim). Each starts its
 // backoff again (wait_step 0), the release writes one line naming the claim and both rows, and the
-// first run after the ready publishes. The claim's machines tell the outbox nothing here, so the
-// ready route's release alone makes the rows due.
+// first run after the ready publishes. The changes of the claim before its ready, the relaunch
+// among them, are released before the row that waits for any change of it is queued, so the
+// ready's release alone makes both rows due.
 func TestRoleWaitReadyMakesEveryWaitingRowDue(t *testing.T) {
 	t.Parallel()
 	for _, tc := range roleWaitCases {
@@ -250,21 +267,23 @@ func TestRoleWaitReadyMakesEveryWaitingRowDue(t *testing.T) {
 			t.Parallel()
 			h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
 			rig := h.queue()
-			held := h.queueWaiting(record.WaitForClaim(h.token), h.start.Add(time.Hour))
-			// The held row is on a later step of its wait, so the ready's step back to 0 is read.
-			if _, err := h.pool.Exec(context.Background(), "update outbox set wait_step = 4 where id = $1", held); err != nil {
-				t.Fatalf("put the held row at step 4 of its wait: %v", err)
-			}
-			w := h.readyHooks(false)
-			h.loops(w)
+			w := h.readyHooks()
 			machine := h.claim(supervise.StateIdle, nil)
+			h.release(w)
 
 			rig.runTo(6)
 			if _, step, key, _ := rowWait(t, h.pool, rig.id); step != 6 || key != record.WaitForReady(h.token) {
 				t.Fatalf("after 6 refusals the row waits at step %d for %q, want step 6 for %q", step, key, record.WaitForReady(h.token))
 			}
 			relaunchedReady(t, machine, tc)
-			readyAt := h.ready(w, machine)
+			h.release(w)
+			held := h.queueWaiting(record.WaitForClaim(h.token), h.clock.Now().Add(time.Hour))
+			// The held row is on a later step of its wait, so the ready's step back to 0 is read.
+			if _, err := h.pool.Exec(context.Background(), "update outbox set wait_step = 4 where id = $1", held); err != nil {
+				t.Fatalf("put the held row at step 4 of its wait: %v", err)
+			}
+			readyAt := h.ready(machine)
+			h.release(w)
 			dueAtOnce(t, h.pool, rig.id, readyAt, "the refused row due at the ready")
 			dueAtOnce(t, h.pool, held, readyAt, "the held row due at the ready")
 			for _, id := range []int64{rig.id, held} {
@@ -298,6 +317,9 @@ func TestRoleWaitReadyMakesEveryWaitingRowDue(t *testing.T) {
 func TestRoleWaitReadyLeavesAPacedCatchUpAtItsMoment(t *testing.T) {
 	t.Parallel()
 	h := newRoleWaitHarness(t, roleWaitCases[0], nil)
+	w := h.readyHooks()
+	machine := h.claim(supervise.StateRegistered, nil)
+	h.release(w)
 	paced := h.start.Add(5 * time.Minute)
 	catchUp := pacedCatchUp(t, h.pool, h.records, "LEGION-208", 1, h.start, paced)
 	if _, err := h.pool.Exec(context.Background(), "update outbox set wait_for = $2 where id = $1", catchUp, record.WaitForClaim(h.token)); err != nil {
@@ -305,11 +327,9 @@ func TestRoleWaitReadyLeavesAPacedCatchUpAtItsMoment(t *testing.T) {
 	}
 	rig := newRoleWaitRig(t, h.runner, h.pool, h.clock, catchUp)
 	beside := h.queueWaiting(record.WaitForClaim(h.token), h.start.Add(time.Hour))
-	w := h.readyHooks(false)
-	h.loops(w)
-	machine := h.claim(supervise.StateRegistered, nil)
 
-	readyAt := h.ready(w, machine)
+	readyAt := h.ready(machine)
+	h.release(w)
 	dueAtOnce(t, h.pool, beside, readyAt, "the notice beside the catch-up due at the ready")
 	if due, _, _, _ := rowWait(t, h.pool, catchUp); !due.Equal(paced) {
 		t.Fatalf("the paced catch-up is due at %s after the ready, want its moment %s", due, paced)
@@ -336,9 +356,9 @@ func firstTurnRig(t *testing.T, tc roleWaitCase) (*roleWaitHarness, *roleWaitRig
 	t.Helper()
 	h := newRoleWaitHarness(t, tc, refusalError("unclaimed"))
 	rig := h.queue()
-	w := h.readyHooks(true)
+	w := h.readyHooks()
 	machine := h.claim(supervise.StateRegistered, nil)
-	h.ready(w, machine)
+	h.ready(machine)
 	h.release(w)
 	if ready := machine.View().LastReady; !ready.Equal(h.start) {
 		t.Fatalf("the claim's ready is dated %s, want the row's own moment %s", ready, h.start)
@@ -406,6 +426,47 @@ func TestRoleWaitFirstTurnBoundRunsTheRowAt30Seconds(t *testing.T) {
 	}
 }
 
+// S8 (R1): one ready of a launch whose session has not taken its role's name yet makes a row that
+// waits for its claim publish once before that name: the ready makes the row due, its publish is
+// refused because no session holds the role, and the row then waits for the claim's first turn or
+// the ready + roleNameBound, with no second publish before either. The ready is driven as the ready
+// route drives it: the machine takes it (supervise.RequestReady), the end of that decision tells
+// the claims' change hook, whose release lands and whose lane runs the row while the route goes
+// on, and the route then hands the claim the ready left to its own hook (routeReady). Nothing the
+// route's hook does may make the row due a second time.
+func TestRoleWaitFirstTurnOneReadyPublishesOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range roleWaitNoHolderCases() {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			t.Parallel()
+			h := newRoleWaitHarness(t, tc, refusalError("unclaimed"))
+			w := h.readyHooks()
+			machine := h.claim(supervise.StateRegistered, nil)
+			h.release(w)
+			// A row the gate held while the launch came up: it waits for the claim's ready.
+			rig := newRoleWaitRig(t, h.runner, h.pool, h.clock, h.queueWaiting(record.WaitForClaim(h.token), h.start.Add(time.Hour)))
+
+			c := machine.Claim()
+			if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: c.Token, Generation: c.Generation, Session: c.Session}); err != nil {
+				t.Fatalf("the ready of %s's launch %d: %v", c.Token, c.Generation, err)
+			}
+			machine.Wait()
+			h.release(w)
+			rig.run()
+			h.routeReady(machine.Claim())
+			h.release(w)
+			if due, step, key, _ := rowWait(t, h.pool, rig.id); !due.Equal(h.start.Add(roleNameBound)) || step != 0 || key != record.WaitForClaim(h.token) {
+				t.Fatalf("after the ready and its refused publish the row is due %s after the ready, at step %d, waiting for %q; want %s after it, step 0, %q",
+					due.Sub(h.start), step, key, roleNameBound, record.WaitForClaim(h.token))
+			}
+			rig.run()
+			if got, want := publishOffsets(h.publisher.publishes, h.start), []time.Duration{0, roleNameBound}; !slices.Equal(got, want) {
+				t.Fatalf("published at %v, want %v: once at the ready, then at the end of the pane's first-turn bound", got, want)
+			}
+		})
+	}
+}
+
 // S10 (R1): a row on the capped waits of a refusal while its claim said it was ready waits for
 // the claim's next ready alone (record.WaitForReady): a turn start of the ready claim makes it no
 // sooner due, and the ready of the claim's next launch, which moves its LastReady, makes it due at
@@ -422,7 +483,7 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 		t.Helper()
 		h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
 		rig := h.queue()
-		w := h.readyHooks(true)
+		w := h.readyHooks()
 		machine := h.claim(supervise.StateIdle, nil)
 		h.release(w)
 		rig.runTo(6)
@@ -454,7 +515,7 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 			t.Fatalf("drop the held row: %v", err)
 		}
 		relaunchedReady(t, machine, tc)
-		readyAt := h.ready(w, machine)
+		readyAt := h.ready(machine)
 		h.release(w)
 		if due, step, _, _ := rowWait(t, h.pool, rig.id); !due.Equal(readyAt) || step != 0 {
 			t.Fatalf("after the next launch's ready the row is due at %s at step %d, want at the ready (%s) at step 0", due, step, readyAt)
@@ -472,9 +533,8 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 		waiting, _, _, _ := rowWait(t, h.pool, rig.id)
 
 		relaunchedReady(t, machine, tc)
-		h.ready(w, machine)
-		// The restart takes what the hooks recorded with it: no release runs.
-		w.readied.take(context.Background())
+		h.ready(machine)
+		// The restart takes what the hook recorded with it: no release runs.
 		w.changed.take(context.Background())
 		if due, _, _, _ := rowWait(t, h.pool, rig.id); !due.Equal(waiting) {
 			t.Fatalf("the refused row is due at %s with the ready's release lost, want still at its wait (%s)", due, waiting)
@@ -485,6 +545,59 @@ func TestRoleWaitReadyRestartsTheBackoff(t *testing.T) {
 				due, waiting.Add(record.RoleWaitBackoff(0)))
 		}
 	})
+}
+
+// S15 (R2): a restart of the daemon is no ready of the claims it restores. A row on the capped
+// waits of a refusal while its claim said it was ready (record.WaitForReady), at the cap, keeps
+// its step and its moment across the restore of that ready claim (supervisor.restore) and the
+// release of whatever the restarted daemon's claim-change hook recorded meanwhile, so each restart
+// costs no publish beyond the cap's 12 an hour: the row's next run is at the moment the earlier
+// daemon stored, and it waits the cap again after it (dispatch://INFRA-4131/spec#b-r-capped).
+func TestRoleWaitReadyCapHoldsAcrossARestoreOfTheClaim(t *testing.T) {
+	t.Parallel()
+	for _, tc := range roleWaitCases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			t.Parallel()
+			h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
+			rig := h.queue()
+			w := h.readyHooks()
+			machine := h.claim(supervise.StateIdle, nil)
+			h.release(w)
+			rig.runTo(10)
+			due, step, key, _ := rowWait(t, h.pool, rig.id)
+			if step != 10 || key != record.WaitForReady(h.token) || !due.Equal(h.clock.Now().Add(record.RoleWaitBackoffMost)) {
+				t.Fatalf("after 10 refusals the row is due %s on, at step %d, waiting for %q; want the cap (%s), step 10, %q",
+					due.Sub(h.clock.Now()), step, key, record.RoleWaitBackoffMost, record.WaitForReady(h.token))
+			}
+
+			// The restart: a fresh daemon's supervisor, its claim-change hook its own workflow's,
+			// restores the claim as the earlier daemon left it, and the outbox reads its machine.
+			machine.Wait()
+			booted := h.readyHooks()
+			restarted := newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
+			restarted.deps = h.sup.deps
+			t.Cleanup(restarted.stop)
+			if _, err := restarted.restore(context.Background(), []supervise.Claim{machine.Claim()}); err != nil {
+				t.Fatalf("restore the ready claim: %v", err)
+			}
+			h.runner.supervisor = restarted
+			h.release(booted)
+			if gotDue, gotStep, gotKey, _ := rowWait(t, h.pool, rig.id); !gotDue.Equal(due) || gotStep != step || gotKey != key {
+				t.Fatalf("after the restore of its ready claim the row is due %s on, at step %d, waiting for %q; want still due %s on, at step %d, waiting for %q",
+					gotDue.Sub(h.clock.Now()), gotStep, gotKey, due.Sub(h.clock.Now()), step, key)
+			}
+
+			before := len(publishesOf(h.publisher.publishes, rig.id, h.start))
+			rig.run()
+			if got := publishesOf(h.publisher.publishes, rig.id, h.start); len(got) != before+1 || got[before] != due.Sub(h.start) {
+				t.Fatalf("the row published at %v after the restore, want one publish more at its stored moment (%s)", got[before:], due.Sub(h.start))
+			}
+			if next, nextStep, _, _ := rowWait(t, h.pool, rig.id); nextStep != step+1 || !next.Equal(due.Add(record.RoleWaitBackoffMost)) {
+				t.Fatalf("after its run at its stored moment the row is due %s later at step %d, want the cap (%s) at step %d",
+					next.Sub(due), nextStep, record.RoleWaitBackoffMost, step+1)
+			}
+		})
+	}
 }
 
 // S11 (R1): a ready that lands while a lane holds the row, its publish in flight, marks the row
@@ -506,16 +619,16 @@ func TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce(t *testing.T) {
 			t.Parallel()
 			h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
 			rig := newRoleWaitRig(t, h.runner, h.pool, h.clock, h.queueWaiting(record.WaitForClaim(h.token), h.start))
-			w := h.readyHooks(false)
-			h.loops(w)
+			w := h.readyHooks()
 			machine := h.claim(supervise.StateRegistered, nil)
+			h.release(w)
 			h.publisher.during = func() {
 				h.publisher.during = nil
-				h.ready(w, machine)
-				testwait.Eventually(t, "the ready's release to wake the row its lane holds", func() bool {
-					_, _, _, woken := rowWait(t, h.pool, rig.id)
-					return woken
-				})
+				h.ready(machine)
+				h.release(w)
+				if _, _, _, woken := rowWait(t, h.pool, rig.id); !woken {
+					t.Fatalf("the ready's release left the row its lane holds unwoken")
+				}
 			}
 
 			rig.run()
@@ -535,8 +648,8 @@ func TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce(t *testing.T) {
 // (record.WaitForClaim), so that launch's ready makes it due at once: the run that woke the role
 // publishes nothing, the launch comes up and says it is ready, and the first run after the ready
 // publishes at the ready. The clock stands still from the wake on, so only the ready can make the
-// row due; the claims' machines tell the outbox each change and the ready route its ready, both
-// released on the test's goroutine once the ready has come.
+// row due; the claims' machines tell the outbox each change, the ready among them, released on the
+// test's goroutine once the ready has come.
 func TestRoleWaitReadyMakesDueARowThatWokeItsRole(t *testing.T) {
 	t.Parallel()
 	for _, tc := range roleWaitCases {
@@ -546,7 +659,7 @@ func TestRoleWaitReadyMakesDueARowThatWokeItsRole(t *testing.T) {
 		t.Run(string(tc.kind), func(t *testing.T) {
 			t.Parallel()
 			h := newRoleWaitHarness(t, tc, nil)
-			w := h.readyHooks(true)
+			w := h.readyHooks()
 			machine := h.claim(supervise.StateSuspended, func(c *supervise.Claim) { c.SuspendedBy = supervise.SuspendedByReleased })
 			rig := h.queue()
 
@@ -559,7 +672,7 @@ func TestRoleWaitReadyMakesDueARowThatWokeItsRole(t *testing.T) {
 				t.Fatalf("the run that woke the role published %d times, want none", got)
 			}
 			comesUp(t, machine, false)
-			readyAt := h.ready(w, machine)
+			readyAt := h.ready(machine)
 			h.release(w)
 			if due, step, key, _ := rowWait(t, h.pool, rig.id); due.After(readyAt) {
 				t.Fatalf("after the ready of the launch the row woke, the row is due at %s, %s after the ready, at step %d waiting for %q; want it due at the ready",

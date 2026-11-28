@@ -446,20 +446,27 @@ func launchedController(ctx context.Context, st *store.Store, project string) (s
 	return supervise.Claim{}, nil
 }
 
-// claimReadyHook is the ready route's hook: every claim's ready goes to the workflow's (nil for a
-// daemon with no workflow), which releases the outbox rows that wait for it, and the daemon's
-// controller's goes to its keeper first, so the controller is handed its start message before the
-// controller notices waiting for it are released behind it.
-func claimReadyHook(keeper *controllerKeeper, workflow func(supervise.Claim)) func(supervise.Claim) {
+// claimReadyHook is the ready route's hook (api.Options.ClaimReady): the daemon's controller's
+// ready goes to its keeper, which hands the controller its start message (controllerKeeper.ready);
+// every other ready goes nowhere, and a daemon with no keeper (`controller: operator`) has no hook.
+// It releases no outbox row. The rows that wait for a ready, the controller's notices among them,
+// are released by the ready's own decision, whose end tells the claims' change hook before the
+// route calls this one (workflow's claimChanged, outbox.releaseChanged), and a second release here
+// would make the same rows due a second time (dispatch://INFRA-4131/spec#b-r-wait-ready).
+//
+// So the controller notices waiting for the controller can be made due before its keeper hands it
+// the start message, and nothing in this order holds them behind it. What holds each notice is
+// its read of the role's holder before it publishes (the outbox's controllerHolds): it is
+// published only once the controller's registered session holds the controller's role live at the
+// Envoy listener, and a launched session takes its role's name at its first turn, or at the
+// pane's first-turn bound (roleNameBound), not at its ready.
+func claimReadyHook(keeper *controllerKeeper) func(supervise.Claim) {
 	if keeper == nil {
-		return workflow
+		return nil
 	}
 	return func(c supervise.Claim) {
 		if c.Role == claim.RoleController {
 			keeper.ready(c)
-		}
-		if workflow != nil {
-			workflow(c)
 		}
 	}
 }

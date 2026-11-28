@@ -286,7 +286,7 @@ func TestNoticeReceiptTimeoutExceptionCopyIsDueAtTheArchitectsReady(t *testing.T
 	t.Parallel()
 	tc := roleWaitCases[0]
 	h := newRoleWaitHarness(t, tc, nil)
-	w := h.readyHooks(true)
+	w := h.readyHooks()
 	machine := h.claim(supervise.StateIdle, nil)
 	h.release(w)
 	const original = 7
@@ -312,7 +312,7 @@ func TestNoticeReceiptTimeoutExceptionCopyIsDueAtTheArchitectsReady(t *testing.T
 	}
 
 	relaunchedReady(t, machine, tc)
-	readyAt := h.ready(w, machine)
+	readyAt := h.ready(machine)
 	h.release(w)
 	if due, step, _, _ := rowWait(t, h.pool, held.id); !due.Equal(readyAt) || step != 0 {
 		t.Fatalf("after the architect's ready the copy is due at %s at step %d, want at the ready (%s) at step 0", due, step, readyAt)

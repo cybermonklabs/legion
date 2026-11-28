@@ -300,13 +300,13 @@ func (r *outbox) noticePublished(row record.OutboxRow, payload record.Notice, ar
 // (dispatch://INFRA-4131/spec#b-r-never-given-up): each is due at once when copyDueAtOnce says
 // so, and otherwise after the capped backoff of the copies sent before it (record.RoleWaitBackoff
 // of Resends: 1 s, doubling, to RoleWaitBackoffMost). Either way it waits for its architect's ready
-// (record.WaitForReady), so the architect's next ready makes it due at once (outbox.releaseReady)
-// and a turn start of a session that took nothing does not, and it ends, as every notice ends,
-// once its architect will not hold its role again (the executor's architectEnded). Each copy is a
-// row of its own, with a wait and lines of its own. Each published copy of a row is queued again
-// once, marked processed under the row's dedupe key and the copy's count: a publish whose 200 was
-// lost is retried under the same key, and an earlier listener reports each failed forward under a
-// fresh event id.
+// (record.WaitForReady), so the architect's next ready makes it due at once
+// (outbox.releaseChanged) and a turn start of a session that took nothing does not, and it ends,
+// as every notice ends, once its architect will not hold its role again (the executor's
+// architectEnded). Each copy is a row of its own, with a wait and lines of its own. Each published
+// copy of a row is queued again once, marked processed under the row's dedupe key and the copy's
+// count: a publish whose 200 was lost is retried under the same key, and an earlier listener
+// reports each failed forward under a fresh event id.
 //
 // The publish's row finishes once the listener answers, and an earlier listener reports a failed
 // forward only after its receipt window (two seconds, longer while forwards queue behind others on
@@ -439,16 +439,16 @@ func catchUpSuperseded(catchUp record.CatchUp, held supervise.Claim, issue *reco
 // and recipient, the session the report names. A copy is due at once when the architect's agent
 // has said it is ready (supervise.SaidReady), and it is the first copy or its report names a
 // session other than the one the claim is ready on: that ready has passed, so the ready key the
-// copy waits for (record.WaitForReady, which outbox.releaseReady makes due) is not met again before
-// the claim's next ready, and every later notice to the architect would wait behind the copy. The
-// first covers a relaunch that reported ready inside the receipt window; a later copy that failed
-// on another session went where the role no longer is. A later copy whose report names no session
-// (the listener names none for no_holder, or when it could not read the holder) says nothing about
-// where the role went. It waits its delay (record.RoleWaitBackoff of resends), as does a later copy
-// that failed on the claim's own ready session and every copy while the claim has not reported
-// ready, so a claim that reads live while its session hears nothing (a reconnecting connection, a
-// death the supervisor has not seen) is sent its copies on the capped backoff, at most 12 an hour,
-// rather than one every few seconds.
+// copy waits for (record.WaitForReady, which outbox.releaseChanged makes due) is not met again
+// before the claim's next ready, and every later notice to the architect would wait behind the
+// copy. The first covers a relaunch that reported ready inside the receipt window; a later copy
+// that failed on another session went where the role no longer is. A later copy whose report names
+// no session (the listener names none for no_holder, or when it could not read the holder) says
+// nothing about where the role went. It waits its delay (record.RoleWaitBackoff of resends), as
+// does a later copy that failed on the claim's own ready session and every copy while the claim
+// has not reported ready, so a claim that reads live while its session hears nothing (a
+// reconnecting connection, a death the supervisor has not seen) is sent its copies on the capped
+// backoff, at most 12 an hour, rather than one every few seconds.
 func copyDueAtOnce(held supervise.Claim, resends int, recipient string) bool {
 	if !supervise.SaidReady(held.State) {
 		return false

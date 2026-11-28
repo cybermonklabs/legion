@@ -243,7 +243,7 @@ func newEventWaitHarness(t *testing.T, roots ...string) *eventWaitHarness {
 		},
 		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
 	}
-	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token](), changed: newWakeSet[string]()}
+	w := &workflowRuntime{outbox: runner, log: quietLogger(), changed: newWakeSet[string]()}
 	sup.deps.ClaimChanged = w.claimChanged
 	return &eventWaitHarness{t: t, ctx: context.Background(), clock: clock, pool: pool, records: records, trees: trees, sup: sup,
 		rt: rt, runner: runner, w: w, logs: logs}
@@ -384,8 +384,9 @@ func eventWaitStopInLeftTree(t *testing.T) {
 }
 
 // E7: a suspend that finds no machine for a stored claim that may still run waits for the claim's
-// machine (stopWithoutMachine); the supervisor publishing that machine (supervisor.add) is a change
-// of the claim its hook is told.
+// machine (stopWithoutMachine), as it does between a Create's write of the claim and the machine
+// it publishes after; the supervisor publishing that machine (supervisor.Create) is a change of
+// the claim its hook is told.
 func eventWaitStopWithoutMachine(t *testing.T) {
 	h := newEventWaitHarness(t, "LEGION-208")
 	h.issue("LEGION-208", phase.Testing, "testing", nil)
@@ -404,7 +405,7 @@ func eventWaitStopWithoutMachine(t *testing.T) {
 
 	stop.waitsOnToTheCap(record.WaitForClaim(tester))
 	stop.dueAtItsEvent(func() {
-		if _, err := h.sup.restore(h.ctx, []supervise.Claim{stored}); err != nil {
+		if _, _, err := h.sup.Create(h.ctx, stored, ""); err != nil {
 			t.Fatalf("supervise the stored tester: %v", err)
 		}
 	})

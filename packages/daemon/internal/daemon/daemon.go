@@ -2177,13 +2177,13 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // transaction that could see another instant.
 //
 // The rows are the ones a ready would otherwise release and the pacing holds back (the outbox's
-// releaseReady leaves behind, by the same rule, exactly the rows whose reserved moment is still
-// ahead of now, record.Store.ExpediteWaits): a row whose moment has come is a wake that is running
-// or about to, or one whose attempt failed and is waiting on a backoff of its own, and neither is a
-// wake the pacing holds. Each goes to the architect of its own issue, a root's or a
-// child's, whose token it is composed for exactly as the line that wake writes composes it (the
-// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
-// holds no such row allocates nothing.
+// release of a ready, releaseChanged, leaves behind, by the same rule, exactly the rows whose
+// reserved moment is still ahead of now, record.Store.ExpediteWaits): a row whose moment has come
+// is a wake that is running or about to, or one whose attempt failed and is waiting on a backoff
+// of its own, and neither is a wake the pacing holds. Each goes to the architect of its own issue,
+// a root's or a child's, whose token it is composed for exactly as the line that wake writes
+// composes it (the outbox's wakeRan), since the row names the issue and the kind alone. A project
+// whose outbox holds no such row allocates nothing.
 //
 // A row this daemon's pacer still holds in its queue carries no moment of its own
 // (record.CatchUpIsHeld), so the state names it with the pacer's estimate for its place
@@ -3306,7 +3306,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var client dispatch.Client
 	var tokens appauth.Source
 	var grants *credential.Grants
-	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
@@ -3328,7 +3327,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	if workflow != nil {
 		catchUps = workflow.catchUps
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.apps, workflow.grants
-		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
+		prepare, unread, await = workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
 		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
@@ -3396,7 +3395,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
 		Experiments:        cfg.ExperimentsDeclared(),
-		ClaimReady:         claimReadyHook(keeper, claimReady),
+		ClaimReady:         claimReadyHook(keeper),
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,

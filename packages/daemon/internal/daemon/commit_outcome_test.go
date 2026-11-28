@@ -258,10 +258,11 @@ func newNoticeRig(t *testing.T) *noticeRig {
 	return &noticeRig{direct: direct, fault: fault, logged: logged, wakes: wakes, runner: runner, now: now}
 }
 
-// release releases the rows waiting for LEGION-1's and LEGION-9's architects, as their readies do.
+// release releases the rows waiting for LEGION-1's and LEGION-9's architects, as their readies do
+// (releaseReadies).
 func (r *noticeRig) release(t *testing.T, ctx context.Context) error {
 	t.Helper()
-	return r.runner.releaseReady(ctx, architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9"))
+	return releaseReadies(ctx, r.runner, architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9"))
 }
 
 // due is how many notices the direct pool reads as due at the rig's moment.

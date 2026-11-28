@@ -2945,7 +2945,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // from the daemon's own record of that claim: a claim with no machine, a failed or retired one
 // (controllerKeeper starts it again) and a launch that has not registered its session wait there,
 // publish nothing and read no holder, and a registered launch that has not said it is ready is
-// published to at most once; the claim's ready makes the row due at once (releaseReady). Under
+// published to at most once; the claim's ready makes the row due at once (releaseChanged). Under
 // `controller: operator` the role is the operator's own controller's, held to no claim of this
 // daemon, so the gate lets every attempt through to controllerHolds.
 //
@@ -3068,11 +3068,11 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 // claims the role, and a row no controller holds never spins. Under `controller: daemon` the wait
 // is held to the launched controller claim (heldTopic) and waits for any change of it
 // (record.WaitForClaim): that claim's ready, and each change of it after, its first turn among
-// them, make the row due at once (releaseReady, releaseChanged), and the capped backoff runs it
-// between them. The wait holds nothing else of the issue behind it: a controller notice is a board
-// row, and the outbox holds a due row back only behind an older status write or branch of its
-// issue (record's outboxInOrder) or a running lifecycle row (outboxLaneFree), so the issue's status
-// writes, messages, other notices and lifecycle rows run as they come due.
+// them, make the row due at once (releaseChanged), and the capped backoff runs it between them.
+// The wait holds nothing else of the issue behind it: a controller notice is a board row, and the
+// outbox holds a due row back only behind an older status write or branch of its issue (record's
+// outboxInOrder) or a running lifecycle row (outboxLaneFree), so the issue's status writes,
+// messages, other notices and lifecycle rows run as they come due.
 func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role claim.Token) error {
 	if r.pool == nil || r.records == nil {
 		return errors.New("controller notice executor has no store to read the registered controller from")
@@ -4164,7 +4164,7 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
 // until its machine is available, and otherwise finishes without acting. Both waits are for a
 // change of the claim (record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event): the
-// machine the daemon publishes for it (supervisor.add) and its stop are each one its hook is told.
+// machine the daemon makes for it (supervisor.Create) and its stop are each one its hook is told.
 // This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
 // tree's close rows; this row releases no tree resources itself.
@@ -4388,7 +4388,7 @@ func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) 
 // claim. Creation persists a claim before publishing its machine in memory, and the stop must not
 // be consumed in that interval: while the stored claim may still hold a process, the row waits for
 // the machine the later publish brings, a change of the claim the daemon's hook is told of
-// (supervisor.add, record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event); a claim that
+// (supervisor.Create, record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event); a claim that
 // runs nothing, or none at all, leaves it nothing to stop.
 func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, token claim.Token) error {
 	pending, err := r.trees.StoredClaimMayRun(ctx, token, row.ID)

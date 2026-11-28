@@ -741,12 +741,12 @@ func TestANoticeReachesAnArchitectThatTakesMinutesToRelaunch(t *testing.T) {
 }
 
 // Once the architect's claim is ready again, the copy waiting out its re-send delay is due at once:
-// the ready's release makes it due, and it arrives at the relaunch itself rather than at its
-// delay's end. So a notice written after the relaunch is not held behind that copy by the
-// per-architect fence for minutes: it arrives within seconds, after the waiting copy, and the
-// waiting copy arrives once. A Go relaunch resumes the claim's session file, so the relaunched
-// agent registers the same session id the stopped one had; a relaunch onto a new session is
-// released the same way.
+// the ready's release makes it due (the end of the ready's decision tells the claim-change hook,
+// workflowRuntime.claimChanged), and it arrives at the relaunch itself rather than at its delay's
+// end. So a notice written after the relaunch is not held behind that copy by the per-architect
+// fence for minutes: it arrives within seconds, after the waiting copy, and the waiting copy
+// arrives once. A Go relaunch resumes the claim's session file, so the relaunched agent registers
+// the same session id the stopped one had; a relaunch onto a new session is released the same way.
 func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, stopped, relaunched string }{
@@ -758,6 +758,8 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 			records := record.NewStore()
 			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			hooks := &workflowRuntime{log: quietLogger(), changed: newWakeSet[string]()}
+			sup.deps.ClaimChanged = hooks.claimChanged
 			architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, tc.stopped)
 			architect := architectTopicToken(t, "LEGION-1")
 			start := time.Now()
@@ -767,19 +769,22 @@ func TestANoticeWrittenAfterTheRelaunchIsNotHeldBehindAWaitingCopy(t *testing.T)
 			publisher := &holderPublisher{}
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
 				now: func() time.Time { return clock }}
+			hooks.outbox = runner
 			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, start))
 
 			taken, received, readyDone, writtenDone := 0, []string{}, false, false
 			var arrivedA, arrivedB time.Time
 			for clock.Before(start.Add(15*time.Minute)) && arrivedB.IsZero() {
 				if !readyDone && !clock.Before(relaunched) {
-					// The relaunched agent takes the role back and says it is ready.
+					// The relaunched agent takes the role back and says it is ready; the end of that
+					// decision tells the claim-change hook, whose release runs here.
 					machine, _ := sup.Machine(architect)
 					if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: architect, Generation: machine.Claim().Generation, Session: machine.Claim().Session}); err != nil {
 						t.Fatalf("ready at %s: %v", clock.Sub(start), err)
 					}
 					machine.Wait()
-					if err := runner.releaseReady(context.Background(), architectTopicToken(t, "LEGION-1")); err != nil {
+					keys, _ := hooks.changed.take(context.Background())
+					if err := runner.releaseChanged(context.Background(), keys); err != nil {
 						t.Fatalf("release at %s: %v", clock.Sub(start), err)
 					}
 					readyDone = true
@@ -866,7 +871,7 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	now := time.Now()
 	architectsWaitingNotices(t, pool, records, now.Add(record.RoleWaitBackoffMost))
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: func() time.Time { return now }}
-	if err := runner.releaseReady(context.Background(), architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
+	if err := releaseReadies(context.Background(), runner, architectTopicToken(t, "LEGION-1"), architectTopicToken(t, "LEGION-9")); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	rows, err := pool.Query(context.Background(), "select issue, next_at <= $1 from outbox where "+notStateRows+" order by id", now)
@@ -888,21 +893,24 @@ func TestAReadyArchitectReleasesOnlyItsOwnNotices(t *testing.T) {
 	}
 }
 
-// The ready route's hook only records a ready claim, so the agent's ready is answered without
-// waiting on a release; the workflow's release loop then releases the architect's waiting notice.
-func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
+// The end of a ready's decision tells the claim-change hook, which only records the ready's keys
+// (workflowRuntime.claimChanged), so the machine's decision, and the ready route that waits on it,
+// is answered without waiting on a release; the workflow's release loop then releases the
+// architect's waiting notice.
+func TestAReadyArchitectsNoticesAreReleasedOffItsDecision(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
+	w := &workflowRuntime{outbox: runner, log: quietLogger(), changed: newWakeSet[string]()}
+	sup.deps.ClaimChanged = w.claimChanged
 	architectClaimOn(t, sup, "LEGION-1", supervise.StateRegistered, "ses_arch")
 	architect := architectTopicToken(t, "LEGION-1")
 	copied := mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Resends: 1}, time.Now().Add(record.RoleWaitBackoffMost))
 	copied.Wait.WaitFor = record.WaitForReady(architect)
 	enqueueOutbox(t, pool, records, copied)
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	w := &workflowRuntime{outbox: runner, log: quietLogger(), readied: newWakeSet[claim.Token]()}
 	due := func() bool {
 		t.Helper()
 		var due bool
@@ -912,14 +920,18 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 		return due
 	}
 
-	w.claimReady(supervise.Claim{Token: architect, Role: claim.RoleArchitect, State: supervise.StateReady})
+	machine, _ := sup.Machine(architect)
+	if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: architect, Generation: machine.Claim().Generation, Session: "ses_arch"}); err != nil {
+		t.Fatalf("the architect's ready: %v", err)
+	}
+	machine.Wait()
 	if due() {
-		t.Fatalf("the hook released the notice itself, so the ready route waited on the release")
+		t.Fatalf("the hook released the notice itself, so the ready's decision waited on the release")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
-		w.releaseReadied(ctx)
+		w.releaseChanged(ctx)
 		close(stopped)
 	}()
 	defer func() {
