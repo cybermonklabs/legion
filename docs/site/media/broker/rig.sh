@@ -246,9 +246,12 @@ until_true 30 "the broker's health check" curl -sf "$broker_url/healthz"
 
 # --- Dispatch: the e2e harness's three servers, the server pointed at the broker. The fakes bind
 # ports the kernel assigns and print them; the server serves on the keeper's socket. -------------
-if [ ! -f "$root/packages/dispatch/web/dist/index.html" ]; then
-  note "building the Dispatch dashboard"
+# The harness imports the contracts package's build, which a fresh clone lacks.
+if [ ! -f "$root/packages/dispatch/web/dist/index.html" ] ||
+  [ ! -f "$root/packages/contracts/dist/index.js" ]; then
+  note "building the contracts and the Dispatch dashboard"
   (cd "$root" && bun install --frozen-lockfile >/dev/null)
+  (cd "$root/packages/contracts" && bun run build:dispatch >/dev/null)
   (cd "$root/packages/dispatch" && bun run build:web >/dev/null)
 fi
 start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
