@@ -167,7 +167,6 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	}
 
 	drove := map[string]bool{}
-	// needsDatabase is every site whose row needs Postgres.
 	needsDatabase := map[string]bool{}
 	for _, row := range []struct {
 		site, name string
@@ -475,8 +474,6 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			}
 		})
 	}
-	// A run with no database skipped the rows that need one: their sites are left out and
-	// logged, and every other site must still be driven.
 	noDatabase := os.Getenv(storetest.DatabaseURLEnv) == ""
 	var missing, leftOut []string
 	for _, site := range refusalSites {
