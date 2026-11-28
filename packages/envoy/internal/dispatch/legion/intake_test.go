@@ -41,9 +41,11 @@ import (
 //
 // Each intake the rig starts reads the module's fake clock and defers its calls on it
 // (Intake.clock, intakeClock), hands its messages back on that fake (park), and tells the rig when
-// its take-over's callback has run (awaitTakeOver) and when it has handled a wake (wakeUp). The
-// fake moves only when the test moves it, so a deferred call or a hand-back comes due only once the
-// test moves the clock past it (intakeClock.advance, runUntil), never by wall time.
+// its take-over's callback has run (awaitTakeOver) and when it has handled a wake (wakeUp). A timer
+// armed on the fake fires only when the test moves it (intakeClock.advance, runUntil), so a
+// deferred call is made, and a hand-back comes back, only at a move of the clock, never by itself.
+// The fake's moment is the wall clock plus the moves made on it (clocktest.Held), so a deadline can
+// come due by wall time, and the next move of any size then fires it.
 type intakeRig struct {
 	t         *testing.T
 	database  *store.Store
@@ -116,10 +118,11 @@ type intakeRun struct {
 
 // intakeClock is the rig's clock: the module's fake (clocktest.Held, since the intake stamps rows
 // that the database compares with its own now()), which every intake the rig starts reads and
-// defers its calls on (Intake.clock), and on which the rig arms its hand-backs (park). It moves only
-// when the test moves it (advance, runUntil), or at each reading the intake makes once the test
-// sets a jump (jumps), and no timer armed on it fires by wall time. It counts the calls the
-// intakes defer on it (deferrals).
+// defers its calls on (Intake.clock), and on which the rig arms its hand-backs (park). Its moment
+// is the wall clock plus the moves made on it: the test's (advance, runUntil) and, once the test
+// sets a jump, one at each reading the intake makes (jumps). A timer armed on it fires only at a
+// move, never by itself, and a deadline can come due by wall time: the next move of any size then
+// fires it. It counts the calls the intakes defer on it (deferrals).
 type intakeClock struct {
 	*clocktest.Fake
 	mu   sync.Mutex

@@ -771,10 +771,14 @@ func (m *readRuleModel) burstStep() {
 		// hand-back is withheld (withholdOf) until the stop has dropped it, so the clock's move past
 		// the minute does not bring it back: the take-over does. The take-over waits, up to 3 s of
 		// wall-clock time, for the message to be judged: parked, as the read's holder; its read at
-		// the daemon; or acknowledged, as a message that holds no read is. The durable's ack floor
-		// stays below a message the rig holds parked, the holder of the read the cursor owes, so the
-		// message is acknowledged once it is delivered and every message the durable has not
-		// acknowledged is one the rig holds parked, which the message is not.
+		// the daemon; or acknowledged with the intake idle (intakeIdle), as a message that holds no
+		// read and calls for none is. The durable's ack floor stays below a message the rig holds
+		// parked, the holder of the read the cursor owes, so the message is acknowledged once it is
+		// delivered and every message the durable has not acknowledged is one the rig holds parked,
+		// which the message is not. A message of a store the cursor drops is acknowledged before the
+		// read it calls for (callRead), queued on INFRA's runner behind it, reaches the daemon: the
+		// intake is not idle while that call waits or runs, so the wait ends at its read at the
+		// daemon, or once the call has ended with no read.
 		s := m.setting.store
 		m.commit(s, 1)
 		holder := m.rig.lastStreamSeq() + 1
@@ -786,7 +790,7 @@ func (m *readRuleModel) burstStep() {
 				return true
 			}
 			info := m.rig.consumerInfo()
-			return info.NumPending == 0 && info.Delivered.Stream >= holder && info.NumAckPending == len(parked)
+			return info.NumPending == 0 && info.Delivered.Stream >= holder && info.NumAckPending == len(parked) && m.intakeIdle()
 		})
 		m.rig.clock.advance(ReadRetryAfter + time.Second)
 		before = held.fake.served()

@@ -905,14 +905,28 @@ These waits pass a span of real time, and stay:
   behind it, and up to 5 s for the messages past the cap to reach the intake. Each ends at its
   condition, and passes its whole span where its condition does not come. The take-over of a
   burst whose message past a gap holds the read waits up to 3 s for that message to be judged:
-  parked, its read at the daemon, or acknowledged, which ends the wait where the message holds no
-  read. A take-over that finds the burst's read held at its daemon waits for the client's window
-  (`readRuleWindow`, 3 s) to end that read; no seed of `readRuleRows` does.
+  parked, its read at the daemon, or acknowledged with the intake idle (no whole read in flight,
+  no call that `callRead` queued and no message waiting on INFRA's runner), which ends the wait
+  where the message holds no read and calls for none. A message of a store the cursor drops is
+  acknowledged before the read it calls for (`callRead`), queued on INFRA's runner behind it,
+  reaches the daemon, so that wait ends at the read, or once the call has ended with no read. A
+  take-over that finds the burst's read held at its daemon waits for the client's window
+  (`readRuleWindow`, 3 s) to end that read; no seed of `readRuleRows` does. Three `rig.runUntil`
+  waits of the seeds go on where they answer false, whether their deadline passed or the rig was
+  quiet with nothing armed within their moves: `stopsAnsweringStep` waits up to (reads+2) times
+  1.5 s for the daemon to be read that many times, and goes on to the checks either way;
+  `finish` waits up to `readRuleSettle` (2 s) for the durable's ack floor to reach the last
+  message, and where it does not, takes the durable over and waits up to `readRuleFloor` (135 s),
+  whose end fails the seed; and `awaitCaughtUp` waits up to `readRuleCatchUp` (75 s) for the
+  cursor to catch up, and where the rig is then quiet with nothing armed and the cursor owes a
+  failed read that no message holds, has the daemon publish its next message and waits again, up
+  to three times, and fails the seed otherwise.
 - `TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute`'s daemon answers each read 200 ms late
   in real time (`fakeDaemon.slows`).
 
-Every other bounded wait here (`rig.waitFor`, the deadline of a `rig.runUntil`, a `testwait.Holds`
-before a check) ends at its condition, and its bound is the moment the test fails.
+Every other bounded wait here whose end fails the test (`rig.waitFor`, the deadline of a
+`rig.runUntil` whose false the test fails on, a `testwait.Holds` before a check) ends at its
+condition, and its bound is the moment the test fails.
 
 A test that runs an intake holds a rig of its own: its own database (`storetest.Open`), its own
 NATS account (`testnats.URL`), its own fake daemons and its own intake, whose clock, logger
