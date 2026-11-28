@@ -1,8 +1,10 @@
 import { mkdirSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { ownDatabase } from "@legion/test-fixtures/postgres";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { SQL, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import {
   awaitReady,
   buildGoBinaries,
@@ -84,8 +86,8 @@ const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
 // that never answered stopped.
 const DISPATCH_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 
-/** The test server's DSN, or the error that says the run has none. The CI results stack makes
- *  its secrets broker's database on the same server. */
+/** The test server's DSN, or the error that says the run has none: the CI results stack makes its
+ *  secrets broker's database on the server the Dispatch stack makes its own on. */
 export function testDatabaseServer(): string {
   if (DISPATCH_TEST_DATABASE_URL === undefined || DISPATCH_TEST_DATABASE_URL === "") {
     throw new Error(
@@ -97,9 +99,10 @@ export function testDatabaseServer(): string {
 
 /**
  * Starts a real Dispatch server, built from this checkout, on a loopback port and a database of
- * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
- * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
- * when `go` or the DSN is missing, the build fails, or the server does not come up.
+ * its own: a copy of template1 that `@legion/test-fixtures/postgres` makes on the server
+ * `DISPATCH_TEST_DATABASE_URL` names, which the server migrates itself as it boots. It resolves
+ * once `GET /api/v1` answers 200, and throws, naming why, when `go` or the DSN is missing, the
+ * build fails, or the server does not come up.
  *
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
@@ -114,12 +117,9 @@ export function testDatabaseServer(): string {
  * that reserved it is done, whether or not the stack ever reached `stop`.
  */
 export async function startDispatchStack(options: DispatchStackOptions): Promise<DispatchStack> {
-  const postgres = testDatabaseServer();
   const work = options.work;
-  const database = `dispatch_stack_${crypto.randomUUID().replaceAll("-", "")}`;
-  const databaseUrl = new URL(postgres);
-  databaseUrl.pathname = `/${database}`;
-  const admin = new SQL(postgres);
+  // The server applies its migrations into this database at boot.
+  const database = await ownDatabase("dispatch_stack", "DISPATCH_TEST_DATABASE_URL");
   let child: Subprocess | undefined;
   const stop = async (): Promise<void> => {
     if (child !== undefined) {
@@ -130,13 +130,9 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     }
     // Dropped with force: the server's pool is gone with the process above, and a connection the
     // run left behind must not keep the database on the shared test server.
-    await admin.unsafe(`drop database if exists ${database} with (force)`);
-    await admin.close();
+    await database.drop();
   };
   try {
-    // A copy of template1's files, as the Go tests' own fixture makes a scratch database
-    // (testdb.create): the server applies its migrations into it at boot.
-    await admin.unsafe(`create database ${database} strategy file_copy`);
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,
@@ -154,9 +150,10 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       options.portChosen,
       (port) => {
         const settings: Record<string, string> = {
+          ...bunCacheOff,
           PATH: SHELL_PATH,
           HOME: home,
-          DATABASE_URL: databaseUrl.toString(),
+          DATABASE_URL: database.url,
           DISPATCH_AGENT_TOKEN: token,
           DISPATCH_IDENTITY: "header:X-Dispatch-User",
           DISPATCH_IDENTITY_HEADER_TRUSTED: "1",

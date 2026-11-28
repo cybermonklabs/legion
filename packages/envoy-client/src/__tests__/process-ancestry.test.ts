@@ -3,14 +3,25 @@ import { isAncestor, nearestAncestorNamed } from "../process-ancestry";
 
 test("isAncestor finds this process and its parent, and not a process outside its chain", () => {
   expect(isAncestor(String(process.pid))).toBe(true);
-  expect(isAncestor(String(process.ppid))).toBe(true);
   expect(isAncestor("1")).toBe(false);
-  const child = Bun.spawnSync([
+  // The parent is one of the row's own processes. The test runner's parent is whatever started
+  // it, which can be init (a container whose runner execs the command), and the walk stops at init
+  // by design, so the row starts a child that starts a grandchild, and the grandchild asks about
+  // the child: a parent that is never init, whatever the row runs under.
+  const module = new URL("../process-ancestry.ts", import.meta.url).pathname;
+  const grandchild = `import { isAncestor } from ${JSON.stringify(module)};
+process.stdout.write(\`\${isAncestor(String(process.ppid))} \${process.ppid}\`);`;
+  const child = `const run = Bun.spawnSync([process.execPath, "-e", ${JSON.stringify(grandchild)}]);
+process.stdout.write(\`\${run.stdout.toString()} \${process.pid} \${run.stderr.toString()}\`);`;
+  const chain = Bun.spawnSync([process.execPath, "-e", child]);
+  const [answer, parent, childPid] = chain.stdout.toString().split(" ");
+  expect({ parent, answer }).toEqual({ parent: childPid, answer: "true" });
+  const stranger = Bun.spawnSync([
     process.execPath,
     "-e",
     "process.stdout.write(String(process.pid))",
   ]);
-  expect(isAncestor(child.stdout.toString())).toBe(false);
+  expect(isAncestor(stranger.stdout.toString())).toBe(false);
 });
 
 describe("nearestAncestorNamed", () => {

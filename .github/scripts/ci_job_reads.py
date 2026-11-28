@@ -1911,9 +1911,6 @@ UNIT_ALONE_TESTS = {
     "internal/pglisten": [
         "TestTheListenerReplacesAHalfOpenConnection",
     ],
-    "internal/testnats": [
-        "TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime",
-    ],
     "loadtest": [
         "TestSamplerHeapReadDelaysNoSample",
     ],

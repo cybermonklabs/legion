@@ -197,7 +197,8 @@ esac
 # `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
 # `--shard=$shard/4` this leg's quarter of the lane's row TIME rather than Playwright's quarter of
 # its row count. Each leg places every file of every project the lane selects by the row times
-# main measured (e2e/shard-weights.json) and keeps its own; e2e/shard-split.ts says why the count
+# that main's full-lane runs, and each run that `--run <id>` named, measured
+# (e2e/shard-weights.json) and keeps its own; e2e/shard-split.ts says why the count
 # split left one leg a fifth heavier than the others and how all four legs compute one placement.
 # Without it here the legs would split by count again, every row still run once, and nothing red.
 # It prints one line to the log before the first row: this leg's rows, the row time it expects
