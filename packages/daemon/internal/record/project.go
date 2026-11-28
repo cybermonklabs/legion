@@ -158,16 +158,35 @@ func OnNextChange(issue Issue) bool {
 	return issue.NextChange != 0 && issue.NextChange == issue.Generation
 }
 
-// CarriedNow says whether defect is carried by a change that can still end it: one of the issue's
-// own generation, the open next change (OnNextChange) or the current generation's return before
-// its merge (workflow's carryReturn), since every carry is written at the current generation and
-// MergeDefects marks merged only the carrying generation's defects. A defect carried by an earlier
-// generation that did not merge it, as a re-admission leaves the change it ends, is carried by no
-// change that will: generations never come back. Such a defect is a reason again, which the next
-// change carries, as an uncarried one is. It is the defects' twin of OnNextChange, so a value a
-// generation raise left behind is inert wherever it came from.
+// CarriedNow says whether a change's carry of defect still holds, so that defect is no reason of
+// another change. The rule depends on the kind.
+//
+// A carry of a check's reason or of a production check's (DefectKindCheck, DefectKindProduction)
+// always holds, whatever generation the issue stands at since. The change that carried such a
+// reason answered it: by its merge, by its end with no pull request on the check's pass or on the
+// production check its end opens (workflow's changeResolved), or, where a re-admission ended it,
+// by the re-run, whose merge the checks read again. A check that fails again is a reason of its
+// own, by its new deciding result (workflow's recordCheckReasons), and the production check of the
+// newest merge answers a production reason. So a carried reason of these kinds is never a reason
+// again.
+//
+// A reported defect and a request (DefectKindDefect, DefectKindRequest) hold the close until a
+// merged change carries them or a withdrawal ends them, and no read answers them. So a carry of
+// one holds only for a change that can still end it: one of the issue's own generation, the open
+// next change (OnNextChange) or the current generation's return before its merge (workflow's
+// carryReturn), since every carry is written at the current generation and MergeDefects marks
+// merged only the carrying generation's defects. One an earlier generation carried and did not
+// merge, as a re-admission leaves the change it ends, is carried by no change that will:
+// generations never come back. Such a defect is a reason again, which the next change carries, as
+// an uncarried one is, so the carry a generation raise left behind is inert wherever it came from.
 func CarriedNow(defect Defect, issue Issue) bool {
-	return defect.CarriedBy != 0 && defect.CarriedBy == issue.Generation
+	if defect.CarriedBy == 0 {
+		return false
+	}
+	if defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction {
+		return true
+	}
+	return defect.CarriedBy == issue.Generation
 }
 
 // Stopped is whether the issue's own record says its work has stopped: it is out of the

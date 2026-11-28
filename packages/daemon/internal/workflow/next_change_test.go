@@ -193,26 +193,42 @@ func TestAStaleNextChangeHoldsNoClose(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
-// A defect is carried only by a change of the issue's own generation: the open next change, or the
-// return of the current generation before its merge (record.CarriedNow). A defect a re-admission
-// left carried by the generation it ended is carried by no change that can end it, since
-// MergeDefects marks merged only the carrying generation's defects, and generations never come
-// back. So it is a reason again, and the next change after the re-run's merge carries it. Read as
-// carried while `carried_by` was set at all, it was skipped as a reason (changeReasons) and still
-// held the close as an open defect, so the issue waited in verifying with no change started and
-// none to come.
-func TestADefectAReadmissionLeftCarriedStartsTheNextChange(t *testing.T) {
+// A change that carries only a production reason and opens no pull request ends: the production
+// check its end opens answers that reason (changeResolved). A check's fail after the end starts the
+// change after it, and the production reason does not join that change: a check's or a production
+// check's reason that a change carried was answered by that change, whatever generation the issue
+// has reached since (record.CarriedNow). Read as carried only by a change of the issue's own
+// generation, the old production failure was a reason again once a later change raised the
+// generation: the judge of that change carried it and told the architect that it joined.
+func TestAProductionReasonAnEndedChangeCarriedJoinsNoLaterChange(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	mergedRoot(t, rig)
-	defect := rig.seedDefect(waitRoot, "The page is blank after a save.")
-	if _, err := rig.pool.Exec(t.Context(), `update defects set generation = $2, carried_by = $2 where id = $1`, defect, waitGeneration-1); err != nil {
-		t.Fatalf("carry %s's defect by the generation a re-admission left: %v", waitRoot, err)
-	}
-	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+	rig.report(waitRoot, 1, "fail", "the widget cache serves a stale page in production", nil)
 	rig.started(waitRoot, changeGeneration, 1)
-	if rows := rig.defectRows(waitRoot); len(rows) != 1 || rows[0].carriedBy != changeGeneration {
-		t.Fatalf("the reasons of %s = %+v, want the left defect carried by the next change, %d", waitRoot, rows, changeGeneration)
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.issue(waitRoot); got.Generation != changeGeneration || got.NextChange != 0 {
+		t.Fatalf("%s after its change ended stands at generation %d with change %d open, want %d with none", waitRoot, got.Generation,
+			got.NextChange, changeGeneration)
+	}
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, failingAt("c-after", waitRootMerge, "result-1")))
+	rig.started(waitRoot, changeGeneration+1, 2)
+	told := len(noticesOfKind(t, rig.pool, waitRoot, "next-change"))
+
+	rig.readAt(waitRoot, changeGeneration+1, answerOf(waitRoot, nil, failingAt("c-after", waitRootMerge, "result-1")))
+
+	rows := rig.defectRows(waitRoot)
+	if len(rows) != 2 || rows[0].kind != record.DefectKindProduction || rows[0].carriedBy != changeGeneration ||
+		rows[1].kind != record.DefectKindCheck || rows[1].carriedBy != changeGeneration+1 {
+		t.Fatalf("the reasons of %s = %+v, want the production reason carried by the ended change %d alone and c-after's by the open change %d",
+			waitRoot, rows, changeGeneration, changeGeneration+1)
+	}
+	if got := len(noticesOfKind(t, rig.pool, waitRoot, "next-change")); got != told {
+		t.Fatalf("the architect's next-change notices after the read = %d, want the %d it had: no reason joined the open change", got, told)
 	}
 }
 

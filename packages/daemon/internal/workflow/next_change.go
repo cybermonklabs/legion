@@ -250,11 +250,12 @@ func (e *Engine) changePullRequests(ctx context.Context, tx pgx.Tx, key string) 
 	return pulls, nil
 }
 
-// changeReasons is the reasons a next change of issue would carry now: its open defects that no
-// change of its own generation carries (record.CarriedNow: an uncarried one, or one an earlier
-// generation carried and never merged, as a re-admission leaves it), with each check's reason left
-// out where that check passes in the read the judge holds. A check that passes holds nothing, and
-// a reason a change already carries joins that change rather than starting another (D7).
+// changeReasons is the reasons a next change of issue would carry now: its open defects whose carry
+// no longer holds (record.CarriedNow: an uncarried one, or a reported defect or a request an earlier
+// generation carried and never merged, as a re-admission leaves it; a carried check's or production
+// check's reason was answered by its change), with each check's reason left out where that check
+// passes in the read the judge holds. A check that passes holds nothing, and a reason a change
+// already carries joins that change rather than starting another (D7).
 func changeReasons(issue record.Issue, view closeView) []record.Defect {
 	var reasons []record.Defect
 	for _, defect := range view.facts.Defects {
@@ -319,10 +320,10 @@ func (e *Engine) recordCheckReasons(ctx context.Context, tx pgx.Tx, issue record
 				break
 			}
 			// A check that is already a reason adds none: one waiting for a change to start
-			// (carried by no change of this generation, record.CarriedNow) and one the issue's open
-			// change carries. A reason a change of this generation carries that has ended holds
-			// nothing: that change answered it, and a fail after it is the check failing again,
-			// which is a reason of its own.
+			// (carried by none, record.CarriedNow) and one the issue's open change carries. A reason
+			// a change carried that has ended, or that a re-admission ended, holds nothing: that
+			// change answered it, and a fail after it is the check failing again, which is a reason
+			// of its own.
 			if defect.Check == failed.Check && defect.Open() &&
 				(!record.CarriedNow(defect, issue) || record.OnNextChange(issue) && defect.CarriedBy == issue.NextChange) {
 				known = true
