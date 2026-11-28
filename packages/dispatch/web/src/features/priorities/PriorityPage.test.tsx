@@ -496,7 +496,7 @@ test("a change made while an earlier change to the priority is out waits for it"
   // before the reader leaves the field, however long the typing takes here: each change is one
   // write, written as the reader leaves the field.
   const user = userEvent.setup({ delay: null });
-  const { patch } = page();
+  const { client, patch } = page();
   const first = Promise.withResolvers<Priority>();
   patch.mockImplementationOnce(() => first.promise);
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
@@ -512,7 +512,17 @@ test("a change made while an earlier change to the priority is out waits for it"
     await user.type(title, " again");
   });
   await user.tab();
-  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  // The title's change is pressed and waits its turn on the priority's line, never sent, while
+  // the owner's is still out: the fact the count below is read at.
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toContainEqual(
+      expect.objectContaining({
+        detail: expect.objectContaining({ text: "Rocq and Lean speed work restarted again" }),
+        sent: false,
+        status: "queued",
+      })
+    )
+  );
   expect(patch).toHaveBeenCalledTimes(1);
   await act(async () => first.resolve(saved("rocq-lean")));
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
