@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -290,6 +291,15 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 			want: "", from: sourceNone, readsCommits: true,
 		},
 		{
+			name:   "a commit subject that begins with the word dispatch is no trailer",
+			number: 403,
+			pull: firstSourcePull{
+				title: "feat: the work", branch: "topic",
+				commits: []string{"dispatch: keep the " + bystander + " rows", "Do the work\n\nDispatch: " + own},
+			},
+			want: own, from: sourceCommitMessage, readsCommits: true,
+		},
+		{
 			name:   "the title mentions an unrelated issue of this repository, the body's trailer names the pull request's own",
 			number: 402,
 			pull:   firstSourcePull{title: "Follow " + bystander, body: "Dispatch: " + own, branch: "topic"},
@@ -306,6 +316,68 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wantAttributedEachWay(t, ctx, pool, tc.number, tc.pull, tc.want, tc.from, tc.readsCommits)
+		})
+	}
+}
+
+// TestATruncatedEnvelopeBodyLeavesTheAttributionToTheReconcile: a `pull_request` envelope carries
+// at most 2048 runes of the body and says so in body_truncated, so a trailer past the cut is not in
+// it. Under the first-source walk a mention before the cut would decide for good: an unrelated
+// issue of this repository would be credited, or an issue of another repository would credit
+// nobody, and the write would be stamped read at this build's rule, so no later pass would look
+// again. The envelope therefore attributes nothing from a cut body and leaves the row unread, and
+// the reconcile's own read of the whole pull request decides.
+func TestATruncatedEnvelopeBodyLeavesTheAttributionToTheReconcile(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	other := seedHeadIssue(t, ctx, pool, 47)
+	own := seedGadgetsIssue(t, ctx, pool, 48)
+	bystander := seedGadgetsIssue(t, ctx, pool, 647)
+	for _, tc := range []struct {
+		name    string
+		number  int
+		mention string
+	}{
+		{"the kept part mentions an unrelated issue of this repository", 411, bystander},
+		{"the kept part mentions an issue of another repository", 412, other},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			full := "Keeps the " + tc.mention + " rows.\n\n" + strings.Repeat("Evidence. ", 300) + "\n\nDispatch: " + own
+			kept := string([]rune(full)[:2048])
+			url := "https://github.com/acme/gadgets/pull/" + strconv.Itoa(tc.number)
+			sha := strings.Repeat(strconv.Itoa(tc.number), 14)[:40]
+			fake := newFakeGitHub(t)
+			fake.handle("GET /repos/acme/gadgets/pulls/"+strconv.Itoa(tc.number), func(w http.ResponseWriter, _ *http.Request) {
+				mustEncode(t, w, map[string]any{
+					"number": tc.number, "title": "feat: the work", "body": full, "html_url": url,
+					"state": "open", "merged": false, "updated_at": "2026-11-28T12:57:00Z",
+					"head": map[string]any{"ref": "topic", "sha": sha, "repo": map[string]any{"full_name": "acme/gadgets"}},
+					"base": map[string]any{"ref": "main"},
+				})
+			})
+			fake.handle("GET /repos/acme/gadgets/pulls/"+strconv.Itoa(tc.number)+"/commits", func(w http.ResponseWriter, _ *http.Request) {
+				mustEncode(t, w, []any{})
+			})
+			client := fake.newTestClient()
+			intake := newIntake(tuningFor(t), nil, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), nil, unrenamed())
+			if _, err := intake.recordPullRequestHead(ctx, map[string]string{
+				"kind": "pr", "action": "opened", "merged": "false", "repo": "acme/gadgets", "number": strconv.Itoa(tc.number),
+				"title": "feat: the work", "body": kept, "body_truncated": "true", "head_ref": "topic",
+				"head_repo": "acme/gadgets", "head_sha": sha, "base_ref": "main", "url": url,
+				"updated_at": "2026-11-28T12:57:00Z",
+			}, tc.number); err != nil {
+				t.Fatalf("record the head the envelope reports: %v", err)
+			}
+			fromEnvelope := readHead(t, ctx, pool, "acme/gadgets", tc.number)
+			if fromEnvelope.IssueKey != nil || fromEnvelope.CheckedAt != nil {
+				t.Errorf("the envelope wrote #%d credited to %q and read at %v, want nobody and no read time: its body was cut before its trailer",
+					tc.number, creditedTo(fromEnvelope.IssueKey), fromEnvelope.CheckedAt)
+			}
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			if after := readHead(t, ctx, pool, "acme/gadgets", tc.number); creditedTo(after.IssueKey) != own {
+				t.Fatalf("after a reconcile pass #%d is credited to %q from %q, want %s from the whole body's trailer",
+					tc.number, creditedTo(after.IssueKey), after.AttributionSource, own)
+			}
 		})
 	}
 }
