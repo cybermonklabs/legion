@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // recordedMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the
@@ -58,7 +60,9 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 	if err != nil || len(claimed) != 1 || claimed[0].Email != email {
 		t.Fatalf("Claim after the removal = %+v, %v; want %s's one revocation", claimed, err, email)
 	}
-	if again, err := revocations.Claim(ctx, time.Minute, 5); err != nil || len(again) != 0 {
+	// The retry window is stagedAhead, staged state and not a wait: the first claim is still inside
+	// it however long a loaded machine takes between the two claims.
+	if again, err := revocations.Claim(ctx, stagedAhead, 5); err != nil || len(again) != 0 {
 		t.Fatalf("Claim inside the retry window = %+v, %v; want nothing", again, err)
 	}
 	if _, due, err := revocations.NextDue(ctx, time.Minute); err != nil || !due {
@@ -212,10 +216,9 @@ func TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock(t *testing.
 	if owed, err := HoldMachineLoginApprovals(ctx, inFlight, email); err != nil || owed {
 		t.Fatalf("an approval of erin's with nothing owed = owed %t, %v; want it to hold her approval lock", owed, err)
 	}
-	// The bound only ends a record that waits; one that does not answers at once.
-	bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := RecordMachineLoginRevocation(bounded, begin(), email); !errors.Is(err, ErrMachineLoginApprovalInFlight) {
+	// The give-up only ends a record that waits, which then fails here with the context's error; one
+	// that does not wait answers at once.
+	if err := RecordMachineLoginRevocation(testwait.Context(t), begin(), email); !errors.Is(err, ErrMachineLoginApprovalInFlight) {
 		t.Fatalf("a record while an approval of erin's holds her approval lock = %v, want ErrMachineLoginApprovalInFlight at once", err)
 	}
 	if err := inFlight.Rollback(ctx); err != nil {

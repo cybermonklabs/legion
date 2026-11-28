@@ -26,7 +26,7 @@ func textVersionsLiteral(cut time.Time) string {
 // neither of the two tables carries one.
 func TestTheKeywordTableHasNoForeignKey(t *testing.T) {
 	ctx := context.Background()
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestNoMigrationWritesAKeywordVersion(t *testing.T) {
 // The relation's columns, their types and their order are what its readers build on.
 func TestTheKeywordRelationAnswersTheContractColumns(t *testing.T) {
 	ctx := context.Background()
-	store := openTestStore(t)
+	store := openEmptyTestStore(t)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

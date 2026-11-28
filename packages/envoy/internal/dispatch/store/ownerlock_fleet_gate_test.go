@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,10 +26,16 @@ import (
 // owner_lock_legacy_registration). It goes on once that transaction commits, and the next owner
 // lock reads the earlier build in the fleet and takes the owner's row, without the gate; a second
 // arrival then waits for nothing, though that writer is between its owner lock and its write too.
+//
+// The arrival is read waiting when the writer is first between its lock and its write and again
+// as the writer lets the gate go, and its gate function catches no error (gateWaitsEndOnlyByTheLock),
+// so the wait ends only when the gate is granted, or by an error the Receive below fails on: an
+// arrival cannot give its wait up and go through.
 func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
+			gateWaitsEndOnlyByTheLock(t, s)
 			ctx := context.Background()
 			waitRegistrationsOut(ctx, t, s)
 			writer, err := s.Pool.Begin(ctx)
@@ -60,10 +66,12 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			arrived := make(chan error, 1)
 			go func() { arrived <- arriveOn(ctx, t, conn, arrival, uuid.NewString()) }()
 			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
+			// The arrival waits for the gate the writer holds shared (awaitGateWait read it
+			// waiting), so it cannot end before the writer commits: that state is what this reads.
 			select {
 			case err := <-arrived:
 				t.Fatalf("%s ended (%v) while the writer was between its owner lock and its write", arrival.name, err)
-			case <-time.After(300 * time.Millisecond):
+			default:
 			}
 
 			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, owners.issueA.LockKey()); err != nil {
@@ -71,6 +79,9 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			}
 			if _, err := writer.Exec(ctx, `update issues set last_seq = $2 where key = $1`, owners.issueA.Key, seq+1); err != nil {
 				t.Fatal(err)
+			}
+			if gate, granted := gateLock(t, s, arrivalPID); gate != "ExclusiveLock" || granted {
+				t.Fatalf("%s holds the gate as %q (granted %t) as the writer is about to commit, want it still waiting for it exclusively: it gave its wait up", arrival.name, gate, granted)
 			}
 			if err := writer.Commit(ctx); err != nil {
 				t.Fatal(err)
@@ -111,6 +122,25 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 				t.Fatalf("a second arrival beside a writer in the mode beside an earlier build: %v", answer.err)
 			}
 		})
+	}
+}
+
+// gateWaitsEndOnlyByTheLock fails t unless every function that takes the owner lock gate for an
+// earlier build's arrival (owner_lock_legacy_arrival, owner_lock_legacy_registration) takes it
+// with the waiting pg_advisory_xact_lock and catches no error: its wait then ends only when the
+// gate is granted, or with the error its lock_timeout raises (55P03), and never by giving the
+// wait up and going on without the gate, which a wait read as an order of events cannot see.
+func gateWaitsEndOnlyByTheLock(t *testing.T, s *Store) {
+	t.Helper()
+	for _, function := range []string{"owner_lock_legacy_arrival", "owner_lock_legacy_registration"} {
+		var source string
+		if err := s.Pool.QueryRow(context.Background(), `select prosrc from pg_proc where proname = $1`, function).Scan(&source); err != nil {
+			t.Fatalf("read %s's body: %v", function, err)
+		}
+		body := strings.ToLower(source)
+		if !strings.Contains(body, "pg_catalog.pg_advisory_xact_lock(") || strings.Contains(body, "pg_try_advisory") || strings.Contains(body, "exception") {
+			t.Fatalf("%s takes the owner lock gate in a way that can end its wait without the gate: want pg_catalog.pg_advisory_xact_lock and no exception handler or try lock in\n%s", function, source)
+		}
 	}
 }
 
@@ -306,7 +336,7 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 			}()
 			defer func() {
 				_ = pause.Rollback(ctx)
-				<-done
+				testwait.Receive(t, "the writer's LockOwner to return once the pause rolled back", done)
 				_ = writer.Rollback(ctx)
 			}()
 			awaitFleetReadPause(t, s, writerPID, done)
@@ -354,18 +384,21 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 }
 
 // lockAnswer is what a transaction's lock came to: its answer, or, before it answered, the
-// backends Postgres records its backend as waiting for.
+// backends Postgres records its backend as waiting for, and what that backend was doing then
+// (its pid, state and wait event in pg_stat_activity), which a give-up prints.
 type lockAnswer struct {
 	answered bool
 	err      error
 	blockers []int32
+	backend  string
 }
 
 // awaitUnblockedAnswer waits for what runs on backend pid - an owner lock, an arrival - to answer
 // on answered, and reads between its questions whom Postgres records that backend as waiting for
 // (pg_blocking_pids): one that queues behind another transaction is seen waiting there, and the
 // wait ends with those backends rather than at any span of the clock. Its one bound is the test
-// binary's deadline less testwait's margin (testwait.Until).
+// binary's deadline less testwait's margin (testwait.Until). A try that finds neither reads what
+// the backend is doing, so a give-up names it.
 func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan error, what string) lockAnswer {
 	t.Helper()
 	return testwait.Until(t, what+" to answer or to wait for another backend", func() (lockAnswer, bool) {
@@ -375,10 +408,15 @@ func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan er
 		default:
 		}
 		var blockers []int32
-		if err := s.Pool.QueryRow(context.Background(), `select pg_blocking_pids($1)`, int32(pid)).Scan(&blockers); err != nil {
+		var backend string
+		if err := s.Pool.QueryRow(context.Background(), `
+			select pg_blocking_pids($1),
+				coalesce((select format('backend %s %s (wait %s/%s)', pid, state, wait_event_type, wait_event)
+					from pg_stat_activity where pid = $1), format('backend %s not in pg_stat_activity', $1))`,
+			int32(pid)).Scan(&blockers, &backend); err != nil {
 			t.Fatalf("read whom backend %d waits for: %v", pid, err)
 		}
-		return lockAnswer{blockers: blockers}, len(blockers) != 0
+		return lockAnswer{blockers: blockers, backend: backend}, len(blockers) != 0
 	})
 }
 

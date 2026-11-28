@@ -13,6 +13,10 @@ import (
 // the claim, may send none.
 //
 // Control: Sendable without its claim's age, and the row with the old claim reads sendable, named.
+//
+// The window is stagedAhead, staged state and not a wait: the claim must still be younger than it
+// when Sendable reads it however long a loaded machine takes between the two, and the row ages the
+// claim past it on the database's clock rather than waiting.
 func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -35,22 +39,23 @@ func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	if !claimed[0].RecordedAt.Equal(recordedAt) || claimed[0].RecordedAt.Before(before) {
 		t.Fatalf("the claim's RecordedAt = %s, want the row's recorded_at %s, after %s", claimed[0].RecordedAt, recordedAt, before)
 	}
-	if sendable, err := revocations.Sendable(ctx, claimed[0], 25*time.Second); err != nil || !sendable {
+	if sendable, err := revocations.Sendable(ctx, claimed[0], stagedAhead); err != nil || !sendable {
 		t.Fatalf("Sendable just after the claim = %t, %v; want sendable", sendable, err)
 	}
 
-	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = tried_at - interval '26 seconds' where email = $1`, email); err != nil {
+	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = tried_at - make_interval(secs => $2) where email = $1`,
+		email, (stagedAhead + time.Second).Seconds()); err != nil {
 		t.Fatal(err)
 	}
-	if sendable, err := revocations.Sendable(ctx, claimed[0], 25*time.Second); err != nil || sendable {
-		t.Errorf("Sendable with the claim 26 s old and a 25 s window = %t, %v; want not sendable", sendable, err)
+	if sendable, err := revocations.Sendable(ctx, claimed[0], stagedAhead); err != nil || sendable {
+		t.Errorf("Sendable with the claim a second older than its %s window = %t, %v; want not sendable", stagedAhead, sendable, err)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = clock_timestamp() where email = $1`, email); err != nil {
 		t.Fatal(err)
 	}
 	record(email)
-	if sendable, err := revocations.Sendable(ctx, claimed[0], 25*time.Second); err != nil || sendable {
+	if sendable, err := revocations.Sendable(ctx, claimed[0], stagedAhead); err != nil || sendable {
 		t.Errorf("Sendable under the claim's generation after a removal recorded it again = %t, %v; want not sendable", sendable, err)
 	}
 }

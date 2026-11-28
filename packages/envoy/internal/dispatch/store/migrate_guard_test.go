@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Processes that boot at once against an empty database all migrate it. The version table is
@@ -28,7 +31,9 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open another process's store: %v", err)
 		}
-		t.Cleanup(another.Pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of another process's pool to come back, so the pool closes", another.Pool.Close)
+		})
 		stores = append(stores, another)
 	}
 	set := fstest.MapFS{"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")}}
@@ -42,7 +47,7 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 	}
 	close(start)
 	for range processes {
-		if err := <-errs; err != nil {
+		if err := testwait.Receive(t, "a process's migrate to return", errs); err != nil {
 			t.Errorf("a process migrating at the same moment failed: %v", err)
 		}
 	}
@@ -112,12 +117,14 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 // A migration whose lock another transaction holds gives up once the runner's lock timeout runs
 // out on every one of its attempts, naming itself, the lock it wanted and the session that held
 // it, and applies nothing. Unbounded, it waits for as long as the holder lives, and every read and
-// write of the table queues behind its request for that long.
+// write of the table queues behind its request for that long: the holder here lives to the end of
+// the test, so a migrate that returns at all bounded its wait, and how many waits it made is read
+// from the runner's own records rather than timed. Between two attempts the runner pauses
+// LockTimeoutRetryPause holding nothing, which its own records show too: each attempt's WARN
+// line comes at least that pause and the next attempt's LockTimeout after the one before it.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
-	// Every attempt waits out the lock timeout, with the runner's pause between attempts.
-	gaveUp := pgmigrate.LockTimeoutAttempts*lockTimeout + (pgmigrate.LockTimeoutAttempts-1)*pgmigrate.LockTimeoutRetryPause
 	ctx := context.Background()
+	logs := captureLogs(t)
 	store := openEmptyTestStore(t)
 	if _, err := store.Pool.Exec(ctx, "create table guard_held (id integer)"); err != nil {
 		t.Fatalf("create the held table: %v", err)
@@ -141,24 +148,31 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 		"migrations/0001_widen_held.up.sql": {Data: []byte("alter table guard_held add column wider integer")},
 	}
 
-	// The test's own bound on the wait, well past the runner's: a runner that does not bound its
-	// lock waits shows up here as a wait this long.
-	bound := gaveUp + 3*lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
-	err = store.migrate(bounded, set)
-	waited := time.Since(started)
-	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held lock, until the test's own %s bound cancelled it (%v): nothing bounds a migration's lock wait", waited.Round(time.Millisecond), bound, err)
-	}
+	err = store.migrate(testwait.Context(t), set)
 	if err == nil {
-		t.Fatalf("migrate applied a migration whose lock another transaction held, after %s", waited.Round(time.Millisecond))
+		t.Fatal("migrate applied a migration whose lock another transaction held")
 	}
-	if waited < gaveUp || waited > gaveUp+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about %s: %d attempts of the %s lock timeout", waited.Round(time.Millisecond), gaveUp, pgmigrate.LockTimeoutAttempts, lockTimeout)
+	var lockTimeout *pgmigrate.LockTimeoutError
+	if !errors.As(err, &lockTimeout) {
+		t.Fatalf("migrate = %v, want a lock timeout", err)
 	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
+	if want := fmt.Sprintf("after %d attempts:", pgmigrate.LockTimeoutAttempts); !strings.Contains(err.Error(), want) {
+		t.Errorf("migrate error = %q, want it to name %q: the runner gave up on a count of attempts of its own", err, want)
+	}
+	if n := strings.Count(logs.String(), "migration=0001_widen_held.up.sql"); n != pgmigrate.LockTimeoutAttempts {
+		t.Errorf("the runner logged %d timed-out attempts, want %d of the %s lock timeout:\n%s",
+			n, pgmigrate.LockTimeoutAttempts, pgmigrate.LockTimeout, logs.String())
+	}
+	// The line's time is the runner's own record of when it gave up on an attempt, written to the
+	// millisecond, so a gap may read up to a millisecond short of what passed.
+	attempts := attemptTimes(t, logs.String(), "migration=0001_widen_held.up.sql")
+	for i := 1; i < len(attempts); i++ {
+		if gap := attempts[i].Sub(attempts[i-1]); gap < pgmigrate.LockTimeoutRetryPause+pgmigrate.LockTimeout-time.Millisecond {
+			t.Errorf("attempt %d gave up %s after attempt %d; want at least the %s pause before it and its own %s lock timeout",
+				i+1, gap, i, pgmigrate.LockTimeoutRetryPause, pgmigrate.LockTimeout)
+		}
+	}
+	t.Logf("migrate gave up: %v", err)
 	holderPID := strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
 	for _, want := range []string{"0001_widen_held.up.sql", "AccessExclusiveLock", "guard_held", "pid " + holderPID, "pg_stat_activity"} {
 		if !strings.Contains(err.Error(), want) {
@@ -177,6 +191,29 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 	if widened || recorded {
 		t.Errorf("the migration that gave up left its column (%t) or its version (%t) behind", widened, recorded)
 	}
+}
+
+// attemptTimes reads, in order, the time of each line of logs that carries field, a key=value pair
+// followed by the line's next attribute ("migration=<name>", "table=<name>"): the moments
+// RetryLockTimeouts and RetryVersionTableLockTimeouts logged their timed-out attempts.
+func attemptTimes(t *testing.T, logs, field string) []time.Time {
+	t.Helper()
+	var at []time.Time
+	for _, line := range strings.Split(logs, "\n") {
+		if !strings.Contains(line, field+" ") {
+			continue
+		}
+		stamp, ok := strings.CutPrefix(strings.Fields(line)[0], "time=")
+		if !ok {
+			t.Fatalf("a line the runner logged carries no time: %q", line)
+		}
+		when, err := time.Parse(time.RFC3339Nano, stamp)
+		if err != nil {
+			t.Fatalf("read the time of %q: %v", line, err)
+		}
+		at = append(at, when)
+	}
+	return at
 }
 
 // existingTables reports which of names exist in the store's database.

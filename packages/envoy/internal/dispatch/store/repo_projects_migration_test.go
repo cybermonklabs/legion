@@ -5,11 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // repoProjectsDefaultVersion is the migration that adds a project's default repository and an
@@ -144,8 +144,7 @@ func isSQLState(err error, code string) bool {
 // poll waits on a lock: the migration, queued behind a writer's open transaction.
 func awaitMigrationLockWait(t *testing.T, store *Store) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the migration to wait on the writer's lock", func() bool {
 		var waiting int
 		if err := store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
@@ -153,14 +152,8 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the migration never waited on the writer's lock")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 }
 
 // A legacy release's create that commits while 0113 waits for its tables is counted: the
@@ -191,14 +184,10 @@ func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the writer: %v", err)
 	}
-	select {
-	case err := <-applied:
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(err.Error(), "EDGE-34") {
-			t.Fatalf("migrate after a writer committed EDGE-34 33 links down: %v, want 0113 refusing it (23514)", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the migration never finished after the writer committed")
+	err = testwait.Receive(t, "the migration to finish after the writer committed", applied)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(err.Error(), "EDGE-34") {
+		t.Fatalf("migrate after a writer committed EDGE-34 33 links down: %v, want 0113 refusing it (23514)", err)
 	}
 	if got := schemaVersion(t, store); got != repoProjectsDefaultVersion-1 {
 		t.Fatalf("schema version = %d, want %d", got, repoProjectsDefaultVersion-1)

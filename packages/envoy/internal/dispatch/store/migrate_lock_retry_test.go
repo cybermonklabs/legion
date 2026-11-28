@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // withOwedTrigger is censusBase plus a pending 0002 that adds a row trigger to things: a function and
@@ -58,12 +58,15 @@ func TestMigrateTriesALockTimeoutAgainAndAppliesOnceTheWriterCommits(t *testing.
 	migrated := make(chan error, 1)
 	go func() { migrated <- store.migrate(ctx, withOwedTrigger()) }()
 	waitForQueuedLock(t, store, "things", "ShareRowExclusiveLock")
-	// Past the first attempt's lock_timeout and into the pause, then let the writer go.
-	time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+	// The first attempt has given up and the runner is in its pause once it says so; letting the
+	// writer go then leaves the next attempt the clear path it needs.
+	testwait.Eventually(t, "the runner to give up its first attempt and say it tries the migration again", func() bool {
+		return strings.Contains(logs.String(), "the runner tries it again")
+	})
 	if err := held.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-migrated; err != nil {
+	if err := testwait.Receive(t, "the migration to return once the writer committed", migrated); err != nil {
 		t.Fatalf("migrate once the writer committed: %v", err)
 	}
 	if got := schemaVersion(t, store); got != 2 {

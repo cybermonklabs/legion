@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the
@@ -21,7 +21,7 @@ import (
 // old, and the confirmation that follows reads new again.
 func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -77,7 +77,7 @@ func confirmedJustNow(membership auth.PersonMembership) bool {
 // make one person two rows.
 func TestPeopleTableRefusesAnEmailThatIsNotLowercase(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -100,12 +100,14 @@ func storedRefreshToken(t *testing.T, database *Store, email string) *string {
 	return stored
 }
 
-// captureLogs sends slog's default logger to a buffer until t ends.
-func captureLogs(t *testing.T) *bytes.Buffer {
+// captureLogs sends slog's default logger to a buffer until t ends. The buffer is logtest's, whose
+// own lock makes a read safe while the code under test still logs on a goroutine of its own, as a
+// migration does while its row waits for the line that says it tries again.
+func captureLogs(t *testing.T) *logtest.Buffer {
 	t.Helper()
-	var logs bytes.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
-	return &logs
+	logs := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	return logs
 }
 
 // revokingPool is a sign-in pool on this machine with Dispatch's app client and the revocation
@@ -144,7 +146,7 @@ func migratedEmptyStore(t *testing.T) *Store {
 }
 
 // retireLines counts the lines logging a refresh token the pool did not revoke.
-func retireLines(logs *bytes.Buffer) int {
+func retireLines(logs *logtest.Buffer) int {
 	return strings.Count(logs.String(), "the sign-in pool did not revoke a refresh token stored in plain text")
 }
 
@@ -152,7 +154,7 @@ func retireLines(logs *bytes.Buffer) int {
 // sealed under the signing key, in the versioned format, and only a store under that key opens it.
 func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -190,7 +192,7 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 // replaces the value, revoking one in plain text first; a sealed value is never sent to the pool.
 func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -392,7 +394,7 @@ func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.
 // value: no later boot will see that token.
 func TestPgPeopleStoreSignInRetiresThePlainTokenItReplaces(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -614,29 +616,22 @@ func TestPgPeopleStoreEndsTheSessionsOfAConcurrentFirstSignIn(t *testing.T) {
 	}
 	second := make(chan error, 1)
 	go func() { second <- people.SignInSubject(ctx, email, "subject-2", "refresh-2") }()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.Eventually(t, "the second sign-in to wait on the first's uncommitted row", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0`).Scan(&waiting); err != nil {
 			t.Fatal(err)
-		}
-		if waiting > 0 {
-			break
 		}
 		select {
 		case err := <-second:
 			t.Fatalf("the second sign-in finished while the first was uncommitted: %v", err)
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the second sign-in never waited on the first")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return waiting > 0
+	})
 	if err := first.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-second; err != nil {
+	if err := testwait.Receive(t, "the second sign-in to finish once the first committed", second); err != nil {
 		t.Fatalf("the second sign-in: %v", err)
 	}
 	if generation, found := sessionGeneration(t, sessions, email); !found || generation != 1 {

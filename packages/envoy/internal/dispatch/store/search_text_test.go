@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedSearchDocument makes a project, an issue and a document artifact to hang versions on, and
@@ -33,36 +35,37 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 
 // Search indexing takes time linear in the text (LEGION-465). Postgres's parser rescans a run
 // such as `a_a_a_…` from every letter in it: to_tsvector('english', …) alone took 5.0 s, 21 s and
-// 84 s for 25, 50 and 100 KB of `a_` on Postgres 16.15, so a 1 MiB body took hours and this
-// statement timeout cancelled every shape below on the generated columns 0010 declared. Through
-// search_text each takes under a second (0.85 s for 1 MiB of `a_`).
+// 84 s for 25, 50 and 100 KB of `a_` on Postgres 16.15, so a 1 MiB body took hours on the
+// generated columns 0010 declared. Through search_text each takes under a second (0.85 s for 1 MiB
+// of `a_`). Each insert is bounded by the shared wait alone (testwait.Context), the one bound a
+// test has: an index that rescans its runs takes hours at this size and fails there, naming the
+// shape, while a loaded machine's linear one passes however long it takes.
 func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	artifactID := seedSearchDocument(t, ctx, store)
+	bounded := testwait.Context(t)
 	for number, shape := range []string{"a_", "1_", "a-b_", "1.2_", "a_1_"} {
 		body := strings.Repeat(shape, (1<<20)/len(shape))
 		started := time.Now()
-		// The insert runs in its own transaction so a statement_timeout bounds it; the rollback
-		// releases the connection whatever happened, since Pool.Close waits for every connection.
+		// The insert runs in its own transaction; the rollback, on a context the shared wait does
+		// not end, releases the connection whatever happened, since Pool.Close waits for every
+		// connection.
 		err := func() error {
 			tx, err := store.Pool.Begin(ctx)
 			if err != nil {
 				return err
 			}
 			defer tx.Rollback(ctx)
-			if _, err := tx.Exec(ctx, "set local statement_timeout = '20s'"); err != nil {
-				return err
-			}
-			if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, $2, $3, '[]')`, artifactID, number+1, body); err != nil {
+			if _, err := tx.Exec(bounded, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, $2, $3, '[]')`, artifactID, number+1, body); err != nil {
 				return err
 			}
 			return tx.Commit(ctx)
 		}()
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "57014" {
-			t.Fatalf("indexing 1 MiB of %q ran past 20 s: search indexing is not linear in the text", shape)
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &pgErr) && pgErr.Code == "57014") {
+			t.Fatalf("indexing 1 MiB of %q did not end before the shared wait gave up (%v): search indexing is not linear in the text", shape, err)
 		}
 		if err != nil {
 			t.Fatalf("insert 1 MiB of %q: %v", shape, err)

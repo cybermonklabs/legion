@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -131,7 +132,13 @@ func ready(t testing.TB) {
 	}
 }
 
-// clone returns a store on a new database cloned from template, dropped after t ends.
+// clone returns a store on a new database cloned from template, dropped after t ends. The store's
+// pool closes before the drop runs, through the shared wait (testwait.Returns): store.Pool's Close
+// returns only once every connection in use has come back, and a row that failed, or the defect it
+// caught, can leave the code under test holding one for good, parked on a fake clock no one moves
+// or a gate no one opens. The wait then fails naming the pool, where Close alone would hang the
+// test binary to its timeout, and the drop, which runs after it, ends the connections still held
+// (dropDatabase's forced drop).
 func clone(t testing.TB, template string) *store.Store {
 	t.Helper()
 	name := randomName(t, "dispatch_test_")
@@ -146,7 +153,9 @@ func clone(t testing.TB, template string) *store.Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	testcleanup.Add(t, database.Pool.Close)
+	testcleanup.Add(t, func() {
+		testwait.Returns(t, "every connection of the test's database pool to come back, so the pool closes", database.Pool.Close)
+	})
 	return database
 }
 

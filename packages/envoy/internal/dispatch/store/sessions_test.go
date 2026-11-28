@@ -7,7 +7,7 @@ import (
 
 func TestPgSessionStoreAdvancesGenerationOnRevocation(t *testing.T) {
 	ctx := context.Background()
-	database := openTestStore(t)
+	database := openEmptyTestStore(t)
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
