@@ -464,6 +464,9 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
+	// The coverage route answers 503 SEARCH_COVERAGE_NOT_FILLED until a fill has ended, as a
+	// server's counts loop fills it after it listens.
+	fillCoverageCounts(t, database)
 	var probed []string
 	for _, route := range rows {
 		target, addressable := crossProjectPath(t, route, owned)

@@ -703,10 +703,10 @@ func IndexBlocks(
 // ItemKind.WindowKind is of a comment's, a message's or an ask's.
 const DocumentWindowKind = "document_block"
 
-// windowKinds is every kind an embeddings window row is written under. A statement naming them
-// as literals is one the planner can prove embeddings_window_owner's partial predicate for,
-// whatever a parameter holds (writeWindows).
-const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_part')`
+// WindowKinds is every kind an embeddings window row is written under, as a literal SQL list. A
+// statement naming them as literals is one the planner can prove embeddings_window_owner's
+// partial predicate for, whatever a parameter holds (writeWindows).
+const WindowKinds = `('document_block', 'comment_block', 'message_block', 'ask_part')`
 
 // BlockEmbeddingStates is where meaning search stands on each block of the owner whose windows
 // are kind kind under ownerKey: model.BlockEmbedded for a block every window covering it holds
@@ -718,13 +718,13 @@ const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_p
 // embeddings_window_owner's partial predicate and reach the owner's rows through that index.
 //
 // It lives here, with the writes of the rows it reads, so the list of window kinds is held in
-// one place: this package's windowKinds, migration 20261102233630's index predicate and the
+// one place: this package's WindowKinds, migration 20261102233630's index predicate and the
 // column the two of them name.
 func BlockEmbeddingStates(ctx context.Context, q Queryer, kind, ownerKey string) (map[string]string, error) {
 	rows, err := q.Query(ctx, `
 		select covered.block_id, bool_and(e.embedded_hash is not distinct from e.content_hash)
 		from embeddings e cross join unnest(e.covers) as covered(block_id)
-		where e.kind = $1 and e.kind in `+windowKinds+`
+		where e.kind = $1 and e.kind in `+WindowKinds+`
 		  and split_part(e.id, '#', 1) = $2
 		group by covered.block_id
 	`, kind, ownerKey)
@@ -899,7 +899,7 @@ func windowsStatement(kind, ownerKey string, windows []itemblocks.Window, state 
 		),
 		dropped as (
 			delete from embeddings
-			where kind = $1 and kind in ` + windowKinds + `
+			where kind = $1 and kind in ` + WindowKinds + `
 			  and split_part(id, '#', 1) = $2 and id <> all($4::text[])
 		)
 		select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)

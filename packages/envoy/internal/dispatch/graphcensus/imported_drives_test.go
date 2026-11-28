@@ -135,7 +135,7 @@ func newWritersRig(t *testing.T) *writersRig {
 	}
 	// One identity for the API and the document service, so a person's browser that connects to a
 	// document's room is admitted by the same header the API reads (emptyAskQuestion).
-	caller := identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
+	caller := identity.HeaderIdentity{People: people}
 	broker := events.NewBroker()
 	rig.documents = docs.New(docs.Deps{Store: rig.database, Events: broker, Identity: caller, ServerURL: writersServerURL, Settle: time.Hour})
 	t.Cleanup(func() {
@@ -290,7 +290,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "docs/new_document.go#QueueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`

@@ -116,12 +116,12 @@ var (
 // an ask or a comment thread, a message for a message thread, or the ask itself when that write is
 // its answer, which the statement only marks and answerReplyRows reads off the ask's node), what
 // the thread is about (the ask's question, or its root's text) and who wrote it (the ask's asker,
-// or its root's author, as stored), where it lives (the row's own owner columns, its issue's
-// priority and its project), how far the caller has read it, whether it is still unread, how many
-// writes in it they have not read, the document mark its root is anchored to, and the version a
-// dismissal of the row is held to (user_threads.version, migration 20261105093500). Its ref always
-// names the thread's root, never the reply: a reply carries no anchor, so a link to it would skip
-// the document redirect an anchored root takes.
+// or its root's author, as stored), where it lives (the row's own owner columns, its issue's own
+// priority and the one it resolves to, and its project), how far the caller has read it, whether
+// it is still unread, how many writes in it they have not read, the document mark its root is
+// anchored to, and the version a dismissal of the row is held to (user_threads.version, migration
+// 20261105093500). Its ref always names the thread's root, never the reply: a reply carries no
+// anchor, so a link to it would skip the document redirect an anchored root takes.
 //
 // $4 is the number of rows to read, null for every row; a Dismissed page resumes from $5 and $6
 // (myRepliesDismissedCursor).
@@ -185,8 +185,17 @@ const myRepliesDismissedCut = `
 
 // myRepliesPageRest is what every state selects over the rows the cut kept. The unread count
 // reads an ask's answer as a write in its thread as the ask's node holds it (askNodeAnswererOf,
-// askNodeAnsweredAtOf), as every read of an answer reads it (R3).
+// askNodeAnsweredAtOf), as every read of an answer reads it (R3). A row carries the priority its
+// issue resolves to and its source beside the issue's own (refs.IssuePriorityTerms), climbed once
+// for the page from the issues of its rows (`subjects`), never once per row. The subjects keep the
+// issue of every row, an issue twice where two of its threads are on the page: the terms answer
+// one row per issue whatever they start from, and a distinct here is a sort the planner may put
+// over the page, which no Reply read may make (replies_plan_test.go). It is a variable, as the
+// terms are, so the four page reads below it are too.
 var myRepliesPageRest = `
+	subjects as (
+		select p.issue_key as key from page p where p.issue_key is not null
+	), ` + refs.IssuePriorityTerms + `,
 	message_replies as (
 		select p.thread_id as root_id, m.id, m.created_at, m.author
 		from page p join messages m on m.in_reply_to = p.thread_id
@@ -213,7 +222,7 @@ var myRepliesPageRest = `
 	       coalesce(rc.body, rm.body, ''),
 	       coalesce(rc.deleted_at, rm.deleted_at), coalesce(rc.deleted_by, rm.deleted_by),
 	       coalesce(rc.created_at, rm.created_at, p.replied_at),
-	       i.priority, p.project_key, p.read_through, p.unread,
+	       i.priority, ` + refs.IssuePriorityColumns + `, p.project_key, p.read_through, p.unread,
 	       coalesce(counted.unread_count, 0), coalesce(root.anchor, a.anchor), p.dismissed_at,
 	       p.version, coalesce(a.author, root.author, mroot.author)
 	from page p
@@ -270,12 +279,13 @@ var myRepliesPageRest = `
 		  and not (w.author->>'kind' = 'user' and user_threads_login(w.author->>'id') = $1)
 	) counted on true
 	left join issues i on i.key = p.issue_key
+	` + refs.IssuePriorityJoin + `
 	left join artifacts ar on ar.id = p.artifact_id`
 
 var (
 	myRepliesPageQuery      = myRepliesPage + myRepliesUnread + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
 	myRepliesInboxPageQuery = myRepliesPage + myRepliesInbox + myRepliesPageCut + myRepliesPageRows + myRepliesPageRest
-	// The Dismissed view's first page and the page that follows a cursor, two constants for the
+	// The Dismissed view's first page and the page that follows a cursor, two statements for the
 	// reason the states are three: a cursor behind a parameter is a filter, not an index
 	// condition.
 	myRepliesDismissedPageQuery = myRepliesPage + myRepliesDismissed +
@@ -706,7 +716,7 @@ func (s *server) readMyReplyRows(
 			&issueKey, &issueTitle, &project, &slug, &name,
 			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
 			&replyID, &answerWrite, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
-			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
+			&row.Priority, &row.ResolvedPriority, &row.PriorityFrom, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 			&row.DismissedAt, &version, &rootAuthor,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)

@@ -184,7 +184,7 @@ func cookieRequest(t *testing.T, email string, generation int64) *http.Request {
 // and the person is recorded as having signed in, which is what makes them assignable.
 func TestHeaderIdentityNamesThePersonLowercasedAndRecordsThem(t *testing.T) {
 	people := newTestPeopleStore(nil)
-	identity := HeaderIdentity{Header: "X-Dispatch-User", People: people}
+	identity := HeaderIdentity{People: people}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Dispatch-User", " Sami@Example.com ")
@@ -202,7 +202,7 @@ func TestHeaderIdentityNamesThePersonLowercasedAndRecordsThem(t *testing.T) {
 
 func TestHeaderIdentityRejectsAMissingHeader(t *testing.T) {
 	people := newTestPeopleStore(nil)
-	identity := HeaderIdentity{Header: "X-Dispatch-User", People: people}
+	identity := HeaderIdentity{People: people}
 	for _, value := range []string{"", "   "} {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.Header.Set("X-Dispatch-User", value)

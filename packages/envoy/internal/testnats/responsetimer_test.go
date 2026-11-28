@@ -22,6 +22,7 @@ import (
 // ("$SYS.REQ.ACCOUNT.*.CONNZ" and "$SYS.REQ.ACCOUNT.*.STATZ"). A start, a reload (Grant) and a
 // restart are each read, since a restart is a new nats-server and a reload is what the timer races.
 func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
+	t.Parallel()
 	const never = time.Duration(math.MaxInt64)
 	allow := []string{"$JS.API.>", "$SYS.REQ.USER.INFO", "$SYS.REQ.ACCOUNT.PING.*", "_INBOX.>"}
 	seed, public := User(t)
@@ -68,6 +69,7 @@ func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 // them. The test also reads that the server's system account is that JWT account, so it cannot pass
 // on a server that made a system account of its own.
 func TestAServerWhoseSystemAccountIsAJWTStarts(t *testing.T) {
+	t.Parallel()
 	key := func(create func() (nkeys.KeyPair, error)) (nkeys.KeyPair, string) {
 		t.Helper()
 		pair, err := create()

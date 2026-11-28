@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type inboxIssue struct {
@@ -55,10 +56,14 @@ type askReach struct {
 
 type inboxAsk struct {
 	shapedAsk
-	Issue     *inboxIssue         `json:"issue,omitempty"`
-	Document  *inboxDocument      `json:"document,omitempty"`
-	Priority  *int                `json:"priority"`
-	LastReply *model.AskLastReply `json:"last_reply"`
+	Issue    *inboxIssue    `json:"issue,omitempty"`
+	Document *inboxDocument `json:"document,omitempty"`
+	Priority *int           `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the ask's issue's (model.Issue's), null on a project
+	// document's ask, which has no issue.
+	ResolvedPriority *int                `json:"resolved_priority"`
+	PriorityFrom     *string             `json:"priority_from"`
+	LastReply        *model.AskLastReply `json:"last_reply"`
 	// SnoozedUntil is the caller's own snooze on this row, null when they have not snoozed it.
 	// It is surfaced, never filtered: the row stays in everyone's inbox including its snoozer's,
 	// who folds it away while this moment is still ahead and sees it again once it passes.
@@ -86,6 +91,17 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 		return "login", login, nil
 	}
 }
+
+// inboxListedAsks is the filter of the asks the Inbox lists, over the ask aliased a, its issue i and
+// its own document ar (the joins of askReadFrom): an open ask, as its row and its node both say
+// (askOpenOf), on an open issue where it has one, of the project $1 names, or of any where $1 is
+// empty. listInbox reads it twice, as its own filter and as the filter of `subjects`, the issues
+// its priority walk climbs from, so the walk climbs from the issue of every ask the read can list:
+// a change of which asks the Inbox lists moves the walk with it, and no listed ask reads a
+// resolved priority of null for want of a climb.
+var inboxListedAsks = askOpenOf("a") + `
+		  and (i.key is null or i.closed_at is null)
+		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)`
 
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
@@ -118,6 +134,12 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// test would probe the node of every ask stored. At a cut the asks shadow names no node, so
 	// the shadow's state decides.
 	//
+	// The rows are ordered by the priority each ask's issue resolves to (refs.IssuePriorityTerms:
+	// its own, else the nearest issue's above it), so an ask on a child that takes P0 from a parent
+	// stands with the P0 asks. `subjects` is the issues of the asks this read can list
+	// (inboxListedAsks), so the walk climbs once for the page rather than once per row, and from no
+	// issue the read cannot answer.
+	//
 	// At a cut the inbox applies the same rule to the records at the cut (decision 10 of
 	// INFRA-4620's plan). The caller's snoozes keep no history, so the read joins none and each
 	// row leaves its snooze out (inboxAtTheCut). An ask whose person rests on a project default
@@ -135,17 +157,23 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $`+strconv.Itoa(len(args))
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		with recursive subjects as (
+			select distinct i.key
+			from asks a
+			join issues i on i.key = a.issue_key
+			left join artifacts ar on ar.id = a.artifact_id
+			where `+inboxListedAsks+`
+		), `+refs.IssuePriorityTerms+`
 		select `+askReadColumns+`,
-		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-		       `+snoozeColumn+`
-		`+askReadFrom+snoozeJoin+`
-		where `+askOpenOf("a")+`
-		  and (i.key is null or i.closed_at is null)
-		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
+		       i.key, i.title, i.assignee, i.priority, `+refs.IssuePriorityColumns+`,
+		       ar.project_key, ar.slug, ar.name, `+snoozeColumn+`
+		`+askReadFrom+`
+		`+refs.IssuePriorityJoin+snoozeJoin+`
+		where `+inboxListedAsks+`
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
-		order by i.priority asc nulls last, waiting_on desc,
+		order by `+refs.IssuePriorityResolved+` asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
 	`, args...)
 	if err != nil {
@@ -158,7 +186,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		var ask inboxAsk
 		var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
 		var snoozedUntil *time.Time
-		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
+		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &ask.ResolvedPriority, &ask.PriorityFrom, &documentProject, &documentSlug, &documentName, &snoozedUntil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

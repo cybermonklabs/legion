@@ -44,7 +44,7 @@ var storeWriteCallSites = map[string]string{
 	// version states it right after its event (appendEvents, above).
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/artifacts.go#queueNewArtifact":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"docs/new_document.go#QueueNewArtifact":         "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
@@ -64,7 +64,7 @@ var storeWriteCallSites = map[string]string{
 	"api/message_delivery.go#completeMessageDelivery": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and caused by the event the
-	// create appends after it. createIssue, storeArtifact with queueNewArtifact, and createAskFor
+	// create appends after it. createIssue, storeArtifact with docs' QueueNewArtifact, and createAskFor
 	// are listed above for their block index and follow, and their drivers hold the node step too;
 	// these are the others. Their order - the owner lock their path already takes, the node before
 	// the row, the event before the tuples - is the order of the write they share (QueueNodes, then

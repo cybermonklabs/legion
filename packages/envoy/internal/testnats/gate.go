@@ -128,7 +128,7 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 			continue
 		}
 		g := &Gate{t: t, address: net.JoinHostPort(ip.String(), strconv.Itoa(port)), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
-		listener, err := net.Listen("tcp", g.address)
+		listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: ip, Port: port})
 		if err != nil {
 			g.release()
 			last = err
@@ -188,7 +188,7 @@ func (g *Gate) Close() {
 	if g.relay == nil {
 		return
 	}
-	g.relay.Close()
+	g.relay.Close(g.t)
 	g.relay = nil
 }
 
@@ -207,5 +207,10 @@ func (g *Gate) Open() {
 		g.t.Fatalf("open the gate at %s: %v", g.address, err)
 		return
 	}
-	g.relay = newRelay(listener, g.target, false)
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		_ = listener.Close()
+		g.t.Fatalf("open the gate at %s: got %T, want *net.TCPListener", g.address, listener)
+	}
+	g.relay = newRelay(tcpListener, g.target, false)
 }

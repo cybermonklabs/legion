@@ -1,6 +1,19 @@
 package api
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
 
 // This file holds the statements of R1 as main writes them, copied from the text this change
 // replaces: their document arm reads each document's latest version through a lateral join over
@@ -35,27 +48,30 @@ import "fmt"
 // write the window kinds and delete the whole-text rows main's meaning arms read. Four of
 // mainSearchQueryMeaningBody's five arms therefore find nothing at all over this release's rows,
 // so a meaning statement built from it decides nothing: it would hold a working statement
-// against a blind one. The equality test's two meaning cases run against
-// searchQueryMeaningOverMainsDocumentArm and relatedMeaningQueryOverMainsDocumentArm below -
-// this release's own meaning body over main's keyword legs - whose one difference from the
-// statement each is the oracle of is the document arm, which is the question the oracle asks.
+// against a blind one. The equality test's two meaning cases run against main's meaning
+// statements as main ran them at 497581c7 instead (mainAt4975SearchQueryMeaningScoped and
+// mainAt4975RelatedMeaningScopedQuery, search_oracle_test.go), which read the windows and are
+// written out whole, so no line of either moves with the package's own text.
 // mainSearchQueryMeaningBody is kept for the timing harness, which measures it on a database at
 // the schema before this release, where it is still the text that ran.
+//
+// The end of the file is the meaning document arm's own oracle test (R2a,
+// TestTheMeaningDocumentArmAnswersMainsRowsAndDates), which holds this build's arm to main's arm
+// of 497581c7, the one search_oracle_test.go freezes: these older texts know no window and hold
+// no such arm.
 
 // mainSearchKeywordLegs is main's searchKeywordLegs: the five-kind keyword union whose document
 // arm this change moves to document_search. That arm is a named piece of its own
 // (mainDocumentKeywordLeg), the side the measurement holds this change's arm against.
 //
 // Each arm carries window_id and covers as nulls, which main's arms did not: INFRA-370 added the
-// two columns to every arm of both unions, a keyword arm has nothing to put in them, and these
-// legs are unioned with this release's meaning CTEs, which do carry them
-// (searchQueryMeaningOverMainsDocumentArm). Nothing reads either column out of a keyword row.
+// two columns to every arm of both unions, and a keyword arm has nothing to put in them.
+// mainSearchQueryMeaningBody's meaning arms carry the same two nulls, so its union keeps one
+// column shape. Nothing reads either column out of a keyword row.
 //
 // The issue arm's own column reads q.own_keys, the array INFRA-1042 made of main's scalar
-// own_key: these legs run under both openers - main's two below, whose own_keys is the one key
-// main's own_key was, and this release's own (searchQueryMeaningOverMainsDocumentArm,
-// relatedMeaningQueryOverMainsDocumentArm), which names no scalar at all - and `= any(<one key>)`
-// is main's `= <that key>` row for row.
+// own_key: main's two openers below bind it as the one key, or the none, that main's own_key
+// was, and `= any(<one key>)` is main's `= <that key>` row for row.
 func mainSearchKeywordLegs(rank func(searchColumn string) string) string {
 	return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
@@ -132,11 +148,11 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // covers is no row, so the package's own lateral answers null for every one of those rows too.
 // The null written here is therefore that column's own value rather than a stand-in, and the
 // lateral's twenty-five lines are not copied into a place where they could only ever answer
-// null. The two statements whose rows can carry covers are this release's own meaning ones, and
-// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm). The
-// other is the text the headline is cut from, which the package selects beside the headline for
-// the snippet's reading (pmdoc.SearchSnippet); it is copied here as the package
-// writes it, a lateral the headline reads too, since its value is a row's own.
+// null. The statements whose rows can carry covers are this release's own meaning ones, and
+// they are held against main's meaning statements as search_oracle_test.go freezes them, whose
+// page carries that lateral. The other is the text the headline is cut from, which the package
+// selects beside the headline for the snippet's reading (pmdoc.SearchSnippet); it is copied here
+// as the package writes it, a lateral the headline reads too, since its value is a row's own.
 func mainSearchPageAndTailSQL(legsSource string) string {
 	return fmt.Sprintf(`page as (
   select l.*, f.score
@@ -243,9 +259,9 @@ legs as (
 // whole-text embedding kinds ('document', 'comment', 'ask', 'message'), which this release's
 // indexers no longer write and delete as each owner gains a window (migration 20261102233625),
 // so those four answer nothing at all over this release's rows. That is why the equality test
-// holds its two meaning statements against this release's meaning body over main's keyword legs
-// rather than against this text, and why this text is left here for the timing harness alone,
-// which measures it on a database at the schema before this release.
+// holds its two meaning statements against main's meaning statements of 497581c7
+// (search_oracle_test.go) rather than against this text, and why this text is left here for the
+// timing harness alone, which measures it on a database at the schema before this release.
 //
 // Its meaning arms carry window_id and covers as nulls for the reason mainSearchKeywordLegs' arms
 // do: the keyword legs this body unions carry them, and a union's arms need one column shape.
@@ -398,8 +414,8 @@ func mainRelatedCoordinationRank(searchColumn string) string {
 
 // The whole statements of R1 the bodies above make. Main's two keyword statements are the oracle
 // of the equality test's keyword cases, as mainRelatedProbeSQL is of its probe case; the two
-// meaning oracles below them are this release's meaning body over main's keyword legs, for the
-// reason given at the top of this file.
+// meaning statements are the timing harness's alone, for the reason given at the top of this
+// file.
 var (
 	mainSearchQuery        = mainSearchQOpener + mainSearchQueryBody(mainSearchKeywordLegsSQL, mainFusedSQL)
 	mainSearchQueryMeaning = mainSearchQOpener + mainSearchQueryMeaningBody(mainSearchKeywordLegsSQL)
@@ -409,27 +425,6 @@ var (
 	mainRelatedDocumentKeywordLeg = mainDocumentKeywordLeg(mainRelatedCoordinationRank)
 	mainRelatedKeywordQuery       = mainRelatedQOpener + mainRelatedTermWeights(9) + mainSearchQueryBody(mainRelatedKeywordLegs, mainRelatedFusedSQL)
 	mainRelatedMeaningQuery       = mainRelatedQOpener + mainRelatedTermWeights(12) + mainSearchQueryMeaningBody(mainRelatedKeywordLegs)
-
-	// searchQueryMeaningOverMainsDocumentArm and relatedMeaningQueryOverMainsDocumentArm are the
-	// package's own two meaning statements with main's keyword legs in place of this release's.
-	// Every other line of each - the opener, the five meaning CTEs, the fusion, the page and its
-	// hit lateral - is the package's own text, so the one thing that differs between either of
-	// these and the statement it is the oracle of is the document keyword arm. A change to
-	// searchDocumentKeywordLeg therefore moves one side and not the other, which is what an
-	// oracle is for; a change to the rest moves both, which main's frozen meaning copy would have
-	// caught and this does not. That is the price of a meaning body whose rows main's own text
-	// cannot see.
-	//
-	// Both are the scoped shape (meaningOneProject), because every caller of either binds a
-	// project as $2 - the fixture's own (documentSearchFixture.project) and the measurement
-	// subject's (statement_timing_test.go) - and that is the shape search and the check send for
-	// such a call (runMeaningSearch, relatedMeaningStatementFor). Each binds the acting
-	// credential where the statement it is the oracle of binds it, since both are this
-	// release's own body.
-	searchQueryMeaningOverMainsDocumentArm = searchQOpener(12) +
-		searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningOneProject)
-	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "", 14, meaningOneProject)
 )
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.
@@ -466,3 +461,389 @@ select p.lexeme from probe p
                   and ($4::uuid is null or coalesce(k.artifact_id, k.block_artifact_id) is distinct from $4::uuid))
     or exists (select 1 from messages m join issues i on i.key = m.issue_key
                 where m.search @@ p.tq and i.project_key = $1 and m.issue_key <> $3)`
+
+// meaningDocumentDateBase is the instant the date fixture's dates are counted from.
+var meaningDocumentDateBase = time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
+
+// meaningDocumentDateWord is in every version of the date fixture's documents and in its issues'
+// titles, so the keyword legs of the statements over that fixture answer rows beside the meaning
+// arms.
+const meaningDocumentDateWord = "heron"
+
+// meaningDocumentDateFixture is the corpus of R2a: twelve documents of three versions each, each
+// version written five days after the one before it and each document's first version a day
+// after the one before it, so a document's three versions have three different created_at.
+// Documents one to six are owned by the six issues of project, seven to ten by project itself
+// and eleven and twelve by otherProject. Each document has two windows embedded near the query's
+// vector, at a distance of their own.
+//
+// since lies between two versions' dates: after the second version and before the third of
+// documents four to eight, and after the first and before the second of nine to twelve, while
+// all three versions of documents one to three are older. So a filter reading the newest
+// version's date keeps nine documents of the twelve, and one reading an older version's keeps
+// fewer.
+type meaningDocumentDateFixture struct {
+	database              *store.Store
+	embedder              *fakeEmbedder
+	project, otherProject string
+	// issueKey is the issue the related-item check's excluding statements leave out.
+	issueKey  string
+	since     time.Time
+	documents []meaningDocumentDateDocument
+}
+
+// meaningDocumentDateDocument is one document of the fixture as the database holds it: its
+// project, the updated_at of the issue owning it (nil for a project's document), and its
+// versions' created_at in the order of their numbers.
+type meaningDocumentDateDocument struct {
+	id, project    string
+	issueUpdatedAt *time.Time
+	versions       []time.Time
+}
+
+// newMeaningDocumentDateFixture writes the fixture as SQL, every version with the created_at the
+// fixture gives it and every window settled at the fake embedder's identity: the issue rows,
+// the documents, their versions (whose trigger, 20261101182454, holds each document's
+// document_search row at its newest version), and their windows, each a vector as angledVector
+// builds one (pairVectorSQL), with a cosine of its own to queryVector between 0.64 and 0.87.
+func newMeaningDocumentDateFixture(t *testing.T) meaningDocumentDateFixture {
+	t.Helper()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	fixture := meaningDocumentDateFixture{
+		database: database, embedder: embedder, project: "MARSH", otherProject: "DELTA", issueKey: "MARSH-1",
+		since: meaningDocumentDateBase.Add(18*24*time.Hour + 12*time.Hour),
+	}
+	createTestProject(t, handler, fixture.project, fixture.otherProject)
+	ctx := context.Background()
+	for _, step := range []struct {
+		what, statement string
+		arguments       []any
+	}{
+		{"the issues", `
+			insert into issues (key, project_key, number, title, status, created_by, rank, created_at, updated_at)
+			select $1::text || '-' || n, $1::text, n, 'Heron survey ' || n, case when n % 2 = 0 then 'done' else 'todo' end,
+			       '{"kind":"user","id":"alice"}', lpad(n::text, 20, '0'),
+			       $2::timestamptz, $2::timestamptz + make_interval(days => n)
+			from generate_series(1, 6) n
+		`, []any{fixture.project, meaningDocumentDateBase}},
+		{"the documents", `
+			insert into artifacts (project_key, issue_key, slug, name, kind, created_by)
+			select case when n <= 10 then $1::text else $2::text end, case when n <= 6 then $1::text || '-' || n end,
+			       'heron-notes-' || n, 'Heron notes ' || n || '.md', 'doc', '{"kind":"user","id":"alice"}'
+			from generate_series(1, 12) n
+		`, []any{fixture.project, fixture.otherProject}},
+		{"their versions", `
+			insert into artifact_versions (artifact_id, number, markdown, authors, created_at)
+			select a.id, v,
+			       '# Heron notes ' || d.n || E'\n\n' || case when v = 3 then 'Heron counts at the marsh, sheet ' || d.n
+			                                                  else 'Draft ' || v || ' of sheet ' || d.n end || E'.\n',
+			       '[]', $1::timestamptz + make_interval(days => d.n + 5 * v)
+			from artifacts a
+			cross join lateral (select split_part(a.slug, '-', 3)::int as n) d
+			cross join generate_series(1, 3) v
+			where a.slug like 'heron-notes-%'
+		`, []any{meaningDocumentDateBase}},
+		{"their windows", `
+			insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers)
+			select 'document_block', a.id::text || '#b' || w, 'Window b' || w || ' of ' || a.name,
+			       md5(a.id::text || w), md5(a.id::text || w), $1,
+			       ` + pairVectorSQL("1", "2 + 2 * d.n + w", "0.9 - 0.02 * d.n - 0.01 * w") + `,
+			       now(), array['b' || w]
+			from artifacts a
+			cross join lateral (select split_part(a.slug, '-', 3)::int as n) d
+			cross join generate_series(1, 2) w
+			where a.slug like 'heron-notes-%'
+		`, []any{embedder.Identity()}},
+		{"the statistics", `analyze`, nil},
+	} {
+		if _, err := database.Pool.Exec(ctx, step.statement, step.arguments...); err != nil {
+			t.Fatalf("write %s: %v", step.what, err)
+		}
+	}
+
+	rows, err := database.Pool.Query(ctx, `
+		select a.id::text, a.project_key, i.updated_at, array_agg(v.created_at order by v.number)
+		from artifacts a
+		left join issues i on i.key = a.issue_key
+		join artifact_versions v on v.artifact_id = a.id
+		where a.slug like 'heron-notes-%'
+		group by a.id, a.project_key, i.updated_at`)
+	if err != nil {
+		t.Fatalf("read the documents back: %v", err)
+	}
+	defer rows.Close()
+	straddled := 0
+	for rows.Next() {
+		var document meaningDocumentDateDocument
+		if err := rows.Scan(&document.id, &document.project, &document.issueUpdatedAt, &document.versions); err != nil {
+			t.Fatalf("scan a document: %v", err)
+		}
+		if newest := len(document.versions) - 1; newest > 0 && document.versions[newest-1].Before(fixture.since) && !document.versions[newest].Before(fixture.since) {
+			straddled++
+		}
+		fixture.documents = append(fixture.documents, document)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the documents back: %v", err)
+	}
+	if len(fixture.documents) != 12 || straddled == 0 {
+		t.Fatalf("the fixture holds %d documents, %d of them with since between their two newest versions; want 12, and some",
+			len(fixture.documents), straddled)
+	}
+	return fixture
+}
+
+// pairVectorSQL is a vector of embed.Dimension as SQL, built as angledVector builds one in Go: a
+// unit vector holding similarity at the 1-based position axis and the rest of its length at the
+// position other, above axis, so that its cosine with the unit vector of axis is similarity. Each
+// argument is an SQL expression, similarity a number between 0 and 1. A fixture writes a corpus's
+// vectors with it in one statement, where a vector built in Go would be a parameter of its own
+// per row.
+func pairVectorSQL(axis, other, similarity string) string {
+	return fmt.Sprintf(`('[' || repeat('0,', (%[1]s) - 1) || ((%[3]s)::float8)::text
+	        || ',' || repeat('0,', (%[2]s) - (%[1]s) - 1) || sqrt(1 - ((%[3]s)::float8) ^ 2)::text
+	        || repeat(',0', %[4]d - (%[2]s)) || ']')::vector`, axis, other, similarity, embed.Dimension)
+}
+
+// meaningDocumentArmStatement is one meaning statement R2a runs over the date fixture: this
+// build's text and main's at 497581c7 (search_oracle_test.go), bound as the caller binds it,
+// with the project and the updated_since that binding narrows by.
+type meaningDocumentArmStatement struct {
+	name, live, main string
+	// mainArm is main's meaning_document_candidates as search_oracle_test.go names it apart, for
+	// search's three statements; the related-item check's arm is not named apart there.
+	mainArm   string
+	project   string
+	since     *time.Time
+	arguments []any
+}
+
+// statements is search's three meaning statements, each for every project form its caller
+// binds it with and each with no updated_since and with the fixture's, and the related-item
+// check's six, whose q narrows by no updated_since (relatedQOpener): the unscoped ones for a
+// check naming no project, the scoped and joined ones for the fixture's project, and the
+// excluding ones leaving the fixture's first issue out, as an issue create leaves its own.
+func (f meaningDocumentDateFixture) statements() []meaningDocumentArmStatement {
+	word := meaningDocumentDateWord
+	related := func(project string, excluding bool) []any {
+		arguments := slices.Concat(
+			[]any{"'" + word + "'", project, suggestionSearchDepth, word, headlineOptions, 0, contracts.SearchKindDepth, searchFusionK},
+			[]any{embed.Literal(queryVector()), searchMeaningFloor, f.embedder.Identity()},
+			[]any{[]string{word}, []float64{2.5}})
+		if excluding {
+			arguments = append(arguments, []string{"issue:" + f.issueKey})
+		}
+		return append(arguments, documentSearchSeen()...)
+	}
+	var statements []meaningDocumentArmStatement
+	for _, search := range []struct {
+		name, live, main, mainArm string
+		projects                  []string
+	}{
+		{"searchQueryMeaning", searchQueryMeaning, mainAt4975SearchQueryMeaning, mainAt4975MeaningDocumentCandidates, []string{""}},
+		{"searchQueryMeaningScoped", searchQueryMeaningScoped, mainAt4975SearchQueryMeaningScoped, mainAt4975MeaningDocumentCandidatesScoped,
+			[]string{f.project}},
+		{"searchQueryMeaningJoined", searchQueryMeaningJoined, mainAt4975SearchQueryMeaningJoined, mainAt4975MeaningDocumentCandidatesJoined,
+			[]string{"", f.project}},
+	} {
+		for _, project := range search.projects {
+			for _, since := range []*time.Time{nil, &f.since} {
+				name := search.name + ", every project"
+				if project != "" {
+					name = search.name + ", " + project
+				}
+				if since != nil {
+					name += ", updated since"
+				}
+				statements = append(statements, meaningDocumentArmStatement{
+					name: name, live: search.live, main: search.main, mainArm: search.mainArm, project: project, since: since,
+					arguments: searchMeaningQueryArguments(
+						searchParameters{text: word, project: project, limit: searchDefaultLimit, since: since},
+						queryVector(), f.embedder.Identity()),
+				})
+			}
+		}
+	}
+	return append(statements,
+		meaningDocumentArmStatement{name: "relatedMeaningQuery", live: relatedMeaningQuery, main: mainAt4975RelatedMeaningQuery,
+			arguments: related("", false)},
+		meaningDocumentArmStatement{name: "relatedMeaningScopedQuery", live: relatedMeaningScopedQuery, main: mainAt4975RelatedMeaningScopedQuery,
+			project: f.project, arguments: related(f.project, false)},
+		meaningDocumentArmStatement{name: "relatedMeaningJoinedQuery", live: relatedMeaningJoinedQuery, main: mainAt4975RelatedMeaningJoinedQuery,
+			project: f.project, arguments: related(f.project, false)},
+		meaningDocumentArmStatement{name: "relatedMeaningExcludingQuery", live: relatedMeaningExcludingQuery,
+			main: mainAt4975RelatedMeaningExcludingQuery, arguments: related("", true)},
+		meaningDocumentArmStatement{name: "relatedMeaningScopedExcludingQuery", live: relatedMeaningScopedExcludingQuery,
+			main: mainAt4975RelatedMeaningScopedExcludingQuery, project: f.project, arguments: related(f.project, true)},
+		meaningDocumentArmStatement{name: "relatedMeaningJoinedExcludingQuery", live: relatedMeaningJoinedExcludingQuery,
+			main: mainAt4975RelatedMeaningJoinedExcludingQuery, project: f.project, arguments: related(f.project, true)},
+	)
+}
+
+// meaningDocumentArmRow is one row of meaning_document_candidates as R2a reads it: the document,
+// the window that matched, the date the arm gives the row, and the row's cosine to the query.
+type meaningDocumentArmRow struct {
+	id, window string
+	updatedAt  time.Time
+	r          float64
+}
+
+// The text a meaning statement holds its candidate CTEs between: the first of them opens after
+// the statement's q (and the related-item check's term weights), and the document arm is
+// followed by the arm over it, meaning_document.
+const (
+	meaningArmsStart        = "meaning_issue_candidates as ("
+	meaningDocumentArmStart = "meaning_document_candidates as ("
+	meaningDocumentArmEnd   = "\n),\nmeaning_document as ("
+)
+
+// meaningDocumentArmOf cuts statement into what opens it, everything before its first candidate
+// CTE, and its meaning_document_candidates CTE from its name to its closing parenthesis, which
+// is how search_oracle_test.go names main's arm apart.
+func meaningDocumentArmOf(t *testing.T, statement string) (opener, arm string) {
+	t.Helper()
+	arms := strings.Index(statement, meaningArmsStart)
+	start := strings.Index(statement, meaningDocumentArmStart)
+	if arms < 0 || start < arms {
+		t.Fatalf("the statement holds no %q after its opener:\n%s", meaningDocumentArmStart, statement)
+	}
+	length := strings.Index(statement[start:], meaningDocumentArmEnd)
+	if length < 0 {
+		t.Fatalf("the statement's document arm is followed by no %q:\n%s", meaningDocumentArmEnd, statement)
+	}
+	return statement[:arms], statement[start : start+length+len("\n)")]
+}
+
+// meaningDocumentArmRows runs statement's meaning_document_candidates alone, bound to arguments,
+// and answers its rows ordered by document and window. The CTE runs behind the statement's own
+// opener, and beside it a CTE that names every parameter cast to the type Postgres gives it in
+// the whole statement (statementLiterals): the CTE reads only some of them, and a parameter no
+// part of a statement reads has no type Postgres can bind it with. Nothing reads that CTE, so
+// it is planned away.
+func meaningDocumentArmRows(t *testing.T, connection *pgxpool.Conn, statement string, arguments []any) []meaningDocumentArmRow {
+	t.Helper()
+	ctx := context.Background()
+	opener, arm := meaningDocumentArmOf(t, statement)
+	types, _ := statementLiterals(t, connection, statement, arguments)
+	typed := make([]string, len(types))
+	for index, name := range types {
+		typed[index] = fmt.Sprintf("$%d::%s", index+1, name)
+	}
+	rows, err := connection.Query(ctx, opener+arm+",\nevery_parameter as (select "+strings.Join(typed, ", ")+")\n"+
+		"select id::text, window_id, updated_at, r from meaning_document_candidates order by id, window_id", arguments...)
+	if err != nil {
+		t.Fatalf("run the meaning document arm alone: %v", err)
+	}
+	defer rows.Close()
+	var read []meaningDocumentArmRow
+	for rows.Next() {
+		var row meaningDocumentArmRow
+		if err := rows.Scan(&row.id, &row.window, &row.updatedAt, &row.r); err != nil {
+			t.Fatalf("scan a row of the meaning document arm: %v", err)
+		}
+		row.updatedAt = row.updatedAt.UTC()
+		read = append(read, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the meaning document arm: %v", err)
+	}
+	return read
+}
+
+// requireDocumentsAndDates holds rows, this build's meaning document arm over the fixture for a
+// statement narrowed to project (every project when empty) and to since (none when nil), to the
+// fixture itself: both windows of every document in that project whose newest version is no
+// older than since, and nothing else, each dated by its issue's updated_at, or by that newest
+// version's created_at for a project's document, which is the date document_search holds.
+func (f meaningDocumentDateFixture) requireDocumentsAndDates(t *testing.T, rows []meaningDocumentArmRow, project string, since *time.Time) {
+	t.Helper()
+	answered := map[string][]meaningDocumentArmRow{}
+	for _, row := range rows {
+		answered[row.id] = append(answered[row.id], row)
+	}
+	for _, document := range f.documents {
+		windows := answered[document.id]
+		delete(answered, document.id)
+		newest := document.versions[len(document.versions)-1]
+		if project != "" && document.project != project || since != nil && newest.Before(*since) {
+			if len(windows) > 0 {
+				t.Errorf("the arm answered document %s of %s, newest version %s, which the project or updated_since leaves out: %v",
+					document.id, document.project, newest, windows)
+			}
+			continue
+		}
+		if len(windows) != 2 {
+			t.Errorf("the arm answered %d windows of document %s, want its two: %v", len(windows), document.id, windows)
+		}
+		want, whose := newest, "its newest version's created_at"
+		if document.issueUpdatedAt != nil {
+			want, whose = *document.issueUpdatedAt, "its issue's updated_at"
+		}
+		for _, window := range windows {
+			if !window.updatedAt.Equal(want) {
+				t.Errorf("the arm dated window %s %s, want %s, %s", window.window, window.updatedAt, want, whose)
+			}
+		}
+	}
+	for id, windows := range answered {
+		t.Errorf("the arm answered %s, no document of the fixture: %v", id, windows)
+	}
+}
+
+// TestTheMeaningDocumentArmAnswersMainsRowsAndDates holds R2a and R2c: the meaning document arm
+// reads each document's date from document_search.created_at and answers the rows main's arm
+// does, which read the newest version's created_at through a lateral over artifact_versions. Over
+// documents of three versions with different dates, owned by issues and by projects, it runs the
+// arm alone (meaningDocumentArmRows) from this build's statement and from main's at 497581c7,
+// and compares each row's document, window, date and cosine, for every project scope and with
+// an updated_since between two versions' dates. Then it runs each whole statement, this build's
+// and main's, under the settings the route runs meaning statements under
+// (searchScanSettings(searchMeaningScan), the bound among them), and compares the answers row
+// for row.
+//
+// The statements are search's three meaning statements and the related-item check's six, which
+// share searchQueryMeaningBody and so the arm. For search's three, the arm cut from main's
+// statement must be the arm search_oracle_test.go names apart, so what runs as main's arm is
+// main's frozen text. The comparison decides something only while the arm answers rows, so this
+// build's rows are also held to the fixture (requireDocumentsAndDates), and each whole answer
+// must name a document of the fixture.
+func TestTheMeaningDocumentArmAnswersMainsRowsAndDates(t *testing.T) {
+	t.Parallel()
+	fixture := newMeaningDocumentDateFixture(t)
+	ctx := context.Background()
+	connection, err := fixture.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the arm's reads: %v", err)
+	}
+	defer connection.Release()
+
+	for _, statement := range fixture.statements() {
+		t.Run(statement.name, func(t *testing.T) {
+			if statement.mainArm != "" {
+				if _, arm := meaningDocumentArmOf(t, statement.main); arm != statement.mainArm {
+					t.Fatalf("the arm cut from main's statement is not main's frozen arm:\n%s\nwant\n%s", arm, statement.mainArm)
+				}
+			}
+			want := meaningDocumentArmRows(t, connection, statement.main, statement.arguments)
+			got := meaningDocumentArmRows(t, connection, statement.live, statement.arguments)
+			if !slices.Equal(got, want) {
+				t.Errorf("this build's meaning document arm answered\n%v\nwant main's\n%v", got, want)
+			}
+			fixture.requireDocumentsAndDates(t, got, statement.project, statement.since)
+
+			settings := searchScanSettings(searchMeaningScan)
+			wantAnswer := documentSearchRows(t, ctx, fixture.database, statement.main, statement.arguments, settings)
+			gotAnswer := documentSearchRows(t, ctx, fixture.database, statement.live, statement.arguments, settings)
+			if !slices.Equal(gotAnswer, wantAnswer) {
+				t.Errorf("this build's statement answered\n%s\nwant main's\n%s", strings.Join(gotAnswer, "\n"), strings.Join(wantAnswer, "\n"))
+			}
+			answer := strings.Join(wantAnswer, "\n")
+			if !slices.ContainsFunc(fixture.documents, func(document meaningDocumentDateDocument) bool {
+				return strings.Contains(answer, document.id)
+			}) {
+				t.Errorf("main's statement named no document of the fixture, so the comparison decided nothing:\n%s", answer)
+			}
+		})
+	}
+}
