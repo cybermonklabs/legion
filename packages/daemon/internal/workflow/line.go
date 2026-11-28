@@ -320,21 +320,21 @@ func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Pha
 // (leftItsPhase), and the route takes returnTo on every tester's fail.
 func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Phase, string) {
 	if !w.Stored {
-		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; this report moved nothing",
 			n, issue.Key)
 	}
 	at, _ := w.PlaceOf(failed)
 	if at.Kind != record.PlaceStep {
-		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this fail names no step of the task to return to; send the fail again without returnTo; this report moved nothing",
 			n, w.Task, issue.Key, failed, strings.Join(plan.Words(record.NamedSteps(w.Steps)), " "))
 	}
 	role := w.Steps[at.Position-1].Role
 	switch {
 	case n > len(w.Steps):
-		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) failed; send the fail again naming an earlier step of that task, or without returnTo; this report moved nothing",
 			n, w.Task, issue.Key, len(w.Steps), at.Position, role)
 	case n >= at.Position:
-		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that failed; send the fail again naming an earlier step, or without returnTo; this report moved nothing",
 			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role)
 	}
 	return w.steps()[n-1], ""

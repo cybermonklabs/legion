@@ -42,11 +42,11 @@ import (
 // issue the daemon has not recorded — an operator's spawn of an issue no record of the project
 // holds, the project's own or another project's, whose record the daemon's records do not read
 // (internal/daemon's projectRecords), so its ready drops and queues no catch-up keyed by that
-// or of a child that has left the workflow or is done. A phase worker's ready is answered
+// issue — or of a child that has left the workflow or is done. A phase worker's ready is answered
 // differently: a merge forward still owed to its role is asked again at a launch later than the one
 // a row of the ask was last delivered at (askAgainAtLaunch), the worker another role's open merge
 // holds is held again (holdSentWorker), and it is given its phase's task again when it holds that
-// phase with nothing pending (readyWorkerTask).
+// phase with no work pending (supervise.HoldsWork, readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -338,7 +338,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, issue record.Is
 		Generation: issue.GenerationOf("start", role), Phase: issue.Phase, Task: resume, ResumeTask: true}); err != nil {
 		return err
 	}
-	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
+	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with no work pending is given its phase's task",
 		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
 	return nil
 }

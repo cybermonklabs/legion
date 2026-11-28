@@ -112,9 +112,11 @@ var (
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
 // nkey when the server sends no nonce ("nats: nkeys not supported by the server"), so an
 // operator's NATS_NKEY_SEED, NATS_DAEMON_NKEY_SEED, or either's _FILE pointer never reaches the
-// tests' clients. A test that means to pass a seed sets it itself.
+// tests' clients. Nor does an operator's NATS_DAEMON_SERVICE_TOKEN_FILE, which would make a daemon
+// test's boot present that file's token in place of the seed or no credential the test set up, or
+// refuse the boot beside a daemon seed. A test that means to pass a seed or a token sets it itself.
 func init() {
-	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE", "NATS_DAEMON_SERVICE_TOKEN_FILE"} {
 		os.Unsetenv(name)
 	}
 }
