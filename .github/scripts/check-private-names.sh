@@ -326,17 +326,22 @@ if [ ${#keys[@]} -gt 0 ]; then
 fi
 for i in "${!term_patterns[@]}"; do printf '%s\n' "${term_patterns[i]}" > "$pattern_dir/term.$i"; done
 # One line says how many terms and keys the run read, and never a term or a key: on a pull
-# request's own run, the proof that the job holds the list. An empty list prints the warning
-# below instead.
+# request's own run, the proof that the job holds the list. It counts a key as read only in a
+# `keys` run, the one run that checks it: a `names` run reads the `key:` lines too, since its
+# masking hides a key, but checks none, so its line says that its keys were not checked. An empty
+# list prints the warning below instead.
 if [ ${#terms[@]} -gt 0 ]; then
   printf '%s\n' "${term_patterns[@]}" > "$patterns_file"
   if [ ${#terms[@]} -eq 1 ]; then read_count="1 term"; else read_count="${#terms[@]} terms"; fi
-  if [ ${#keys[@]} -eq 1 ]; then
-    read_count+=" and 1 issue key"
-  elif [ ${#keys[@]} -gt 1 ]; then
-    read_count+=" and ${#keys[@]} issue keys"
+  if [ ${#keys[@]} -eq 1 ]; then key_count="1 issue key"; else key_count="${#keys[@]} issue keys"; fi
+  if [ ${#keys[@]} -eq 0 ]; then
+    read_count+=" read"
+  elif [ "$rules" = keys ]; then
+    read_count+=" and $key_count read"
+  else
+    read_count+=" read; $key_count not checked: rule 6 runs only with PRIVATE_NAME_RULES=keys"
   fi
-  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count read"
+  echo "check-private-names: PRIVATE_NAME_TERMS: $read_count"
 fi
 
 # named_parts <part...>: the 1-based index of each part the first two rules match, one a line, by

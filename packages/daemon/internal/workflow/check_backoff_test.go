@@ -62,6 +62,7 @@ func failLook(t *testing.T, rig checkRig, issue string, at time.Time) (time.Time
 // every failed look named its next one 2 h out, so a role that could not start was launched a
 // whole budget's worth of times every two hours until the check's bound.
 func TestACheckRoleFailureDoublesTheNextLookInterval(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	at := checkOpened
 	for i, want := range []time.Duration{2 * time.Hour, 4 * time.Hour, 8 * time.Hour, 16 * time.Hour} {
@@ -93,6 +94,7 @@ func TestACheckRoleFailureDoublesTheNextLookInterval(t *testing.T) {
 // look bound out as every such report does, and the failure of the look after it names its next
 // look 2 h out again, not 8 h.
 func TestAReportedLookResetsTheCheckRoleBackoffToTwoHours(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	due, wake := failLook(t, rig, "LEGION-209", checkOpened)
 	startLookAt(t, rig, "LEGION-209", due, wake)
@@ -130,6 +132,7 @@ func TestAReportedLookResetsTheCheckRoleBackoffToTwoHours(t *testing.T) {
 // failed look leaves the look bound's wake standing, so the look after a streak of failures comes
 // a look bound after that bound rather than the doubled wait after the failure.
 func TestACheckRoleFailureBetweenLooksIsRetriedAtTheNextLook(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		streak int           // failed looks in a row before the look that ends at its bound
@@ -210,6 +213,7 @@ func TestACheckRoleFailureBetweenLooksIsRetriedAtTheNextLook(t *testing.T) {
 // the retirement the earlier release's row started look 2 at the look bound's retry, two hours
 // out, and the replacement then found the look advanced and started nothing.
 func TestAFailureBetweenLooksRetiresTheWakeAnEarlierReleaseQueued(t *testing.T) {
+	t.Parallel()
 	rig := childCheckRig(t)
 	bound := checkOpened.Add(CheckLookBound)
 	rig.clock.now = bound

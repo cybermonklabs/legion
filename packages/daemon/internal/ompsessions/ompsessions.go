@@ -29,7 +29,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/envoy/fileerr"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Oh My Pi's two session-storage variables (session-storage-config.ts): StorageVariable set to
@@ -216,15 +217,22 @@ const undefinedTable = "42P01"
 // ReadDSN is the connection URL a DSN file holds, trimmed as Oh My Pi trims it. Every caller reads
 // the session database's: Connect, which opens it, and the launcher's own resume lookup
 // (launcher.sessionWritten), which reads the file afresh before each attempt so a URL rewritten
-// under it is picked up. Its refusals name the file, never what it holds.
+// under it is picked up. Its refusals name neither what the file holds nor its path, where a URL
+// pasted in place of the path would be: a file that cannot be read is named by why (fileerr.Err),
+// which still unwraps to the read's error, and a URL holding an unencoded "@" after its user part,
+// where a password holding an "@" or a "/" leaves part of itself (pgdsn.Refusal), is named by the
+// file alone, since every connect error would print that part.
 func ReadDSN(file string) (string, error) {
 	body, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("read the database URL file %s: %w", file, err)
+		return "", fmt.Errorf("read the database URL file: %w", fileerr.Err(err))
 	}
 	dsn := strings.TrimSpace(string(body))
 	if dsn == "" {
-		return "", fmt.Errorf("the database URL file %s is empty", file)
+		return "", errors.New("the database URL file is empty")
+	}
+	if err := pgdsn.Refusal(dsnFileSetting, dsn); err != nil {
+		return "", err
 	}
 	return dsn, nil
 }
@@ -243,7 +251,7 @@ func (c *Conn) Close(ctx context.Context) error { return c.c.Close(ctx) }
 func (c *Conn) IsClosed() bool { return c.c.IsClosed() }
 
 // Connect opens the session database whose URL dsnFile holds. A refusal names the database's
-// address, never the URL's password (store.ConnectError).
+// address, never the URL's password (pgdsn.ConnectError).
 func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 	dsn, err := ReadDSN(dsnFile)
 	if err != nil {
@@ -254,14 +262,18 @@ func Connect(ctx context.Context, dsnFile string) (*Conn, error) {
 
 // ConnectURL opens the session database at dsn, a URL ReadDSN read, and is the one place the
 // package opens a connection and builds a Conn. A refusal names the database's address, never the
-// URL's password (store.ConnectError).
+// URL's password (pgdsn.ConnectError).
 func ConnectURL(ctx context.Context, dsn string) (*Conn, error) {
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
-		return nil, store.ConnectError(dsn, err)
+		return nil, pgdsn.ConnectError(dsnFileSetting, dsn, err)
 	}
 	return &Conn{c: conn}, nil
 }
+
+// dsnFileSetting is how a refusal names where the session database's URL comes from: the file
+// DSNFileVariable points at, by no path (ReadDSN).
+const dsnFileSetting = "the database URL file"
 
 // Written is when the session the table holds at path was last written: the row's mtime_ms, which
 // Oh My Pi sets on every write, an append included, and Import sets to the copied file's. ok is false
@@ -432,7 +444,12 @@ func Import(ctx context.Context, conn *Conn, path string, content []byte, mtime 
 const Absent int64 = -1
 
 // partBytes is the largest part Replace stores, Oh My Pi's PART_BYTES: a full write is split into
-// parts of at most 1 MiB, where an append stores what it adds as one part.
+// parts of at most 1 MiB. Oh My Pi's appends store parts two ways (sql-session-storage.ts at the
+// pinned tag): a line appended alone is one part of its own length (append), and two or more
+// lines queued while an earlier write to the session runs are stored in one transaction
+// (appendBatch, from indexed-session-storage.ts), short lines sharing parts of at most 1 MiB and a
+// longer line cut across parts at character boundaries (appendedParts). Append stores what it
+// adds as one part, as a line appended alone is stored.
 const partBytes = 1024 * 1024
 
 // MovedError is Append's and Replace's refusal of a session whose row is not the one its writer

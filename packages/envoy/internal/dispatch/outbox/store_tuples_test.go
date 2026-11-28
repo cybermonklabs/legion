@@ -42,6 +42,7 @@ type claimTuple struct {
 // updates a row: both facts are rows of their own. Last, it reads the visibility and the state
 // of every node the store holds, the role and the page the publisher wrote among them.
 func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
+	t.Parallel()
 	const (
 		key    = "T-1"
 		role   = "store-tuples-role"

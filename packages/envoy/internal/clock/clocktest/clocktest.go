@@ -14,11 +14,14 @@
 // timers due together in the order they were armed. The fake reads each timer's deadline as that
 // timer fires, so a timer which the firing of another arms inside the span fires in the same move.
 // An AfterFunc's function runs on a goroutine of its own, and the move waits for it to return before
-// it fires the next timer, so what a timer's function did is done when Advance returns. The wait
-// has no bound of its own: a function that never returns, one that waits for the test to act after
-// the move among them, holds the move until go test's -timeout panics the binary, and the
-// goroutine dump it prints shows the move waiting in moveLocked. A channel timer (After, NewTimer,
-// Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
+// it fires the next timer, so what a timer's function did is done when Advance returns. The move
+// waits through the wait the tests share (testwait.ReceiveInHelper): a function that never returns,
+// one that waits for the test to act after the move among them, holds the move until that wait
+// gives up, 30 s before the test binary's deadline, and the move then panics with the wait's text,
+// which names the timer's deadline and the move's target. A move whose timer's function waits for
+// the test to act is made off the test goroutine through StartMove, whose join, on the test
+// goroutine, is that move's one bound and names the function it waits for. A channel timer (After,
+// NewTimer, Sleep) is fired by a non-blocking send on its channel, whose buffer holds one.
 //
 // A timer armed for a moment the fake has already reached, a wait of zero or less, fires as it is
 // armed, as the real clock's does, and is never pending: an AfterFunc's function starts on a
@@ -32,9 +35,11 @@
 // # What is armed
 //
 // Armed is the deadlines pending on the fake, in order: every timer armed and neither fired nor
-// stopped, a Sleep in progress and a deadline context not yet ended among them. A test reads it
-// until the deadline it expects is pending, so it moves the fake past a deadline only once the
-// code has armed it, and a failure names what the test expected and the deadlines it saw.
+// stopped, a Sleep in progress and a deadline context not yet ended among them. AwaitArmed waits for
+// a count of them, AwaitArmedAt for one deadline among them and AwaitArmedCountAt for a count of
+// timers at one deadline, through testwait, as clockwork's
+// BlockUntilContext does, so a test moves the fake past a deadline only once the code has armed it,
+// and a failure names what the test expected, the deadlines it saw and the fake's moment.
 //
 // SetWhen reads the fake's present and its pending deadlines, asks a question of them and makes
 // the move the answer names, under one hold of the fake's lock. A test that reads Armed and then
@@ -52,6 +57,12 @@
 // or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
 // never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
 // instead.
+//
+// # Another source's moments
+//
+// WithNow is a clock whose waits run on one clock and whose Now reads another source, for code
+// whose stamps must stand on the moments a test sets while its own pauses run on a clock the test
+// does not move.
 package clocktest
 
 import (
@@ -60,9 +71,11 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Fake is a clock.Clock that moves only by Advance and Set. Its zero value is not ready; New and
@@ -75,6 +88,9 @@ type Fake struct {
 	wall  func() time.Time
 	now   time.Time
 	added time.Duration
+	// stepped is every step StepWall has made, which Now reads on top of the fake's moment and the
+	// timers do not.
+	stepped time.Duration
 	// arms counts every arm, so the timers due together fire in the order they were armed.
 	arms    uint64
 	pending []*timer
@@ -88,11 +104,51 @@ func New(start time.Time) *Fake { return &Fake{now: start} }
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
 func Held() *Fake { return &Fake{held: true, wall: time.Now} }
 
-// Now is the fake's moment.
+// WithNow is c with the moment it reads taken from now: every timer, sleep and deadline context
+// runs on c, and Now answers now's moment. It is for code whose waits must run on c while the
+// moments it stamps or judges are another source's, such as a writer whose backoff after a lost
+// compare-and-swap is a pause of its own, on a clock nothing has to move, while the moments it
+// stamps stand on a fake the test moves: on that fake, the pause would end only when the test
+// moved it.
+func WithNow(c clock.Clock, now func() time.Time) clock.Clock {
+	return nowFrom{Clock: c, now: now}
+}
+
+// nowFrom is WithNow's clock: c's waits, with Now read from now.
+type nowFrom struct {
+	clock.Clock
+	now func() time.Time
+}
+
+func (c nowFrom) Now() time.Time { return c.now() }
+
+// Now is the fake's moment plus every step StepWall has made.
 func (c *Fake) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.nowLocked()
+	return c.nowLocked().Add(c.stepped)
+}
+
+// StepWall steps the wall clock that Now reads by d, forward or back, as an operator or NTP steps
+// a machine's clock, and fires no timer. The timers, Armed, AwaitArmed, AwaitArmedAt, Advance, Set
+// and SetWhen stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the
+// wall clock does. What a channel timer sends carries the steps, as what Go's sends does: Go sends
+// the moment a timer fell due read on the wall clock as it sends (time.sendTime, Now less the
+// lateness), so a channel timer here sends its deadline plus every step made; one armed for a
+// moment the fake has already reached sends the moment it was armed plus every step. A fake that
+// never steps is a fake whose Now is its moment, and whose channel timers send their deadlines, or
+// their arm moments.
+//
+// What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
+// beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
+// that compares or subtracts its own readings of the clock never sees a step of the wall. A time
+// from the fake has one reading, so after a step such code sees it. A loop whose grid compares its
+// own readings of Now (clock.Ticker) shifts that grid by a step on the fake, where production's
+// grid does not move.
+func (c *Fake) StepWall(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stepped += d
 }
 
 func (c *Fake) nowLocked() time.Time {
@@ -118,7 +174,7 @@ func (c *Fake) Advance(d time.Duration) {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	c.moveLocked(c.nowLocked().Add(d), false)
+	c.moveLocked(c.nowLocked().Add(d), false, sharedWait)
 }
 
 // Set moves the fake to at, earlier or later, firing every timer due by then. A timer keeps the
@@ -138,20 +194,22 @@ func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, boo
 		c.mu.Unlock()
 		return armed, false
 	}
-	c.moveLocked(target, true)
+	c.moveLocked(target, true, sharedWait)
 	return armed, true
 }
 
 func (c *Fake) moveTo(target time.Time) {
 	c.mu.Lock()
-	c.moveLocked(target, true)
+	c.moveLocked(target, true, sharedWait)
 }
 
 // moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
 // the lock again (the loop's post statement), and the last lets it go. back is whether the move
 // may end before the fake's present, as a Set may; a move that may not ends at target only when
 // target is ahead, since another move can take the fake past it while a timer of this one fires.
-func (c *Fake) moveLocked(target time.Time, back bool) {
+// wait waits for done, which closes once the AfterFunc's function what names has returned: a move
+// on the test goroutine passes sharedWait, and the move StartMove started passes its waitFor.
+func (c *Fake) moveLocked(target time.Time, back bool, wait func(what string, done <-chan struct{})) {
 	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
@@ -169,13 +227,14 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			// Under the lock, so a Stop or Reset that returned before it never leaves this value
 			// behind for a later receive.
 			select {
-			case next.c <- next.at:
+			case next.c <- next.at.Add(c.stepped):
 			default:
 			}
 			c.mu.Unlock()
 			continue
 		}
-		f, own := next.f, next.own
+		// The deadline is read under the lock: the function may Reset its own timer once it runs.
+		f, own, due := next.f, next.own, next.at
 		c.mu.Unlock()
 		if !own {
 			f()
@@ -186,8 +245,89 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			defer close(done)
 			f()
 		}()
-		<-done
+		what := fmt.Sprintf("the function of the AfterFunc due at %s, which a move to %s fired, to return",
+			due.Format(time.RFC3339Nano), target.Format(time.RFC3339Nano))
+		wait(what, done)
 	}
+}
+
+// sharedWait waits for done, which closes once the function what names has returned, through the
+// wait the tests share (testwait.ReceiveInHelper), and panics with that wait's text at its give-up.
+func sharedWait(what string, done <-chan struct{}) {
+	if _, err := testwait.ReceiveInHelper("clocktest", what, done); err != nil {
+		panic(err)
+	}
+}
+
+// StartMove moves the fake to target on a goroutine of its own, firing every timer due by then as
+// Advance does, and never back: another move that took the fake past target while a timer of this
+// one fired leaves it there. It returns join, which waits on the test goroutine for that move to
+// return. It is for a move that fires a timer whose function waits on what the test holds, or on
+// what the test does after the move began, for which a move on the test goroutine would wait for
+// ever.
+//
+// The started move waits for each timer's function with no bound of its own, and join's wait
+// (testwait.Until) is its one bound: a function that never returns fails t there, on the test
+// goroutine, with a text that names what, the move, and the function the move waits for, by its
+// timer's deadline and the move's target. A move made on the test goroutine waits for each
+// function through testwait.ReceiveInHelper instead and panics at its give-up, whose moment, read
+// from the process's start, is microseconds before the test's own waits give up, too close to
+// order a give-up on another goroutine against them. A started move nobody joins waits for its
+// function for ever, on its own goroutine.
+//
+// Once the move has returned, each call of join returns at once, so a row may join in its body and
+// again in a cleanup that runs when the body ended before its join. Call join on the test
+// goroutine only.
+func (c *Fake) StartMove(what string, target time.Time) (join func(t testing.TB)) {
+	started := &startedMove{returned: make(chan struct{})}
+	go func() {
+		defer close(started.returned)
+		c.mu.Lock()
+		c.moveLocked(target, false, started.waitFor)
+	}()
+	return func(t testing.TB) {
+		t.Helper()
+		testwait.Until(t, what+" to return", func() (string, bool) {
+			select {
+			case <-started.returned:
+				return "", true
+			default:
+				return started.reading(), false
+			}
+		})
+	}
+}
+
+// startedMove is a move StartMove started, as its join reads it: returned closes once the move has
+// returned, and waiting is the wait for a timer's function the move is in, empty between two.
+type startedMove struct {
+	returned chan struct{}
+
+	mu      sync.Mutex
+	waiting string
+}
+
+// waitFor waits for done, which closes once the function what names has returned, with no bound of
+// its own: the join's wait on the test goroutine is the one bound, and reads what while the move
+// waits here.
+func (m *startedMove) waitFor(what string, done <-chan struct{}) {
+	m.mu.Lock()
+	m.waiting = what
+	m.mu.Unlock()
+	<-done
+	m.mu.Lock()
+	m.waiting = ""
+	m.mu.Unlock()
+}
+
+// reading is the join's last reading of the move: the wait for a timer's function it is in.
+func (m *startedMove) reading() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.waiting == "" {
+		return "the move waits for no timer's function"
+	}
+	return "the move waits for " + m.waiting
 }
 
 // dueLocked is the pending timer due earliest by target, the earliest armed among those due
@@ -229,6 +369,75 @@ func (c *Fake) armedLocked() []time.Time {
 		deadlines[i] = t.at
 	}
 	return deadlines
+}
+
+// AwaitArmed waits until at least n timers are pending on the fake and returns their deadlines,
+// earliest first. what names what the test waits to see armed; a failure prints it with n and what
+// the last try read (armedReading).
+func (c *Fake) AwaitArmed(t testing.TB, what string, n int) []time.Time {
+	t.Helper()
+	var armed []time.Time
+	testwait.Until(t, fmt.Sprintf("%s (at least %d timers armed on the fake clock)", what, n), func() (string, bool) {
+		pending, reading := c.armedReading()
+		if len(pending) < n {
+			return reading, false
+		}
+		armed = pending
+		return reading, true
+	})
+	return armed
+}
+
+// AwaitArmedAt waits until a timer due at at is pending on the fake, and returns the deadline of
+// every timer pending then, earliest first: the reading that held at. It looks for the one deadline
+// rather than a count, since the code's other timers on the fake may be pending beside it. what
+// names what the test waits to see armed; a failure prints it with at and what the last try read
+// (armedReading).
+func (c *Fake) AwaitArmedAt(t testing.TB, what string, at time.Time) []time.Time {
+	t.Helper()
+	var held []time.Time
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() (string, bool) {
+		armed, reading := c.armedReading()
+		if !slices.ContainsFunc(armed, at.Equal) {
+			return reading, false
+		}
+		held = armed
+		return reading, true
+	})
+	return held
+}
+
+// AwaitArmedCountAt waits until at least n timers due at at are pending on the fake, and returns
+// the deadline of every timer pending then, earliest first: the reading that held them. It is for a
+// row that moves the fake to a deadline several timers share, one for each socket the code opened,
+// only once every one of them has armed it, so none is armed after the move and comes due at a
+// moment the row does not drive. what names what the test waits to see armed; a failure prints it
+// with at, n and what the last try read (armedReading).
+func (c *Fake) AwaitArmedCountAt(t testing.TB, what string, at time.Time, n int) []time.Time {
+	t.Helper()
+	var held []time.Time
+	testwait.Until(t, fmt.Sprintf("%s armed %d times for %s", what, n, at.Format(time.RFC3339Nano)), func() (string, bool) {
+		armed, reading := c.armedReading()
+		if count := len(slices.DeleteFunc(slices.Clone(armed), func(deadline time.Time) bool { return !deadline.Equal(at) })); count < n {
+			return reading, false
+		}
+		held = armed
+		return reading, true
+	})
+	return held
+}
+
+// armedReading is one reading of what is armed, for the waits on it: the deadline of every pending
+// timer, earliest first, and what a wait that gives up prints of them, read under one hold of the
+// lock: no timer armed, or how many are and their deadlines, and the fake's moment then.
+func (c *Fake) armedReading() ([]time.Time, string) {
+	c.mu.Lock()
+	now, armed := c.nowLocked(), c.armedLocked()
+	c.mu.Unlock()
+	if len(armed) == 0 {
+		return armed, fmt.Sprintf("no timer armed, the fake at %v", now)
+	}
+	return armed, fmt.Sprintf("%d timers armed, due at %v, the fake at %v", len(armed), armed, now)
 }
 
 func (c *Fake) After(d time.Duration) <-chan time.Time { return c.NewTimer(d).C() }
@@ -282,8 +491,8 @@ func (c *Fake) arm(t *timer, due func(now time.Time) time.Time) {
 }
 
 // placeLocked arms t for at, or, when the fake has already reached at, fires it at once as the real
-// clock fires a wait of zero or less: a channel timer's send, of the fake's present, the moment it
-// was armed, is made here, under the lock, and the function it answers, which the
+// clock fires a wait of zero or less: a channel timer's send, of the fake's present plus the steps,
+// the moment it was armed, is made here, under the lock, and the function it answers, which the
 // caller runs once it has let the lock go, starts an AfterFunc's function on a goroutine of its
 // own, not waited for, or ends a deadline context.
 func (c *Fake) placeLocked(t *timer, at time.Time) func() {
@@ -298,7 +507,7 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	switch {
 	case t.c != nil:
 		select {
-		case t.c <- c.nowLocked():
+		case t.c <- c.nowLocked().Add(c.stepped):
 		default:
 		}
 		return func() {}

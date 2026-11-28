@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The acceptance clause this holds: a hook failure the recovery repairs by itself logs no ERROR.
@@ -45,13 +46,8 @@ func TestRewatchRetryAfterAReconnectLogsNoError(t *testing.T) {
 	logs := clientLogs.fromHere()
 	srv.Stop(t)
 	srv.Start(t)
-	for run := 1; run <= 2; run++ {
-		select {
-		case <-hooked:
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the reconnect hooks ran %d time(s); want the failed run and the retry", run-1)
-		}
-	}
+	testwait.Receive(t, "the reconnect hooks' failed run", hooked)
+	testwait.Receive(t, "the reconnect hooks' retry", hooked)
 	// The retry clears the stall as it records the events it covered, just after the hook returned.
 	waitFor(t, "the retry that covered the reconnect", func() bool {
 		stall, hookErr := client.HookStall()

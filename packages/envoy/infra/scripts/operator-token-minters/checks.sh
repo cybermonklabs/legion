@@ -125,13 +125,18 @@ held_list() {
 
 # --- Roles. ---
 
-# role_perms ROLE: sets ROLE_FILE to a file listing the role's permissions, from the previews'
-# custom roles or `gcloud iam roles describe`; returns 1 with ROLE_ERROR.
+# role_file ROLE: sets ROLE_FILE to the file under $WORK/roles that lists the role's permissions,
+# named by the role with each character outside A-Za-z0-9._- made _. role_perms and the previews'
+# custom roles (step-code-iam.sh) name it so. The shell makes the name: a run asks for a role's
+# file about a hundred times, and a process for each would cost more than the describes do.
+role_file() { ROLE_FILE="$WORK/roles/${1//[^A-Za-z0-9._-]/_}"; }
+# role_perms ROLE: sets ROLE_FILE (role_file) to a file listing the role's permissions, from the
+# previews' custom roles or `gcloud iam roles describe`, once a run; returns 1 with ROLE_ERROR.
 role_perms() {
-  ROLE_FILE="$WORK/roles/$(printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_')"
+  role_file "$1"
   ROLE_ERROR=""
   if [ -e "$ROLE_FILE.error" ]; then
-    ROLE_ERROR="$(cat "$ROLE_FILE.error")"
+    ROLE_ERROR="$(<"$ROLE_FILE.error")"
     return 1
   fi
   [ ! -e "$ROLE_FILE" ] || return 0
@@ -139,12 +144,41 @@ role_perms() {
     ROLE_ERROR="gcloud is not on PATH, so the role $1 cannot be described"
   elif ! gcloud iam roles describe "$1" --format=json --quiet >"$WORK/role.json" 2>"$WORK/role.err"; then
     ROLE_ERROR="gcloud iam roles describe $1 was refused (it needs iam.roles.get for a custom role): $(first_line "$WORK/role.err")"
-  elif ! jq -r '.includedPermissions[]?' "$WORK/role.json" >"$WORK/role.list" 2>"$WORK/role.err"; then
+  elif ! jq -r '[.includedPermissions[]?] | unique[]' "$WORK/role.json" >"$ROLE_FILE" 2>"$WORK/role.err"; then
     ROLE_ERROR="gcloud iam roles describe $1 answered no JSON role: $(first_line "$WORK/role.err")"
+    rm -f "$ROLE_FILE"
   fi
   if [ -n "$ROLE_ERROR" ]; then
     printf '%s' "$ROLE_ERROR" >"$ROLE_FILE.error"
     return 1
   fi
-  sort -u "$WORK/role.list" >"$ROLE_FILE"
+}
+# role_listed PERMISSION: whether the role file ROLE_FILE (role_file, role_perms) lists PERMISSION.
+# Each role file is read into ROLE_LISTED once, every line of it, a last one no line break ends too,
+# so a preview's many bindings of one role start no process. Its callers run it as a condition,
+# where errexit is off, so a file it cannot read stops the run here (exit 2, which on_exit reads as
+# UNKNOWN), never as a role that lists nothing. The cache holds a file as it was when first read,
+# which is right because each role file is written before it is first read: role_perms writes one
+# only where none exists, and step-code-iam.sh writes every custom role of the previews before its
+# first role_granted.
+declare -A ROLE_READ=() ROLE_LISTED=()
+role_listed() {
+  local permission
+  if [ -z "${ROLE_READ[$ROLE_FILE]:-}" ]; then
+    { while IFS= read -r permission || [ -n "$permission" ]; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"; } || {
+      echo "operator-token-minters: the role file $ROLE_FILE could not be read" >&2
+      exit 2
+    }
+    ROLE_READ[$ROLE_FILE]=1
+  fi
+  [ -n "${ROLE_LISTED["$ROLE_FILE $1"]:-}" ]
+}
+# role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
+# the role file ROLE_FILE lists (role_listed), comma-separated, or "" for none.
+role_granted() {
+  local permission
+  GRANTED=""
+  for permission in ${CHECK_PERMS[$1]}; do
+    ! role_listed "$permission" || GRANTED="${GRANTED:+$GRANTED,}$permission"
+  done
 }

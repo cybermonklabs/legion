@@ -110,7 +110,7 @@ func TestAHelloBindsNoPodButTheSandboxsCurrentLiveOne(t *testing.T) {
 			g := newRig(t, nil)
 			first := g.spawn(workerSpec(t))
 			name := first.Sandbox.Name
-			g.hold.Store(true)
+			g.setHold(true)
 			if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
 				t.Fatal(err)
 			}

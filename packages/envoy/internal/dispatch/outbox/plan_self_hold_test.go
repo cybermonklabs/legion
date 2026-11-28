@@ -126,5 +126,5 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 		t.Fatalf("the comment was not published once both mentions settled: attempt_count %d, publish_error %s, reached %v",
 			attempts, publishFailure(failure), reached)
 	}
-	waitFor(t, 10*time.Second, "the route's forward", func() bool { return len(recv.received()) > 1 })
+	waitFor(t, "the route's forward", func() bool { return len(recv.received()) > 1 })
 }

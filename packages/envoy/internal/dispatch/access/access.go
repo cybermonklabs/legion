@@ -481,8 +481,10 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // its resume reads it: every credential's but a broker token's, whose list is answered only while
 // some project is private or its person is a restricted member, as it was before (R9). Open is
 // every viewer that is not a restricted member's.
-// What a broker token scoped to one project writes is decided outside this package, by the write
-// scope such a token had before projects could be private, which no list here decides.
+// What a broker token that names one project writes, CredentialCovers states: every project's
+// objects that a credential naming no project may write, but for a private project that the token
+// does not name. Each write check of internal/dispatch/api asks it with the visibility of the
+// project that the write names.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor

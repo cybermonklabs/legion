@@ -1,15 +1,29 @@
 package api
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* TestAVersionsBlocksCarryTheParentOfATaskBlock
+
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"maps"
 	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // versionBlocksAnswer is what a version read with ?blocks=true answers, as a reader of the plan
@@ -202,4 +216,219 @@ func assertPlanTask(t *testing.T, answer versionBlocksAnswer, id, steps, body st
 		return
 	}
 	t.Fatalf("no block %s among %+v (markdown %q)", id, *answer.Blocks, answer.Markdown)
+}
+
+// versionBlocksFixtures holds, from this package's directory, the two answers
+// TestAVersionsBlocksCarryTheParentOfATaskBlock commits, which -update (updateFixtures) rewrites:
+// a version read that lists each task block's parent, and an older build's refusal of it. Nothing
+// reads them yet; the daemon's Dispatch client of cybermonklabs/legion#5204 is to read them.
+var versionBlocksFixtures = filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "dispatch-version-blocks")
+
+// A plan's task blocks stand under their task by parent, which one release reads and the next one
+// creates. N is the version that first reads parent, read off the manifest, and each build here is
+// the embedded manifest as of its version (pmdoc.ManifestAsOfForTest), so the test holds whether
+// this build is N or later. Three Dispatch processes share one database, one after another, each
+// with a document service of its own, so no service runs while another manifest is installed:
+// pmdoc's readers do not lock the manifest. The build at N+1 writes plan.md of ACME-1, default and
+// t1, t2 and t3 under it. The build at N reads that version and lists each task block with its
+// parent. It writes a later version of the plan, a fourth block under default included, since the
+// plan holds parent already. It refuses a version that puts parent into a plan that holds none,
+// and writes no version of that plan. The build at N-1, whose manifest declares no parent, answers
+// the plan's version 409 DOC_NEWER_CONTENT. The test changes the manifest, a package variable, so
+// it stays serial.
+func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
+	database := storetest.Open(t)
+	seedPeople(t, database, "alice")
+	const parent = "dispatch://ACME-1/artifact/plan-md#b-default"
+	under := func(id, text string) string {
+		return ":::plan_task{#" + id + " parent=\"" + parent + "\"}\n" + text + "\n:::\n"
+	}
+	planText := ":::plan_task{#default}\nShip the parser.\n:::\n\n" + under("t1", "Read the grammar.") + "\n" +
+		under("t2", "Write the parser.") + "\n" + under("t3", "Test the parser.")
+	placed := map[string]string{"default": "", "t1": parent, "t2": parent, "t3": parent}
+	versions, declared := pmdoc.Element{Kind: pmdoc.AttributeElement, Block: "plan_task", Name: "parent"}.Versions()
+	if !declared || versions.CreatableSince != versions.Since+1 {
+		t.Fatalf("plan_task.parent = %+v, %t; want it declared, created one version after it is read", versions, declared)
+	}
+	n := versions.Since
+	asOf := func(version int) []byte {
+		t.Helper()
+		manifest, err := pmdoc.ManifestAsOfForTest(version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manifest
+	}
+
+	restoreNewer, err := pmdoc.UseManifestForTest(asOf(n + 1))
+	if err != nil {
+		t.Fatalf("install the manifest of the build at version %d: %v", n+1, err)
+	}
+	t.Cleanup(restoreNewer)
+	newer, stopNewer := versionBlocksProcess(t, database)
+	if created := dispatchRequest(t, newer, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACME", "name": "Acme"}, "alice"); created.Code != http.StatusCreated {
+		t.Fatalf("create project ACME: status=%d body=%s", created.Code, created.Body.String())
+	}
+	filed := dispatchRequest(t, newer, http.MethodPost, "/api/v1/issues", map[string]string{"project": "ACME", "title": "A plan under its task"}, "alice")
+	if filed.Code != http.StatusCreated {
+		t.Fatalf("create the issue: status=%d body=%s", filed.Code, filed.Body.String())
+	}
+	issue := decodeBody[model.Issue](t, filed)
+	if issue.Key != "ACME-1" {
+		t.Fatalf("the issue is %s, want ACME-1, which the plan's parents name", issue.Key)
+	}
+	plan := createIssueDocument(t, newer, issue.Key, "plan.md", planText)
+	stopNewer()
+	restoreNewer()
+
+	restoreCurrent, err := pmdoc.UseManifestForTest(asOf(n))
+	if err != nil {
+		t.Fatalf("install the manifest of the build at version %d: %v", n, err)
+	}
+	t.Cleanup(restoreCurrent)
+	current, stopCurrent := versionBlocksProcess(t, database)
+	read := dispatchRequest(t, current, http.MethodGet, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true", nil, "alice")
+	if read.Code != http.StatusOK {
+		t.Fatalf("this build reading version 1 of the plan the newer build wrote: status=%d body=%s", read.Code, read.Body.String())
+	}
+	requireParents(t, "version 1, read by this build", decodeBody[versionBlocksAnswer](t, read), placed)
+	uploadIssueDocument(t, current, issue.Key, "plan.md", planText+"\n"+under("t4", "Ship it."))
+	placed["t4"] = parent
+	requireParents(t, "version 2, which this build wrote beside them", readVersionBlocks(t, current, "/api/v1/artifacts/"+plan.ID+"/versions/2?blocks=true"), placed)
+
+	const notesText = ":::plan_task{#n1}\nNote it.\n:::\n"
+	notes := createIssueDocument(t, current, issue.Key, "notes.md", notesText)
+	owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+	refused := dispatchRequest(t, current, http.MethodPost, owner, map[string]any{
+		"name":         "notes.md",
+		"content":      notesText + "\n:::plan_task{#n2 parent=\"dispatch://ACME-1/artifact/notes-md#b-n1\"}\nUnder it.\n:::\n",
+		"precondition": uploadBaseNamed(t, current, owner, "notes.md"),
+	}, "alice")
+	expectRefusal(t, "this build putting parent into a plan that holds none", refused, http.StatusBadRequest, "INVALID_MARKDOWN",
+		`this Dispatch build reads attribute "parent" of typed block "plan_task" but cannot write it yet`)
+	if second := dispatchRequest(t, current, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/versions/2", nil, "alice"); second.Code != http.StatusNotFound {
+		t.Fatalf("the refused write left version 2 of the plan that holds no parent: status=%d body=%s", second.Code, second.Body.String())
+	}
+	stopCurrent()
+	restoreCurrent()
+
+	restoreOlder, err := pmdoc.UseManifestForTest(asOf(n - 1))
+	if err != nil {
+		t.Fatalf("install the manifest of the build at version %d: %v", n-1, err)
+	}
+	t.Cleanup(restoreOlder)
+	older, _ := versionBlocksProcess(t, database)
+	newerContent := dispatchRequest(t, older, http.MethodGet, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true", nil, "alice")
+	expectRefusal(t, "a build of the release before reading version 1 of the plan", newerContent, http.StatusConflict, "DOC_NEWER_CONTENT", "parent")
+
+	requireVersionBlocksFixture(t, "plan-with-parent.json", read.Body.Bytes(), func(fixture, answer []byte) bool {
+		var held, served versionBlocksAnswer
+		if json.Unmarshal(fixture, &held) != nil || json.Unmarshal(answer, &served) != nil || held.Blocks == nil || served.Blocks == nil {
+			return false
+		}
+		return held.Markdown == served.Markdown && reflect.DeepEqual(blocksBesideTheirTokens(*held.Blocks), blocksBesideTheirTokens(*served.Blocks))
+	})
+	requireVersionBlocksFixture(t, "older-build-newer-content.json", newerContent.Body.Bytes(), func(fixture, answer []byte) bool {
+		var held, served any
+		return json.Unmarshal(fixture, &held) == nil && json.Unmarshal(answer, &served) == nil && reflect.DeepEqual(held, served)
+	})
+}
+
+// versionBlocksProcess is one Dispatch process on database, with a document service of its own,
+// as one build of a release serves. stop ends its routes' background work and shuts its service
+// down, so nothing of it reads the manifest once stop returns, and the caller may install another
+// (pmdoc.UseManifestForTest). The test's end stops a process the test did not.
+func versionBlocksProcess(t *testing.T, database *store.Store) (http.Handler, func()) {
+	t.Helper()
+	service := docs.New(docs.Deps{Store: database, ServerURL: testServerURL, Settle: 20 * time.Millisecond})
+	deps, err := NewDeps(DepsInput{
+		Store:       database,
+		Identity:    headerIdentity(database),
+		AgentTokens: sharedAgentTokens(t, "agent-token"),
+		Docs:        service,
+		ServerURL:   testServerURL,
+	})
+	if err != nil {
+		t.Fatalf("new API dependencies: %v", err)
+	}
+	lifetime, end := context.WithCancel(t.Context())
+	mux := http.NewServeMux()
+	background := Register(mux, lifetime, deps)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			end()
+			background.Wait()
+			if err := service.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut down the process's document service: %v", err)
+			}
+		})
+	}
+	t.Cleanup(stop)
+	return mux, stop
+}
+
+// requireParents requires answer to list exactly the task blocks want names, each with the parent
+// want gives it as a block[] attribute, and with none where want gives "".
+func requireParents(t *testing.T, what string, answer versionBlocksAnswer, want map[string]string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, block := range *answer.Blocks {
+		if block.Type != "plan_task" {
+			continue
+		}
+		got[block.ID] = ""
+		for _, attribute := range block.Attributes {
+			if attribute.Name != "parent" {
+				continue
+			}
+			if attribute.Kind != string(pmdoc.BlockAttributeBlockList) {
+				t.Errorf("%s: block %s carries parent as a %q attribute, want block[]", what, block.ID, attribute.Kind)
+			}
+			got[block.ID] = attribute.Value
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("%s lists the task blocks and their parents %v, want %v (markdown %q)", what, got, want, answer.Markdown)
+	}
+}
+
+// blocksBesideTheirTokens is blocks with no token: what a fixture of a version read holds to
+// this build's answer, beside the markdown.
+func blocksBesideTheirTokens(blocks []model.ArtifactBlock) []model.ArtifactBlock {
+	stripped := make([]model.ArtifactBlock, len(blocks))
+	for index, block := range blocks {
+		block.Token = ""
+		stripped[index] = block
+	}
+	return stripped
+}
+
+// requireVersionBlocksFixture writes answer to the fixture name under -update (updateFixtures),
+// indented, and otherwise requires the committed fixture and answer to be the same answer by same.
+func requireVersionBlocksFixture(t *testing.T, name string, answer []byte, same func(fixture, answer []byte) bool) {
+	t.Helper()
+	path := filepath.Join(versionBlocksFixtures, name)
+	if *updateFixtures {
+		var indented bytes.Buffer
+		if err := json.Indent(&indented, answer, "", "  "); err != nil {
+			t.Fatalf("indent the answer for %s: %v", name, err)
+		}
+		indented.WriteByte('\n')
+		if err := os.MkdirAll(versionBlocksFixtures, 0o755); err != nil {
+			t.Fatalf("make the fixture directory: %v", err)
+		}
+		if err := os.WriteFile(path, indented.Bytes(), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+		t.Logf("wrote %s", path)
+		return
+	}
+	fixture, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s, which -update writes: %v", path, err)
+	}
+	if !same(fixture, answer) {
+		t.Fatalf("%s is not what this build answers. Write it again with -update.\nfixture: %s\nanswer:  %s", path, fixture, answer)
+	}
 }

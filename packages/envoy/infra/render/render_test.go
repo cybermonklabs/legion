@@ -689,9 +689,9 @@ func TestWebhookListenerEnvRefusals(t *testing.T) {
 			want: `refused: --mention-trigger: mentionTrigger is required with webhook "github"`,
 		},
 		{
-			name: "a dot in --machine-id",
-			args: listenerFlags([]string{"machine-id"}, "--machine-id", "example.machine"),
-			want: "refused: --machine-id: machineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry",
+			name: "a '%' in --machine-id",
+			args: listenerFlags([]string{"machine-id"}, "--machine-id", "example%2Emachine"),
+			want: "refused: --machine-id: machineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names",
 		},
 		{
 			name: "a blank second --nats-url",

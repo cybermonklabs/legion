@@ -29,7 +29,9 @@ job and step runs, here and under --steps. It evaluates the subset of GitHub's e
 language those use:
 string, boolean, number and null literals; the contexts `github.event_name`, `github.ref`,
 `github.sha`, `github.event.pull_request.number`, `github.event.pull_request.labels.*.name`,
-`github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`, `inputs.<name>` (a
+`github.event.pull_request.base.sha`, `github.event.merge_group.base_sha`, `runner.temp` (the
+runner's temporary directory, /home/runner/work/_temp, which the generation step's env names the
+directory of its base's cached filters in), `inputs.<name>` (a
 workflow_dispatch input this workflow declares, and under --steps an input of the called
 workflow), `steps.<id>.outputs.<name>` and `steps.<id>.outputs`, and under --steps
 `needs.changes.result`, `needs.changes.outputs.<name>` and `needs.changes`; `!`, `==`, `!=`, `&&`,
@@ -44,8 +46,8 @@ unknown function or a context it does not model, is refused by name with exit 2,
 false.
 
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
-  [--base <sha>] [--input <name>=<value>]... [--label <name>]... [--verdict <filter>=<value>]...
-  [--verdicts <true|false>] [--step-outputs <id>=<file>]...
+  [--base <sha>] [--pull-base <sha>] [--input <name>=<value>]... [--label <name>]...
+  [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
   [--filter-step | --generate-step | --concurrency | --steps <job> [--changes-result <result>]]
        ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
@@ -53,8 +55,11 @@ the changes job's filters, which it computes when it runs (.github/scripts/ci-fi
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
 verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
-the run is measured against, forty 3s by default: a pull request's base, a merge group's base, or
-the merge base with main the `base` step finds on a dispatch. --step-outputs gives the outputs of
+the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
+step finds - the first parent of a pull request's merge commit, the merge base with main on a
+dispatch. --pull-base is the pull request event's own base.sha, --base by default, which is older
+than the first parent when main has moved since the branch's base (98 of 149 pull-request runs on
+2026-11-26). --step-outputs gives the outputs of
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
@@ -92,14 +97,15 @@ class Refused(Exception):
 
 
 # The contexts an expression may read, whole: the event's name, the run's ref and commit, the pull
-# request's number, label names and base commit, the merge group's base commit, an input, and a
+# request's number, label names and base commit, the merge group's base commit, the runner's
+# temporary directory, an input, and a
 # step's outputs or one of them; and under --steps the changes job's result and outputs, which only
 # that mode's context holds. A read of anything else, `github.event.pull_request` or `github.event`
 # as a whole among them, is refused, so an output can read the labels only through the path
 # --label-readers finds in its text.
 MODELLED = re.compile(r"github\.event_name|github\.ref|github\.sha|github\.event\.pull_request\.number"
                       r"|github\.event\.pull_request\.labels\.\*\.name|github\.event\.pull_request\.base\.sha"
-                      r"|github\.event\.merge_group\.base_sha|inputs\.[A-Za-z0-9_-]+"
+                      r"|github\.event\.merge_group\.base_sha|runner\.temp|inputs\.[A-Za-z0-9_-]+"
                       r"|steps\.[A-Za-z0-9_-]+\.outputs(?:\.[A-Za-z0-9_-]+)?"
                       r"|needs\.changes(?:\.result|\.outputs(?:\.[A-Za-z0-9_-]+)?)?", re.I)
 # An `inputs.<name>` read, and a value naming the changes job: what makes a step's `if:` one --steps
@@ -432,6 +438,7 @@ def main():
     parser.add_argument("--ref")
     parser.add_argument("--sha", default="1" * 40)
     parser.add_argument("--base", default="3" * 40)
+    parser.add_argument("--pull-base")
     parser.add_argument("--input", action="append", default=[])
     parser.add_argument("--label-readers", action="store_true")
     parser.add_argument("--filter-step", action="store_true")
@@ -488,10 +495,11 @@ def main():
     pull_request = args.event == "pull_request"
     try:
         context = {
+            "runner": {"temp": "/home/runner/work/_temp"},
             "github": {"event_name": args.event, "ref": ref, "sha": args.sha,
                        "event": {"pull_request": {"number": 1 if pull_request else None,
                                                   "labels": [{"name": label} for label in args.label],
-                                                  "base": {"sha": args.base if pull_request else None}},
+                                                  "base": {"sha": (args.pull_base or args.base) if pull_request else None}},
                                  "merge_group": {"base_sha": args.base if args.event == "merge_group" else None}}},
             "inputs": dispatch_inputs(document, args.event, args.input),
             "steps": {step_id: {"outputs": {}} for step_id in ids},

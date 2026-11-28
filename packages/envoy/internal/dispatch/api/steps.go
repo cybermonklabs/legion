@@ -1,10 +1,12 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,9 +18,9 @@ import (
 )
 
 // An issue's step records are the record of each run of each step of its workflow, which the
-// Legion daemon of the issue's project writes twice, at the run's start and at its end, under one
-// id it derives for the run (PUT /api/v1/issues/{key}/steps/{id}), and which every reader of the
-// project reads (GET /api/v1/issues/{key}/steps). A retro's record also takes the rating the agent
+// Legion daemon writes twice, at the run's start and at its end, under one id it derives for the
+// run (PUT /api/v1/issues/{key}/steps/{id}), and which every reader of the project reads
+// (GET /api/v1/issues/{key}/steps). A retro's record also takes the rating the agent
 // that did the retro gave the plan, and its reason, through a route of its own
 // (PUT /api/v1/issues/{key}/steps/{id}/rating), and the record of a run of an issue that a draw put
 // in an experiment takes the experiment and the variant drawn through another
@@ -28,12 +30,14 @@ import (
 // its router's NOT_FOUND, which the daemon sends again until Dispatch serves it. All four live in
 // internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
-// Each write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its
-// actor, or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer
-// bound to a session cannot make another's (403 ACTOR_SESSION_MISMATCH); a credential that proves
-// no session, such as the shared agent token, a personal agent token or a service account's, can
-// name the daemon's session and write, as the role-holders publish can while
-// DISPATCH_LEGION_STATUS_SCOPE is off (issue_role_holders.go). Like the design gates'
+// Each write names as its actor legion-daemon:<PROJECT>, the session of the issue's project's
+// daemon, or the session of another project's daemon that the request's broker token proves
+// (isIssueDaemon). Dispatch refuses any other writer 403 STEP_WRITER. That holds the session
+// the body names, which a bearer bound to a session cannot make another's (403
+// ACTOR_SESSION_MISMATCH); a credential that proves no session, such as the shared agent token, a
+// personal agent token or a service account's, can name the session of the issue's project's
+// daemon and write, as the role-holders publish can while DISPATCH_LEGION_STATUS_SCOPE is off
+// (issue_role_holders.go). Like the design gates'
 // publish the writes append no issue event and notify nobody, since an event would feed the
 // daemon's intake with facts it caused; and they read the issue with no open check, because the
 // merge that closes an issue ends a step of it.
@@ -44,7 +48,7 @@ const (
 	// codeStepInput is a value outside its form, or a first write of a run that does not name
 	// its identity; the message names the field (workflowstore.ErrStepInput).
 	codeStepInput = contracts.StepInputCode
-	// codeStepWriter is a writer that is not the session of the issue's project's daemon.
+	// codeStepWriter is a writer that is not a daemon that writes the issue's records (isIssueDaemon).
 	codeStepWriter = contracts.StepWriterCode
 	// codeStepOtherIssue is an id whose record is a run of another issue.
 	codeStepOtherIssue = contracts.StepOtherIssueCode
@@ -236,19 +240,20 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 }
 
 // requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
-// the issue key of the path, where the actor is the writer of the records of that issue, the
-// session of its project's Legion daemon (legionDaemonSessionOf). It refuses any other writer 403
-// STEP_WRITER, naming what record and whose.
+// the issue key of the path, where the actor is a writer of the records of that issue
+// (isIssueDaemon). That writer is the session of its project's Legion daemon, or the session of
+// another project's daemon that the request's broker token proves. It refuses any other writer
+// 403 STEP_WRITER, naming what record and whose.
 func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
 	actor, ok := s.requireActor(w, r, supplied)
 	if !ok {
 		return model.Actor{}, "", false
 	}
 	key := r.PathValue("key")
-	writer := legionDaemonSessionOf(key)
-	if actor.Kind != "session" || actor.ID != writer {
-		writeError(w, codeStepWriter, http.StatusForbidden,
-			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
+	if !s.isIssueDaemon(r, actor, key) {
+		writeError(w, codeStepWriter, http.StatusForbidden, fmt.Sprintf(
+			"only a Legion daemon writes %s of %s: the session %s, or the session legion-daemon:<P> of another project's daemon whose broker token names P and proves that session",
+			record, key, legionDaemonSessionOf(key)))
 		return model.Actor{}, "", false
 	}
 	return actor, key, true
@@ -282,12 +287,15 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 	return project, true
 }
 
-// listIssueSteps is every run of every step of one issue, task by task in the order of each
-// task's first run: GET /api/v1/issues/{key}/steps. A closed issue's runs read as an open one's,
-// and a key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a
-// mistyped key never reads as an issue Legion never ran. Only a read that finds no run looks for
-// the issue: the write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue
-// is ever deleted, so a read that finds a run has found its issue.
+// listIssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan
+// (workflowstore.NewestPlan), in the plan's order, each with the needs its node records (null
+// where the node recorded none), the steps the plan gives it and every run of them ([] where none
+// ran); then every other task with a run, in the order of each such task's first run. It reads the
+// plan node and the runs alone, and no document. A closed issue's runs read as an open one's, and a
+// key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a mistyped key
+// never reads as an issue Legion never ran. Only a read that finds no run looks for the issue: the
+// write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue is ever
+// deleted, so a read that finds a run has found its issue.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -310,8 +318,50 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	plan, err := workflowstore.NewestPlan(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
+	if plan != nil {
+		// A planned step stands where the newest run of it stands among the records of the plan's
+		// own run of the issue (its generation): the runs come in the order they happened. A run is
+		// of the step only where it stands at the step's place with the step's role: a later version
+		// of the plan in force can put another step at a place where an earlier step already ran.
+		// A run names no agent key, so a step `role:key` is matched by its role, which this release
+		// names at most once in a task. Its state is a word of contracts' PLANNED_STEP_STATES, which
+		// PlannedStep.State's enum tag holds (TestTheStepRouteNamesContractsWords).
+		type stepOf struct {
+			task string
+			step int
+			role string
+		}
+		newest := map[stepOf]string{}
+		for _, step := range steps {
+			if step.Generation == plan.Generation && step.Kind == workflowstore.StepKindStep {
+				newest[stepOf{step.Task, step.Place, step.Role}] = step.Result
+			}
+		}
+		for _, task := range plan.Tasks {
+			tasks[task.ID] = len(read.Tasks)
+			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps)), Steps: []model.StepRecord{}}
+			for index, name := range task.Steps {
+				role, _, _ := strings.Cut(name, ":")
+				state := contracts.PlannedStepNotStarted
+				if result, ran := newest[stepOf{task.ID, index + 1, role}]; ran {
+					state = cmp.Or(result, contracts.PlannedStepRunning)
+				}
+				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
+			}
+			if task.Needs != nil {
+				needs := append([]string{}, (*task.Needs)...)
+				planned.Needs = &needs
+			}
+			read.Tasks = append(read.Tasks, planned)
+		}
+	}
 	for _, step := range steps {
 		index, known := tasks[step.Task]
 		if !known {

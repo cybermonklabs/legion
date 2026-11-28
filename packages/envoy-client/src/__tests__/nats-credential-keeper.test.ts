@@ -188,7 +188,7 @@ describe("keepNatsCredential", () => {
     await turn();
     expect(asked.length).toBe(1);
     expect(fake.reconnects.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a token that lives one second is renewed before it lapses", async () => {
     // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
@@ -210,7 +210,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a renewal that lands no new token is warned about, never naming the token", async () => {
     // The token client answers the token in hand through a transient exchange failure, so the
@@ -233,7 +233,7 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a closed connection ends the keeper, its status reader too", async () => {
     const broker = stubBroker(2);
@@ -253,7 +253,7 @@ describe("keepNatsCredential", () => {
     expect(asked).toEqual([]);
     expect(fake.reconnects).toEqual([]);
     expect(broker.state.minted.length).toBe(1);
-  }, 15_000);
+  });
 
   test("a connection marked closed before closed() ends trades nothing at the renewal due", async () => {
     // nats.js marks a connection closed before its closed() promise settles: a renewal falling
@@ -277,7 +277,72 @@ describe("keepNatsCredential", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
+
+  /** A keeper over a stand-in credential whose two-second token falls due for renewal at once,
+   *  and whose renewals each wait on `failed`, counted in `renewals()`; its warnings go to
+   *  `warnings`. */
+  function failingRenewal() {
+    const lapses = Date.now() + 2_000;
+    const failed = Promise.withResolvers<void>();
+    let renewals = 0;
+    const credential = standIn({
+      ready: async () => {},
+      renew: () => {
+        renewals += 1;
+        return failed.promise;
+      },
+      authenticator: () => undefined,
+      expiresAt: () => new Date(lapses),
+      needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => "ses_stand_in",
+    });
+    const warnings: string[] = [];
+    const stop = keepNatsCredential(fakeConnection(() => {}).connection, credential, (text) =>
+      warnings.push(text)
+    );
+    return { failed, renewals: () => renewals, warnings, stop };
+  }
+
+  test("a renewal in flight when the keeper is stopped warns nothing when it fails, and arms no retry", async () => {
+    // pi-envoy's stop stops the keeper before its connection drains (`stopInboundKeeper`), and
+    // shows what the keeper warns in the stopping session's pane. A renewal already away when the
+    // keeper stops then fails, and the session is told nothing of it. The control row below is
+    // the same failure with the keeper running.
+    const keeper = failingRenewal();
+    // The renewal due before the two-second token lapses goes away, and then the keeper stops.
+    jest.advanceTimersByTime(2_000);
+    expect(keeper.renewals()).toBe(1);
+    keeper.stop();
+    keeper.failed.reject(new Error("the broker is unreachable"));
+    await turn();
+    // Nothing renews again, at the first retry's time nor a minute on.
+    jest.advanceTimersByTime(60_000);
+    await turn();
+    expect(keeper.warnings).toEqual([]);
+    expect(keeper.renewals()).toBe(1);
+  });
+
+  test("control: a renewal that fails while the keeper runs is warned of and renewed again at the retry", async () => {
+    const keeper = failingRenewal();
+    try {
+      jest.advanceTimersByTime(2_000);
+      expect(keeper.renewals()).toBe(1);
+      keeper.failed.reject(new Error("the broker is unreachable"));
+      await turn();
+      // The first retry comes two seconds after the failure.
+      jest.advanceTimersByTime(60_000);
+      await turn();
+      expect(keeper.warnings).toEqual([
+        expect.stringContaining("the NATS connection's broker token could not be renewed ("),
+      ]);
+      expect(keeper.renewals()).toBe(2);
+    } finally {
+      keeper.stop();
+    }
+  });
 });
 
 // On the fake clock too: a refusal is read as the status reader takes it (`readerAtRest`), and
@@ -328,7 +393,7 @@ describe("keepNatsCredential with a refused live token", () => {
       expect(next).not.toBe(first);
       // The token client dropped it too, so the session's HTTP calls present the new token.
       const headers = await brokerCredential(env, "ses_a").headers("GET", "http://listener.test/");
-      expect(headers["Authorization"]).toBe(`DPoP ${next}`);
+      expect(headers.Authorization).toBe(`DPoP ${next}`);
       // Rate-limited: still the one warning, and it names no token.
       expect(warnings.length).toBe(1);
       for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
@@ -358,7 +423,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 20_000);
+  });
 
   test("the warning repeated after a drop says no token is dropped again until the connection is back", async () => {
     // The deep review of dfa2ea1f59, m1: the repeat, 30 minutes on, still promised a drop the
@@ -408,7 +473,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   test("a refusal of a lapsed token, of one the connection is moving off, or of another kind drops nothing", async () => {
     // A stand-in credential, so each condition is set alone.
@@ -466,7 +531,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 10_000);
+  });
 
   /** A stand-in credential whose renewals the row lands by hand, each with a token that lives
    *  ten minutes; `expiresAt` is when the token in hand lapses. */
@@ -526,7 +591,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a drop's renewal replaces the renewal that was due, rather than adding one", async () => {
     // The token in hand lapses in 2 s, so a renewal is due at 1 s; the drop renews at once and
@@ -549,7 +614,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("a token dropped while the broker is away is presented no more", async () => {
     // The renewal after the drop fails, so the connection holds no token: each CONNECT presents
@@ -572,7 +637,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   // The review of c19c0722bf, R1: a count kept across tokens, and a drop allowed once until the
   // connection was back whatever its session, left a revoked token of a session switched to after
@@ -614,7 +679,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 15_000);
+  });
 
   test("one refusal of a token and one of the token after it drop neither", async () => {
     const { state, credential, land } = heldRenewals(Date.now() + 600_000);
@@ -638,7 +703,7 @@ describe("keepNatsCredential with a refused live token", () => {
       land();
       stop();
     }
-  }, 10_000);
+  });
 
   test("an auth service that refuses every token costs each session one trade for the outage", async () => {
     // The hub's auth service is away and the broker is up: every CONNECT is refused whatever its
@@ -678,7 +743,7 @@ describe("keepNatsCredential with a refused live token", () => {
     } finally {
       stop();
     }
-  }, 30_000);
+  });
 });
 
 // The review of 2fa6fbf7cf, m3: a session switch's follow inside a pass whose deadline is shorter
@@ -743,7 +808,7 @@ describe("followNatsCredential within a bound", () => {
     } finally {
       warn.mockRestore();
     }
-  }, 15_000);
+  });
 
   test("a connection that never comes back fails at what is left of the bound", async () => {
     const broker = stubBroker(600);
@@ -769,7 +834,7 @@ describe("followNatsCredential within a bound", () => {
     );
     expect(fake.reconnects.length).toBe(1);
     expect(fake.readerStopped()).toBe(true);
-  }, 15_000);
+  });
 });
 
 // The credential owns its one count, which its keeper and every dial that opens its connection

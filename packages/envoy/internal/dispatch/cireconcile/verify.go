@@ -118,7 +118,7 @@ func (r *Reconciler) Verify(ctx context.Context) time.Time {
 		answer(ctx)
 		return next
 	}
-	duty.Exclusive(ctx, r.VerifyLeases, VerifyLease, time.Time{}, 0, answer)
+	duty.Exclusive(ctx, nil, r.VerifyLeases, VerifyLease, time.Time{}, 0, answer)
 	return next
 }
 

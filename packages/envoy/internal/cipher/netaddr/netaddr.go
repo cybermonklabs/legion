@@ -1,10 +1,11 @@
 // Package netaddr is the one reading of an IP address every address check of the broker makes:
 // the airlock proxy's rules of where it may dial, the cluster ranges, the bound-host check, the
 // dial the transport checks again, and the addresses config reads at boot; the IPv4 address an
-// IPv6 address carries (CarriedIPv4); and the one list of addresses a private destination may
-// never be (DestinationRefusal). It is also the one reading of the client address a load balancer
-// forwards (ForwardedClient), which an edge reached through Google's load balancer keys its
-// buckets on.
+// IPv6 address carries (CarriedIPv4); and the broker's two rules of an address, the one place each
+// form of an address is decided: where the proxy may dial for a command (DialRefusal) and what the
+// private destination may be (DestinationRefusal). It is also the one reading of the client
+// address a load balancer forwards (ForwardedClient), which an edge reached through Google's load
+// balancer keys its buckets on.
 //
 // It exists because netip keeps two things a socket does not need. An IPv4-mapped IPv6 address
 // (::ffff:34.118.224.1) is the IPv4 address it holds, and netip's predicates answer differently
@@ -37,17 +38,6 @@ func Host(host string) string {
 	}
 	return host
 }
-
-// metadataServers are the cloud metadata servers' IPv6 addresses. Each is a unique-local address
-// (fc00::/7), which is private and so admitted by every rule that takes a private address, but it
-// is the metadata server of the node a pod runs on, as 169.254.169.254 is over IPv4:
-//   - fd20:ce::254: Google Compute Engine's metadata server on an IPv6-only instance
-//     (https://docs.cloud.google.com/compute/docs/metadata/querying-metadata, "Metadata server
-//     endpoints");
-//   - fd00:ec2::254: the instance metadata service of Amazon EC2 on IPv6
-//     (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-IMDS-existing-instances.html,
-//     "The IMDS has two endpoints on an instance").
-var metadataServers = []netip.Addr{netip.MustParseAddr("fd20:ce::254"), netip.MustParseAddr("fd00:ec2::254")}
 
 // The IPv6 forms that carry an IPv4 address (CarriedIPv4). A network with a translator or relay
 // for a form sends a packet for such an address to the IPv4 address inside it: a NAT64
@@ -131,48 +121,6 @@ func CarriedIPv4(addr netip.Addr) (held [3]Carried, n int) {
 		n++
 	}
 	return held, n
-}
-
-// DestinationRefusal answers why addr can be no address of the airlock's private destination
-// (BROKER_PROXY_PRIVATE_UPSTREAM), whatever the cluster ranges say, or "" when it can be one: a
-// loopback or link-local address, unicast or multicast, where the broker's own pod and the node's
-// metadata server answer; an unspecified or multicast address, which is no one service; a cloud
-// metadata server's IPv6 address (metadataServers); a local-use translation address
-// (LocalUseTranslation), whose carried address the address does not say; and an IPv6 address that
-// carries an address refused here (CarriedIPv4), named by its form and that address. The answer
-// completes "... resolves to". addr is read as Canonical reads it. The proxy's check of every
-// dial to the destination (proxy.Server.upstreamAddresses) and config's start check of a
-// destination URL that names an address read this one answer, so the two cannot disagree.
-func DestinationRefusal(addr netip.Addr) string {
-	addr = Canonical(addr)
-	switch {
-	case addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
-		return "a loopback or link-local address, which the airlock never dials"
-	case addr.IsUnspecified() || addr.IsMulticast():
-		return "an unspecified or multicast address, which the airlock never dials"
-	case LocalUseTranslation.Contains(addr):
-		return "a local-use translation IPv6 address (64:ff9b:1::/48), whose IPv4 address the address alone does not say, which the airlock never dials"
-	}
-	for _, server := range metadataServers {
-		if addr == server {
-			return "a cloud metadata server's address, which the airlock never dials"
-		}
-	}
-	held, n := CarriedIPv4(addr)
-	for _, c := range held[:n] {
-		if why := DestinationRefusal(c.Addr); why != "" {
-			return c.Form + " " + c.Addr.String() + ", " + why
-		}
-	}
-	// No tunnelled or translated address is a destination inside the broker's own cluster,
-	// whatever it carries: the network sends it to the IPv4 address inside it, which a check of
-	// the IPv6 address alone does not read. So every carried form is refused, the first it holds
-	// named, and so is an ISATAP address (RFC 5214), whose interface id carries an IPv4 address
-	// inside any prefix, a unique-local one included.
-	if n > 0 {
-		return held[0].Form + " " + held[0].Addr.String() + ", a tunnelled or translated address, which is no private destination"
-	}
-	return ""
 }
 
 // The ways a request carries no client address a load balancer forwarded (ForwardedClient).

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -157,7 +158,7 @@ func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.G
 	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: grants, Pool: h.store.Pool(), Record: record.NewStore(),
 		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
@@ -1741,6 +1742,8 @@ func (c *turnClock) fire(after time.Duration) int {
 // its send after the turn's start, and the re-send acknowledged and then answered busy, by a late
 // refusal or by its result.
 func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
+	// Oh My Pi's busy answer as the stream hands it on: its words for the log, and the outcome the
+	// stream minted from its code, which is all the daemon decides by.
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	for _, tc := range []struct {
 		name string
@@ -1749,7 +1752,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 	}{
 		{name: "the re-send refused at its send, after the turn's start", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
 			t.Helper()
-			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy}
+			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy, Outcome: runtime.OutcomeAgentBusy}
 			if err := machine.Handle(context.Background(), supervise.PromptRefused{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id, Err: refusal}); err != nil {
 				t.Fatalf("refuse the re-send: %v", err)
 			}
@@ -1759,7 +1762,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 				t.Fatalf("acknowledge the re-send: %v", err)
 			}
-			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy}); err != nil {
 				t.Fatalf("refuse the re-send late: %v", err)
 			}
 		}},
@@ -1768,7 +1771,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 				t.Fatalf("acknowledge the re-send: %v", err)
 			}
-			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy}); err != nil {
 				t.Fatalf("answer the re-send busy: %v", err)
 			}
 		}},
@@ -2273,7 +2276,7 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: tester.token, By: supervise.SuspendedByOperator}); err != nil {
 					t.Fatalf("suspend: %v", err)
 				}
-				if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: tester.token}); err != nil {
+				if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: tester.token, By: supervise.SuspendedByOperator}); err != nil {
 					t.Fatalf("resume: %v", err)
 				}
 				// The relaunched pane registers its session again, which is what revokes the old

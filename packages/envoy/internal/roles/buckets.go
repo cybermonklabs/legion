@@ -109,10 +109,17 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 
 // within runs read, waiting for it no longer than ctx and at most readTimeout (bus.Bounded). A
 // read that did not answer in time is named by what.
+//
+// read starts at once: within passes bus.Bounded no connection to wait for. With the connection
+// passed, a read made while nats.go reconnects would wait for the connection first, during a
+// handshake too, and a read whose bound ends in that wait would never begin its bucket's open.
+// Started at once, a read while nats.go reconnects begins its bucket's open with b.mu released
+// (bucket) and answers at its bound, and a request nats.go refuses meanwhile fails as
+// bus.ErrReconnecting.
 func within[T any](ctx context.Context, what string, read func() (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
-	value, answered, err := bus.Bounded(ctx, read)
+	value, answered, err := bus.Bounded(ctx, nil, read)
 	if !answered {
 		return value, fmt.Errorf("%s: %w", what, err)
 	}

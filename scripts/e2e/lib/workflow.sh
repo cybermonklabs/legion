@@ -56,7 +56,11 @@
 # from dispatch_token_file alone: the bearer dispatch_get, dispatch_agent, dispatch_human and
 # ensure_project all send, needed before any of them runs. Stage 4b's prerequisites calls it first,
 # before the lock, so ensure_project can run there; read_bearers calls it again for the run proper.
+# The bearer is printf's argument here, so it turns the shell's xtrace off for itself (`local -`),
+# and a run under `bash -x` traces no bearer.
 write_dispatch_header() {
+  local -
+  set +x
   (umask 077 &&
     tr -d '[:space:]' <"$dispatch_token_file" >"$work/dispatch-token" &&
     printf 'Authorization: Bearer %s\n' "$(cat "$work/dispatch-token")" >"$work/dispatch-auth-header" &&

@@ -35,14 +35,14 @@ func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 	}
 	check := func(when string) {
 		t.Helper()
-		conn, err := ConnectSeed(t, grant.URL, seed)
+		conn, err := AwaitConnectSeed(t, grant.URL, seed)
 		if err != nil {
 			t.Fatalf("%s: connect as the granted user: %v", when, err)
 		}
 		defer conn.Close()
 		system := grant.srv.natsServer().SystemAccount()
 		for _, e := range exports {
-			if _, err := conn.Request(e.request, nil, connectTimeout); err != nil {
+			if _, err := conn.RequestWithContext(Context(t), e.request, nil); err != nil {
 				t.Fatalf("%s: %s got no answer through the system account's export %q: %v", when, e.request, e.export, err)
 			}
 			got, err := system.ServiceExportResponseThreshold(e.export)

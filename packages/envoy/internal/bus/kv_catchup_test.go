@@ -382,6 +382,8 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 // A member that never applies a create is waited for until the caller's context ends, and the
 // error carries both that end and the member's own answer, "bucket not found".
 func TestAMemberThatNeverAppliesACreateEndsAtTheCallersContext(t *testing.T) {
+	// A window, not a wait: the member never applies the create, and the context must end for the
+	// wait to answer context.DeadlineExceeded with the member's own answer.
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	reads := 0

@@ -33,8 +33,9 @@ whole suite is the CI job that runs it.
    never `ci-ok`, which passes when jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
 2. Name it as GitHub writes it: `<caller> / <job>` for a job of a called workflow (`test / test`).
-3. A held-back job needs its label (`full-ci` or `lane:<output>`) on the pull request while a
-   check names it; without it the check reads `absent` or `skipped`.
+3. Name a held-back job only when a test that job alone runs is the proof: the merge queue runs
+   it anyway, and while a check names it, its label (`lane:<output>`, never `full-ci`) reruns it
+   on every push; without the label the check reads `absent` or `skipped`.
 4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 

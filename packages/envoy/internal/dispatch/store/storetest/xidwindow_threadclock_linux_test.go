@@ -15,9 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rig reads a thread's clocks at both ends of every gap, and while the collector is held off
@@ -47,6 +50,197 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 	}
 	if allocs := testing.AllocsPerRun(100, func() { readXidThreadClock() }); allocs != 0 {
 		t.Fatalf("a read of a held thread's clocks allocates %v times, want none", allocs)
+	}
+}
+
+// Measure drops the clock of every transaction still open once it has copied the capture's
+// statements (dropOpenClocks), and a goroutine of the operation may still be running one and
+// reading its clock as it goes: the broadcast route's deliveries may still be claiming their
+// recipients after the route answers, and in envoy-go job 139692608395, where the drop still came
+// before the copy, one delivery's COMMIT was read off its thread's clocks at its start and not at
+// its end, a rig problem that failed the route table's broadcast row. Here the drop runs on another
+// goroutine, as dropOpenClocks does, between the read's finding the thread's held clock and its
+// reading it (xidHeldClockFound). The read must still answer this thread's clocks. Without the
+// clock's dropped mark (xidHeldClock) the read used the descriptor the drop had just closed, and
+// answered nothing.
+func TestAHeldClockDroppedWhileItIsReadStillReadsTheThread(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	thread := unix.Gettid()
+	if readXidThreadClock().thread == 0 {
+		// A kernel that shows no thread's clocks judges no gap (XidNoGapJudgment), so this stops.
+		RequireXidGapJudgment(t)
+		t.Fatal("this thread's scheduler clocks read nothing, yet the rig judges gaps")
+	}
+	stop, ok := xidWatchThreadClock()
+	if !ok {
+		t.Fatal("open this thread's clock to hold it")
+	}
+	defer stop()
+	drops := 0
+	xidHeldClockFound = func() {
+		drops++
+		dropped := make(chan struct{})
+		go func() {
+			defer close(dropped)
+			xidDropThreadClock(thread)
+		}()
+		<-dropped
+	}
+	reading := readXidThreadClock()
+	xidHeldClockFound = nil
+	if drops != 1 {
+		t.Fatalf("the read found this thread's held clock %d times, want once, with the drop between its finding the clock and its reading it, or this run proves nothing", drops)
+	}
+	if _, held := (*xidHeldClocks.Load())[thread]; held {
+		t.Fatal("the drop left this thread's clock held, so this run proves nothing")
+	}
+	if reading.thread != thread {
+		t.Fatalf("a held clock dropped between the read's finding it and its reading it read thread %d, want this thread's clocks (thread %d): the read used a descriptor the drop closed", reading.thread, thread)
+	}
+}
+
+// A drop that starts while a read holds the clock waits for that read before it closes the clock's
+// descriptors (xidHeldClock). Here the read, once it holds the clock and right before it reads the
+// descriptor (xidHeldClockReading), starts a drop on another goroutine and goes on only once that
+// drop is parked on the clock's lock or has returned. The read must answer this thread's clocks,
+// and the drop must not return before the read lets the clock go. A drop that closed the
+// descriptors without the clock's lock returns first, and the read then reads a closed descriptor
+// and answers nothing.
+func TestADropThatStartsDuringAReadWaitsForIt(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	thread := unix.Gettid()
+	if readXidThreadClock().thread == 0 {
+		// A kernel that shows no thread's clocks judges no gap (XidNoGapJudgment), so this stops.
+		RequireXidGapJudgment(t)
+		t.Fatal("this thread's scheduler clocks read nothing, yet the rig judges gaps")
+	}
+	stop, ok := xidWatchThreadClock()
+	if !ok {
+		t.Fatal("open this thread's clock to hold it")
+	}
+	defer stop()
+	held := (*xidHeldClocks.Load())[thread]
+	dropped := make(chan struct{})
+	reads := 0
+	var during string
+	xidHeldClockReading = func() {
+		xidHeldClockReading = nil
+		reads++
+		go func() {
+			defer close(dropped)
+			xidDropThreadClock(thread)
+		}()
+		during = testwait.UntilPolling(t, time.Millisecond, "the drop started during the read to park on the clock's lock or return",
+			func() (string, bool) {
+				select {
+				case <-dropped:
+					return "returned", true
+				default:
+				}
+				if xidDropParkedOnAClocksLock() {
+					return "parked on the clock's lock", true
+				}
+				return "running", false
+			})
+	}
+	reading := readXidThreadClock()
+	xidHeldClockReading = nil
+	// Only the hook starts the drop that closes dropped, so a read that never reached the hook
+	// fails here, by name, before any wait on the drop.
+	if reads != 1 {
+		t.Fatalf("the read held this thread's clock %d times, want once, with the drop started while it held it, or this run proves nothing", reads)
+	}
+	testwait.Receive(t, "the clock drop after the read releases its lock", dropped)
+	if !held.dropped {
+		t.Fatal("the drop returned with the clock not dropped, so this run proves nothing")
+	}
+	if during != "parked on the clock's lock" {
+		t.Errorf("a drop started while a read held the clock %s before the read let the clock go: it closed the clock's descriptors under the read", during)
+	}
+	if reading.thread != thread {
+		t.Errorf("a read during which a drop started read thread %d, want this thread's clocks (thread %d)", reading.thread, thread)
+	}
+}
+
+// xidDropParkedOnAClocksLock reports whether a goroutine is parked on a sync.Mutex inside
+// xidDropThreadClock, read off a dump of every goroutine's stack: a goroutine parked on a mutex is
+// headed [sync.Mutex.Lock] there.
+func xidDropParkedOnAClocksLock() bool {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	for _, goroutine := range strings.Split(string(buf), "\n\n") {
+		header, _, _ := strings.Cut(goroutine, "\n")
+		if strings.Contains(header, "[sync.Mutex.Lock") && strings.Contains(goroutine, "storetest.xidDropThreadClock(") {
+			return true
+		}
+	}
+	return false
+}
+
+// A softirq read holds its thread's clock as a clock read does (xidHeldClock), and one that finds
+// the held clock dropped between its finding it and its reading it (xidHeldClockFound) counts
+// nothing. Here, once the drop has closed the clock, the number of its softirq descriptor is made
+// to open /proc/softirqs again (dup3) before the read takes the clock, so a read of that number
+// counts this CPU's softirqs off a descriptor the rig no longer holds: a read of a closed
+// descriptor counts nothing either way, and could not tell the two readers apart.
+func TestASoftirqReadOfAClockDroppedWhileItIsReadCountsNothing(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	thread := unix.Gettid()
+	if readXidThreadClock().thread == 0 {
+		// A kernel that shows no thread's clocks judges no gap (XidNoGapJudgment), so this stops.
+		RequireXidGapJudgment(t)
+		t.Fatal("this thread's scheduler clocks read nothing, yet the rig judges gaps")
+	}
+	stop, ok := xidWatchThreadClock()
+	if !ok {
+		t.Fatal("open this thread's clock to hold it")
+	}
+	defer stop()
+	held := (*xidHeldClocks.Load())[thread]
+	if held == nil || held.softirqs == nil {
+		t.Fatal("the rig could not pin this thread and open its CPU's softirq counts")
+	}
+	if first := readXidSoftirqs(); !first.ok {
+		t.Fatal("a held thread's softirq counts read nothing before the drop, so this run proves nothing")
+	}
+	number := int(held.softirqs.fd)
+	reopened := false
+	xidHeldClockFound = func() {
+		xidHeldClockFound = nil
+		xidDropThreadClock(thread)
+		fd, err := unix.Open("/proc/softirqs", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Errorf("open /proc/softirqs again: %v", err)
+			return
+		}
+		// The open may itself take the freed number, which dup3 refuses to copy onto itself.
+		if fd != number {
+			defer unix.Close(fd)
+			if err := unix.Dup3(fd, number, unix.O_CLOEXEC); err != nil {
+				t.Errorf("give /proc/softirqs the dropped descriptor's number %d: %v", number, err)
+				return
+			}
+		}
+		reopened = true
+	}
+	reading := readXidSoftirqs()
+	xidHeldClockFound = nil
+	if !reopened {
+		t.Fatal("the read did not find the held clock, or the dropped descriptor's number did not open /proc/softirqs again, so this run proves nothing")
+	}
+	defer unix.Close(number)
+	if reading.ok {
+		t.Fatalf("a softirq read of a clock dropped while it was read counted %v off descriptor %d, which the rig no longer holds", reading.counts, number)
 	}
 }
 
@@ -430,7 +624,8 @@ func xidNodesText(mask [16]uint64) string {
 // xidNUMABalancingFromFiles reads whether the kernel balances memory across NUMA nodes apart from
 // the rig's detector (xidNUMABalancing): kernel.numa_balancing set to anything but 0, and more than
 // one node directory under /sys/devices/system/node, counted rather than read off the online list
-// as the detector reads it. A variable, so that a forced run can read balancing as on.
+// as the detector reads it. It is a variable so that a scratch forcing can read balancing as on, as
+// this change's controls did on their own branches; no code in this tree replaces it.
 var xidNUMABalancingFromFiles = func() bool {
 	setting, err := os.ReadFile("/proc/sys/kernel/numa_balancing")
 	if err != nil || strings.TrimSpace(string(setting)) == "0" {
@@ -464,7 +659,10 @@ func xidRequireBalancingDetector(t *testing.T) {
 // get_mempolicy then set_mempolicy, the latter putting back the mode the former read, so the
 // calling thread's policy is left as it was. A refusal is EPERM, as a seccomp profile answers
 // without CAP_SYS_NICE, or ENOSYS, as a kernel built without NUMA answers; any other answer is
-// not one. answer names what the kernel answered.
+// not one. answer names what the kernel answered. The same test of a refusal is written out at
+// each of this file's other reads of one: the restore subtest's two calls, xidLocalPolicy,
+// threadMempolicy, the memory test's own mbind and mappingMempolicy, as the memory hold writes it
+// at its mbind; a change of what counts as a refusal changes every one of them.
 func xidMempolicyRefusal() (refused bool, answer string) {
 	isRefusal := func(errno unix.Errno) bool { return errno == unix.EPERM || errno == unix.ENOSYS }
 	policy, errno := xidGetPolicy(nil, 0)
@@ -548,7 +746,11 @@ func TestHoldingTheMemoryKeepsNUMABalancingOffItsMappings(t *testing.T) {
 
 // mappingMempolicy is the memory policy of the mapping address lies in (MPOL_F_ADDR). A kernel
 // that refuses the read (EPERM, ENOSYS) refuses the thread hold's get_mempolicy too, so the rig
-// judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment).
+// judges no gap, and the test stops as the rig's self-tests do (RequireXidGapJudgment). On the
+// profiles in use that branch is not reached: a container runtime's default profile, without
+// CAP_SYS_NICE, refuses get_mempolicy, set_mempolicy and mbind together, so the memory test has
+// stopped at the hold's refused mbind, or at xidLocalPolicy's refused read, before it asks a
+// mapping's policy; gVisor refuses none of them.
 func mappingMempolicy(t *testing.T, address unsafe.Pointer) xidPolicy {
 	t.Helper()
 	const byAddress = 1 << 1

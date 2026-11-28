@@ -25,7 +25,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { MentionField } from "../conversation/MentionField";
-import { buildIssuePath, routeProjectOf } from "../refs/routes";
+import { buildIssuePath, routeProjectOf, unknownToShell } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
@@ -46,10 +46,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
 export function CreateIssueDialog({
   onClose,
   createIssue: create = createIssue,
+  newPage = false,
 }: {
   onClose: () => void;
   /** Write seam for tests; defaults to the real API. */
   createIssue?: (input: CreateIssueInput, bounds: WriteBounds) => Promise<Issue>;
+  /** Whether the reader draws the new issue page (`useIssuePageChoice`). Where they do not, an
+   *  address of that page alone preselects no project, as on `main` (`unknownToShell`). */
+  newPage?: boolean;
 }): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
@@ -57,7 +61,9 @@ export function CreateIssueDialog({
   const titleRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({ initialFocusRef: titleRef, onClose, open: true });
   const projects = useQuery(projectsQuery());
-  const routeProject = routeProjectOf(location.pathname);
+  const routeProject = unknownToShell(location.pathname, newPage)
+    ? undefined
+    : routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");

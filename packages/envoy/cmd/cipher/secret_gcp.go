@@ -912,6 +912,12 @@ func (b *gcpBackend) displayName(id string) string { return displayName(b.settin
 // make.
 func (b *gcpBackend) requireAccount(context.Context) error { return nil }
 
+// checkTagValues refuses nothing: Secret Manager holds tags as annotations, whose values take any
+// character and no per-value limit, only one of under 16 KiB for every key and value of the secret
+// together (https://cloud.google.com/secret-manager/docs/reference/rest/v1/projects.secrets, field
+// annotations), which the API holds an update to itself.
+func (b *gcpBackend) checkTagValues(map[string]string) error { return nil }
+
 // personEmail answers, for --owner me, the lowercased email of the person this sign-in is, as
 // Google's userinfo endpoint (gcpUserinfo) names the account behind its token. It is the one
 // userinfo call any form makes. It refuses a token userinfo does not answer, which is any token

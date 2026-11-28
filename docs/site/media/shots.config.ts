@@ -19,18 +19,20 @@ async function inboxPaneReady(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
 }
 
-/** The Inbox below 1280 px: no reading column, so each row holds its own card, under the same
- *  priority bands, with the snoozed question folded under Later. */
-async function inboxCardsReady(page: Page): Promise<void> {
-  await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
-  await expect(page.getByTestId("inbox-pane")).toHaveCount(0);
-  await expect(page.getByRole("article", { name: "Urgency: Blocking" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^P1 \(1\)/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
+/** The Inbox drawer, open over the project's issues: the Inbox that keeps each question's card in
+ *  its own row at every width, under the same priority bands. */
+async function inboxDrawerReady(page: Page): Promise<Locator> {
+  await expect(page.getByRole("button", { name: "Board" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  const drawer = page.getByRole("dialog", { name: "Inbox" });
+  await expect(drawer.getByRole("article", { name: "Urgency: Blocking" })).toBeVisible();
+  await expect(drawer.getByRole("button", { name: /^P1 \(1\)/ })).toBeVisible();
+  return drawer;
 }
 
-/** The row of the spec's decision block, which both Inbox shots are of. */
-function signInRow(page: Page): Locator {
+/** The row of the spec's decision block, which the Inbox shots are of. */
+function signInRow(page: Page | Locator): Locator {
   return page.locator("[data-inbox-row]").filter({ hasText: "Which sign-in path?" });
 }
 
@@ -74,18 +76,18 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "ask-card",
-      alt: "An ask card in the Inbox: the question, its two options and Other, a note field, and Answer.",
-      route: "/",
+      alt: "An ask card in the Inbox drawer: the question, its two options and Other, a note field, and Answer.",
+      route: "/projects/CORE/issues",
       viewport: "desktop",
-      // Below 1280 px the Inbox has no reading column, so each question keeps its card in its
-      // own row. This shot is of that card.
+      // The drawer keeps each question's card in its own row at every width; the Inbox page draws
+      // a question's card in its reading column or view instead. This shot is of the drawer's.
       size: { height: 900, width: 1024 },
       theme: "light",
       ready: async (page) => {
-        await inboxCardsReady(page);
-        await expect(signInRow(page).locator("[data-ask-answer]")).toBeVisible();
+        const drawer = await inboxDrawerReady(page);
+        await expect(signInRow(drawer).locator("[data-ask-answer]")).toBeVisible();
       },
-      element: signInRow,
+      element: (page) => signInRow(page.getByRole("dialog", { name: "Inbox" })),
     },
     {
       id: "issue-spec",
@@ -226,12 +228,30 @@ const dispatch: ShotSet<DispatchWorkspace> = {
     },
     {
       id: "inbox-phone",
-      alt: "The Inbox on a phone in dark mode.",
+      alt: "The Inbox on a phone in dark mode: one question open full width, under the Inbox control that goes back to the list.",
       route: "/",
       viewport: "phone",
       theme: "dark",
       ready: async (page) => {
-        await expect(page.getByRole("article", { name: "Urgency: Blocking" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
+        await expect(page.getByTestId("inbox-list")).toBeVisible();
+        await expect(page.getByTestId("inbox-pane")).toHaveCount(0);
+      },
+      // On a phone the Inbox lists short rows, and the row the reader opens is read in their
+      // place: this shot opens the blocking question. The age is the part of a short row that is
+      // neither the owner link nor a control (`e2e/inbox-pane.ts`'s `selectRow`).
+      steps: async (page) => {
+        await page
+          .locator("[data-inbox-row]")
+          .filter({ has: page.getByText("Blocking", { exact: true }) })
+          .locator("time")
+          .first()
+          .click();
+        const view = page.getByTestId("inbox-reading-view");
+        await expect(view.getByRole("article", { name: "Urgency: Blocking" })).toBeVisible();
+        await expect(
+          view.getByRole("button", { exact: true, name: "Back to the Inbox list" })
+        ).toBeVisible();
       },
     },
     {

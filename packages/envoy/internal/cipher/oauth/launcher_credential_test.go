@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -176,8 +177,8 @@ func TestRevokingASignInEndsTheTokenItsTradeMinted(t *testing.T) {
 	}
 }
 
-// recordSignIn writes the person_signins row the trade's own recorder stood in for and answers
-// its id, which the revoke route takes.
+// recordSignIn writes the person_signins row the trade's own recorder stood in for, as the
+// account the fixture's person token names, and answers its id, which the revoke route takes.
 func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -186,7 +187,10 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, person, thumbprint, machine); err != nil {
+	if err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: person, Thumbprint: thumbprint, MachineAccount: machine,
+		Account: store.IssuerSubject{Issuer: f.google.URL(), Subject: "109" + person}, EndUnrecorded: true,
+	}); err != nil {
 		t.Fatalf("RecordPersonSignIn: %v", err)
 	}
 	var id string

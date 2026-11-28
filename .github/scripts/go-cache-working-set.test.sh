@@ -6,9 +6,10 @@
 # check that the Go this repository pins still marks the cache entries a build uses
 # (cmd/go/internal/cache/cache.go's markUsed), which is what the script reads; a Go that stopped
 # would fail them. The later cases run the script against a stand-in `go` that only answers
-# `go env GOCACHE`, over cache files written here, for what no small real build reaches: an
-# output another action wrote before, the second family of a job, the files that are not
-# entries, a build that reads none of the restored entries, and relative state directories.
+# `go env GOCACHE` and `go env GOMODCACHE`, over cache files written here, for what no small real
+# build reaches: an output another action wrote before, the second family of a job, the files that
+# are not entries, a build that reads none of the restored entries, relative state directories,
+# and the module zips `end` and `zips` delete.
 #
 # Run from anywhere: .github/scripts/go-cache-working-set.test.sh
 # CI runs it in ci.yaml's test job, after its setup-go.
@@ -53,7 +54,20 @@ source_file() {
 source_file "$module/go.mod" $'module example.com/m\n\ngo 1.21'
 source_file "$module/a/a.go" $'package a\n\nfunc A() int { return 1 }'
 source_file "$module/b/b.go" $'package b\n\nimport "example.com/m/a"\n\nfunc B() int { return a.A() + 1 }'
-export GOCACHE=$work/real-cache GOFLAGS='' GOENV=off GOTOOLCHAIN=local GOPATH=$work/gopath
+# A module cache of the caller's own, with a zip in it, exported as a Legion pod exports the issue's
+# shared GOMODCACHE: `end` deletes the zips of `go env GOMODCACHE`, so a real-go case that read the
+# caller's would delete them while every check passed. The export below must win over it, the guard
+# after it stops the run before any `end` when it does not, and the last real-go case checks the
+# zip is still there.
+caller_zip=$work/caller-modcache/cache/download/example.com/z/@v/v1.0.0.zip
+mkdir -p "$(dirname "$caller_zip")"
+printf 'zip\n' >"$caller_zip"
+export GOMODCACHE=$work/caller-modcache
+export GOCACHE=$work/real-cache GOFLAGS='' GOENV=off GOTOOLCHAIN=local GOPATH=$work/gopath GOMODCACHE=$work/gopath/pkg/mod
+if [[ $(go env GOMODCACHE) != "$work"/* ]]; then
+  echo "FAIL: go env GOMODCACHE is $(go env GOMODCACHE), outside this run's $work, so a real-go end would delete its zips"
+  exit 1
+fi
 # build: the stand-in fill's build, with the commands it ran on stderr in $work/x.log (-x).
 build() {
   (cd "$module" && go build -x ./... 2>"$work/x.log")
@@ -125,15 +139,19 @@ cp -a "$GOCACHE" "$grown"
 source_file "$module/a/a.go" $'package a\n\nfunc A() int { return 4 }'
 GOCACHE=$grown build
 check "the cache holds more entries than the pruned one" "$( (($(entries "$grown") > settled)) && echo true || echo false)"
-unset GOCACHE GOFLAGS GOENV GOTOOLCHAIN GOPATH
+
+echo "case: no real-go end touched the caller's own module cache"
+check "the zip in the exported GOMODCACHE the run replaced is still there" "$( [ -f "$caller_zip" ] && echo true || echo false)"
+unset GOCACHE GOFLAGS GOENV GOTOOLCHAIN GOPATH GOMODCACHE
 
 # --- a stand-in go over cache files written here -------------------------------------------------
 # fake_cache <dir>: a cache directory with a stand-in `go` beside it on PATH, which answers
-# `go env GOCACHE` with <dir> and nothing else.
+# `go env GOCACHE` with <dir>/cache, `go env GOMODCACHE` with <dir>/mod and nothing else.
 fake_cache() {
   local dir=$1
   mkdir -p "$dir/cache/00" "$dir/cache/ab" "$dir/cache/cd" "$dir/cache/fuzz/x" "$dir/bin"
-  printf '#!/usr/bin/env bash\n[ "$*" = "env GOCACHE" ] && echo %q && exit 0\nexit 2\n' "$dir/cache" >"$dir/bin/go"
+  printf '#!/usr/bin/env bash\n[ "$*" = "env GOCACHE" ] && echo %q && exit 0\n[ "$*" = "env GOMODCACHE" ] && echo %q && exit 0\nexit 2\n' \
+    "$dir/cache" "$dir/mod" >"$dir/bin/go"
   chmod +x "$dir/bin/go"
 }
 hexid() { printf '%064d' "$1"; }
@@ -204,6 +222,48 @@ check "and writes its list there" "$( [ -s "$fake/first/before" ] && echo true |
 touch "$c/ab/ab$(hexid 10 | cut -c3-)-d"
 check "end with it exits 0" "$(is "$(in_fake end first)" 0)"
 check "and keeps the entry the build used" "$( [ -e "$c/ab/ab$(hexid 10 | cut -c3-)-d" ] && echo true || echo false)"
+
+echo "case: end and zips delete the module zips, and keep the trees and the files beside them"
+fake=$work/fake8
+fake_cache "$fake"
+v=$fake/mod/cache/download/example.com/x/@v
+mkdir -p "$v" "$fake/mod/example.com/x@v1.0.0/testdata" "$fake/mod/cache/download/example.com/y/@v"
+for f in v1.0.0.zip v1.0.0.ziphash v1.0.0.mod v1.0.0.info list; do printf '%s\n' "$f" >"$v/$f"; done
+printf 'package x\n' >"$fake/mod/example.com/x@v1.0.0/x.go"
+# A zip a module ships in its own tree is the module's file, not a download.
+printf 'fixture\n' >"$fake/mod/example.com/x@v1.0.0/testdata/fixture.zip"
+# Three MiB, so the count's megabytes are no rounding of a few bytes to 0.
+head -c 3145728 /dev/zero >"$fake/mod/cache/download/example.com/y/@v/v2.0.0.zip"
+PATH=$fake/bin:$PATH run begin "$fake/state"
+PATH=$fake/bin:$PATH run end "$fake/state"
+check "end exits 0" "$(is "$status" 0)"
+check "and names the zips it deleted and their size" "$(contains "$out" "^go module cache $fake/mod: deleted 2 module zips (3 MB), which no build reads$")"
+check "and no zip is left under the download directory" "$(is "$(find "$fake/mod/cache/download" -name '*.zip' | wc -l | tr -d ' ')" 0)"
+check "and the .ziphash, .mod, .info and list beside it stay" \
+  "$( [ -f "$v/v1.0.0.ziphash" ] && [ -f "$v/v1.0.0.mod" ] && [ -f "$v/v1.0.0.info" ] && [ -f "$v/list" ] && echo true || echo false)"
+check "and the extracted tree stays" "$( [ -f "$fake/mod/example.com/x@v1.0.0/x.go" ] && echo true || echo false)"
+check "and so does a zip inside the extracted tree" "$( [ -f "$fake/mod/example.com/x@v1.0.0/testdata/fixture.zip" ] && echo true || echo false)"
+printf 'zip\n' >"$v/v1.0.0.zip"
+PATH=$fake/bin:$PATH run zips
+check "zips alone exits 0" "$(is "$status" 0)"
+check "and deletes the zip a later download wrote" "$( [ -e "$v/v1.0.0.zip" ] && echo false || echo true)"
+check "and counts it" "$(contains "$out" "deleted 1 module zips")"
+PATH=$fake/bin:$PATH run zips
+check "a second zips counts none" "$(contains "$out" "deleted 0 module zips (0 MB)")"
+PATH=$fake/bin:$PATH run zips "$fake/state"
+check "zips given a state directory is a usage error" "$(is "$status" 2)"
+mkdir -p "$fake/findfail"
+printf '#!/usr/bin/env bash\necho "find: planted failure" >&2\nexit 1\n' >"$fake/findfail/find"
+chmod +x "$fake/findfail/find"
+printf 'zip\n' >"$v/v1.0.0.zip"
+PATH=$fake/findfail:$fake/bin:$PATH run zips
+check "a find that fails fails zips, so the fill saves nothing" "$(is "$status" 1)"
+check "and zips prints no count for it" "$(lacks "$out" 'deleted')"
+fake=$work/fake9
+fake_cache "$fake"
+PATH=$fake/bin:$PATH run zips
+check "zips on a module cache with no download directory exits 0" "$(is "$status" 0)"
+check "and says it found no zip to delete" "$(contains "$out" "no $fake/mod/cache/download, so no module zip to delete")"
 
 echo "case: the script refuses what would prune the wrong cache or a cache it never marked"
 fake=$work/fake3

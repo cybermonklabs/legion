@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""A stand-in for omp, for driving evidence/accord-skills-run.sh with no model session.
+
+check.sh's fixture puts the directory of this file first on PATH, and gives its models.yml,
+which names no provider, as IOC_OMP_MODELS, so that check.test.sh plays the row i-skills-run
+without a model, a credential or a gateway; it holds no secret and names no host.
+
+It answers the four calls the script makes, in the shapes omp 18.18.6 gives them:
+`omp --help`, whose text holds the line of each flag the script's session passes,
+`omp --version`, `omp skill list --json`, which lists the SKILL.md folders under
+$HOME/.omp/agent/skills as omp's native user provider does, and one print-mode session
+(`-p --mode json ...`), whose JSON event stream carries the events the script reads: the
+orchestrator's read of skill://accord-initiator, each bash call of accord_initiator.py with
+the bash tool's trace of its argv and status, or, in the mode locked-eval, each handle call
+through the eval tool with its code and what it printed, each task subagent's progress with
+its read of skill://accord-receiver and its result, with the task it was given, which holds
+the delivery line, and the assistant messages with their usage. The specialists are played
+by canned replies, and the initiator is the installed script itself, run on them, so the
+state file it writes at $ACCORD_STATE is a real one.
+
+The script runs omp under env -i, so the stub reads its mode from the file omp-stub-mode
+beside it, not from the environment; check.test.sh copies this directory and writes the file:
+  locked        (the default) the protocol runs to INTENT-LOCKED, each reply echoing its
+                check, each specialist answering through subagents of its own, one a round;
+  locked-eval   the same, but each handle call runs through the eval tool, as the real session
+                of round 52 made it: the first cell defines handle(a, r), which runs the script
+                on the list form of its argv and prints what it printed, and calls it once, and
+                each later cell holds only a call of handle; each cell's result is what the
+                call printed, with no trace; init and execution-message stay bash calls;
+  one-subagent  the protocol runs to INTENT-LOCKED, but in each round one subagent serves both
+                specialists: it is given both messages and writes both replies;
+  self-replied  the protocol runs to INTENT-LOCKED, but the specialist payments writes no reply
+                the initiator reads: its task subagent, given its message, reads accord-receiver
+                and returns its reply without the delivery line, and the orchestrator hands the
+                initiator a reply for it with the issued check line copied in, so that only
+                telemetry's subagents return a delivery line;
+  stalled       the session ends after the CONVENE round, with the state at frame_0;
+  killed        the session runs the CONVENE round, so the model has answered, and then the
+                stub ends its own process with SIGKILL, as the pod's memory guard ends one;
+  bound         the same, and then the stub exits 124, timeout's status at its bound;
+  max-time      the same, and then the session ends as omp 18.18.6 ends one at --max-time,
+                measured on 2026-11-25: one more answer whose stopReason is toolUse, then
+                agent_end, nothing on stderr and exit 0;
+  errored       the same, and then an answer that fails on an error no gateway cause names,
+                "unexpected client error", and omp exits 1;
+  slow-kill     the stub ignores TERM, runs the CONVENE round, sleeps 2 s and then ends its
+                own process with SIGKILL, as timeout's KILL ends an omp that did not end on the
+                TERM it sends at its bound; check.test.sh runs it with the script's bound at
+                1 s (IOC_ACCORD_BOUND), so the KILL comes past the bound;
+  429           the gateway refuses the first request with HTTP 429 and omp exits 1;
+  503           the same with HTTP 503, a server error;
+  401           the same with HTTP 401, a refusal of the credential.
+
+A session writes its arguments, one a line, into the file omp-stub-args beside it, so that
+check.test.sh reads which cost cap the script passed on.
+"""
+import json, os, re, signal, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+try:
+    with open(os.path.join(HERE, "omp-stub-mode")) as fh:
+        MODE = fh.read().strip() or "locked"
+except OSError:
+    MODE = "locked"
+ARGS = sys.argv[1:]
+SKILLS = os.path.join(os.environ.get("HOME", ""), ".omp", "agent", "skills")
+DELIVERY = re.compile(r"<accord-delivery[^>]*>.*?</accord-delivery>")
+# What the gateway answers the first request with, by mode, as omp's message for it begins.
+GATEWAY = {"429": "429 Too Many Requests: rate limit reached for the team",
+           "503": "503 Service Unavailable: the upstream is overloaded",
+           "401": "401 Unauthorized: the credential was refused"}
+call_id = 0
+handle_defined = False
+
+
+def emit(event):
+    print(json.dumps(event), flush=True)
+
+
+def assistant(stop="toolUse", error=None):
+    msg = {"role": "assistant", "provider": "stub", "model": "stub", "stopReason": stop,
+           "usage": {"input": 0, "output": 0 if error else 1, "cost": {"total": 0.0}}}
+    if error:
+        msg["errorMessage"] = error
+    emit({"type": "message_end", "message": msg})
+
+
+def tool(name, args, result):
+    global call_id
+    call_id += 1
+    cid = f"stub-{call_id}"
+    emit({"type": "tool_execution_start", "toolCallId": cid, "toolName": name, "args": args})
+    emit({"type": "tool_execution_end", "toolCallId": cid, "toolName": name, "isError": False, "result": result})
+
+
+def initiator(*argv):
+    global handle_defined
+    script = os.path.join(SKILLS, "accord-initiator", "scripts", "accord_initiator.py")
+    run = subprocess.run(["python3", script, *argv], capture_output=True, text=True)
+    if MODE == "locked-eval" and argv[0] == "handle":
+        # The cells as the tester printed them from the real run: no cell after the first names
+        # the script, or "handle" as an item of a list.
+        code = f"handle({json.dumps(argv[2])}, '''{argv[4]}''')"
+        if not handle_defined:
+            handle_defined = True
+            listed = ", ".join(json.dumps(a) for a in ("python3", script, "handle", "--agent"))
+            code = (f"import subprocess\ndef handle(a, r):\n"
+                    f"    p = subprocess.run([{listed}, a, \"--reply\", r], capture_output=True, text=True)\n"
+                    f"    print(p.stdout, p.stderr)\n{code}")
+        tool("eval", {"language": "py", "code": code}, {"content": [{"type": "text", "text": run.stdout}]})
+    else:
+        node = {"k": "simple", "argv": ["python3", script, *argv], "st": run.returncode, "runs": 1}
+        tool("bash", {"command": " ".join(["python3", script, argv[0], "..."])},
+             {"content": [{"type": "text", "text": run.stdout}], "details": {"trace": {"units": [{"nodes": [node]}]}}})
+    assistant()
+    return json.loads(run.stdout)
+
+
+def reply(agent, phase, message):
+    line = DELIVERY.search(message).group(0)
+    if phase == "convene":
+        body = {"agent": agent, "roles": [agent], "capabilities": ["reports"], "access_scopes": ["its own"],
+                "holdings_summary": f"what {agent} owns"}
+    elif phase.startswith("frame"):
+        body = {"agent": agent, "atoms": [{"text": f"{agent}: decide on the rollback by the error rate", "type": "objective"}]}
+    elif phase in ("ground", "clarify"):
+        body = {"agent": agent, "units": {"error_rate": "fraction 0-1", "rollback": "revert the deploy"},
+                "term": "error_rate", "extended_definition": "failed requests over all requests"}
+    else:
+        body = {"agent": agent, "holds": [], "checks": [{"criterion": "error rate back under its baseline", "covers": []}]}
+    return f"{line}\n\n{json.dumps(body)}"
+
+
+def subagent(sub, context, task, out):
+    progress = {"id": sub, "agent": "task", "status": "running",
+                "recentTools": [{"tool": "read", "args": "skill://accord-receiver"}]}
+    emit({"type": "tool_execution_update", "toolName": "task", "partialResult": {"details": {"progress": [progress]}}})
+    tool("task", {"context": context, "tasks": [{"name": sub, "task": task}]},
+         {"content": [{"type": "text", "text": out}],
+          "details": {"progress": [dict(progress, status="completed")],
+                      "results": [{"id": sub, "exitCode": 0, "task": task, "output": out,
+                                   "usage": {"cost": {"total": 0.0}}}]}})
+
+
+def specialist(agent, phase, message, n):
+    out = reply(agent, phase, message)
+    subagent(f"{agent}{n}", f"You are the specialist {agent}.", message, out)
+    return out
+
+
+# one_subagent(phase, messages, n); the mode one-subagent: one subagent given every
+# specialist's message, whose result holds every reply; it returns the replies by specialist.
+def one_subagent(phase, messages, n):
+    outs = {agent: reply(agent, phase, message) for agent, message in messages.items()}
+    subagent(f"specialists{n}", "You are each of the specialists.", "\n\n".join(messages.values()),
+             "\n\n".join(outs.values()))
+    return outs
+
+
+def session():
+    emit({"type": "session", "version": 3, "id": "stub", "cwd": os.getcwd()})
+    with open(os.path.join(HERE, "omp-stub-args"), "w") as fh:
+        fh.write("\n".join(ARGS) + "\n")
+    if MODE in GATEWAY:
+        assistant(stop="error", error=GATEWAY[MODE])
+        return 1
+    if MODE == "slow-kill":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    tool("read", {"path": "skill://accord-initiator"}, {"content": [{"type": "text", "text": "(skill)"}]})
+    data = initiator("init", "--specialists", "telemetry,payments", "--key-terms", "error_rate,rollback",
+                     "--task", "Decide whether to roll back the payment service deploy.")["data"]
+    for n in range(1, 21):
+        phase, messages = data.get("phase"), data.get("messages") or {}
+        if data.get("status") == "LOCKED" or not messages:
+            break
+        outs = {}
+        for agent, message in messages.items():
+            if MODE == "one-subagent":
+                outs = outs or one_subagent(phase, messages, n)
+                out = outs[agent]
+            elif MODE == "self-replied" and agent == "payments":
+                out = reply(agent, phase, message)
+                subagent(f"{agent}{n}", f"You are the specialist {agent}.", message, out.partition("\n\n")[2])
+            else:
+                out = specialist(agent, phase, message, n)
+            result = initiator("handle", "--agent", agent, "--reply", out)
+            if not result.get("ok"):
+                assistant(stop="stop")
+                return 0
+            data = result["data"]
+        if MODE in ("stalled", "killed", "bound", "slow-kill", "max-time", "errored"):
+            break
+    if MODE == "slow-kill":
+        time.sleep(2)
+    if MODE in ("killed", "slow-kill"):
+        os.kill(os.getpid(), signal.SIGKILL)
+    if MODE == "bound":
+        return 124
+    if MODE == "max-time":
+        assistant(stop="toolUse")
+        emit({"type": "agent_end"})
+        return 0
+    if MODE == "errored":
+        assistant(stop="error", error="unexpected client error")
+        return 1
+    if data.get("status") == "LOCKED":
+        with open("assignment.txt", "w") as fh:
+            fh.write("Report whether the rollback is needed.\n")
+        for agent in ("telemetry", "payments"):
+            initiator("execution-message", "--agent", agent, "--assignment-file", "assignment.txt")
+    assistant(stop="stop")
+    return 0
+
+
+if ARGS[:1] == ["--version"]:
+    print("omp/0.0.0-stub")
+elif ARGS[:1] == ["--help"]:
+    print("omp stub, a stand-in for omp that plays a session on canned replies\n\nFLAGS")
+    for flag, text in (
+            ("-p, --print", "Non-interactive mode: process prompt and exit"),
+            ("--model=<value>", "Model to use"),
+            ("--thinking=<value>", "Thinking level"),
+            ("--mode=<value>", "Output mode: text, json or rpc"),
+            ("--no-session", "Do not save the session"),
+            ("--no-title", "Do not generate a session title"),
+            ("--no-lsp", "Disable the language servers"),
+            ("--no-context-files", "Do not load context files"),
+            ("--approval-mode=<value>", "Override tools.approvalMode for this session"),
+            ("--max-time=<value>", "Stop the session after this duration"),
+            ("--max-cost=<value>", "Stop sending model requests once the session's spend reaches this many USD")):
+        print(f"      {flag:<34}{text}")
+elif ARGS[:2] == ["skill", "list"]:
+    found = sorted(d for d in (os.listdir(SKILLS) if os.path.isdir(SKILLS) else [])
+                   if os.path.isfile(os.path.join(SKILLS, d, "SKILL.md")))
+    print(json.dumps({"skills": [{"name": d, "source": "native:user"} for d in found]}))
+elif "-p" in ARGS:
+    sys.exit(session())
+else:
+    print(f"omp stub: no answer for {' '.join(ARGS)}", file=sys.stderr)
+    sys.exit(2)

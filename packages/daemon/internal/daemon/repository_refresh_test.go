@@ -101,7 +101,8 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	}
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
-		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1)}
+		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1), heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
+		followWake: make(chan struct{}, 1)}
 	// The records ask the refresher for a read of the live records at the commit of each write that
 	// can change them, as the daemon's do (projectRecords, refreshLive), so a repository a new
 	// record names is among the ones whose bad answers the refresher reads again. The anchors are
@@ -110,7 +111,7 @@ func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*w
 	records := projectRecords{Store: record.NewStore(), project: "LEGION", live: w.wakeLive}
 	w.records = records
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, HearRepository: w.hearRecorded,
-		Steps: config.DesignGateOff.Steps()}, quietLogger())
+		FollowIssue: w.requestFollowOf, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	// The daemon's handlers, in its order (workflowRuntime's boot): the copy of Dispatch's issues
 	// first, so each event applied writes its row before the engine and admission read it.
@@ -928,6 +929,13 @@ func (d *repositoryDispatch) show(issues ...dispatch.Issue) {
 // prepares and applies one through w's handlers.
 func deliver(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue dispatch.Issue) {
 	t.Helper()
+	applyEvent(t, w, issue, prepareEvent(t, w, client, issue))
+}
+
+// prepareEvent shows issue in Dispatch and prepares its event, at its sequence, as the Dispatch
+// consumer does, for applyEvent to apply.
+func prepareEvent(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue dispatch.Issue) intake.DispatchIssue {
+	t.Helper()
 	client.show(issue)
 	fact := intake.DispatchIssue{Key: issue.Key, Seq: issue.LastSeq, Type: "issue.updated", Status: issue.Status, Title: issue.Title, Rank: issue.Rank,
 		Parent: parentKey(issue.Parent), HandedOver: issue.HandedOver, ResolvedRepo: issue.ResolvedRepo}
@@ -935,6 +943,12 @@ func deliver(t *testing.T, w *workflowRuntime, client *repositoryDispatch, issue
 	if err != nil {
 		t.Fatal(err)
 	}
+	return prepared
+}
+
+// applyEvent applies prepared, the event of issue prepareEvent prepared, through w's handlers.
+func applyEvent(t *testing.T, w *workflowRuntime, issue dispatch.Issue, prepared intake.DispatchIssue) {
+	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", fmt.Sprintf("%s-%s-%d", issue.Key, issue.Status, issue.LastSeq), prepared, w.handlers...); err != nil {
 		t.Fatal(err)
 	}
@@ -977,6 +991,19 @@ func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) 
 	testwait.Eventually(t, "zeta/tools recorded on and recovered", func() bool {
 		return recordsOn(w, "zeta/tools") && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
+}
+
+// listedAgain waits for a project listing of client asked after this call. While a repository
+// is unread the refresher's recovery lists Dispatch on its backoff, so a pass can have listed
+// before the test's last change of what Dispatch shows and be waiting on its read of GitHub:
+// served then, that pass records each issue as its listing showed it, before the change. The
+// passes run one after another (refreshRepositories), so a listing counted after the change is
+// made by a pass that began once that one ended, and a test that lets GitHub answer only after it
+// has every recovery read Dispatch as the test last showed it.
+func listedAgain(t *testing.T, client *repositoryDispatch) {
+	t.Helper()
+	listed := client.listingCount()
+	testwait.Eventually(t, "a recovery listing after the last change", func() bool { return client.listingCount() > listed })
 }
 
 // A repository whose installation read fails at boot is recovered once GitHub answers for it: the
@@ -1086,6 +1113,7 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 		}
 	}
 
+	listedAgain(t, client)
 	serveAndRecover(t, w, installs)
 	for _, key := range []string{handed, prepared404} {
 		if recordedIssue(t, w, key) == nil {
@@ -1712,7 +1740,7 @@ func (h *heldRefresher) hold(w *workflowRuntime) {
 
 // wakesWaiting is how many of w's refresher wakes are waiting to be taken.
 func wakesWaiting(w *workflowRuntime) int {
-	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake)
+	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake) + len(w.followWake)
 }
 
 // park waits until the refresher is stopped in the hook with no wake waiting: every job it was

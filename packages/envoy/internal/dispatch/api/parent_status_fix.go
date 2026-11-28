@@ -80,7 +80,7 @@ func RunParentStatusFixAtBoot(ctx context.Context, deps Deps, leases duty.Leases
 			return ParentStatusRule{}, err
 		}
 		if !held {
-			ran := duty.Exclusive(ctx, leases, parentStatusFixLease, time.Time{}, 0, pass.run)
+			ran := duty.Exclusive(ctx, nil, leases, parentStatusFixLease, time.Time{}, 0, pass.run)
 			if pass.err != nil {
 				if ctx.Err() != nil {
 					return ParentStatusRule{}, ctx.Err()

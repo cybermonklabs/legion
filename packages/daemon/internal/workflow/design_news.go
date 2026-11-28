@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -33,8 +34,8 @@ import (
 // Items is what the audience is told, each with its recorded change set, or with the review
 // history that could not say which version the audience took: the holder's items for Issue, or the
 // architect row's own items for the tree. The send has already dropped every item that no longer
-// stands (classify.DesignApprovalStands) and every item the record cannot tell yet, so each one
-// here is said as given.
+// stands (the daemon's itemStands, which asks StepApprovalStands) and every item the record cannot
+// tell yet, so each one here is said as given.
 type News struct {
 	Audience    record.DesignAudience
 	Tree        string
@@ -44,6 +45,10 @@ type News struct {
 	Gates       map[record.DesignStep]record.DesignGate
 	OpeningOwed bool
 	Items       []NewsChange
+	// Back is the phases a move back of Issue reaches where Issue stands in accepting
+	// (MoveBackTargets), which its answer names (acceptingAnswer); nil elsewhere, where nothing
+	// reads it.
+	Back []phase.Phase
 	// Members is every member of the tree, the root among them, in the order the architect's
 	// summary names them. The holder's form reads none.
 	Members []NewsMember
@@ -98,13 +103,15 @@ func (c NewsChange) to() int {
 // is the key of the issue whose architect holds the member in accepting, where that is an
 // architect other than the tree root's: the member's own, or one between it and the root (the
 // owner walk, record.OwningIssue). The summary names that architect as the one told. Every other
-// member has none.
+// member has none. Back is the phases a move back of the member reaches where the root architect
+// answers it in accepting (NewsYouAnswer), as News.Back is the holder's.
 type NewsMember struct {
 	Issue     string
 	Phase     phase.Phase
 	State     NewsState
 	Items     []NewsChange
 	Architect string
+	Back      []phase.Phase
 }
 
 // NewsState is what one member of a tree is told of an approved version, as its root architect's
@@ -152,10 +159,15 @@ const (
 	// NewsAwaitingPerson is a member told nothing while it waits on a person, since no phase
 	// holder works it.
 	NewsAwaitingPerson NewsState = "awaiting-person"
-	// NewsStopped is a member told nothing while it stands in held, whatever holds it (its stopped
-	// task, the issues beneath it or its failed worker): the release that moves it back into a
-	// phase carries what it is owed then.
+	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld), whatever
+	// holds it (its stopped task, the issues beneath it or its failed worker): the release that
+	// moves it back into a phase carries what it is owed then.
 	NewsStopped NewsState = "stopped"
+	// NewsAwaitingChildren is a parent told nothing while it stands in awaiting_children, a
+	// Dispatch child of it open (record.UntoldAwaitingChildren): no restart moves it back, and the
+	// admission pass's return once no child of it is open (ReturnFromChildren) carries what it is
+	// owed then.
+	NewsAwaitingChildren NewsState = "awaiting-children"
 	// NewsDone is a member told nothing because its work is done.
 	NewsDone NewsState = "done"
 	// NewsOutOfWorkflow is a member told nothing because its Dispatch status takes it out of the
@@ -176,10 +188,12 @@ const (
 // no longer stands, and hands it the rest (News).
 //
 // Both forms lead with the gate sentence when the opening is owed to the audience, said of the
-// gate as it stands at send: the opened sentence while the standing gate is open, naming the step
-// approved last, and the closed sentence, naming the version that closed it, once a later version
-// has (gateOpenedSentence, gateClosedSentence, which tellGateMoved also writes). So a merger's
-// release reads the words its prompt quotes, and news sent after the gate closed again says so.
+// gate as it stands at send (gateAtSend): the opened message while the standing gate is open,
+// naming the step approved last, and, where a gated step stands open on an ancestor's approval,
+// each such step with the approval it stands on (gateOpenedMessage); and the closed sentence,
+// naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
+// writes both through the same two functions, so a merger's release reads the words its prompt
+// quotes, and news sent after the gate closed again says so.
 //
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the sections and the typed blocks that changed (requirements and the other non-check blocks for
@@ -222,16 +236,18 @@ func RenderNews(news News) string {
 // gateAtSend is the gate sentence of tree as gates stand now. The standing gate is closed when a
 // step the tree is gated on holds a row that is not open (classify.StandingGate, the predicate the
 // merger's hold reads too), and the sentence names that row's latest version, the one with its
-// reviewer. Otherwise it is open, and the sentence names the approval that opened it: the row
-// whose approval Dispatch recorded last (record.EventMark.After), the later step in the tree's
-// order where the marks cannot tell. It is "" when no row holds an approval, which says nothing.
+// reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
+// opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
+// step in the tree's order where the marks cannot tell, with each step that stands open on an
+// ancestor's approval (basisStepsOf), as tellGateMoved says it (gateOpenedMessage). It is "" when
+// no row holds an approval, which says nothing.
 func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) string {
 	if held, closed := classify.StandingGate(steps, gates); closed {
 		return gateClosedSentence(tree, held.Step.OrSpec(), held.ArtifactID, held.LatestVersion)
 	}
 	var opened record.DesignGate
 	var openedStep record.DesignStep
-	for _, step := range classify.RequiredSteps(classify.TreeSteps(steps, gates)) {
+	for _, step := range (record.TreeGate{Steps: steps, Rows: gates}).Required() {
 		row, ok := gates[step]
 		if !ok || row.ApprovedVersion == nil {
 			continue
@@ -243,7 +259,7 @@ func gateAtSend(tree string, steps []record.DesignStep, gates map[record.DesignS
 	if openedStep == "" {
 		return ""
 	}
-	return gateOpenedSentence(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion)
+	return gateOpenedMessage(tree, openedStep, opened.ArtifactID, *opened.ApprovedVersion, basisStepsOf(steps, gates))
 }
 
 // holderNews is the holder's form after its gate sentence: what changed for its issue, then the
@@ -266,10 +282,11 @@ func holderNews(news News) []string {
 			list = append(list, "- "+nothingChanged(item))
 			continue
 		}
-		list = append(list, fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, "your phase")))
+		basis := basisWords(news.Gates, item)
+		list = append(list, fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, "your phase", basis != ""), basis))
 		list = append(list, indented(changeLines(news.Tree, item, "your phase"))...)
 	}
-	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase)}
+	return []string{strings.Join(list, "\n"), holderRule(news.Issue, news.Phase, news.Back)}
 }
 
 // nothingChanged is the words that tell a holder an item's new version changed nothing its issue
@@ -287,13 +304,14 @@ func nothingChanged(item NewsChange) string {
 
 // holderRule is the closing paragraph of a holder's news: the rule its role's prompt carries for
 // answering it. The architect holding an issue in accepting answers by its sign-off or a move
-// back (acceptingAnswer). The planner revises its plan in place when it is stale, since the plan is
-// its own work wherever its task places its step (prompts/go/planner.md), and comments when it is current. Every
-// other phase worker moves back when its work is stale, and comments when it is current.
-func holderRule(issue string, p phase.Phase) string {
+// back to back, the phases of the steps of its task before the acceptance (acceptingAnswer). The
+// planner revises its plan in place when it is stale, since the plan is its own work wherever its
+// task places its step (prompts/go/planner.md), and comments when it is current. Every other phase
+// worker moves back when its work is stale, and comments when it is current.
+func holderRule(issue string, p phase.Phase, back []phase.Phase) string {
 	switch p {
 	case phase.Accepting:
-		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue) +
+		return "As your prompt says, read each named section and check at the new version, then " + acceptingAnswer(issue, back) +
 			", with a reason that names the version and the change."
 	case phase.Planning:
 		return fmt.Sprintf("As your role's prompt says, read each named section and check at the new version. A stale plan is your own work "+
@@ -306,11 +324,32 @@ func holderRule(issue string, p phase.Phase) string {
 }
 
 // acceptingAnswer is the answer an architect gives the news of an issue it holds in accepting,
-// named as subject: its sign-off, or a move back. It is written once for its two readers: the
-// closing rule of the holder form (holderRule) and the root architect's line for a member it
-// answers itself (memberWords).
-func acceptingAnswer(subject string) string {
-	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to planning, implementing or testing", subject)
+// named as subject: its sign-off, or a move back to back, the phases of the steps of its task
+// before the acceptance (MoveBackTargets), which the daemon's send reads from the task and refuses
+// to send without. It is written once for its two readers: the closing rule of the holder form
+// (holderRule) and the root architect's line for a member it answers itself (memberWords).
+func acceptingAnswer(subject string, back []phase.Phase) string {
+	named := make([]string, len(back))
+	for i, p := range back {
+		named[i] = string(p)
+	}
+	return fmt.Sprintf("sign %s off with `sign_off`, or call `request_backward_move` to move it back to %s", subject, listed(named, "or"))
+}
+
+// MoveBackTargets is the phases a move back of an issue standing in accepting reaches, on line,
+// the phases its task walks (Walk.Line, LineOf): each phase before accepting, the phases of the
+// steps of the task before the acceptance, as the walk's backward rows reach them (backwardRows).
+// So the answer of the news (acceptingAnswer) names no phase a move would be refused for, where
+// the task has no step for it, and leaves out none a move reaches. A line that holds no accepting,
+// or no step before it, is an error: an issue stands in accepting only on a task with an
+// acceptance after its implementer step (plan.Supported), so such a line is a record the news
+// cannot answer.
+func MoveBackTargets(line []phase.Phase) ([]phase.Phase, error) {
+	at := slices.Index(line, phase.Accepting)
+	if at < 1 {
+		return nil, fmt.Errorf("the line %v holds no step before an acceptance", line)
+	}
+	return slices.Clone(line[:at]), nil
 }
 
 // architectNews is the root architect's summary after its gate sentence: each pair of versions
@@ -325,13 +364,18 @@ func architectNews(news News) []string {
 		own[item.key()] = true
 	}
 	if pairs := distinctPairs(news); len(pairs) > 0 {
-		list := []string{fmt.Sprintf("A person approved a new version of the design of %s. What changed, for each pair of versions this news names:", news.Tree)}
+		opener := fmt.Sprintf("A person approved a new version of the design of %s.", news.Tree)
+		if !slices.ContainsFunc(pairs, func(item NewsChange) bool { return basisWords(news.Gates, item) == "" }) {
+			opener = fmt.Sprintf("A new version of the design of %s stands approved on an ancestor's approval.", news.Tree)
+		}
+		list := []string{opener + " What changed, for each pair of versions this news names:"}
 		for _, item := range pairs {
 			taker := ""
 			if own[item.key()] {
 				taker = "you"
 			}
-			line := fmt.Sprintf("- The %s document (%s): %s.", item.Step, item.artifact(), pairWords(item, taker))
+			basis := basisWords(news.Gates, item)
+			line := fmt.Sprintf("- The %s document (%s): %s.%s", item.Step, item.artifact(), pairWords(item, taker, basis != ""), basis)
 			if item.Changes.WorkUnchanged() {
 				why := "Only its decision blocks changed"
 				if item.Changes.Unchanged {
@@ -348,11 +392,24 @@ func architectNews(news News) []string {
 	if len(news.Members) > 0 {
 		list := []string{fmt.Sprintf("Each issue of the tree of %s, with its phase and what it is told:", news.Tree)}
 		for _, member := range news.Members {
-			list = append(list, fmt.Sprintf("- %s, in %s: %s", member.Issue, member.Phase, memberWords(member)))
+			list = append(list, fmt.Sprintf("- %s, in %s: %s", member.Issue, member.Phase, memberWords(member, news.Gates)))
 		}
 		paragraphs = append(paragraphs, strings.Join(list, "\n"))
 	}
 	return paragraphs
+}
+
+// basisWords is what news adds of an item whose new version stands approved on an ancestor's
+// approval rather than a person's: the step's row in gates holds that version open on a basis
+// (record.DesignGate.OnBasis). It says so in the words of the opened message (basisSentence),
+// after a space, so no news task tells a holder that a person approved that version. It is "" for
+// every other item.
+func basisWords(gates map[record.DesignStep]record.DesignGate, item NewsChange) string {
+	gate, ok := gates[item.Step]
+	if !ok || !gate.OnBasis() || gate.ApprovedVersion == nil || *gate.ApprovedVersion != item.to() {
+		return ""
+	}
+	return " " + basisSentence(gate)
 }
 
 // distinctPairs is each step's pair of versions the architect's summary tells of, and each
@@ -379,13 +436,14 @@ func distinctPairs(news News) []NewsChange {
 // memberWords is what the architect's summary says of one member: what it is owed, and who tells
 // it, or that it is told nothing and why. The holder of a member in accepting that another
 // architect than the tree root's owns is that architect (NewsMember.Architect): the member's own,
-// or the architect of the issue above it that the summary names.
-func memberWords(member NewsMember) string {
+// or the architect of the issue above it that the summary names. gates is the tree root's gate
+// rows, which say whether an item's new version stands on an ancestor's approval (basisWords).
+func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGate) string {
 	owes := "owed news of the approved design"
 	if len(member.Items) > 0 {
 		owed := make([]string, len(member.Items))
 		for i, item := range member.Items {
-			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase"))
+			owed[i] = fmt.Sprintf("version %d of the %s document, %s", item.to(), item.Step, sinceWords(item, "its phase", basisWords(gates, item) != ""))
 		}
 		owes = "owed " + strings.Join(owed, ", and ")
 	}
@@ -406,7 +464,7 @@ func memberWords(member NewsMember) string {
 	case NewsAtNextStart:
 		return fmt.Sprintf("%s; the next start of %s carries it.", owes, holder)
 	case NewsYouAnswer:
-		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it"))
+		return fmt.Sprintf("%s. You hold it in accepting, so you answer it yourself: read what changed, then %s.", owes, acceptingAnswer("it", member.Back))
 	case NewsWorkUnchanged:
 		return "told nothing: the approved version holds the same text as the one it took, apart from decision blocks."
 	case NewsNotConcerned:
@@ -419,6 +477,9 @@ func memberWords(member NewsMember) string {
 		return "told nothing while it waits on a person: no phase holder works it."
 	case NewsStopped:
 		return "told nothing while it is held: the release that moves it back into a phase carries what it is owed then."
+	case NewsAwaitingChildren:
+		return "told nothing while it waits on its open children: the return that moves it back into its phase once no child " +
+			"of it is open carries what it is owed then."
 	case NewsDone:
 		return "told nothing: its work is done."
 	case NewsOutOfWorkflow:
@@ -434,26 +495,32 @@ func memberWords(member NewsMember) string {
 }
 
 // pairWords is the version an item tells as news says it: the new version, then what taker took
-// before it (sinceWords).
-func pairWords(item NewsChange, taker string) string {
-	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker))
+// before it (sinceWords, with onBasis).
+func pairWords(item NewsChange, taker string, onBasis bool) string {
+	return fmt.Sprintf("version %d, %s", item.to(), sinceWords(item, taker, onBasis))
 }
 
 // sinceWords is the version taker last took as news says it: the change set's From, or that no
 // version was approved before the new one (From 0). From 0 is only ever a version the told row
 // held or the review history read and found none before: a history that could not be read names
 // no pair (NewsChange.HistoryUnread), and is said as a version the daemon could not read, never as
-// a first approval. An empty taker names nobody's taking.
-func sinceWords(item NewsChange, taker string) string {
+// a first approval. An empty taker names nobody's taking. onBasis says the new version stands
+// approved on an ancestor's approval (basisWords), which no person gave, so its first approval is
+// said as the first approved version, never as the first version a person approved.
+func sinceWords(item NewsChange, taker string, onBasis bool) string {
 	if item.HistoryUnread != nil {
 		return "since a version the daemon could not read"
+	}
+	first := "the first version a person approved"
+	if onBasis {
+		first = "the first approved version"
 	}
 	from := item.Changes.From
 	switch {
 	case from == 0 && taker == "":
-		return "the first version a person approved"
+		return first
 	case from == 0:
-		return fmt.Sprintf("the first version a person approved; %s took none before it", taker)
+		return fmt.Sprintf("%s; %s took none before it", first, taker)
 	case taker == "":
 		return fmt.Sprintf("since version %d", from)
 	}

@@ -76,6 +76,44 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 	d := last + debounce.Milliseconds()
 	g := d + grace
 
+	// Reasons are part of the observer contract, not arbitrary labels on a verdict. Pin each
+	// one and its spelling independently so an attempted settlement cannot be reported idle.
+	stopped := ready()
+	stopped.VerifyStopped = stopped.Hash()
+	retrying := stopped
+	retrying.VerifyRetryAt = d + 200
+	verifying := ready(claimed(3, d+10))
+	verifying.Claim.Verify = true
+	for _, tc := range []struct {
+		name    string
+		state   State
+		now     int64
+		reason  scheduleReason
+		label   string
+		verdict verdict
+	}{
+		{"settled", ready(func(st *State) { st.SettledEmitted = true }), d, reasonIdle, "idle", verdictIdle},
+		{"given up", stopped, d, reasonIdle, "idle", verdictIdle},
+		{"retry", retrying, d, reasonRetry, "retry", verdictWait},
+		{"not ready", ready(func(st *State) { st.Checks["build"] = Check{Name: "build", Status: "in_progress"} }), d, reasonNotReady, "not-ready", verdictWait},
+		{"debounce", ready(), last, reasonDebounce, "debounce", verdictWait},
+		{"held", ready(unstamped), g + 1, reasonHeld, "held", verdictHeld},
+		{"stuck", ready(func(st *State) { st.Checks["build"] = Check{Name: "build", Status: "in_progress"} }), last + heldAfter.Milliseconds(), reasonStuck, "stuck", verdictStuck},
+		{"claim", ready(claimed(3, d+10)), d + 10, reasonClaim, "claim", verdictWait},
+		{"verify", verifying, d + 10, reasonVerify, "verify", verdictWait},
+		{"attempt", ready(), d, reasonAttempt, "attempt", verdictAttempt},
+	} {
+		t.Run("reason/"+tc.name, func(t *testing.T) {
+			reason, _ := schedule(tc.state, tc.now, debounce)
+			if reason != tc.reason || reason.String() != tc.label {
+				t.Fatalf("schedule reason = %d (%q), want %d (%q)", reason, reason.String(), tc.reason, tc.label)
+			}
+			if got := reason.verdict(); got != tc.verdict {
+				t.Fatalf("reason %s acts as %s, want %s", reason, verdictNames[got], verdictNames[tc.verdict])
+			}
+		})
+	}
+
 	for _, tc := range []struct {
 		name     string
 		st       State
@@ -108,7 +146,8 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 			seen := map[verdict]bool{}
 			for _, mark := range marks {
 				for now := mark - 50; now <= mark+50; now++ {
-					v, at := schedule(tc.st, now, tc.debounce)
+					reason, at := schedule(tc.st, now, tc.debounce)
+					v := reason.verdict()
 					seen[v] = true
 					p := predicatesAt(tc.st, now, tc.debounce)
 					if attempt := p.due && !p.claimFresh; (v == verdictAttempt) != attempt {
@@ -136,10 +175,10 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 						if at <= now {
 							t.Fatalf("at %d: schedule waits until %d, not a later millisecond", now, at)
 						}
-						if before, beforeAt := schedule(tc.st, at-1, tc.debounce); before != verdictWait || beforeAt != at {
-							t.Fatalf("at %d: schedule waits until %d, but at %d it is %s until %d", now, at, at-1, verdictNames[before], beforeAt)
+						if before, beforeAt := schedule(tc.st, at-1, tc.debounce); before.verdict() != verdictWait || beforeAt != at {
+							t.Fatalf("at %d: schedule waits until %d, but at %d it is %s until %d", now, at, at-1, verdictNames[before.verdict()], beforeAt)
 						}
-						if after, afterAt := schedule(tc.st, at, tc.debounce); after == verdictWait && afterAt == at {
+						if after, afterAt := schedule(tc.st, at, tc.debounce); after.verdict() == verdictWait && afterAt == at {
 							t.Fatalf("at %d: schedule waits until %d, and at %d it still waits until %d", now, at, at, afterAt)
 						}
 						if before, after := predicatesAt(tc.st, at-1, tc.debounce), predicatesAt(tc.st, at, tc.debounce); before == after {

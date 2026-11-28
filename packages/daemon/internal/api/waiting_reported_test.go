@@ -67,6 +67,11 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, nil, err
 }
 
+func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	return observed, nil, err
+}
+
 // waitingStore is a migrated database of this package's template, with the records store and the
 // design-gate steps the deployment gates.
 func waitingStore(t *testing.T) (*store.Store, record.Store, []record.DesignStep) {
@@ -184,9 +189,14 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		// promotion passes over it.
 		{key: queuedRoot, stands: phase.Admitted, status: "todo", tree: queuedRoot},
 		// The live tree the held child belongs to, and the child itself, held at admitted by a
-		// link: a child the workflow holds is out of the line altogether. The root is at work in
-		// implementing, a phase that keeps a slot, so it holds the row it was started with
-		// (record.KeepsSlot): a root in accepting, retro or merging would hold none.
+		// link: a child the workflow holds is out of the line altogether. The root was started in
+		// implementing, a phase that keeps a slot, holding the row it was started with
+		// (record.KeepsSlot), and the held child is an open Dispatch child of it, so the admission
+		// pass stops that phase and the root waits in awaiting_children, holding no row
+		// (dispatch://INFRA-3320 R9, R11). A phase R9 does not reach would not keep this case: a
+		// root in retro or merging holds no row either, and admission.active below lists the
+		// issues holding one, so the root is asserted as R9 makes it rather than moved into one of
+		// them.
 		{key: treeRoot, stands: phase.Implementing, status: "in_progress", tree: treeRoot, slotted: true},
 		{key: heldChild, stands: phase.Admitted, status: "in_progress", tree: treeRoot, parent: treeRoot},
 		// An issue a person moved out of the workflow, and one at work waiting on nothing.
@@ -252,8 +262,10 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "trees", "waiting"}; !slices.Equal(got, want) {
-		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change", got, want)
+	// The projection gives `p0Holders` on every state (the P0 start's entry); `p0Bound` is the daemon's
+	// source's, which this test's source is not.
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "p0Holders", "trees", "waiting"}; !slices.Equal(got, want) {
+		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change, and the P0 holders", got, want)
 	}
 
 	var state api.State
@@ -324,8 +336,16 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 			t.Errorf("admission.%s = %v, want the parked issue %s out of it: nothing of it waits for Legion", list.name, list.keys, parked)
 		}
 	}
-	if got, want := slices.Sorted(slices.Values(admissionView.Active)), []string{atWork, treeRoot}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(slices.Values(admissionView.Active)), []string{atWork}; !slices.Equal(got, want) {
 		t.Errorf("admission.active = %v, want %v: the issues at work on their own phases, and no issue that waits", got, want)
+	}
+	// The tree's root waits on its open child in awaiting_children: out of admission.active,
+	// and held with that child named as what holds it (dispatch://INFRA-3320 R9, R11).
+	if got := state.Issues[treeRoot].Phase; got != phase.AwaitingChildren {
+		t.Errorf("issues.%s.phase = %s, want awaiting_children: its open child %s stops its phase", treeRoot, got, heldChild)
+	}
+	if row, named := heldRow(admissionView.Held, treeRoot); !named || row.Reason != record.HeldAwaitingChildren || !slices.Equal(row.HeldBy, []string{heldChild}) {
+		t.Errorf("admission.held names %s as %+v (named %t), want awaiting_children held by %s", treeRoot, row, named, heldChild)
 	}
 	for _, list := range []struct {
 		name string

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -640,24 +641,37 @@ func (s *memStore) history() []Claim {
 	return append([]Claim(nil), s.puts...)
 }
 
-// testSpecs answers every launch with the same environment, or with the error it was told to, and
-// records the claim each launch was built for.
+// testSpecs answers every launch with the same environment, or with the error it was told to,
+// names the repository it was told every launch works (none, until names), and records the claim
+// each launch was built for.
 type testSpecs struct {
-	err    error
-	mu     sync.Mutex
-	claims []Claim
+	err        error
+	mu         sync.Mutex
+	claims     []Claim
+	repository ghrepo.Repository
 }
 
 func (s *testSpecs) SpawnSpec(_ context.Context, c Claim) (runtime.SpawnSpec, error) {
 	s.mu.Lock()
 	s.claims = append(s.claims, copyClaim(c))
+	repository := s.repository
 	s.mu.Unlock()
 	if s.err != nil {
 		return runtime.SpawnSpec{}, s.err
 	}
 	return runtime.SpawnSpec{
-		Env: map[string]string{"LEGION_ISSUE": c.Issue},
+		Env:        map[string]string{"LEGION_ISSUE": c.Issue},
+		Repository: repository,
 	}, nil
+}
+
+// names is a correction of the issue's repository: every launch built from here on names
+// repository, as the daemon's own spec builder names the repository the issue's record holds at
+// that launch.
+func (s *testSpecs) names(repository ghrepo.Repository) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repository = repository
 }
 
 // last is the claim the latest launch was built for.
@@ -807,6 +821,10 @@ type harness struct {
 	records *logRecords
 	deps    Deps
 	m       *Machine
+	// pace is the wake pacing the harness's machines are built with (pacedHarness), which a
+	// restart builds afresh, as a restarted daemon builds its pacer anew (restart); nil for a
+	// harness that set none, or set its own.
+	pace func(*Deps)
 }
 
 func testLimits() Limits { return Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2} }
@@ -929,11 +947,17 @@ func (h *harness) start(c Claim) {
 }
 
 // restart is a daemon restart: the machine is dropped with whatever it held in memory — its
-// timers die with it — and a new one is built from what the store read back.
+// timers die with it — and a new one is built from what the store read back. The wake pacer's
+// own timer dies with them, so the pacing the harness was built with is built anew (pace), as a
+// restarted daemon builds its own: the old pacer, its pending turn gone, lets nothing more out,
+// and no place a dropped machine held is ever let out to it.
 func (h *harness) restart() {
 	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	if h.pace != nil {
+		h.pace(&h.deps)
+	}
 	h.start(h.store.load(h.token))
 }
 

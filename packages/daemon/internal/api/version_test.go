@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -24,7 +25,7 @@ func TestReleasedContractsGolden(t *testing.T) {
 		t.Errorf("the frozen list ends at %d, want L (%d)", greatest, LastNumberedContract)
 	}
 	if !*updateGolden {
-		path := goldenPath("released-contracts.json")
+		path := apifixture.Path("released-contracts.json")
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s (run `go test ./internal/api/ -update`): %v", path, err)
@@ -52,11 +53,11 @@ func TestReleasedContractsGolden(t *testing.T) {
 // fixture written again (`go test ./internal/api/ -update`) then fails the contracts case until
 // the enum names the word too.
 //
-// The seven words are written out here beside it, so a constant renamed on the Go side — which
+// The eight words are written out here beside it, so a constant renamed on the Go side — which
 // would otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
 func TestFailureCausesGolden(t *testing.T) {
 	want := []supervise.FailureCause{"launch_refused", "died", "never_registered", "stale_plugin",
-		"prompt_retires_exhausted", "provider_error", "unrecorded"}
+		"prompt_retires_exhausted", "provider_error", "cyber_policy", "unrecorded"}
 	if !slices.Equal(supervise.FailureCauses, want) {
 		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
 	}

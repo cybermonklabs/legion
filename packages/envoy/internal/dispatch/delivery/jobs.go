@@ -9,6 +9,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -99,7 +100,7 @@ func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads by clock, checking each job event against settings, and holding its
 // durable and taking it over under a hold and a lease it takes on leases, timed by tuning.
-func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, clock: clock, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},
@@ -120,17 +121,19 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 // (heldDurable). A standby tries every durableBindInterval for the life of the process, so one
 // that outlives the holder takes the durable over seconds after the holder releases its hold or
 // its hold lapses. When ctx ends it stops delivering, under the stop deadline armed then
-// (stopContext), and releases the hold, then stops every burst's timer.
+// (stopContext), and releases the hold, then stops every burst's timer. Every read it makes of
+// GitHub is the intake's (intakeCaller).
 func (j *JobIntake) Run(ctx context.Context) {
-	j.ctx = ctx
+	j.ctx = githubrate.WithCaller(ctx, intakeCaller)
 	defer j.stopPending()
-	j.run(ctx, nil, func() bool { return true })
+	j.run(ctx)
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
 // name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
-// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
+// the run's end event and the reconcile do not. A take-over creates it at the stream's next
+// sequence when it does not exist, and otherwise right after its ack floor (takeOver,
+// takeOverStart). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
 // deliveryConsumerConfig gives, so it takes none of the intake's tuning.
 func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{

@@ -52,15 +52,20 @@ const TupleInDocument = "in_document"
 // when the row was written and whether it names the block's node - by block id; the links its
 // blocks hold, each with the block types it points at, when its row was written, the source
 // event it stands at and whether it names its block's node; and the version the document's
-// blocks stand at (blockStand), which the revision fence is decided on. placed is, for the Held
-// of an indexing the transaction has queued and not written, the far end that indexing gave each
-// block's part_of, by block id, which the store holds only once the write phase has run; it is
-// nil for an index read from the tables, whose placements the plan reads from the store.
+// blocks stand at (blockStand), which the revision fence is decided on. respellable is, by block
+// id, the version a block's text last changed in, for each block whose changed version another
+// renderer version stored or none stamped (pmdoc.OtherRenderer), which a version the document no
+// longer has counts as: the next version may hold such a block's tree in this renderer version's
+// spelling (BlockIndexing.KeepRespelled). placed is, for the Held of an indexing the transaction
+// has queued and not written, the far end that indexing gave each block's part_of, by block id,
+// which the store holds only once the write phase has run; it is nil for an index read from the
+// tables, whose placements the plan reads from the store.
 type BlockIndex struct {
-	blocks map[string]storedBlock
-	links  []indexedLink
-	stand  blockStand
-	placed map[string]blockFarEnd
+	blocks      map[string]storedBlock
+	respellable map[string]int
+	links       []indexedLink
+	stand       blockStand
+	placed      map[string]blockFarEnd
 }
 
 // indexedLink is one block_refs row the index holds: its pair, when the row was written, the
@@ -77,7 +82,7 @@ type indexedLink struct {
 // a plan can tell a link whose attribute now names other types, and the version its blocks stand
 // at, all in the read phase of the write that plans the indexing (PlanBlocks).
 func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockIndex, error) {
-	blocks, err := storedBlocks(ctx, q, artifactID)
+	blocks, respellable, err := storedBlocks(ctx, q, artifactID)
 	if err != nil {
 		return BlockIndex{}, err
 	}
@@ -106,7 +111,7 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 	if err != nil {
 		return BlockIndex{}, err
 	}
-	return BlockIndex{blocks: blocks, links: links, stand: stand}, nil
+	return BlockIndex{blocks: blocks, respellable: respellable, links: links, stand: stand}, nil
 }
 
 // IndexedVersion is what a version's own row says of its block index: the document's ref_key,
@@ -168,13 +173,22 @@ type BlockIndexing struct {
 	// it records, nil for a deleted block.
 	deleted, ids, types, sums, excerpts, textIDs []string
 	texts                                        []*string
-	pairs                                        []blockPair
+	// candidates are the blocks among ids whose changed version another renderer version stored
+	// or none stamped and that aloneCandidates keeps, which KeepRespelled reads and decides;
+	// respelledIDs, respelledSums and respelledExcerpts are those it keeps the changed version of,
+	// with their text's sha256 and excerpt at this version, which Queue writes.
+	candidates                                     []respellCandidate
+	respelledIDs, respelledSums, respelledExcerpts []string
+	pairs                                          []blockPair
 	// placedIDs and placedParents are the blocks the pass places, in document order, and the
 	// block each sits in, nil for one the document holds: what the parents' projection writes.
 	placedIDs     []string
 	placedParents []*string
-	moved         []Target
-	held          BlockIndex
+	// moved is what Moved answers: first the targets of the links the version inserts, deletes
+	// or retypes, linkMoves of them, then those of the links in a block whose text it changed.
+	moved     []Target
+	linkMoves int
+	held      BlockIndex
 	// stated is what the pass states in the node and tuple store, held for the event that causes
 	// the write (graphstore.Uncaused).
 	stated graphstore.Uncaused
@@ -220,6 +234,19 @@ type BlockIndexing struct {
 // its typed block's opening line, so the extraction also finds it as a mention held by that block:
 // the block's mention of a target is kept only while the block itself holds more references to it
 // than its pointers do (a string attribute citing it too, say).
+//
+// A block whose text moved keeps its changed version and time as well where another renderer
+// version stored its changed version, or none stamped it (pmdoc.OtherRenderer), and the text
+// recorded for the block there is that renderer's spelling of its tree here. Of the blocks whose
+// text moved and whose changed version such a renderer version stored, the plan names those
+// aloneCandidates keeps as its candidates, and reads nothing for them: KeepRespelled, which the
+// caller runs in its read phase right after the plan, reads their recorded texts and stored
+// versions and decides (respelledBlocks). Each block it keeps has its row take this text's sha256
+// and excerpt, and no text is recorded for it at this version: a pin to an earlier version still
+// reads unchanged, and the block's recorded text keeps the earlier spelling until its text next
+// changes. Such a block counts as unchanged in Moved and Cited. Its row is still one the pass
+// writes, so its node is stated live as every such block's is (planBlockNodes), which moves
+// nothing of a block the version holds. Every other block whose text moved takes this version.
 //
 // What the pass states in the node and tuple store (Stated) is held for the event that caused the
 // write (graphstore.Uncaused): the block nodes it writes, and the tuples the projection rows
@@ -278,6 +305,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	writer := version.Record.Writer
 	nodes, fits := indexing.indexedNodes(version.Blocks)
 	texts := indexing.planBlockTexts(index, version.Markdown, version.ServerURL, nodes, fits, now)
+	indexing.candidates = aloneCandidates(version.Blocks, indexing.candidates)
 	statement, err := indexing.planBlockNodes(ctx, q, stale, nodes, texts, version, now)
 	if err != nil {
 		return BlockIndexing{}, err
@@ -292,7 +320,7 @@ func PlanBlocks(ctx context.Context, q Queryer, index BlockIndex, rule int, now 
 	if err != nil {
 		return BlockIndexing{}, err
 	}
-	indexing.held = BlockIndex{blocks: texts.held, links: heldLinks, stand: index.stand.indexedAt(version.Number, rule), placed: placed}
+	indexing.held = BlockIndex{blocks: texts.held, respellable: texts.respellable, links: heldLinks, stand: index.stand.indexedAt(version.Number, rule), placed: placed}
 	return indexing, nil
 }
 
@@ -328,7 +356,12 @@ func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown, serverURL str
 	// deleted. held is each block's row as the indexing leaves it, which a later indexing of the
 	// document in this transaction plans against (Held): a row the pass writes names its node
 	// wherever its address fits, since the parents' projection names it on every placed row.
+	// A block the index holds whose changed version another renderer version stored, or none
+	// stamped, may hold its tree in that renderer's spelling, and is a candidate for
+	// KeepRespelled; every other block whose text moved takes this version, which this build
+	// renders, so the index holds it as respellable no longer.
 	held := make(map[string]storedBlock, len(nodes))
+	respellable := maps.Clone(index.respellable)
 	// The blocks of this version whose row names no node, each with the time that row was
 	// written: a pre-store row, which the node step (planBlockNodes) gives its node and its
 	// membership.
@@ -359,8 +392,13 @@ func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown, serverURL str
 			joined = previous.joined
 		}
 		held[block.ID] = storedBlock{sum: hexSum, joined: joined, named: fits[position]}
+		excerpt := BlockExcerpt(body, serverURL)
+		if storedAt, other := respellable[block.ID]; other {
+			b.candidates = append(b.candidates, respellCandidate{block: block, body: body, sum: hexSum, excerpt: excerpt, storedAt: storedAt})
+			delete(respellable, block.ID)
+		}
 		b.ids, b.types, b.sums = append(b.ids, block.ID), append(b.types, block.Type), append(b.sums, hexSum)
-		b.excerpts = append(b.excerpts, BlockExcerpt(body, serverURL))
+		b.excerpts = append(b.excerpts, excerpt)
 		b.textIDs, b.texts = append(b.textIDs, block.ID), append(b.texts, &body)
 		written = append(written, writtenBlock{fits: fits[position], inserted: !kept})
 	}
@@ -369,25 +407,28 @@ func (b *BlockIndexing) planBlockTexts(index BlockIndex, markdown, serverURL str
 	b.deleted = slices.Sorted(maps.Keys(stored))
 	for _, id := range b.deleted {
 		b.textIDs, b.texts = append(b.textIDs, id), append(b.texts, nil)
+		delete(respellable, id)
 	}
 	// The same changed blocks by id, which the node step and the link step look a block up in.
 	changed := make(map[string]struct{}, len(b.ids))
 	for _, id := range b.ids {
 		changed[id] = struct{}{}
 	}
-	return blockTexts{held: held, nodeless: nodeless, written: written, changed: changed}
+	return blockTexts{held: held, respellable: respellable, nodeless: nodeless, written: written, changed: changed}
 }
 
 // blockTexts is what planBlockTexts finds of the version's blocks against the rows the index
 // holds, for the steps that state the blocks' nodes (planBlockNodes) and the links they hold
-// (planLinks): held, each block's row as the indexing leaves it; nodeless, the blocks whose row
-// names no node; written, beside each of BlockIndexing.ids in order, what the pass writes of that
-// block; and changed, the same blocks by id.
+// (planLinks): held, each block's row as the indexing leaves it; respellable, the blocks the
+// index holds as respellable once the indexing is written, before KeepRespelled keeps any;
+// nodeless, the blocks whose row names no node; written, beside each of BlockIndexing.ids in
+// order, what the pass writes of that block; and changed, the same blocks by id.
 type blockTexts struct {
-	held     map[string]storedBlock
-	nodeless []nodelessBlock
-	written  []writtenBlock
-	changed  map[string]struct{}
+	held        map[string]storedBlock
+	respellable map[string]int
+	nodeless    []nodelessBlock
+	written     []writtenBlock
+	changed     map[string]struct{}
 }
 
 // writtenBlock is one block whose document_blocks row the pass writes: whether its address fits
@@ -427,13 +468,68 @@ func (b *BlockIndexing) planLinks(
 	// deleted those rows, and moved what they showed, when it wrote its version.
 	b.stated.Tuples = append(b.stated.Tuples, unheldLinks(statement, b.refKey, b.pairs, links, b.versionAt, writer)...)
 	// A pair held by a block whose text this version moved is a link whose excerpt moved with
-	// it, which is the same set of blocks the node step (planBlockNodes) stated nodes for.
+	// it: the blocks the node step (planBlockNodes) stated nodes for, until KeepRespelled takes
+	// the blocks it keeps out of that set and sets these targets again (moveChangedBlockLinks).
+	b.linkMoves = len(b.moved)
+	b.moveChangedBlockLinks(changed)
+	return heldLinks, nil
+}
+
+// moveChangedBlockLinks sets the targets Moved answers after the first linkMoves, those of the
+// links the version inserts, deletes or retypes: the target of every link the version writes in a
+// block whose text it changed (changed), whose excerpt moved.
+func (b *BlockIndexing) moveChangedBlockLinks(changed map[string]struct{}) {
+	b.moved = b.moved[:b.linkMoves]
 	for _, pair := range b.pairs {
 		if _, wrote := changed[pair.blockID]; wrote {
 			b.moved = append(b.moved, pair.target)
 		}
 	}
-	return heldLinks, nil
+}
+
+// KeepRespelled decides which of the plan's candidates hold the text recorded for them at their
+// changed version in another renderer version's spelling of the same tree (respelledBlocks),
+// reading through q, and takes each it keeps out of the blocks the version changes: its row keeps
+// its changed version and time and takes this text's sha256 and excerpt (Queue), no text is
+// recorded for it at this version, a link it holds is not counted for its excerpt, and the index
+// holds it as respellable still (Held). It is the read half of the plan, run in the caller's read
+// phase right after PlanBlocks and before every other use of the indexing (Moved, Cited, Held,
+// Queue), so the parse and render it makes (pmdoc.FragmentReadsAs) hold no transaction id. It
+// reads nothing when the plan named no candidate (aloneCandidates), as for a pass that lost the
+// revision fence, so a version that moves no such block pays nothing for it.
+func (b *BlockIndexing) KeepRespelled(ctx context.Context, q Queryer) error {
+	kept, err := respelledBlocks(ctx, q, b.artifactID, b.candidates)
+	b.candidates = nil
+	if err != nil || len(kept) == 0 {
+		return err
+	}
+	keep := make(map[string]struct{}, len(kept))
+	for _, candidate := range kept {
+		keep[candidate.block.ID] = struct{}{}
+		b.respelledIDs, b.respelledSums = append(b.respelledIDs, candidate.block.ID), append(b.respelledSums, candidate.sum)
+		b.respelledExcerpts = append(b.respelledExcerpts, candidate.excerpt)
+		b.held.respellable[candidate.block.ID] = candidate.storedAt
+	}
+	changed := make(map[string]struct{}, len(b.ids))
+	for index, id := range b.ids {
+		if _, respelled := keep[id]; respelled {
+			continue
+		}
+		at := len(changed)
+		b.ids[at], b.types[at], b.sums[at], b.excerpts[at] = id, b.types[index], b.sums[index], b.excerpts[index]
+		changed[id] = struct{}{}
+	}
+	b.ids, b.types, b.sums, b.excerpts = b.ids[:len(changed)], b.types[:len(changed)], b.sums[:len(changed)], b.excerpts[:len(changed)]
+	recorded := 0
+	for index, id := range b.textIDs {
+		if _, respelled := keep[id]; !respelled {
+			b.textIDs[recorded], b.texts[recorded] = id, b.texts[index]
+			recorded++
+		}
+	}
+	b.textIDs, b.texts = b.textIDs[:recorded], b.texts[:recorded]
+	b.moveChangedBlockLinks(changed)
+	return nil
 }
 
 // Moved is the targets of the links the indexing inserts or deletes, and of those whose block
@@ -473,17 +569,18 @@ func (b BlockIndexing) Held() BlockIndex {
 
 // Queue queues the indexing's writes on a write phase's batch, which its caller runs in the
 // transaction holding the document's owner lock: the revision fence first (queueStand), then the
-// nodes of the blocks it states (graphstore.QueueNodes), then the blocks the version deleted,
-// which document_blocks loses, and the blocks it changed, with their excerpts and their node
-// columns; the text each of those blocks has at this version, recorded in document_block_texts, a
-// deleted block's as no text, after which the edges at it stop resolving until a version holds
-// its id again; the parent of each block it places, with its node columns; the links its blocks
-// hold; and the version recorded as indexed (document_indexed_versions). It queues no window of
-// its own. A pass that lost the fence queues nothing, and one whose row the fence's statement
-// refuses fails the batch there (queueStand). Whether the stand clears the document's mark is
-// the stand's own statement's to decide, and none of the statements after it reads the mark, so
-// a pass whose stand leaves a mark of a higher rule writes what it writes otherwise and no
-// statement of it assumes the mark gone.
+// nodes of the blocks it states (graphstore.QueueNodes), then the blocks KeepRespelled kept,
+// which take this text's sha256 and excerpt and keep their changed version and time, then the
+// blocks the version deleted, which document_blocks loses, and the blocks it changed, with their
+// excerpts and their node columns; the text each of those blocks has at this version, recorded in
+// document_block_texts, a deleted block's as no text, after which the edges at it stop resolving
+// until a version holds its id again; the parent of each block it places, with its node columns;
+// the links its blocks hold; and the version recorded as indexed (document_indexed_versions). It
+// queues no window of its own. A pass that lost the fence queues nothing, and one whose row the
+// fence's statement refuses fails the batch there (queueStand). Whether the stand clears the
+// document's mark is the stand's own statement's to decide, and none of the statements after it
+// reads the mark, so a pass whose stand leaves a mark of a higher rule writes what it writes
+// otherwise and no statement of it assumes the mark gone.
 //
 // A pair (block, target) that survives keeps its created version, time and source event. A new
 // pair takes this version and versionAt, and the source event QueueStamp gives it. On the
@@ -496,6 +593,13 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 	artifactID, version := b.artifactID, b.version
 	b.queueStand(batch)
 	graphstore.QueueNodes(batch, b.stated)
+	if len(b.respelledIDs) > 0 {
+		batch.Queue(fmt.Sprintf("record the blocks version %d of %s holds respelled", version, artifactID), `
+			update document_blocks d set text_sha256 = r.sum, excerpt = r.excerpt
+			from unnest($2::text[], $3::text[], $4::text[]) as r (id, sum, excerpt)
+			where d.artifact_id = $1 and d.block_id = r.id
+		`, artifactID, b.respelledIDs, b.respelledSums, b.respelledExcerpts)
+	}
 	if len(b.deleted) > 0 {
 		batch.Queue(fmt.Sprintf("delete the blocks version %d of %s no longer holds", version, artifactID), `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)
@@ -535,13 +639,14 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 
 // IndexBlocks indexes version's blocks of artifactID in tx at once: the document's index read
 // (ReadBlockIndex) with what the version's own row says of it (ReadIndexedVersion), the plan
-// (PlanBlocks) and the blocks it cites (Cited), and its statements run as a batch of their own
-// (Queue, store.RunWrite). It is the whole index for a writer with no write phase to queue it on:
-// the seed, and a test that indexes a version itself, each at this build's marking rule
-// (BlockIndexMarkingRule). It answers the targets the indexing moves, the cited blocks among them,
-// whether it won the revision fence, and what it states in the node and tuple store, for the
-// caller to append under its cause (graphstore.Caused). serverURL is the deployment whose
-// dashboard URLs each block's excerpt is cut around (BlockExcerpt).
+// (PlanBlocks), the blocks it keeps across another renderer version's spelling (KeepRespelled)
+// and the blocks it cites (Cited), as docs' planBlockIndex runs them, and its statements run as a
+// batch of their own (Queue, store.RunWrite). It is the whole index for a writer with no write
+// phase to queue it on: the seed, and a test that indexes a version itself, each at this build's
+// marking rule (BlockIndexMarkingRule). It answers the targets the indexing moves, the cited
+// blocks among them, whether it won the revision fence, and what it states in the node and tuple
+// store, for the caller to append under its cause (graphstore.Caused). serverURL is the deployment
+// whose dashboard URLs each block's excerpt is cut around (BlockExcerpt).
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -571,6 +676,9 @@ func IndexBlocks(
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers, ServerURL: serverURL,
 	})
 	if err != nil {
+		return nil, false, graphstore.Uncaused{}, err
+	}
+	if err := indexing.KeepRespelled(ctx, tx); err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	cited, err := indexing.Cited(ctx, tx)
@@ -948,31 +1056,45 @@ type storedBlock struct {
 	named  bool
 }
 
-// storedBlocks is each block the document's index holds, by id.
+// storedBlocks is each block the document's index holds, by id, and, by id, the version its text
+// last changed in for each block whose changed version another renderer version stored or none
+// stamped (pmdoc.OtherRenderer), which a version the document no longer has counts as.
 //
-// It reads the node columns and the row's created_at beside the digest, in the one read of the
-// document's rows the plan takes, because the pass writes a node and a membership for every row
-// that names none (PlanBlocks) and a second read of the same rows would cost a scan of the
-// document for every version.
-func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string]storedBlock, error) {
+// It reads the node columns, the row's created_at and the renderer stamp of its changed version
+// beside the digest, in the one read of the document's rows the plan takes, because the pass
+// writes a node and a membership for every row that names none (PlanBlocks) and a second read of
+// the same rows would cost a scan of the document for every version.
+func storedBlocks(ctx context.Context, q Queryer, artifactID string) (map[string]storedBlock, map[string]int, error) {
 	rows, err := q.Query(ctx, `
-		select block_id, text_sha256, created_at, node_kind is not null and node_address is not null
-		from document_blocks where artifact_id = $1
+		select b.block_id, b.text_sha256, b.created_at, b.node_kind is not null and b.node_address is not null,
+		       b.changed_version, v.renderer_version
+		from document_blocks b
+		left join artifact_versions v on v.artifact_id = b.artifact_id and v.number = b.changed_version
+		where b.artifact_id = $1
 	`, artifactID)
 	if err != nil {
-		return nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
+		return nil, nil, fmt.Errorf("read the blocks of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
 	stored := make(map[string]storedBlock)
+	var respellable map[string]int
 	for rows.Next() {
 		var id string
 		var held storedBlock
-		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named); err != nil {
-			return nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
+		var changedVersion int
+		var stamp *int
+		if err := rows.Scan(&id, &held.sum, &held.joined, &held.named, &changedVersion, &stamp); err != nil {
+			return nil, nil, fmt.Errorf("scan a block of %s: %w", artifactID, err)
 		}
 		stored[id] = held
+		if pmdoc.OtherRenderer(stamp) {
+			if respellable == nil {
+				respellable = make(map[string]int)
+			}
+			respellable[id] = changedVersion
+		}
 	}
-	return stored, rows.Err()
+	return stored, respellable, rows.Err()
 }
 
 // blockPair is one link a block holds: the block's id, the edge's kind and its target, and the

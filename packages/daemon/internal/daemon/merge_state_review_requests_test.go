@@ -29,6 +29,7 @@ import (
 // `requested_teams`, people, Apps and teams alike, and both count; an answer that holds neither
 // list is no count at all, which the round does not end on, never a count of zero.
 func TestAReadOfOnePullRequestCountsItsOpenReviewRequests(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, body string
 		want       *int
@@ -57,6 +58,7 @@ func TestAReadOfOnePullRequestCountsItsOpenReviewRequests(t *testing.T) {
 // check run IN_PROGRESS). A status GitHub counts EXPECTED, required and never reported, is not
 // running. A rollup with no counts reads as no rollup.
 func TestABatchAnswerReadsTheHeadsRollupOnlyForTheHeadItNames(t *testing.T) {
+	t.Parallel()
 	node := func(head string, commits map[string]any) graphQLPull {
 		var pull graphQLPull
 		body := batchNode(86, head, "MERGEABLE", "BLOCKED")

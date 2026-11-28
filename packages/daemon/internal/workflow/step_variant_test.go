@@ -27,6 +27,7 @@ import (
 // with no row, and every step record row of each is read as the outbox holds it, its payload as
 // raw JSON.
 func TestEachStepRecordNamesTheVariantOfItsIssue(t *testing.T) {
+	t.Parallel()
 	walks := []struct {
 		name string
 		// from is the phase LEGION-208 stands at before the walk.
@@ -111,6 +112,7 @@ func TestEachStepRecordNamesTheVariantOfItsIssue(t *testing.T) {
 // a start that names neither. The run is the tester's, which the release before started, so its
 // place has no row until the boot.
 func TestTheStartTheBootOpensNamesTheVariantOfItsIssue(t *testing.T) {
+	t.Parallel()
 	for _, drawn := range []bool{true, false} {
 		name := "of an issue with no group"
 		if drawn {

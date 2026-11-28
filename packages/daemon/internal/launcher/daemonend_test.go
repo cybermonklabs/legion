@@ -80,14 +80,6 @@ func listenForLauncher(t *testing.T, tokens ...string) *daemonEnd {
 	})
 }
 
-// shimHello is the opening of a shim under test: its hello, carrying bootToken.
-func shimHello(bootToken string) func(shimwire.Frame) bool {
-	return func(frame shimwire.Frame) bool {
-		hello, ok := frame.(shimwire.Hello2)
-		return ok && hello.BootToken == bootToken
-	}
-}
-
 // listenFor listens on a loopback port the kernel picks, for code under test whose connections
 // open with a frame opens accepts, and starts the accept loop. Its cleanup, registered before the
 // code's own, runs after the code has stopped: it closes the listener and every connection the

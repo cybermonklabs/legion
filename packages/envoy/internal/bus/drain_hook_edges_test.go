@@ -142,11 +142,7 @@ func TestASlowDeliveryLeavesTheDrainHooksTheirShare(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-slow", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	left := make(chan time.Duration, 1)
 	client.AddDrainHook(func(ctx context.Context) {
 		deadline, _ := ctx.Deadline()
@@ -185,11 +181,7 @@ func TestADeliveryKeepsTenSecondsOfTheListenersDrain(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-window", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	type observed struct {
 		delivered bool
 		left      time.Duration
@@ -235,11 +227,7 @@ func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	if err := client.Conn.Publish("notifications.role.drain-stuck", nil); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the delivery never reached its handler")
-	}
+	testwait.Receive(t, "the delivery to reach its handler", started)
 	watcher.Stop()
 	began := time.Now()
 	err = client.Drain(3 * time.Second)

@@ -9,6 +9,7 @@ import type {
   IssueDetails,
   IssueRouteStatus,
   SearchResultKind,
+  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
@@ -22,6 +23,7 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
+import { printable, printableJson } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
@@ -47,6 +49,7 @@ import {
   writeMayHaveLanded,
 } from "./failures";
 import { linkFor } from "./links";
+import { observedAsKept } from "./observed-text";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
@@ -595,11 +598,49 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** A Unicode format character (Cf), which `breaksRow` quotes. */
+const FORMAT_CHARACTER = /\p{Cf}/u;
+
+/** Whether a title, a label or a holder's name holds what can split an issue's one-line row or
+ *  forge a part of it: the ` · ` that parts the row, the `, ` that parts the labels, a `"` that
+ *  opens or closes a quoted part, any control or line-separating character (C0, DEL, C1 with
+ *  U+0085, U+2028, U+2029), and any Unicode format character (Cf: a zero-width or bidirectional
+ *  mark, which can hide or reorder what a row shows). Lookalikes of `·` are left out: the row
+ *  prints the parent as a part of its own. Dispatch trims only a title's ends (`issue_create.go`,
+ *  `issue_patch.go`) and a label's (`normalizeIssueLabels`), and an agent writes a session's
+ *  title, which names a claim's holder, so a part holding any of them is printed quoted
+ *  (`rowPart`), as a route's holder is: a title or a holder holding ` · child of ACME-9` then
+ *  cannot read as a child's row, and a reader that skips what is in quotes skips each quoted part
+ *  whole. */
+function breaksRow(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029) {
+      return true;
+    }
+    if (character === "·" || character === "," || character === '"') return true;
+    if (FORMAT_CHARACTER.test(character)) return true;
+  }
+  return false;
+}
+
+/** One part of a row as `breaksRow` says: as written, or quoted as JSON quotes it, with the three
+ *  separators JSON leaves raw (U+0085, U+2028, U+2029) escaped too, so no quoted part splits the
+ *  row for a reader that breaks lines on them. */
+function rowPart(value: string): string {
+  if (!breaksRow(value)) return value;
+  return JSON.stringify(value).replace(
+    /[\u0085\u2028\u2029]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
 /** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
 export function printsJson(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_issues" && args["json"] === true;
+  const { json } = args;
+  return tool === "dispatch_issues" && json === true;
 }
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
@@ -680,17 +721,24 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
             ...rows.map((row) => {
               const progress = progressText(row.progress, " · ");
               return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
+                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+                rowPart(row.title) +
+                // The help says each row carries its parent and labels: a root names no parent, so
+                // a reader of the text tells the open roots from their children.
+                (row.parent ? ` · child of ${row.parent}` : "") +
+                (row.labels.length === 0 ? "" : ` · labels ${row.labels.map(rowPart).join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-                (row.claim === null ? "" : ` · claimed by ${claimText(row.claim, agents)}`) +
+                (row.claim === null
+                  ? ""
+                  : ` · claimed by ${claimText(row.claim, agents, {}, rowPart)}`) +
                 (progress === "" ? "" : ` · ${progress}`) +
                 // A route that reaches a live session changes nothing about the row; one
                 // that reaches nobody, or cannot be judged, is what the owner audit reads.
                 (row.route === null || row.route_status === "live" || row.route_status === null
                   ? ""
-                  : ` · route ${routeText(row)}`)
+                  : ` · route ${routeText(row, undefined, rowPart)}`)
               );
             }),
           ].join("\n"),
@@ -699,17 +747,96 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
- *  `dispatch result` record, whose dry run prints the pull-request body line the record would
- *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
+ *  `dispatch result` record of an issue's check, whose dry run prints the pull-request body line
+ *  the record would print, since that line is Dispatch's to write and a copy written here would
+ *  be a second grammar. Every other dry run, a retraction's and a CI job's record of a check of
+ *  the spec files (`project`) included, prints the arguments and writes nothing. A command whose
+ *  call asks Dispatch something before it writes asks that too, through its step in the command
+ *  table (`DispatchCommand.dryRun`): `dispatch artifact` asks how Dispatch would store its text.
+ *  A dry run with no such question sends nothing.
+ */
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
+  const { retract, project } = args;
+  return tool === "dispatch_result" && retract === undefined && project === undefined;
 }
 
-/** `dispatch result`: record one result of one check of an issue's Verification document, or, as
- *  the CLI's dry run, ask Dispatch for the pull-request body line the record would print. */
+/**
+ * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
+ * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
+ * reader keeps, whose recorder is the run and no person. It sends what a result keeps of observed
+ * (`observedAsKept`). The job runs it with its own identity and no session (`runDispatchCli`), and
+ * a session's call reaches it through `resultCommand`.
+ */
+export async function specCheckResultCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const observed = optionalString(args, "observed");
+  const stored = await client.recordSpecCheckResult(project, {
+    commit: stringArg(args, "commit"),
+    check: stringArg(args, "check"),
+    verdict: stringArg(args, "verdict"),
+    ...(observed === undefined ? {} : { observed: observedAsKept(observed) }),
+  });
+  const { predicate } = stored.attestation;
+  return {
+    text: JSON.stringify(stored, null, 2),
+    details: {
+      project,
+      result: stored.id,
+      seq: stored.seq,
+      check: predicate.check,
+      verdict: predicate.verdict,
+    },
+  };
+}
+
+/** One stored result of a check of the spec files, as `dispatch results --project` lists it:
+ *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
+ *  the commit. Each of them is a CI job's or the stored statement's text, so it prints by the rule
+ *  of a runner's log (`printable`, runner-log.ts): a listing read in a job's log starts no line of
+ *  its own and names no workflow command. */
+function specCheckResultLine(result: SpecCheckResult): string {
+  const { predicate, subject } = result.attestation;
+  const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
+  // biome-ignore lint/complexity/useLiteralKeys: digest is an index signature, and claude-envoy's tsconfig refuses dot access on one.
+  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
+  return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
+}
+
+/** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
+ *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
+ *  results as JSON with `json`, each by the rule of a runner's log (runner-log.ts). */
+async function specCheckResultsCommand(
+  client: DispatchClient,
+  args: Record<string, unknown>
+): Promise<DispatchToolResult> {
+  const project = stringArg(args, "project");
+  const commit = stringArg(args, "commit");
+  const check = optionalString(args, "check");
+  const results = (await client.specCheckResults(project, commit, check)).results ?? [];
+  const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
+  const text =
+    optionalBoolean(args, "json") === true
+      ? printableJson(JSON.stringify(results, null, 2))
+      : results.length === 0
+        ? `No result of ${what} is stored at ${printable(commit)}.`
+        : [
+            `Results of ${what} at ${printable(commit)}, newest first:`,
+            ...results.map(specCheckResultLine),
+          ].join("\n");
+  return { text, details: { project, commit, results: results.length } };
+}
+
+/** `dispatch result`: record one result of one check of an issue's Verification document, or,
+ *  with `project`, a CI job's result of a check of the spec files; or, as the CLI's dry run of
+ *  an issue's record, ask Dispatch for the pull-request body line the record would print. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultCommand(client, args);
+  }
   const retract = optionalString(args, "retract");
   if (retract !== undefined) {
     const retraction = await client.retractResult(retract, {
@@ -785,16 +912,37 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, or, with `project`, the results CI jobs stored for checks of the spec files. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
+  if (optionalString(args, "project") !== undefined) {
+    return await specCheckResultsCommand(client, args);
+  }
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
+  // A basis omits the issue's own repository. Resolve it only for the two answers that name
+  // that repository, once per check owner, including a check inherited from an ancestor.
+  const repositories: Record<string, string> = {};
+  const owners = new Set(
+    checks
+      .filter(
+        (check) =>
+          check.pass_stands?.reason === "program_not_named" ||
+          check.pass_stands?.reason === "no_deploy"
+      )
+      .map((check) => check.issue_key)
+  );
+  await Promise.all(
+    [...owners].map(async (owner) => {
+      const issue = await client.getIssue(owner);
+      if (issue.resolved_repo != null) repositories[owner] = issue.resolved_repo;
+    })
+  );
   return {
-    text: formatCheckResults(results, brief),
+    text: formatCheckResults(results, brief, repositories),
     details: {
       issue,
       checks: checks.length,
