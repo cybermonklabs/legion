@@ -72,10 +72,11 @@ trap 'kill "$sampler" 2>/dev/null || true' EXIT
 export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
 # Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
 export DISPATCH_E2E_PG_CONNECTIONS=$connections
-# What the binaries job built, which run-server.sh and run-broker.sh
-# execute instead of building: the server by its path, the broker's three by the
-# directory that holds them.
+# What the binaries job built, which run-server.sh, run-signin-issuer.sh and run-broker.sh
+# execute instead of building: the server and the sign-in issuer by their paths, the broker's
+# three by the directory that holds them.
 export DISPATCH_E2E_SERVER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dispatch"
+export DISPATCH_E2E_ISSUER_BIN="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker/dev-oidc-issuer"
 export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatch-e2e-broker"
 # The blob report this leg hands the merge job. Its name carries the leg, so the legs'
 # reports keep their own names when the merge job downloads them into one directory.
