@@ -30,8 +30,9 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// staleBound is the kvwatch stale bound the listener's session and interest copies run with: their
-// buckets' MaxAge is 5 minutes or none, so the 2-minute default applies.
+// staleBound is the kvwatch stale bound the listener's session and interest copies run with: the
+// session bucket's MaxAge (session.BucketMaxAge) is more than twice it and the interest bucket has
+// none, so the 2-minute default applies.
 const staleBound = 2 * time.Minute
 
 // assertListRefilling fails the test unless response is the list routes' refilling answer: 503,
@@ -61,7 +62,9 @@ func assertListRefilling(t *testing.T, response *http.Response) {
 	}
 }
 
-// listenerClock is the injected clock the rig's watchers measure a stale episode on.
+// listenerClock is a clock a test injects and moves by hand, under a lock because the listener's
+// own goroutines read it: the rig's watchers measure a stale episode on it, and the known-session
+// store's sweeper reads it (knownSessionRig).
 type listenerClock struct {
 	mu  sync.Mutex
 	now time.Time
@@ -525,6 +528,7 @@ func TestACompleteEmptyCopyListsNothingAndCountsZero(t *testing.T) {
 // copy holds nothing for included, where a read-through of that session's interest would wait out
 // its 10 s deadline. GET /v1/interests/ and the gauges read no bucket either.
 func TestTheListsMakeNoNATSReadWhileNATSStalls(t *testing.T) {
+	t.Parallel()
 	const bound = 5 * time.Second
 	rig := newListRig(t, listRigOptions{})
 	rig.seed(t, "ses_stall_joined")

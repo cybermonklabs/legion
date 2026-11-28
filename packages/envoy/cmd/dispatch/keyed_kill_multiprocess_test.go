@@ -56,6 +56,8 @@ const leaseMargin = 10 * time.Second
 // which is where a process dies with nothing of the write committed; the kill is SIGKILL, so no
 // shutdown drains it.
 func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 2)
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "KIL")
 	pair.a.createProject(t, project, "Killed mid-write")

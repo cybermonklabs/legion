@@ -153,7 +153,7 @@ func proxyFaults(now policy.Profiles, tags *storeTags) (refused, unknown []strin
 		source, read := sources[p.Source]
 		switch {
 		case tags != nil && !read:
-			fault("profile", name, now.SourceMissingFault(p.Source, refusedReason[p.Source], refusedDetail[p.Source]))
+			fault("profile", name, now.SourceMissingFault(p, refusedReason[p.Source], refusedDetail[p.Source]))
 			continue
 		case tags == nil && p.ProxyKind == "" && len(now.Kinds()) > 0:
 			unknown = append(unknown, fmt.Sprintf("profile %q: its kind is its source %s's %s tag, which was not read (no --secrets-json), so it was held to no kind", name, p.Source, policy.TagProxy))

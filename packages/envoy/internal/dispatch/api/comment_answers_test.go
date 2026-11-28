@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -341,7 +342,7 @@ func TestADeliveryCallbackReplyAnswersTheCommentItWasHanded(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "A callback's reply", "before")
 
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The root."}, "alice")

@@ -39,8 +39,8 @@ func p0BoundAnswerFixtures(t *testing.T) map[AnswerID]answerFixture {
 	}
 }
 
-// TestACallerInNoPodStatingNoContractIsServedTheP0Holders: Dispatch's sampler reads the state
-// stating no plugin contract, from an address no claim's pod names, so contractsFor places it at
+// TestACallerInNoPodStatingNoContractIsServedTheP0Holders: Dispatch's whole read of the state
+// states no plugin contract, from an address no claim's pod names, so contractsFor places it at
 // this daemon's own body, which carries `admission.p0Holders`, the number the Legion board's
 // header copies (dispatch://INFRA-5636; Dispatch's own row,
 // TestTheStateReadStatesNoContractAndKeepsP0Holders, pins that its read states none). The caller

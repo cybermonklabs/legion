@@ -536,6 +536,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 // at reportLate's WARN, which the lane logs inside it; the control row hands off while the try is
 // in flight, which claimedDuring catches.
 func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	for _, tc := range []struct {
 		name  string
 		atLog bool

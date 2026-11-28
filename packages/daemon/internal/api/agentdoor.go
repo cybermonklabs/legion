@@ -71,6 +71,10 @@ type ClaimRequest struct {
 // recoveries in the paths they share with the operator's door (freshSession, compact). No agent
 // action undoes the pause, which the project's resume alone lifts. The stop and the suspension
 // start nothing and are let through, as the operator's are.
+//
+// startsTheAgent is whether the action's event starts the agent's session, the resume's alone:
+// its answer is given once the start is under way, never once it ended (agentEventAction,
+// startUnderWay, dispatch://INFRA-5649 R4), as the operator's resume is answered.
 type agentAction struct {
 	name                 string
 	invalidRole          string
@@ -78,6 +82,7 @@ type agentAction struct {
 	did                  string
 	refusesATurn         bool
 	controllerPassesHold bool
+	startsTheAgent       bool
 	cutsTheTurn          string
 	reaches              string
 	liveStates           string

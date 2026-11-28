@@ -16,6 +16,7 @@ import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { forgetBrokerClients } from "../broker-credential";
 import type { EnvoyEnvironment } from "../envoy-settings";
 import { brokerNatsCredential } from "../nats-credential";
@@ -89,16 +90,19 @@ test("a session back from a session whose registration is missing takes its own 
     () => "renewed",
     () => "refused"
   );
-  while (!broker.trades.includes(UNREGISTERED)) await Bun.sleep(10);
-  // The host is back on its own session, which is registered, and renews for it.
+  await until("the renewal for the unregistered session in flight", () =>
+    broker.trades.includes(UNREGISTERED)
+  );
+  // The host is back on its own session, which is registered, and renews for it: a renewal held
+  // behind the one in flight would not answer, and the wait for it fails at the row's deadline.
   session = REGISTERED;
-  const back = await Promise.race([
+  const back = await settled(
+    "the renewal for the session the host is back on",
     credential.renew().then(
       () => "renewed",
       (error: unknown) => `refused: ${error instanceof Error ? error.message : String(error)}`
-    ),
-    Bun.sleep(5_000).then(() => "still waiting after 5 s"),
-  ]);
+    )
+  );
   // The row can fail for the defect: the broker was asked for the unregistered session first.
   expect(broker.trades[0]).toBe(UNREGISTERED);
   expect(back).toBe("renewed");
@@ -106,4 +110,4 @@ test("a session back from a session whose registration is missing takes its own 
   const presented = (credential.authenticator("bm9uY2U") as { auth_token: string }).auth_token;
   expect(broker.minted.get(presented)).toBe(REGISTERED);
   void away;
-}, 20_000);
+});

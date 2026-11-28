@@ -119,6 +119,12 @@ func newCopiesRig(t *testing.T) *copiesRig {
 	consumers.deps.delivery.now = listenerClock.Now
 	consumers.harness.config.now = listenerClock.Now
 	consumers.deps.confirmed = newConfirmedRecord(t)
+	// The known-session store is open, as main always opens one: a claim naming the session it
+	// replaces hands that session's messages over only on its record (handoverRefusal), and each
+	// pass of the handover record holds the two sessions to it again (handoverStands).
+	consumers.deps.known = openKnownSessionsOn(t, client.Conn, time.Now)
+	consumers.deps.delivery.known = consumers.deps.known
+	consumers.harness.config.known = consumers.deps.known
 	relays, err := startSessionRelays(consumers.deps.consumers, *consumers.deps.delivery)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
@@ -528,6 +534,7 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // (framesNoReadCanTellTheRoleOf): the pass copies each of the first, which reaches B once, and
 // none of the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
+	t.Parallel()
 	t.Run("1 an outright claim by a different session after the holder crashed inside its live window", func(t *testing.T) {
 		copiesUnreadRoleMessagesRow(t, false)
 	})

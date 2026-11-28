@@ -1,9 +1,11 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -12,7 +14,11 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = temporaryDirectory("skill-scenarios-score");
+// The world the hook below stages there is 1,355 directories and 3,649 files, made in that one hook
+// and removed in the fixture's one `afterAll`, so it is on the memory root (memoryRoot): on the dev
+// box's shared disk the staging hook took 3,065 ms to 14,537 ms and timed out against Bun's 5 s
+// (dispatch://INFRA-4311). pushWork, a small git repository, stays under tmpdir().
+const work = temporaryDirectory("skill-scenarios-score", { root: memoryRoot() });
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
@@ -26,17 +32,52 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  * selects no row of this file runs no hook of it, where a module body that staged its world
  * would leave every file of it behind.
  */
-const stagings: (() => void)[] = [];
+const stagings: (() => void | Promise<void>)[] = [];
 
-beforeAll(() => {
+/**
+ * The guard of each of this file's two `beforeAll` hooks, the staging below and the scoring further
+ * down, which run the processes the rows read (the seven `git` commands of the pushed-code run,
+ * then `bun score.ts runs` over the staged world). Each hook passes it as its own timeout for Bun's
+ * kill and to `useRowGuard` for the shared wait's deadline, so a child that never exits fails the
+ * hook by name first. No row mark falls between the two hooks, so a wait in the scoring hook counts
+ * from the same mark as the staging hook's, the one taken before the file's first hook, and ends
+ * earlier than its own clock would allow, never later.
+ */
+const HOOK_GUARD_MS = 60_000;
+
+beforeAll(async () => {
+  useRowGuard(HOOK_GUARD_MS);
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
     writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
   }
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
-  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-}, 60_000);
+  for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) await stage();
+}, HOOK_GUARD_MS);
+
+/**
+ * Runs `command` to its exit and resolves to what it printed and its exit code. The exit is
+ * waited on through the shared wait, so a child that never exits fails the hook naming `what`
+ * before the hook's guard (`HOOK_GUARD_MS`); a child still running then is killed rather than
+ * outliving the run (a no-op for one that exited).
+ */
+async function exitOf(what: string, command: string[], env?: Record<string, string | undefined>) {
+  const child = Bun.spawn(command, { env, stdout: "pipe", stderr: "pipe" });
+  try {
+    const [stdout, stderr, exitCode] = await settled(
+      what,
+      Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+    );
+    return { stdout, stderr, exitCode };
+  } finally {
+    child.kill("SIGKILL");
+  }
+}
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -130,6 +171,28 @@ const message = JSON.stringify({ message: { body: "Plan: re-check the attachment
 const capture = { "asks.json": "[]", "events.json": seeded, "message.json": message };
 run("ask-on-message-head-1", { ...capture, "out.txt": noKey }, header);
 run("ask-on-message-head-2", { ...capture, "out.txt": "exit=0\n" }, [...header, ...turn]);
+
+/** A request the model's route failed, as Oh My Pi writes it: an assistant message with no content
+ *  that stopped on an error. */
+const failedRequest = (errorMessage: string) => ({
+  type: "message",
+  message: { role: "assistant", content: [], stopReason: "error", errorMessage },
+});
+const unreachable = "Couldn't reach model.invalid (getaddrinfo ENOTFOUND).";
+const exhausted = `Retry budget exhausted after 10 retries: ${unreachable}`;
+// A turn whose retries ran out, and a turn whose retry recovered before its reply.
+run("ask-on-message-head-3", { ...capture, "out.txt": `${exhausted}\nexit=1\n` }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  failedRequest(exhausted),
+]);
+run("ask-on-message-head-4", { ...capture, "out.txt": "exit=0\n" }, [
+  ...header,
+  ...turn.slice(0, 1),
+  failedRequest(unreachable),
+  ...turn.slice(1),
+]);
 
 /** An assistant turn whose one tool call is `bash` running `command`, before the handoff write. */
 const bash = (command: string, id = "call-1", timestamp = "2026-09-30T17:27:30.000Z") => ({
@@ -269,26 +332,27 @@ recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
-stagings.push(() => {
-  const git = (...args: string[]) => {
-    const result = Bun.spawnSync(
+stagings.push(async () => {
+  const git = async (...args: string[]) => {
+    const result = await exitOf(
+      `git ${args.join(" ")} in the pushed-code repository to exit`,
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+      { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
-    return result.stdout.toString().trim();
+    return result.stdout.trim();
   };
-  git("init", "-q", "-b", "legion/LWEVAL-1");
+  await git("init", "-q", "-b", "legion/LWEVAL-1");
   writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 1;\n");
-  git("add", "-A");
-  git("commit", "-qm", "code");
-  const code = git("rev-parse", "HEAD");
+  await git("add", "-A");
+  await git("commit", "-qm", "code");
+  const code = await git("rev-parse", "HEAD");
   writeFileSync(path.join(pushWork, "greet.ts"), "export const greet = 2;\n");
-  git("commit", "-qam", "changed");
-  const pushed = git("rev-parse", "HEAD");
+  await git("commit", "-qam", "changed");
+  const pushed = await git("rev-parse", "HEAD");
   const remote = path.join(runs, "tester-proof-rec-4", "remote.git");
   mkdirSync(path.dirname(remote), { recursive: true });
-  git("clone", "-q", "--bare", pushWork, remote);
+  await git("clone", "-q", "--bare", pushWork, remote);
   recordRun("tester-proof-rec-4", {
     "world.json": worldOf(code),
     "calls.jsonl": calls([ranGreet, bodyEdit(code)]),
@@ -3111,11 +3175,17 @@ for (const [n, faults] of [2, 4, 3].entries())
  *  read in a hook, below the one that stages that world. */
 let out = "";
 let scoredExitCode: number | null = null;
-beforeAll(() => {
-  const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
-  out = scored.stdout.toString();
+beforeAll(async () => {
+  useRowGuard(HOOK_GUARD_MS);
+  const scored = await exitOf("`bun score.ts runs` over the staged world to exit", [
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+  ]);
+  out = scored.stdout;
   scoredExitCode = scored.exitCode;
-}, 60_000);
+}, HOOK_GUARD_MS);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3123,9 +3193,19 @@ test("a run whose agent never got a model turn is a rig error, not a failure", (
     expect(out).toContain(`${name}\trig error: `);
     expect(out).not.toContain(`${name}\tpass=`);
   }
-  // Pass counts over the one run that got a turn; the other is counted only as a rig error.
+  // Pass counts over the runs the rig could score; the others count only as rig errors.
   expect(out).toContain("tester-proof\thead\t0/1\t0/1\t1\t0\n");
-  expect(out).toContain("ask-on-message\thead\t0/1\t0/1\t1\t0\n");
+  expect(out).toContain("ask-on-message\thead\t0/2\t0/2\t2\t0\n");
+});
+
+// Catches: a run whose model's route was down scored as the agent's failure. Oh My Pi writes each
+// failed request as an assistant message, so such a run has assistant messages and did nothing.
+test("a run whose turn ended on a model error is a rig error, and one whose retry recovered is scored", () => {
+  expect(out).toContain(
+    `ask-on-message-head-3\trig error: a turn of the agent ended on a model error: ${exhausted}\n`
+  );
+  expect(out).not.toContain("ask-on-message-head-3\tpass=");
+  expect(out).toContain("ask-on-message-head-4\tpass=false\t");
 });
 
 test("a run whose agent got a turn and did nothing is a failure", () => {
@@ -4161,4 +4241,77 @@ test("the summary tables print how many counted runs carry a flag", () => {
   expect(out).toContain("\nscenario\tlabel\tpass\tpass+ref\trig errors\tflagged\n");
   expect(out).toContain("spec-writing\tflagged\t2/2\t2/2\t0\t1\n");
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
+});
+
+// owner-walk, a scored scenario: `score.ts runs <runs dir> --run <name>` writes one run's row.json.
+// A scored run must have run on its label's model, the `model` line of the built-from rig.sh copies
+// into the run, and on that model alone (unscored).
+const onModel = (model: string) => ({
+  type: "message",
+  message: {
+    role: "assistant",
+    provider: model.split("/")[0],
+    model: model.split("/").slice(1).join("/"),
+    content: [{ type: "text", text: "Done." }],
+  },
+});
+const scoredRun = (model: string | null) => ({
+  "out.txt": "exit=0\n",
+  "built-from": `checkout /checkouts/head\n${model === null ? "" : `model ${model}\n`}`,
+});
+// The header names the label's model, and an answer comes from another one.
+run("owner-walk-root-B-claude-head-1", scoredRun("anthropic/claude-opus-4-8"), [
+  ...header,
+  turn[0],
+  onModel("openai/gpt-6.1-sol"),
+]);
+// The whole session ran on a model other than the label's.
+run("owner-walk-root-B-claude-head-2", scoredRun("anthropic/claude-opus-4-8"), [
+  { ...header[0] },
+  { type: "model_change", model: "anthropic/claude-sonnet-5-5" },
+  turn[0],
+  onModel("anthropic/claude-sonnet-5-5"),
+]);
+// The label's built-from names no model.
+run("owner-walk-root-B-claude-head-3", scoredRun(null), [
+  ...header,
+  turn[0],
+  onModel("anthropic/claude-opus-4-8"),
+]);
+
+/** The row.json `score.ts runs <runs> --run <name>` writes for the run. */
+function scoredRowOf(name: string): { outcome: string; error?: string } {
+  const scored = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "runs",
+    runs,
+    "--run",
+    name,
+  ]);
+  expect(scored.exitCode).toBe(0);
+  return JSON.parse(readFileSync(path.join(runs, name, "row.json"), "utf8"));
+}
+
+// Catches: a scored run on a model its label did not name counted in its label's cells, as when a
+// fallback answered for the gateway's model.
+test("a run on another model is a rig error", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-1")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names 2 models, anthropic/claude-opus-4-8 and openai/gpt-6.1-sol: a scored run runs on its label's model alone",
+  });
+  expect(scoredRowOf("owner-walk-root-B-claude-head-2")).toMatchObject({
+    outcome: "rig-error",
+    error:
+      "its transcript names the model anthropic/claude-sonnet-5-5, and its label's built-from names anthropic/claude-opus-4-8",
+  });
+});
+
+// Catches: a model check that passes a run whose label names no model, which it cannot check.
+test("a scored run whose label's built-from names no model line is a rig error, saying so", () => {
+  expect(scoredRowOf("owner-walk-root-B-claude-head-3")).toMatchObject({
+    outcome: "rig-error",
+    error: "its label's built-from names no model line, so the run's model cannot be checked",
+  });
 });

@@ -291,6 +291,8 @@ func (r *roleActRig) requireNoForward(t *testing.T, window time.Duration) {
 // required to do what the record says: the role message, the kept-role sweep, the drain hold and
 // the handover's retry. The test logs the cases it ran and their count.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
+	// Not parallel: its handover retry surplus case requires the handover (drainKeptRole), which
+	// ends at its first lane read, to end inside roleKeepDrainRetryPause (1 s).
 	const (
 		holder = "ses_act_holder"
 		other  = "ses_act_other"
@@ -496,6 +498,8 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 // drives with the reads answering: the message and each kept copy reach the holder, and the
 // registration renews the claim with no WARN.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
+	// Not parallel: its failed-read handover case requires the handover (drainKeptRole), which
+	// ends at its first claim read that fails, to end inside roleKeepDrainRetryPause (1 s).
 	const holder = "ses_act_held"
 	for _, reads := range []struct {
 		name string

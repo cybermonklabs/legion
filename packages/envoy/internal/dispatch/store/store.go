@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/pgdsn"
 )
 
 // Store is the shared Dispatch database handle.
@@ -50,12 +51,22 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// DSNSetting names the setting Dispatch's DSN comes from, as the store's refusals name it (pgdsn).
+const DSNSetting = "DATABASE_URL"
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC) and gives back a large statement's encoded arguments when it returns to
-// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration.
+// its pool (argumentReleaser), as do the pools Pool.separate copies from its configuration. A URL
+// holding an "@" after its user part, where a password holding an "@" or a "/" leaves part of
+// itself, is refused by DSNSetting alone before anything connects (pgdsn.Refusal), and every
+// failure to parse, open or reach the database is named without the URL's password
+// (pgdsn.ConnectError), since Dispatch logs it.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	if err := pgdsn.Refusal(DSNSetting, databaseURL); err != nil {
+		return nil, err
+	}
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
 		return nil, err
@@ -67,18 +78,18 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
 	config.ConnConfig.Tracer = withArgumentRelease(config.ConnConfig.Tracer)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping Postgres: %w", err)
+		return nil, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	return &Store{Pool: NewPool(pool)}, nil
 }
@@ -127,7 +138,7 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 func declaresPoolSize(databaseURL string) (bool, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, pgdsn.ConnectError(DSNSetting, databaseURL, err)
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil
@@ -192,12 +203,23 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 	if version != math.MaxInt && !slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version == version }) {
 		return fmt.Errorf("migrate through %d: no embedded migration carries that version, none applied", version)
 	}
-	if err := s.prepareVersionTable(ctx, migrations); err != nil {
+	recorded, err := s.prepareVersionTable(ctx, migrations)
+	if err != nil {
 		return err
 	}
 	for _, migration := range migrations {
 		if migration.Version > version {
 			break
+		}
+		// The prepare read these as recorded under the key, in the transaction that judged every
+		// row of the table against this whole set, so this runner applies them no second time and
+		// would otherwise only recheck each one (applyMigrationOnce and
+		// applyNonTransactionalMigration, pgmigrate.RecheckRecorded). Each migration it did not
+		// read as recorded still goes through applyMigration, which judges the table again under
+		// the key before it applies anything, so a version another runner recorded in between is
+		// still found there.
+		if recorded[migration.Version] {
+			continue
 		}
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
@@ -382,7 +404,8 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 //
 // It then judges every row before the runner applies anything (pgmigrate.ReconcileRecorded, whose
 // rule pgmigrate.Reconcile states): a refusal writes nothing and applies nothing. The fills commit
-// with the table, and each is logged once they have (pgmigrate.LogFixes).
+// with the table, and each is logged once they have (pgmigrate.LogFixes). It answers the versions
+// that judgment read as recorded, which the runner applies nothing for (migrateThrough).
 //
 // The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
 // statement the runner sends on its version table runs under one set of values:
@@ -392,8 +415,9 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // transaction back and tries it again, as a migration is tried
 // (pgmigrate.RetryVersionTableLockTimeouts), so a boot that starts while a pg_dump or a census
 // holds the table waits it out within that bound rather than fail on its first wait.
-func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
+func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) (map[int]bool, error) {
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
+	applied := map[int]bool{}
 	var fixes []pgmigrate.Fix
 	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		fixes = nil
@@ -418,19 +442,23 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 			}); err != nil {
 				return err
 			}
-			_, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
+			rows, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
 			if err != nil {
 				return pgmigrate.Labelled(versionTable, err)
 			}
 			fixes = reconciled
+			clear(applied)
+			for _, row := range rows {
+				applied[row.Version] = true
+			}
 			return nil
 		})
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pgmigrate.LogFixes(versionTable, fixes)
-	return nil
+	return applied, nil
 }
 
 // applyMigration applies one migration of migrations, the boot's whole set, trying it again while

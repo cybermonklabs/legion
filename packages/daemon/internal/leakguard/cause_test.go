@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // A cause sentence is one line beginning RefusalPrefix, with the error underneath after a colon,
@@ -67,15 +69,17 @@ func partOf(text, planted string) string {
 	return ""
 }
 
-// The query and the userinfo of a URL are removed from the whole sentence before it is cut at
-// maxCauseBytes, so a token that the cut of the sentence as written would split leaves no part of
-// itself: the cause is the cut of the sentence with the credential gone.
+// The query of a URL is removed, and an authority holding an "@" written as the mark of a URL with
+// credentials, in the whole sentence before it is cut at maxCauseBytes, so a token that the cut of
+// the sentence as written would split leaves no part of itself: the cause is the cut of the
+// sentence with the credential gone.
 func TestACauseCutAtItsBoundKeepsNoPartOfAURLCredential(t *testing.T) {
 	what := "the daemon could not read " + checkRepository.String() + " at leak-check-v15"
 	download := "codeload.example/" + checkRepository.String() + "/legacy.tar.gz/refs/tags/leak-check-v15"
-	for _, tc := range []struct{ name, url, credential string }{
-		{"a token in the query", "https://" + download + "?token=" + plantedToken, "?token=" + plantedToken},
-		{"a token in the userinfo", "https://" + plantedUserinfo + "@" + download, plantedUserinfo + "@"},
+	// credential is what the URL rule takes out of the URL, and shown what it writes there.
+	for _, tc := range []struct{ name, url, credential, shown string }{
+		{"a token in the query", "https://" + download + "?token=" + plantedToken, "?token=" + plantedToken, ""},
+		{"a token in the userinfo", "https://" + plantedUserinfo + "@" + download, plantedUserinfo + "@codeload.example", redact.URLWithCredentials},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			head := RefusalPrefix + what + ": "
@@ -89,7 +93,7 @@ func TestACauseCutAtItsBoundKeepsNoPartOfAURLCredential(t *testing.T) {
 
 			got := Cause(what, errors.New(text))
 
-			if want := (head + strings.Replace(text, tc.credential, "", 1))[:maxCauseBytes]; got != want {
+			if want := (head + strings.Replace(text, tc.credential, tc.shown, 1))[:maxCauseBytes]; got != want {
 				t.Errorf("Cause = %q, want %q: the sentence with its URL credential removed, then cut", got, want)
 			}
 			if part := partOf(got, plantedToken); part != "" {

@@ -8,11 +8,11 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 ## Launched by the daemon (`controller: daemon`)
 
-The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
+The daemon runs you in a pod.
 
 ## What happened before you started
 
-The start procedure (`skill://legion-controller/SKILL.md`, *What happened before you started*). Every launch opens with a start message. Envoy keeps no wake sent while no controller ran, so on it:
+The start procedure (`skill://legion-controller/SKILL.md`, *What happened before you started*). Every launch opens with a start message. On it:
 
 1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it. Take them from the summary's `<KEY> done <status>` lines, ten keys an `issues` read, never from `phase: "done"`.
 2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).

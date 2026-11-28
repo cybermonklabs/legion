@@ -11,17 +11,19 @@ import (
 
 // workspaceProcess is what `legion workspace-init` reads of the process it runs in: its environment
 // (each variable it reads, the PATH it resolves git and jj on, the TMPDIR its one-shot credential
-// goes under, and the environment every git and jj it starts is built from), the clock its fetch's
-// retries read and wait on, the fetch's bound, the runner its commands run under, and whether it
+// goes under, and the environment every git and jj it starts is built from), the clock the fill of
+// `provision` waits on, the fill's bound, the runner its commands run under, and whether it
 // points the process's standard logger at its stderr for the run. A run as `legion` takes its
 // process's own (processWorkspace). A test runs the command inside its test process with one of
 // its own (runIn), so a test of the command changes nothing the whole test process shares.
 type workspaceProcess struct {
 	environ []string
-	// clock is what the fetch's clone retries read and wait on (workspace.FetchRequest's Clock).
+	// clock is what the fill of `provision` reads and sleeps on: its polls of a repository cache
+	// that is not ready and its backoff between transfers from GitHub (workspace.ForIssuePod).
 	clock workspace.Clock
-	// fetchBound is the fetch's workspace.FetchRequest.Bound, the time each clocked stage of the
-	// fetch gets. Zero is workspace.FetchTimeout.
+	// fetchBound is the time each clocked stage of that fill gets — the check of what the
+	// repository cache streamed, and each transfer from GitHub (workspace.ForIssuePod's bound).
+	// Zero is workspace.FetchTimeout.
 	fetchBound time.Duration
 	// newRunner is the runner the commands run under, given the environment its children's are
 	// built from, the slow-command budget (commandBudget) and the tools resolved on PATH.
@@ -35,7 +37,7 @@ type workspaceProcess struct {
 }
 
 // processWorkspace is this process's own: its environment as it started, the real clock, the
-// fetch's own bound, the production runner and the standard logger on stderr.
+// fill's own bound, the production runner and the standard logger on stderr.
 func processWorkspace() workspaceProcess {
 	return workspaceProcess{environ: os.Environ(), clock: clock.Real(), newRunner: workspace.NewRunnerIn, standardLog: true}
 }

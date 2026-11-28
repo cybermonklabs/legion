@@ -189,8 +189,8 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 	if answer.Act == nil || answer.Act.Session != brokerTestSession || answer.Act.TokenID != "" {
 		t.Fatalf("the stored answer's act = %+v, want the session the broker proved and no token row", answer.Act)
 	}
-	// The act records the scopes the credential held, and a broker token holds person alone,
-	// never approve (brokerTokenActor).
+	// The act records the scopes the credential held, and a broker token that acts for its
+	// person, but for an approve-only token, holds person alone, never approve (brokerTokenActor).
 	if !slices.Equal(answer.Act.Scopes, []string{model.ScopePerson}) {
 		t.Fatalf("the stored answer's act scopes = %v, want person alone", answer.Act.Scopes)
 	}
@@ -514,14 +514,7 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 		ID string `json:"id"`
 	}](t, commented).ID
 
-	var raw []byte
-	if err := database.Pool.QueryRow(context.Background(), `select author from comments where id = $1`, commentID).Scan(&raw); err != nil {
-		t.Fatalf("read the comment's author: %v", err)
-	}
-	var author model.Actor
-	if err := json.Unmarshal(raw, &author); err != nil {
-		t.Fatalf("decode the comment's author %s: %v", raw, err)
-	}
+	author := storedAuthor(t, database, commentID)
 	if author.Kind != "session" || author.ID != actingSession {
 		t.Fatalf("the comment's author = %s:%s, want the session it named", author.Kind, author.ID)
 	}
@@ -539,6 +532,7 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 // Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
 // word (credential_requests.go).
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	for _, test := range []struct {
 		name    string
 		session string

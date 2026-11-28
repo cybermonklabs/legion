@@ -55,6 +55,10 @@ const INSTANCE_PATTERN = "[A-Za-z0-9*?._\\[\\]-]{1,100}";
 const NUMBER = "[0-9]{1,6}";
 const CLAIM = "[A-Za-z0-9_.:-]{1,64}";
 const URI = "[A-Za-z0-9:/._-]{1,200}";
+/** A Dispatch scope word as a device login's request names one, and a list of them as the broker
+ *  joins them (`oauthwire.ConsentableScopes`). */
+const SCOPE_WORD = "[a-z][a-z0-9_-]{0,63}";
+const SCOPE_LIST = `${SCOPE_WORD}(?:, ${SCOPE_WORD}){0,7}`;
 /** The exchange policy's one sentence of what a session name may be (Go's `sessionRule`). */
 const SESSION_RULE =
   "a session name is printable, carries no whitespace, '\\*' or '>', and is at most [0-9]{1,4} bytes";
@@ -90,6 +94,7 @@ const POLICY_SENTINELS = {
   projectsFixed: "exchange: the request names projects other than the one its entry gives",
   projectsNoPerson: "exchange: a token that names no person names no project",
   restrictedOneProject: "exchange: a restricted member's machine login names exactly one project",
+  restrictedSignIn: "exchange: a restricted member's Dispatch sign-in is given no token",
 } as const;
 
 function policy(sentinel: keyof typeof POLICY_SENTINELS, format: string, ...slots: string[]) {
@@ -131,8 +136,10 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
   ),
   policy(
     "claimMissing",
-    "the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s",
-    REPOSITORY
+    "the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref",
+    WORKFLOW_REF,
+    REPOSITORY,
+    GIT_REF
   ),
   policy(
     "noEntry",
@@ -253,6 +260,12 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     PERSON_SLOT,
     NUMBER
   ),
+  // A restricted member's Dispatch sign-in, which would act in every project its person reaches.
+  policy(
+    "restrictedSignIn",
+    "%s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead",
+    PERSON_SLOT
+  ),
   // The broker's own audience check (`oauth/exchange.go`, `audience`), which wraps no sentinel.
   `${escapeRegExp("The subject token was refused: ")}${formatPattern("the subject token was not minted for %s, which is the audience this broker accepts from %s", [URI, URI])}\\.`,
 ];
@@ -300,11 +313,14 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   // A read trade's own refusals: the cut (`as_of`), the launcher credential a read trade never
   // makes or moves, the holder's proof (`DPoP-Holder`), the key a read token may not share
   // with a launcher credential, and a job entry's read trade, whose token is minted whole.
+  // A Dispatch sign-in's read trade is refused too, since its token is minted whole with the scopes
+  // its person approved.
   "The 'as_of' parameter names a cut, and only a trade that asks for the scope read may name one\\.",
   "The 'as_of' parameter is not an RFC 3339 time with at most six fractional digits\\.",
   "The 'as_of' parameter names the zero time, which is no cut: a trade that reads the present names no cut\\.",
   "The 'as_of' parameter names a time later than this trade, and a cut is a time that has passed\\.",
   "The scope 'read' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope\\.",
+  "A Dispatch sign-in is minted whole with its approved scopes and cannot trade for 'read'\\.",
   "A read trade makes or moves no launcher credential, so it cannot send launcher_credential=true\\. Trade for read without the parameter\\.",
   `${PERSON_SLOT}'s sign-in on this machine holds no launcher credential yet, and a read trade makes none\\. Sign in with \`agent-secrets login\` first\\.`,
   `${PERSON_SLOT}'s sign-in on this machine holds a launcher credential that has lapsed, and a read trade renews none\\. One ordinary trade of the sign-in renews it, as \`agent-secrets\` makes; then trade for read again\\.`,
@@ -314,6 +330,16 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   "The DPoP-Holder proof is signed with the key the DPoP proof is signed with, and the holder's key is a key of its own\\.",
   "The key this read token would be bound to signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key\\. Send a DPoP-Holder proof by a key made for the token's holder, and the token is bound to that key\\.",
   "The key this proof was signed with signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key\\. Ask for the scope read with a DPoP-Holder proof by a key made for the token's holder, or trade with a key that holds no launcher credential\\.",
+  // A device login refused by the broker's own words (`machine.Service`, `api/edge.go`), behind
+  // its `<CODE>: `: a Dispatch sign-in where the broker serves none (DISPATCH_SIGNIN_OFF, which its
+  // device request, its poll, its refresh and its trade each answer), a scope its person may not
+  // approve (SCOPE_NOT_CONSENTABLE), an `actions` member on a machine login's detail
+  // (ACTIONS_ON_MACHINE_LOGIN), and a device scope other than one of machine or dispatch
+  // (SCOPE_INVALID). The scope word is one the request sent.
+  "this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off",
+  `the scope "${SCOPE_WORD}" is not consentable; a Dispatch sign-in may approve only ${SCOPE_LIST}`,
+  "a machine login's launcher_credential detail carries no actions member, not even an empty list",
+  "a device login names exactly one scope, machine or dispatch",
   ...POLICY_REFUSAL_PATTERNS,
 ].map((source) => new RegExp(`^${source}$`));
 

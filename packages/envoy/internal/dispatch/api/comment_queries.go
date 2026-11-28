@@ -13,11 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
-// one of its documents.
+// listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored
+// in one of its documents. Under order=activity it answers threads, and the artifact scope
+// applies to the root so the page keeps its replies.
 func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -67,38 +69,79 @@ func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 //
 // name is the owner as the request spells it: the key the kept answer is filed under beside its
 // ETag, and the subject the display tree read is logged against.
+//
+// A list at a cut is read whole every time, as a page of the feed at a cut is (listIssueEvents):
+// it reads no basis (readCommentListBasis), whose counters keep no history, and nothing kept, and
+// it goes out under an ETag over the cut and its own bytes, kept under no key
+// (writePastListAnswer). An issue's list at a cut answers no page of threads
+// (refuseThreadPageAtCut).
 func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
-	basis, err := s.readCommentListBasis(r.Context(), owner)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	var page *threadPage
+	if owner.IssueKey != nil {
+		// Only the issue route accepts paging parameters, and only at the present.
+		if refuseThreadPageAtCut(w, r) {
+			return
+		}
+		var err error
+		page, err = parseThreadPage(r.URL.Query(), "in")
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	trees := wantsDisplayTrees(r)
-	etag := s.commentListETag(owner, artifactFilter, basis, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, commentListRoute, name, etag)
-	if s.listAnswers.answer(w, key) {
-		return
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	ownerHeld := false
+	if !atCut {
+		basis, err := s.readCommentListBasis(r.Context(), owner)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.commentListETag(owner, artifactFilter, basis, trees, page)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, commentListRoute, name, etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		ownerHeld = basis.ownerHeld
 	}
 	// The answer is kept and handed to every reader whose request names this owner and ETag
 	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
 	// author must never be the answer kept for the next.
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+	var reads any
+	var err error
+	if page == nil {
+		var comments []model.Comment
+		comments, err = s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+		if err == nil {
+			_, err = s.commentsAtTheCut(r.Context(), comments, elementsOf(""), trees)
+		}
+		if err == nil {
+			reader := s.readDisplayTrees(r.Context(), trees)
+			reads = shapedComments(comments, reader)
+			reader.resolve()
+		}
+	} else {
+		reads, err = s.readCommentThreadPage(r.Context(), *owner.IssueKey, artifactFilter, *page, trees)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), trees)
-	reads := shapedComments(comments, reader)
-	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeListAnswer(w, key, encoded, basis.ownerHeld)
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
+		return
+	}
+	s.writeListAnswer(w, key, encoded, ownerHeld)
 }
 
 // commentListBasis is what a comment list's validator is built on (commentListETag), with whether
@@ -152,10 +195,18 @@ func (s *server) readCommentListBasis(ctx context.Context, owner owner) (comment
 // one count never share a validator. An issue's key alone does not name it, since a new issue
 // takes the key of one gone (answerCommentList), so its created_at is written beside the key as
 // eventFeedETag writes it.
-func (s *server) commentListETag(owner owner, artifactFilter string, basis commentListBasis, trees bool) string {
+func (s *server) commentListETag(owner owner, artifactFilter string, basis commentListBasis, trees bool, page *threadPage) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\ncreated=%d\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
 		deref(owner.IssueKey), basis.createdAt.UnixMicro(), deref(owner.ArtifactID), artifactFilter, basis.watermark, basis.lastSeq)
+	if page != nil {
+		before := ""
+		if page.before != nil {
+			before = page.before.cursor()
+		}
+		_, _ = fmt.Fprintf(hash, "order=activity\nlimit=%d\nbefore=%q\nauthor=%q\nperson=%q\n",
+			page.limit, before, page.author, page.person)
+	}
 	return s.listETag(hash, trees)
 }
 
@@ -224,17 +275,38 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	// At a cut one call reads the comment and its replies: the comment at /comment, each reply
+	// at /replies/<n>. It answers whether no record gives the block id of the comment's anchor at
+	// the cut, which anchorAtTheCut takes to leave out the place of the comment's block.
+	trees := wantsDisplayTrees(r)
+	var undatedBlocks map[string]bool
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		thread := append([]model.Comment{comments[0]}, replies...)
+		reply := elementsOf("/replies")
+		undatedBlocks, err = s.commentsAtTheCut(r.Context(), thread, func(index int) string {
+			if index == 0 {
+				return "/comment"
+			}
+			return reply(index - 1)
+		}, trees)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if !anchorAtTheCut(r.Context(), comments[0].Anchor, "/comment", undatedBlocks[comments[0].ID]) {
+		comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	reader := s.readDisplayTrees(r.Context(), trees)
 	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)

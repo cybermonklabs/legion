@@ -23,13 +23,14 @@ import {
   pageOwnWordsRule,
   pageStateText,
 } from "../../../theme/classes";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { PublishedReferences } from "../../refs/reference-names";
 import { useKeymapScope } from "../../shell/keymap";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
-import { type TreeNode, targetNaming } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
@@ -50,6 +51,7 @@ import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
+import { targetNaming } from "../target-naming";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
@@ -58,12 +60,10 @@ import {
   ask,
   closing,
   DECISIONS_DOCUMENT,
-  decision,
   decisionNode,
   decisionsRead,
   issueDetails,
   issueTree,
-  KEY,
   node,
   openAsk,
   READER,
@@ -217,7 +217,6 @@ interface BodyProps {
   readonly request?: OutlineRequest;
   readonly reveal?: string;
   readonly view?: TreeNode;
-  readonly waitingPress?: number;
 }
 
 /** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
@@ -354,7 +353,6 @@ function renderBody(
     request,
     reveal,
     view,
-    waitingPress,
   }: BodyProps) => {
     const tree = grown === undefined ? root : issueTree(grown);
     const published = given ?? (grown === undefined ? rootPublished : publishedStatements(tree));
@@ -375,7 +373,6 @@ function renderBody(
         {...(reveal === undefined ? {} : { reveal })}
         root={tree}
         view={shown}
-        {...(waitingPress === undefined ? {} : { waitingPress })}
       />
     ) : null;
     const staged = stage ? <ViewStage>{list}</ViewStage> : list;
@@ -620,7 +617,7 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   await waitFor(() => expect(pressedRow.querySelector("[data-node-body]")).not.toBeNull());
   expect(focusedRow(view)).toBe(D("kept"));
   expect(rowOf(view, D("first")).querySelector("[data-node-body]")).toBeNull();
-  expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-kept`);
+  expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/conversation#b-kept`);
 
   // The foot unfolds from its own control, which is a plain button in the tab order, and
   // folds again. Its rows stand after it and are the tree's own.
@@ -1600,9 +1597,9 @@ test("a decision reaches each statement it shaped, and every entry links to its 
     // Each statement named as a chip names a block (`chipName`): the first line of its own
     // words, "The page draws sN. It draws nothing else.", cut by R1's first-line rule and then
     // by the chips' rule within 32 characters.
-    ["The page draws s1.", `/issues/${KEY}#b-s1`],
-    ["The page draws s2.", `/issues/${KEY}#b-s2`],
-    ["The page draws s3.", `/issues/${KEY}#b-s3`],
+    ["The page draws s1.", `/issues/${KEY}/conversation#b-s1`],
+    ["The page draws s2.", `/issues/${KEY}/conversation#b-s2`],
+    ["The page draws s3.", `/issues/${KEY}/conversation#b-s3`],
   ]);
   // A decision tied to nothing names nothing.
   expect(rowOf(view, D("minor")).querySelector("[data-decision-informs]")).toBeNull();
@@ -1613,8 +1610,8 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   };
   expect(link("q-open")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/q-open`]);
   expect(link("a-answered")).toEqual([IN_CONVERSATION, `/issues/${KEY}/asks/a-answered`]);
-  expect(link(D("first"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-first`]);
-  expect(link(D("minor"))).toEqual([IN_CONVERSATION, `/issues/${KEY}#b-minor`]);
+  expect(link(D("first"))).toEqual([IN_CONVERSATION, `/issues/${KEY}/conversation#b-first`]);
+  expect(link(D("minor"))).toEqual([IN_CONVERSATION, `/issues/${KEY}/conversation#b-minor`]);
   // Every row the body draws carries one.
   expect(
     [...view.container.querySelectorAll("[data-node-row]")].filter(
@@ -2203,50 +2200,6 @@ test("a list that holds only the foot, opened by a link inside the app with its 
   view.unmount();
 });
 
-// R13, the tester's F12: the header's count of what waits on the reader turns the filter on
-// and puts the focus on a thing that waits, in the filter's order: each open question whose
-// turn is the reader's, then each decision of the review list. Each press goes to the next
-// of them and round to the first again. A press that lands before the reads are in is taken
-// once the list holds something that waits.
-test("each press of the count of what waits goes to the next thing that waits", async () => {
-  const whole = wholeIssue();
-  const view = renderBody(whole, { waitingPress: 1 });
-  await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
-  // The same press is taken once: the reader's own move is not undone by it.
-  await act(async () => rowOf(view, D("kept")).focus());
-  view.again({ waitingPress: 1 });
-  expect(focusedRow(view)).toBe(D("kept"));
-  // The next press goes to the next thing that waits, wherever the reader has gone since.
-  view.again({ waitingPress: 2 });
-  await waitFor(() => expect(focusedRow(view)).toBe(D("second")));
-  view.again({ waitingPress: 3 });
-  await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
-  // And round to the first again.
-  view.again({ waitingPress: 4 });
-  await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
-  view.unmount();
-
-  // With no question waiting on the reader, the newest decision of the review list.
-  const noQuestion = renderBody(
-    { ...whole, children: whole.children.filter((child) => child.id !== "q-open") },
-    { waitingPress: 1 }
-  );
-  await waitFor(() => expect(focusedRow(noQuestion)).toBe(D("second")));
-  noQuestion.unmount();
-
-  // A press that lands before the decisions read is in is taken once it is.
-  const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
-  early.again({ waitingPress: 2 });
-  expect(focusedRow(early)).toBeUndefined();
-  await act(async () =>
-    early.client.setQueryData(
-      ["decisions", KEY],
-      decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
-    )
-  );
-  await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
-});
-
 // The tester's F6: a Change sent on a decision is a comment anchored to its words. Once it is
 // in the comments read the decision says a change was asked for, leaves the review list for
 // the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
@@ -2606,7 +2559,7 @@ test("the body draws the entries the filter's view left", async () => {
   await act(async () => rowOf(decisionOut, "q-open").focus());
   await user.keyboard("w");
   await waitFor(() =>
-    expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-first`)
+    expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}/conversation#b-first`)
   );
   decisionOut.unmount();
 

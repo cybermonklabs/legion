@@ -637,8 +637,10 @@ func TestAFreshSessionReachesAClaimOverADeadProcess(t *testing.T) {
 
 					recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
 
-					if recorder.Code != http.StatusOK {
-						t.Fatalf("the fresh session over the dead process = %d, want the 200 of a claim started again; body %s",
+					// The operator's door answers 202 once the start is written launching, the
+					// controller's 200 (dispatch://INFRA-5649 R4).
+					if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+						t.Fatalf("the fresh session over the dead process = %d, want the 200 or 202 of a claim started again; body %s",
 							recorder.Code, recorder.Body)
 					}
 					if got := processReads(h) - reads; got != 1 {
@@ -804,22 +806,25 @@ func workingController(t *testing.T, h *harness) claim.Token {
 
 // deadControllerRefusal is the sentence the compaction gives the project's own controller
 // stored working over a process the read at the request finds gone (api's refuseDeadController).
-// Its keeper does nothing for a controller stored working, and the fresh session refuses the
-// controller in every state, so neither is named: what starts it is the operator's suspend,
+// Its keeper ends a controller stored working only past controller_turn_bound_minutes, and the
+// fresh session refuses the controller in every state, so neither is named: what starts it is the
+// operator's suspend,
 // which lands where it arrives on a claim whose process a read found gone, and then the
 // operator's resume, which the keeper's own resume is held from by that suspension.
 func deadControllerRefusal(token claim.Token) string {
 	return string(token) + " is stored working over a process that is no longer running, so it runs no " +
-		"Oh My Pi session to compact. The daemon's controller keeper does nothing for a controller stored " +
-		"working and does not resume one an operator suspended, so the operator starts it again: " +
+		"Oh My Pi session to compact. The daemon's controller keeper ends a controller stored working only " +
+		"once its turn has been open longer than controller_turn_bound_minutes, and does not resume one an " +
+		"operator suspended, so the operator starts it again now: " +
 		"`legion claims suspend --claim " + string(token) + "`, then `legion claims resume --claim " + string(token) + "`"
 }
 
 // The project's own controller stored working over a dead process is refused the compaction
 // as every claim in that window is, with the code of a claim that runs no session to compact
 // (api's claimNotRunning) — and named what starts it, which is neither the door a workflow role
-// is named nor the keeper a stopped controller is: the keeper leaves a controller stored working
-// alone, and the fresh session refuses the controller outright. So the sentence names the
+// is named nor the keeper a stopped controller is: the keeper ends a controller stored working
+// only past its turn bound, and the fresh session refuses the controller outright. So the
+// sentence names the
 // operator's suspend and resume, and the row then runs those two commands as the sentence names
 // them and finds the controller suspended by the first and launching after the second, which is
 // what makes the sentence true rather than merely spelled. Only the operator's door asks: the
@@ -864,8 +869,8 @@ func TestACompactionOfTheControllerOverADeadProcessNamesTheOperatorsSuspendAndRe
 				if state := h.stored(token).State; state != supervise.StateSuspended {
 					t.Fatalf("the controller is %s after the suspend, want it suspended", state)
 				}
-				if resumed := h.operator(http.MethodPost, route+"resume", nil); resumed.Code != http.StatusOK {
-					t.Fatalf("the resume the refusal names = %d, want 200; body %s", resumed.Code, resumed.Body)
+				if resumed := h.operator(http.MethodPost, route+"resume", nil); resumed.Code != http.StatusAccepted {
+					t.Fatalf("the resume the refusal names = %d, want 202: it is answered once its start is written launching; body %s", resumed.Code, resumed.Body)
 				}
 				if m, _ := h.supervisor.Machine(token); m.Claim().State != supervise.StateLaunching {
 					t.Errorf("the controller is %s after the resume, want it launching", m.Claim().State)

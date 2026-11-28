@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { Actor, AskResolution } from "../../api/types";
+import * as askBodyWords from "../ask-body/ask-body-words";
+import * as decisionCardWords from "../decision-card/decision-card-words";
 import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
@@ -14,6 +16,7 @@ import {
 } from "./page-structure";
 import * as pageWords from "./page-words";
 import {
+  ADDRESS_FALLBACK_WORDS,
   ANSWER_LINES,
   ANSWER_PHRASES,
   ANSWER_SOURCES,
@@ -136,7 +139,7 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
-  ...WORD_FILES.flatMap(({ module }) => module.default.unasked),
+  ...WORD_FILES.flatMap<unknown>(({ module }) => module.default.unasked),
 ];
 
 const ANSWERS: readonly unknown[] = [
@@ -144,7 +147,7 @@ const ANSWERS: readonly unknown[] = [
   BLOCKED_BY_REFUSALS,
   HELP_LINES,
   KEY_REPORTS,
-  ...WORD_FILES.flatMap(({ module }) => module.default.answers),
+  ...WORD_FILES.flatMap<unknown>(({ module }) => module.default.answers),
 ];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
@@ -377,6 +380,24 @@ test("every answer to the reader's own act is one sentence with no schema token"
     expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
     expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
   }
+  // So is each line an address's fallback draws around the issue's key, and each heading and
+  // alert of an item, by its kind, is read whole.
+  const { back, block, children, items } = ADDRESS_FALLBACK_WORDS;
+  const fallbackLines = [
+    block.heading,
+    children.heading,
+    ...[back, block.line, children.line].map(({ after, before }) => `${before}CORE-9${after}`),
+    ...Object.values(items).flatMap(({ missing, unreadable }) => [
+      missing.heading,
+      `${missing.line.before}CORE-9${missing.line.after}`,
+      unreadable.heading,
+      unreadable.message,
+    ]),
+  ];
+  for (const whole of fallbackLines) {
+    expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
+    expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
+  }
   // A table holds what it is for and nothing the page says unasked.
   const unasked = new Set(UNASKED.flatMap(phrasesOf));
   expect(
@@ -384,13 +405,15 @@ test("every answer to the reader's own act is one sentence with no schema token"
   ).toEqual([]);
 });
 
-test("the five controls are named in the order the row draws them, and none is called Tree", () => {
+test("the controls are named in the order the row draws them, and none is called Tree", () => {
   expect(PRESET_ORDER.map((preset) => PRESET_NAMES[preset])).toEqual([
+    "Dashboard",
     "Conversation",
     "Spec",
     "Verification",
     "Plan",
     "Decisions",
+    "Threads",
   ]);
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
@@ -413,11 +436,25 @@ test("the five controls are named in the order the row draws them, and none is c
   ).toEqual([]);
 });
 
+// R22: the Spec view draws Statement, never Requirement (R7), so no word of the list is
+// the model's name for a statement. The list is lowercase, so its words cannot tell where a
+// word came from: they are read from every declaration but one entry, let through by name,
+// `BLOCK_TYPE_NAMES.requirement`, the tag of a requirement block in a document other than the
+// spec, which is no statement.
+test("no word of the list is requirement", () => {
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
+  expect(
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => /^requirements?$/iu.test(word))
+  ).toEqual([]);
+});
+
 test("every empty-state line is one sentence a person reads", () => {
   for (const line of Object.values(EMPTY_STATE_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(EMPTY_STATE_LINES.spec_summary).toBe("This spec has no summary.");
 });
 
 test("every key report is one sentence saying where the key could not go", () => {
@@ -538,6 +575,17 @@ test("DECLARED_WORDS holds every declared word and no other", () => {
   // Verification is the filter's name, his word for what draws the checks (R2, the Design's
   // "The words"), and no longer a word the page holds back.
   expect(DECLARED_WORDS).toContain("verification");
+
+  // The ask body's list and the decision card's are taken in whole (R13): every word of each of
+  // their tables is a declared word, though Dashboard's part file splits a table between what the
+  // page draws on load and what it says only in answer to the reader's act.
+  const lists = [...Object.values(askBodyWords), ...Object.values(decisionCardWords)];
+  expect(
+    lists
+      .flatMap(phrasesOf)
+      .flatMap(wordsIn)
+      .filter((word) => !DECLARED_WORDS.includes(word))
+  ).toEqual([]);
 });
 
 // An internal word is how the model or the code spells a thing, not how a person says it: a
@@ -891,10 +939,12 @@ test("the join adds each file's keys after the table's own, nested as the table 
   });
 });
 
-// A part's file that the join does not read fails here. So does a part that has no file.
+// A part's file that the join does not read fails here. So does a part that has no file. The
+// open parts are lettered, and Dashboard's part (dispatch://INFRA-5702) and Threads' part
+// (dispatch://INFRA-5704) are named.
 test("each open part of the page has its own words file, which the join reads", () => {
-  const letters = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z"];
-  const expected = letters.map((letter) => `page-words-${letter.toLowerCase()}.ts`);
+  const parts = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z", "Dashboard", "Threads"];
+  const expected = parts.map((part) => `page-words-${part.toLowerCase()}.ts`);
   const read: readonly string[] = WORD_FILES.map(({ file }) => file);
   expect(read).toEqual(expected);
   const inDirectory = readdirSync(import.meta.dir).filter(

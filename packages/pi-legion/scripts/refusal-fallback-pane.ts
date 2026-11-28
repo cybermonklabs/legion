@@ -35,6 +35,7 @@
 // is 1 when any expectation failed, and 2 when the run could not be made at all.
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { exitProcess } from "@legion/envoy-client/process-exit";
 import {
   type FallbackCooldownState,
   LEGION_FALLBACK_ENTRY,
@@ -48,6 +49,12 @@ import {
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+
+/** How long an exit on a failure gives stderr to take the lines that say what failed before it
+ * exits whatever is still queued (`exitProcess`). Nothing stops the driver but the person who runs
+ * `scripts/e2e/refusal-fallback-omp.sh`, which reads its output as it comes and sets no guard of
+ * its own; the bound is how long a reader that takes nothing keeps it. */
+const EXIT_FLUSH_MS = 5_000;
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
@@ -70,7 +77,7 @@ if (
   process.stderr.write(
     "usage: LEGION_OMP_PATH=<omp> REFUSAL_FALLBACK_NATS_URL=<nats://host:port> bun packages/pi-legion/scripts/refusal-fallback-pane.ts <cooldown-ms> <drive-ms> <evidence-dir>\n"
   );
-  process.exit(2);
+  await exitProcess(2, EXIT_FLUSH_MS);
 }
 
 /** The provider key both models sit under: one stand-in serves both, so a request's own `model`
@@ -85,7 +92,7 @@ const WEAK = `${PROVIDER}/${WEAK_ID}`;
 
 /**
  * Oh My Pi's own floor for how long it suppresses a model it could not classify
- * (`packages/coding-agent/src/session/turn-recovery.ts:2578-2585` at the pinned tag): five
+ * (`packages/coding-agent/src/session/turn-recovery.ts:2645-2652` at the pinned tag): five
  * minutes. Without `retry.fallbackRevertPolicy: never` the host's own restore would come at about
  * this mark, so a pane with no request to the refused model between it and the cooldown's end
  * is the proof that the overlay's `never` and the plugin's ten minutes are both in force.
@@ -416,9 +423,9 @@ async function writeProfile(home: string, base: string): Promise<void> {
       "  modelFallback: true",
       "  fallbackRevertPolicy: never",
       // Admit a surfaced rate limit to the chain consult (`sourceRateLimited` and
-      // `deferToSameModel`, `session/turn-recovery.ts:3838-3840` and `:4184` at the pinned tag),
+      // `deferToSameModel`, `session/turn-recovery.ts:3909-3911` and `:4273` at the pinned tag),
       // for a context no larger than `retry.rateLimitFallbackMaxContextTokens`, 100,000 tokens by
-      // default (`rateLimitHoldsModel`, `:4198-4199` and `:4209`). A 429 retried inside the
+      // default (`rateLimitHoldsModel`, `:4287-4288` and `:4298`). A 429 retried inside the
       // transport reaches this recovery only as the timeout of its first-event budget.
       "  rateLimitWalksChain: true",
       "  fallbackChains:",
@@ -801,7 +808,7 @@ try {
 } catch (error) {
   process.stderr.write(`FAIL drive: ${error instanceof Error ? error.message : String(error)}\n`);
   for (const step of cleanup.splice(0).reverse()) await step();
-  process.exit(2);
+  await exitProcess(2, EXIT_FLUSH_MS);
 }
 for (const step of cleanup.splice(0).reverse()) await step();
 
@@ -825,6 +832,6 @@ if (firstFailure !== undefined) {
   process.stderr.write(
     `refusal fallback: ${failed.length} expectation(s) failed, the first ${firstFailure}\n`
   );
-  process.exit(1);
+  await exitProcess(1, EXIT_FLUSH_MS);
 }
 say(`refusal fallback: every expectation held, transcripts in ${evidence}`);

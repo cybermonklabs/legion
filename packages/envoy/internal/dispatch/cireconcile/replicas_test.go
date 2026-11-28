@@ -16,6 +16,7 @@ import (
 // compare-and-swap of an observation GitHub already holds -- so what the lease saves is the
 // App's budget.
 func TestOneProcessServesEachPeriod(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -60,6 +61,7 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 // installations, not a process, and warns that requests sent inside a limit may get the
 // integration banned.
 func TestARecordedLimitStopsEveryProcess(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -109,6 +111,7 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 // line, saying it was rate-limited, under which scope, and when GitHub will take a request again.
 // An alarm reads the pass by that line alone.
 func TestTheStopIsInThePassLine(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

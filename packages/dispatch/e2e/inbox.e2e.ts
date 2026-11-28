@@ -873,8 +873,10 @@ test("a pending credential request alone is listed, counted, and keeps the empty
       {
         approve_url: approveUrl,
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["DEMO_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-alice",
         requested_at: new Date().toISOString(),
         session: { enrollment: null, request: null },
@@ -882,8 +884,10 @@ test("a pending credential request alone is listed, counted, and keeps the empty
       {
         approve_url: "https://secrets.internal.example/approve/record-bob",
         approver: "bob",
+        dispatch_scopes: null,
         identifiers: ["BOB_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-bob",
         requested_at: new Date().toISOString(),
         session: { enrollment: null, request: null },
@@ -932,8 +936,10 @@ test("a pending credential request naming a running session links to it in the I
       {
         approve_url: "https://secrets.internal.example/approve/record-session-587",
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["SESSION_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-session-587",
         requested_at: new Date().toISOString(),
         session: { enrollment: "sess-session-587", request: "sess-session-587" },
@@ -970,8 +976,10 @@ test("a pending credential request naming only the request's session id shows it
       {
         approve_url: "https://secrets.internal.example/approve/record-request-only-587",
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["SESSION_REQUEST_ONLY_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-request-only-587",
         requested_at: new Date().toISOString(),
         session: { enrollment: null, request: "sess-request-only-587" },
@@ -1005,8 +1013,10 @@ test.describe("credential record path", () => {
       await setPendingCredentialRequests([
         {
           approver: "alice",
+          dispatch_scopes: null,
           identifiers: ["OLD_BROKER_KEY"],
           kind: "agent_secret",
+          reason: "",
           record_id: "record-old-broker",
           requested_at: new Date().toISOString(),
           session: { enrollment: null, request: null },
@@ -1071,8 +1081,10 @@ test("a credential request seeded after the Inbox loads appears, and counts, wit
       {
         approve_url: "https://secrets.internal.example/approve/record-alice",
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["DEMO_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-alice",
         requested_at: new Date().toISOString(),
         session: { enrollment: null, request: null },

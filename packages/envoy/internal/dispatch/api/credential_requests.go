@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -62,8 +64,10 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*cipher.Client, boo
 // and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
 // AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
-// gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
-// the log line naming the file is the operator's only pointer to it.
+// gets its own code because the broker was never asked: the fix is in Dispatch's deployment. The
+// log line names the setting that holds the file, DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, and
+// why it could not be read, never the path, which can be a token pasted where the path goes: the
+// operator reads the path from Dispatch's own configuration by that name.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *cipher.Error
@@ -75,7 +79,12 @@ func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error)
 		}
 		var tokenErr *cipher.AccountTokenError
 		if errors.As(err, &tokenErr) {
-			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "path", tokenErr.Path, "error", tokenErr.Err)
+			reason := tokenErr.Err.Error()
+			var pathErr *fs.PathError
+			if errors.As(tokenErr.Err, &pathErr) {
+				reason = fileerr.Class(tokenErr.Err)
+			}
+			slog.Error("dispatch: cannot read its ServiceAccount token for the secrets broker", "setting", tokenErr.Setting, "reason", reason)
 			writeError(w, "AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError, "Dispatch cannot read its own ServiceAccount token for the secrets broker")
 			return
 		}
@@ -119,13 +128,22 @@ func (s *server) readRelayBody(w http.ResponseWriter, r *http.Request) (json.Raw
 // POST /api/v1/credential-requests/{id}/deny.
 type credentialDecisionInput struct {
 	Code *string `json:"code"`
+	// The Dispatch scopes the person approves for a Dispatch sign-in, none or more, each one the
+	// sign-in asked for: required on the approval of a Dispatch sign-in, and absent on a machine
+	// login's approval. A denial never forwards it, whatever the browser sends, since a denial
+	// grants nothing. The broker refuses a scope the sign-in did not ask for (400
+	// SCOPE_NOT_ASKED), a scope no sign-in may hold (400 SCOPE_NOT_CONSENTABLE), a Dispatch
+	// sign-in's approval without this field (400 SCOPES_REQUIRED), and any sign-in's approval on a
+	// broker that serves none (400 DISPATCH_SIGNIN_OFF).
+	Scopes *[]string `json:"scopes,omitempty"`
 }
 
 // decisionFor builds the broker's decision body for an approve or deny: the approver is the
-// caller's canonical login, and the one field read from the browser's body is a machine login's
-// typed code. Any other field the browser sends, an approver among them, is ignored, never
-// forwarded. An empty body is a decision with no code.
-func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor) (cipher.Decision, bool) {
+// caller's canonical login, and the fields read from the browser's body are a machine login's
+// typed code and, on an approval alone (approve), the Dispatch scopes the person approves for a
+// Dispatch sign-in. Any other field the browser sends, an approver among them, and the scopes of a
+// denial, are ignored, never forwarded. An empty body is a decision with no code.
+func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model.Actor, approve bool) (cipher.Decision, bool) {
 	body, ok := s.readRelayBody(w, r)
 	if !ok {
 		return cipher.Decision{}, false
@@ -137,7 +155,11 @@ func (s *server) decisionFor(w http.ResponseWriter, r *http.Request, actor model
 			return cipher.Decision{}, false
 		}
 	}
-	return cipher.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}, true
+	decision := cipher.Decision{Approver: model.CanonicalLogin(actor.ID), Code: input.Code}
+	if approve {
+		decision.Scopes = input.Scopes
+	}
+	return decision, true
 }
 
 // --- GET /api/v1/credential-requests ---
@@ -181,7 +203,7 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	decision, ok := s.decisionFor(w, r, actor)
+	decision, ok := s.decisionFor(w, r, actor, true)
 	if !ok {
 		return
 	}
@@ -199,7 +221,7 @@ func (s *server) denyCredentialRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	decision, ok := s.decisionFor(w, r, actor)
+	decision, ok := s.decisionFor(w, r, actor, false)
 	if !ok {
 		return
 	}
@@ -372,12 +394,18 @@ func (s *server) revokeSignIn(w http.ResponseWriter, r *http.Request) {
 type credentialCapabilities struct {
 	// Whether the page where a person types a machine's code is worth serving: whether, that
 	// is, this broker still serves RFC 8628's device grant, read from its RFC 8414 metadata
-	// (cipher.Client.ServesDeviceGrant). False for a Dispatch with no broker at all,
+	// (cipher.Client.Capabilities). False for a Dispatch with no broker at all,
 	// where no code is ever printed for anyone to type.
 	MachineCodePage bool `json:"machine_code_page"`
+	// Whether this broker serves a Dispatch sign-in (BROKER_DISPATCH_SIGNIN=on), read from the
+	// same metadata (its scopes_supported names the scope dispatch): the pages offer the sign-in's
+	// guidance only where this and machine_code_page are both true. False for a Dispatch with no
+	// broker, for a broker that serves none or predates them, and for one never read; a Dispatch
+	// from before this field sends none, which a reader takes as false.
+	DispatchSignIn bool `json:"dispatch_sign_in"`
 }
 
-// getCredentialCapabilities answers that one fact. Unlike every other route here it answers for
+// getCredentialCapabilities answers those facts. Unlike every other route here it answers for
 // a Dispatch with no broker rather than 404 FEATURE_OFF, because the question it answers is
 // exactly "what can this deployment do": a 404 would leave the page unable to tell a Dispatch
 // with no broker from a route it failed to reach.
@@ -387,7 +415,8 @@ func (s *server) getCredentialCapabilities(w http.ResponseWriter, r *http.Reques
 	}
 	capabilities := credentialCapabilities{}
 	if s.deps.AgentSecrets != nil {
-		capabilities.MachineCodePage = s.deps.AgentSecrets.ServesDeviceGrant(r.Context())
+		served := s.deps.AgentSecrets.Capabilities(r.Context())
+		capabilities.MachineCodePage, capabilities.DispatchSignIn = served.DeviceGrant, served.DispatchSignIn
 	}
 	WriteJSON(w, http.StatusOK, capabilities)
 }

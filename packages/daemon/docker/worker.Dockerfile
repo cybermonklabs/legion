@@ -73,12 +73,14 @@
 # download is checked against no hash, so it runs in a stage of its own and only its one-line
 # marker reaches the runtime stage, whose bind mount of it is what makes BuildKit build that
 # stage. The last
-# runs `legion version` and `legion probe-image`, which runs the three launch probes (the daemon's two
-# plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
-# loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
-# its generated Legion plugin and the daemon API contract its manifest declares — and holds Claude
-# Code's pin to one a pod can install and verify, checks every image-site capability against this
-# image, and prints the results before the OK line the daemon's probe Sandbox reads.
+# runs `legion version` and `legion probe-image`, which makes five launch probes: the pi.agents
+# probe, the contract probe and the plugin load probe (the two the daemon's boot run also makes),
+# the session-storage probe and the Claude lane. With them it holds the Legion plugin to the daemon
+# API contract and proves it loads with the Envoy plugin, holds the claude-envoy root the same way
+# — its built channel server, its generated Legion plugin and the daemon API contract its manifest
+# declares — and holds Claude Code's pin to one a pod can install and verify. It then checks every
+# image-site capability against this image and prints the results before the OK line the daemon's
+# probe Sandbox reads.
 # A broken image never publishes.
 #
 # The `legion` profile carries no model route, and neither does Legion: an operator's pod supplies it
@@ -99,17 +101,18 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
-# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
-# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
-# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
-# on a large pack fills an issue pod again. The builds that add sjawhar/jj#4 (a merge of two commits
-# with several merge bases keeps what both sides hold, jj-vcs/jj#6369), 0.46.0-sami.20261125-112159
-# and 20261125-125342, never finish a `jj git import` that makes conflicted commits visible: one
-# core spins until the process is killed, where this build imports the same 2,760 refs in 22 s
-# (INFRA-5926). So the pin stays here, without sjawhar/jj#4, until a build carries #4 without that
-# hang, and a role's merge with several merge bases can drop one side's change, as before #4565.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
+# Sami's jj fork, at a release built from sjawhar/jj#5 on top of sjawhar/jj#4 and sjawhar/jj#3.
+# sjawhar/jj#3 gives jj 0.46 a gix-pack that maps each pack, index and multi-pack-index in 8 MiB
+# chunks and keeps the chunks reads mark within 512 MiB (JJ_PACK_MAPPED_LIMIT sets another
+# budget): under gVisor a whole mapping counts as the pod's memory once one page of it is read.
+# sjawhar/jj#4 keeps, in a merge of two commits with several merge bases, what both sides hold
+# (jj-vcs/jj#6369). sjawhar/jj#5 makes a `jj git import` that brings in many conflicted merges of
+# many commits take 0.6 to 1.2 s, where 0.46.0-sami.20261120-120102 takes 15 to 27 s and the
+# builds with #4 alone, 0.46.0-sami.20261125-112159 and 20261125-125342, take about an hour
+# (INFRA-5926). Only the fork's tests hold #5's change: no Legion test bounds the import's time.
+# A later pin must carry all three, or one jj command on a large pack fills an issue pod again, a
+# role's merge silently reverts work, or a fresh workspace's import takes about an hour.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261127-111037
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
 # pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
@@ -125,8 +128,8 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Oh My Pi's was read on 2026-11-26 at its 18.18.6-sami.20261126-110039 pin, jj's on 2026-11-26 at
-# its 0.46.0-sami.20261120-120102 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-055727 pin, jj's on 2026-11-27 at
+# its 0.46.0-sami.20261127-111037 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
 # stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
@@ -135,8 +138,8 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # sami-build.yml workflow at refs/heads/release-candidate (`gh attestation verify <archive> --repo
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
-ARG OMP_SHA256=5a87f1737b1fd6c01884f907c69b95a4fc3705d8f9b783036faa2e8525b3e797
-ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG OMP_SHA256=e17f13c83beb6ccc86820fb9517e4be2011d045739900fa23830aef1b466c830
+ARG JJ_SHA256=bde9d8cf39663db78701c6f74b137d5cbe327089ed93d75264815a3b2a18e752
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
 # ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API
@@ -260,8 +263,9 @@ ARG AZURE_CLI_PYTHON_VERSION=3.13.17
 # it against this SHA-256 before apt reads one index signed by it, so a rotated or re-exported key
 # fails the build and gets read by a person instead of being trusted.
 ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
-# The CodeGraph CLI and the Oh My Pi tool that wraps it are pinned to the versions the devbox runs
-# (`codegraph --version`, `omp/plugins/package.json`). Each one installs from a committed lockfile
+# The CodeGraph CLI is pinned here, and the dev box follows it: the worker image is the source of its
+# version. The Oh My Pi tool that wraps it is pinned to the version the devbox runs
+# (`omp/plugins/package.json`). Each one installs from a committed lockfile
 # in the plugin-deps stage: the tool, @bopstack/pi-codegraph, from packages/daemon/docker/omp-plugins,
 # and the CLI, @colbymchenry/codegraph, from packages/daemon/docker/codegraph. Each package.json
 # pins its one package, and each bun.lock pins everything Bun installs beside it, so, as for the
@@ -1373,7 +1377,15 @@ RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
 # CodeGraph's telemetry
 # and update-check opt-out (ranked above CODEGRAPH_TELEMETRY, above stored config, above
 # default-on) — every worker's own `codegraph` call, and the warm-up the tmux daemon runs outside
-# this image, must never phone home for an automatic, non-opt-in tool. No PUPPETEER_EXECUTABLE_PATH:
+# this image, must never phone home for an automatic, non-opt-in tool. CODEGRAPH_NO_WAL_DEFER=1:
+# CodeGraph keeps SQLite's own checkpoint interval during `sync` and an `index` over an existing
+# index, where it would turn the interval off and fold the write-ahead log through a background
+# valve. Measured on CodeGraph 1.6.4 in a Job of an issue pod's shape (INFRA-5717 R3): a `sync` of
+# 500 changed files of cybermonklabs/legion grew `.codegraph/codegraph.db-wal` to 1,190 MiB without
+# it and to 165 MiB with it, and took 254 s with it against 137 s without; on 1.5.0 the log passed
+# 1 GiB in 9 s, and in an issue pod on 2026-11-26 it passed 15 GB and filled the disk. The warm-up
+# sets it for its own builds too (internal/workspace's codegraphEnvironment). No
+# PUPPETEER_EXECUTABLE_PATH:
 # Oh My Pi picks its browser by that variable first, else the first of google-chrome-stable,
 # google-chrome, chromium, chromium-browser and chrome on PATH (then /usr/bin/chromium and its
 # neighbours), and downloads Chrome for Testing only with none of those — so the image's chromium on
@@ -1386,6 +1398,7 @@ ENV OMP_PROFILE=legion \
     HOME=/home/legion \
     USER=legion \
     DO_NOT_TRACK=1 \
+    CODEGRAPH_NO_WAL_DEFER=1 \
     PATH=/opt/legion/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin
 # Numeric uid:gid (user `legion`, created above) so Kubernetes `runAsNonRoot` can verify it from the
 # image alone.
@@ -1723,7 +1736,8 @@ ARG GH_STACK_TOOL
 # other gate. The Envoy plugin's `dispatch` shim runs its bundled CLI under
 # the image's bun and prints its help, so a pi-envoy packed without bin/ or dist/dispatch.js, or an
 # image without bun, fails here; that the extension puts bin/ first on an agent's PATH is pi-envoy's
-# own test. Then `legion probe-image` runs the three launch probes through
+# own test. Then `legion probe-image`, with no LEGION_IMAGE_PROBE_RUN, runs the launch probes of
+# the build's run, pi.agents, the session-storage probe and the Claude lane among them, through
 # the daemon's own code, loading the plugins the way a Sandbox pod does (--envoy-plugin-root then
 # --plugin-root: the two explicit extensions, discovery on, so the profile's CodeGraph plugin and a
 # repository's own extensions load beside the two roots; a pi-envoy that loaded twice, a profile
@@ -1757,10 +1771,12 @@ ARG GH_STACK_TOOL
 # omp-session-id=<taken|absent|unread> daemon-api-version=<N>` — `on` here is
 # Oh My Pi's own default for retry.modelFallback, since the build runs under no operator overlay; a
 # probe pod reads the operator's value — and a build whose image lacks a capability fails here, the
-# probe naming every failure. The daemon's probe Sandbox runs it
-# again with its own contract, on the pod baseline and under the operator's pod, resolving every
-# agent's model, and refuses a skipped result, before any claim runs on the image
-# (packages/daemon/internal/runtime/sandbox/probe.go).
+# probe naming every failure. The daemon's probe Sandbox runs it again at every boot with its own
+# contract, on the pod baseline and under the operator's pod, resolving every agent's model, and
+# refuses an agent-models=skipped result, before any claim runs on the image
+# (packages/daemon/internal/runtime/sandbox/probe.go). That run sets LEGION_IMAGE_PROBE_RUN=boot in
+# the probe container's env, which leaves out pi.agents, the session-storage probe and the Claude
+# lane, since this step makes them on the same image, and prints session-storage=skipped.
 # It needs the natives step 3 extracted, which the cached probe layer above carries. The step leaves no
 # residue: Oh My Pi's logs, and the Go telemetry counters the capability check's `go version` writes
 # under HOME (the toolchain step's XDG_CONFIG_HOME does not reach a probe that runs as a pod would).
@@ -1858,8 +1874,8 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
 # The Kubernetes runtime sets every container's command explicitly
-# (packages/daemon/internal/runtime/sandbox/manifest.go): the init containers run `legion
-# workspace-init fetch …` and `legion workspace-init provision …`, and the main container runs `legion
+# (packages/daemon/internal/runtime/sandbox/manifest.go): the init container runs `legion
+# workspace-init provision …`, and the main container runs `legion
 # worker-shim --connect tcp://<daemon>:<worker_stream_port> --boot-token-file … -- omp --mode rpc …`.
 # This ENTRYPOINT therefore only makes `docker run <image> version` and `docker run <image>
 # probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy

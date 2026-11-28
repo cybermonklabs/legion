@@ -377,6 +377,7 @@ func TestStoredOrderChecker(t *testing.T) {
 // the check reads its markdown and reports no mismatch where that markdown reads as the render.
 // A version holding other text than the fold is still a mismatch, whatever its stamp.
 func TestStoredOrderReadsAVersionOfAnotherRendererVersionAsTheTreeItSpells(t *testing.T) {
+	t.Parallel()
 	another := pmdoc.RendererVersion - 1
 	for _, test := range []struct {
 		name     string
@@ -795,12 +796,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	testcleanup.Add(t, func() {
 		close(stopped)
 		done.Wait()
-		client := peer.Doc.ClientID()
-		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
-			room := service.srv.GetDoc(artifactID)
-			return room == nil || room.StateVector().Clock(client) >= sent
-		})
+		awaitPeerApplied(t, service, artifactID, peer)
 		if typing.Add(-1) > 0 {
 			return
 		}

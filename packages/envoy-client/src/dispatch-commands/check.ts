@@ -15,6 +15,7 @@ import { defaultExec, type ExecFn, resolveCwdRepo } from "../dispatch-cwd";
 import { type ParsedDispatchRef, parseDispatchRef } from "../dispatch-owner";
 import { localPictures, parseAgentArtifactRef } from "../dispatch-picture-tools";
 import { formatZodIssues } from "../tool-input-errors";
+import { RESULTS_AT_AS_OF_PROBLEM } from "./as-of";
 import {
   asObject,
   type CheckedCall,
@@ -71,6 +72,8 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_limits: true,
   dispatch_api: true,
   dispatch_inbox: true,
+  dispatch_deploy: true,
+  dispatch_deploys: true,
   // A session's own conversation belongs to no issue, so the call names the session instead.
   dispatch_send_to_agent: true,
   dispatch_architecture_sync: true,
@@ -248,6 +251,12 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
         problems.push(
           "blocks lists the live document, the one dispatch doc-edit changes; name no version"
         );
+      }
+      break;
+    }
+    case "dispatch_results": {
+      if (optionalString(args, "at") !== undefined && optionalString(args, "as_of") !== undefined) {
+        problems.push(RESULTS_AT_AS_OF_PROBLEM);
       }
       break;
     }

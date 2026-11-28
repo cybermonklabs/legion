@@ -47,11 +47,19 @@ function sourceName(source: SourceKey): string {
   return `the architecture source ${source.repo} for ${source.project}`;
 }
 
+/** The id of the section's heading, which an address names to open Settings at this section
+ *  (`SettingsPage`): an issue's Components line links there while its project has no source. */
+export const ARCHITECTURE_SOURCES_HEADING_ID = "architecture-sources-heading";
+
 /** A project's architecture sources, one row per repository: the branch its architecture
  * documents are imported from, the commit imported and how many components it supplies. Saving
  * runs the server's GitHub App access check, so a listed row has proven access — it shows
  * "Access verified" until a sync reports otherwise — and a failed check surfaces the server's
- * reason inline. Saving a repository the project already has changes that source's branch. */
+ * reason inline. Saving a repository the project already has changes that source's branch.
+ *
+ * Its form's groups, in this order: Source project, Source repository, Branch and Add source, two
+ * columns from `sm` and one below it; each field shrinks with its column, and a value longer than
+ * its field ends in an ellipsis with the whole value as its title. */
 export function ArchitectureSourcesSection(): ReactNode {
   const queryClient = useQueryClient();
   const [project, setProject] = useState("");
@@ -119,10 +127,10 @@ export function ArchitectureSourcesSection(): ReactNode {
     : undefined;
 
   return (
-    <section aria-labelledby="architecture-sources-heading">
+    <section aria-labelledby={ARCHITECTURE_SOURCES_HEADING_ID}>
       <h2
         className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-        id="architecture-sources-heading"
+        id={ARCHITECTURE_SOURCES_HEADING_ID}
       >
         Architecture sources
       </h2>
@@ -282,6 +290,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                 pattern={ownerRepoPattern}
                 placeholder="owner/repo"
                 required
+                title={repository === "" ? undefined : repository}
                 value={repository}
               />
             </label>
@@ -293,6 +302,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
                 required
+                title={branch === "" ? undefined : branch}
                 value={branch}
               />
             </label>

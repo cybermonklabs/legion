@@ -51,12 +51,12 @@ func TestTheComparisonFailsOnATextNeverApproved(t *testing.T) {
 		fixture string
 		want    Problem
 	}{
-		{"one-word", Problem{Pos: Position{"orders.md", 7}, Node: "an-order-survives-a-restart", Rule: "unapproved-text", Detail: wantUnapprovedText}},
-		{"unapproved-statement", Problem{Pos: Position{"orders.md", 29}, Node: "each-order-gets-one-bill", Rule: "unapproved-id", Detail: wantUnapprovedID}},
-		{"check-text", Problem{Pos: Position{"orders.md", 11}, Node: "a-restart-keeps-each-order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
-		{"component-purpose", Problem{Pos: Position{"components.md", 7}, Node: "orders", Rule: "unapproved-text", Detail: wantUnapprovedText}},
-		{"interface-joins", Problem{Pos: Position{"components.md", 11}, Node: "orders-to-billing", Rule: "unapproved-text", Detail: wantUnapprovedText}},
-		{"term-definition", Problem{Pos: Position{"components.md", 19}, Node: "order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"one-word", Problem{Pos: Position{"orders.yaml", 7}, Node: "an-order-survives-a-restart", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"unapproved-statement", Problem{Pos: Position{"orders.yaml", 51}, Node: "each-order-gets-one-bill", Rule: "unapproved-id", Detail: wantUnapprovedID}},
+		{"check-text", Problem{Pos: Position{"orders.yaml", 14}, Node: "a-restart-keeps-each-order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"component-purpose", Problem{Pos: Position{"components.yaml", 8}, Node: "orders", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"interface-joins", Problem{Pos: Position{"components.yaml", 15}, Node: "orders-to-billing", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"term-definition", Problem{Pos: Position{"components.yaml", 32}, Node: "order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
 	} {
 		t.Run(row.fixture, func(t *testing.T) {
 			t.Parallel()
@@ -125,18 +125,18 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 				t.Fatalf("Current: %+v", problems)
 			}
 			dir := t.TempDir()
-			write := func(id, block string) {
+			write := func(id, text string) {
 				t.Helper()
-				if err := os.WriteFile(filepath.Join(dir, id+".md"), []byte(block), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(dir, id+".yaml"), []byte(text), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
-			for _, node := range nodesOf(current) {
-				block, err := node.node.Print()
+			for _, node := range Nodes(current) {
+				printed, err := node.Print()
 				if err != nil {
 					t.Fatal(err)
 				}
-				write(node.id, block)
+				write(node.NodeID(), printed)
 			}
 			got := Compare(parseDir(t, dir), approved)
 			if len(got.Problems) != 0 {
@@ -150,12 +150,12 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 
 			planted := current.Statements[0]
 			planted.Text = strings.Replace(planted.Text, " ", " planted ", 1)
-			block, err := planted.Print()
+			printed, err := planted.Print()
 			if err != nil {
 				t.Fatal(err)
 			}
-			write(planted.ID, block)
-			want := []Problem{{Pos: Position{planted.ID + ".md", 1}, Node: planted.ID, Rule: "unapproved-text", Detail: wantUnapprovedText}}
+			write(planted.ID, printed)
+			want := []Problem{{Pos: Position{planted.ID + ".yaml", 1}, Node: planted.ID, Rule: "unapproved-text", Detail: wantUnapprovedText}}
 			if got := Compare(parseDir(t, dir), approved); !reflect.DeepEqual(got.Problems, want) {
 				t.Errorf("Problems with one planted word:\n got %+v\nwant %+v", got.Problems, want)
 			}
@@ -169,7 +169,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 func TestARemovedIdThatComesBackIsRefused(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "removed-id-reused")
-	want := []Problem{{Pos: Position{"orders.md", 29}, Node: "an-order-is-paid-once", Rule: "removed-id", Detail: wantRemovedID}}
+	want := []Problem{{Pos: Position{"orders.yaml", 51}, Node: "an-order-is-paid-once", Rule: "removed-id", Detail: wantRemovedID}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -185,7 +185,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 	t.Parallel()
 	approved := readApproved(t, "testdata/compare/removed-kept/approved.json")
 	files := readFiles(t, "testdata/compare/removed-kept/spec")
-	last := string(files["orders.md"])
+	last := string(files["orders.yaml"])
 	earlier := strings.Replace(last, " and refunds each second payment.", ".", 1)
 	if earlier == last {
 		t.Fatal("the fixture holds no last approved text of the removed statement")
@@ -193,7 +193,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 	for name, content := range map[string]string{"its last approved text": last, "an earlier approved text": earlier} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			files := map[string][]byte{"orders.md": []byte(content), "components.md": files["components.md"]}
+			files := map[string][]byte{"orders.yaml": []byte(content), "components.yaml": files["components.yaml"]}
 			tree, problems := Parse(files)
 			if len(problems) != 0 {
 				t.Fatal(problems)
@@ -229,7 +229,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 func TestTheFirstFailingNodeIsNamedNotTheGate(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "one-of-four")
-	want := []Problem{{Pos: Position{"orders.md", 29}, Node: "each-order-gets-one-bill", Rule: "unapproved-text", Detail: wantUnapprovedText}}
+	want := []Problem{{Pos: Position{"orders.yaml", 51}, Node: "each-order-gets-one-bill", Rule: "unapproved-text", Detail: wantUnapprovedText}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -246,17 +246,17 @@ func TestTheFirstFailingNodeIsNamedNotTheGate(t *testing.T) {
 	}
 }
 
-// ReadApproved refuses a version whose block does not parse, here a text line that starts with
-// :::, and names the node and the version (Review focus 1).
-func TestTheApprovedFixtureRefusesAnUnprintableBlock(t *testing.T) {
+// ReadApproved refuses a version whose document does not read, here YAML that yaml.v3 does not
+// read, and names the node and the version (Review focus 1).
+func TestTheApprovedFixtureRefusesADocumentThatDoesNotRead(t *testing.T) {
 	t.Parallel()
 	_, err := ReadApproved(strings.NewReader(`{"nodes":[{"id":"a-page-shows-it","versions":[` +
-		`{"version":1,"at":"2026-11-10T00:00:00Z","block":":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"},` +
-		`{"version":2,"at":"2026-11-11T00:00:00Z","block":":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"}]}]}`))
+		`{"version":1,"at":"2026-11-10T00:00:00Z","document":"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"},` +
+		`{"version":2,"at":"2026-11-11T00:00:00Z","document":"---\ntype: [\n"}]}]}`))
 	if err == nil {
-		t.Fatal("ReadApproved accepted a block that does not parse")
+		t.Fatal("ReadApproved accepted a document that does not read")
 	}
-	for _, want := range []string{`"a-page-shows-it"`, "version 2", "bad-block-line"} {
+	for _, want := range []string{`"a-page-shows-it"`, "version 2", "bad-yaml"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("ReadApproved: %q, want an error that names %s", err, want)
 		}
@@ -267,13 +267,13 @@ func TestTheApprovedFixtureRefusesAnUnprintableBlock(t *testing.T) {
 // gives a current text by accident.
 func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	t.Parallel()
-	block := func(id, text string) string {
-		return `":::requirement{#` + id + ` kind=\"behavior\"}\n` + text + `\n:::\n"`
+	doc := func(id, text string) string {
+		return `"---\ntype: requirement\nid: ` + id + `\nkind: behavior\ntext:\n  - ` + text + `\n"`
 	}
-	version := func(n, at, block string) string {
-		return `{"version":` + n + `,"at":"` + at + `","block":` + block + `}`
+	version := func(n, at, doc string) string {
+		return `{"version":` + n + `,"at":"` + at + `","document":` + doc + `}`
 	}
-	good := version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it."))
+	good := version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it."))
 	for _, row := range []struct{ name, json, want string }{
 		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removd" is not in the format`},
 		{"a field written in other letters", `{"nodes":[{"id":"a-page-shows-it","Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
@@ -285,20 +285,28 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"a node with no id", `{"nodes":[{"id":"","versions":[` + good + `]}]}`, "a node has no id"},
 		{"one id on two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `]},{"id":"a-page-shows-it","versions":[` + good + `]}]}`, `node "a-page-shows-it" is in the approved spec two times`},
 		{"a node with no version", `{"nodes":[{"id":"a-page-shows-it","removed":true,"versions":[]}]}`, `approved node "a-page-shows-it": it has no version`},
-		{"version 0", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("0", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it.")) + `]}]}`,
+		{"version 0", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("0", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 0: the versions are 1 and more, oldest first`},
-		{"versions out of order", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("2", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it.")) + `,` + good + `]}]}`,
+		{"versions out of order", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("2", "2026-11-10T00:00:00Z", doc("a-page-shows-it", "The page shows it.")) + `,` + good + `]}]}`,
 			`approved node "a-page-shows-it" version 1: the versions are 1 and more, oldest first`},
-		{"a version older than the one before it", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `,` + version("2", "2026-11-09T00:00:00Z", block("a-page-shows-it", "The page shows all.")) + `]}]}`,
+		{"a version older than the one before it", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `,` + version("2", "2026-11-09T00:00:00Z", doc("a-page-shows-it", "The page shows all.")) + `]}]}`,
 			`approved node "a-page-shows-it" version 2: it is older than version 1`},
-		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"block":` + block("a-page-shows-it", "The page shows it.") + `}]}]}`,
+		{"a version with no time", `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":1,"document":` + doc("a-page-shows-it", "The page shows it.") + `}]}]}`,
 			`approved node "a-page-shows-it" version 1: it has no time`},
-		{"a block of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-all", "The page shows all.")) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds node "a-page-shows-all"`},
-		{"a block of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", `The page shows it.\n:::\n\n:::term{#page name=\"page\"}\nA page is a view.`)) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds 2 nodes`},
-		{"a block that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `":::requirement{#a-page-shows-it  kind=\"behavior\"}\nThe page shows it.\n:::\n"`) + `]}]}`,
-			`approved node "a-page-shows-it" version 1: bad-approved-block: the block is not as Print writes it`},
+		{"a document of another node", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-all", "The page shows all.")) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node "a-page-shows-all", not "a-page-shows-it"`},
+		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
+		{"a document whose parent is no id", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\nparent: ' '\ntext:\n  - The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: parent " " is no id`},
+		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: not-printed: line 4 is "kind:  behavior\n", and print writes "kind: behavior\n" there (other spaces)`},
+		// A problem of the schema that keeps the node leaves the printed form to the reader, which
+		// names the line; one that loses or changes the node leaves it to ReadApproved.
+		{"a document that Print does not write, of a node that breaks a rule of the schema", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\ntext:\n  -   The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: not-printed: line 5 is "  -   The page shows it.\n", and print writes "  - The page shows it.\n" there (other spaces)`},
+		{"a document that Print does not write, of a node that the schema changes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\nsurprise: true\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is not as Print writes it`},
 		{"null", `null`, `: it is null`},
 		{"an empty object", `{}`, `it holds no "nodes" list`},
 		{"a null list of nodes", `{"nodes":null}`, `: the value at "/nodes" is null`},
@@ -322,20 +330,21 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	}
 }
 
-// An approved block holds each relation by the id of the node that it names, and the derivation
+// An approved document holds each relation by the id of the node that it names, and the derivation
 // reads a relation only to a node of its kind: a parent that names no node, or a check, would read
 // as no parent, and in wait-cycle the statement above it would then read met where the scenario
 // has it not met (R22: "Dispatch refuses the approval of a change request that puts a statement
 // under a parent that the approved spec does not hold"). So the reader and the entry of the
 // derivation (approvedFault), and Current for a caller that builds an Approved itself, refuse a
 // relation that names no node of the approved spec of a kind that its relationRule gives it, the rule
-// that Validate reads in the files, naming the member and the value. A node that the approved spec
-// removed is one that it holds, so a relation to it is taken where its kind is right, and refused
-// where it is not. A check serves one statement (R6: "narrower than its statement"), so a check
-// whose block leaves out serves names none, while a statement or a component that leaves out its
-// parent is at the top (R1, R15). Each row sets one relation of one node beside an approved spec of
-// each kind, a node of each kind kept and removed: each value of the row with no want is taken (the
-// controls), and each other is refused with its line.
+// that Validate reads in the files, naming the member and the value; a value that is no id, such as
+// " " or "Pages", names no node, and the reader of the document refuses it as no id (versionText). A
+// node that the approved spec removed is one that it holds, so a relation to it is taken where its
+// kind is right, and refused where it is not. A check serves one statement (R6: "narrower than its
+// statement"), so a check whose document leaves out serves names none, while a statement or a
+// component that leaves out its parent is at the top (R1, R15). Each row sets one relation of one
+// node beside an approved spec of each kind, a node of each kind kept and removed: each value of the
+// row with no want is taken (the controls), and each other is refused with its line.
 func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	t.Parallel()
 	type node interface{ Print() (string, error) }
@@ -346,7 +355,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Print of %s: %v", id, err)
 		}
-		return ApprovedNode{ID: id, Removed: removed, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}
+		return ApprovedNode{ID: id, Removed: removed, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Document: block}}}
 	}
 	statement := func(id string) Statement {
 		return Statement{ID: id, Text: "The pages show each order.", Kind: KindBehavior}
@@ -380,10 +389,13 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		}
 	}
 	noNode := func(member, v string) string {
-		return "bad-approved-block: " + member + " " + quoted(v) + " names no node of the approved spec"
+		return "bad-approved-document: " + member + " " + quoted(v) + " names no node of the approved spec"
 	}
 	wrongKind := func(member, v, names, wanted string) string {
-		return "bad-approved-block: " + member + " " + quoted(v) + " names " + names + ", not " + wanted
+		return "bad-approved-document: " + member + " " + quoted(v) + " names " + names + ", not " + wanted
+	}
+	noID := func(member, v string) string {
+		return "bad-approved-document: " + member + " " + quoted(v) + " is no id"
 	}
 	type value struct{ v, want string }
 	for _, row := range []struct {
@@ -393,7 +405,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 	}{
 		{"a statement's parent", func(v string) (string, node) { s := statement("a-page-shows-it"); s.Parent = v; return s.ID, s }, []value{
 			{"pages", ""}, {"old-pages", ""}, {"", ""},
-			{"no-such-statement", noNode("parent", "no-such-statement")}, {" ", noNode("parent", " ")}, {"Pages", noNode("parent", "Pages")},
+			{"no-such-statement", noNode("parent", "no-such-statement")}, {" ", noID("parent", " ")}, {"Pages", noID("parent", "Pages")},
 			{"pages-load", wrongKind("parent", "pages-load", "a check", "a statement")},
 			{"envoy", wrongKind("parent", "envoy", "a component", "a statement")},
 			{"work-unit", wrongKind("parent", "work-unit", "a term", "a statement")},
@@ -408,7 +420,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			return s.ID, s
 		}, []value{
 			{"pages", ""}, {"old-pages", ""},
-			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noID("serves", "Pages")},
 			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
 			{"envoy-to-dispatch", wrongKind("serves", "envoy-to-dispatch", "an interface", "a statement")},
 			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
@@ -420,7 +432,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			return s.ID, s
 		}, []value{
 			{"envoy", ""}, {"envoy-to-dispatch", ""}, {"old-envoy", ""}, {"old-envoy-to-dispatch", ""},
-			{"no-such-component", noNode("about", "no-such-component")}, {"Envoy", noNode("about", "Envoy")},
+			{"no-such-component", noNode("about", "no-such-component")}, {"Envoy", noID("about", "Envoy")},
 			{"pages", wrongKind("about", "pages", "a statement", "a component or an interface")},
 			{"old-pages", wrongKind("about", "old-pages", "a statement", "a component or an interface")},
 			{"old-pages-load", wrongKind("about", "old-pages-load", "a check", "a component or an interface")},
@@ -428,8 +440,8 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		}},
 		{"the statement that a check serves", func(v string) (string, node) { return "a-page-shows-each-order", check("a-page-shows-each-order", v) }, []value{
 			{"pages", ""}, {"old-pages", ""},
-			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noNode("serves", "Pages")},
-			{"old-pages pages", noNode("serves", "old-pages pages")}, {"", noNode("serves", "")},
+			{"no-such-statement", noNode("serves", "no-such-statement")}, {"Pages", noID("serves", "Pages")},
+			{"old-pages pages", noID("serves", "old-pages pages")}, {"", noNode("serves", "")},
 			{"pages-load", wrongKind("serves", "pages-load", "a check", "a statement")},
 			{"envoy", wrongKind("serves", "envoy", "a component", "a statement")},
 			{"old-pages-load", wrongKind("serves", "old-pages-load", "a check", "a statement")},
@@ -438,7 +450,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		}},
 		{"a component's parent", func(v string) (string, node) { c := component("envoy-delivery"); c.Parent = v; return c.ID, c }, []value{
 			{"envoy", ""}, {"old-envoy", ""}, {"", ""},
-			{"no-such-component", noNode("parent", "no-such-component")}, {" ", noNode("parent", " ")},
+			{"no-such-component", noNode("parent", "no-such-component")}, {" ", noID("parent", " ")},
 			{"envoy-to-dispatch", wrongKind("parent", "envoy-to-dispatch", "an interface", "a component")},
 			{"pages", wrongKind("parent", "pages", "a statement", "a component")},
 			{"old-envoy-to-dispatch", wrongKind("parent", "old-envoy-to-dispatch", "an interface", "a component")},
@@ -451,7 +463,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 			return c.ID, c
 		}, []value{
 			{"dispatch", ""}, {"old-envoy", ""},
-			{"legion", noNode("joins", "legion")}, {"Legion", noNode("joins", "Legion")},
+			{"legion", noNode("joins", "legion")}, {"Legion", noID("joins", "Legion")},
 			{"envoy-to-dispatch", wrongKind("joins", "envoy-to-dispatch", "an interface", "a component")},
 			{"pages", wrongKind("joins", "pages", "a statement", "a component")},
 			{"old-envoy-to-dispatch", wrongKind("joins", "old-envoy-to-dispatch", "an interface", "a component")},
@@ -459,7 +471,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 		}},
 		{"the id of a term", func(v string) (string, node) {
 			return v, Term{ID: v, Name: "work item", Definition: "A work item is one unit of work."}
-		}, []value{{"work-item", ""}, {"Work-Item", `bad-approved-block: id "Work-Item" is no id`}}},
+		}, []value{{"work-item", ""}, {"Work-Item", `bad-approved-document: id "Work-Item" is no id`}}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -469,7 +481,7 @@ func TestAnApprovedRelationNamesANodeOfTheApprovedSpecOfItsKind(t *testing.T) {
 				err := approvedFault(nodes, nil)
 				want := ""
 				if v.want != "" {
-					want = fmt.Sprintf("specgraph: approved node %s version 1: %s (line 1 of its block)", quoted(id), v.want)
+					want = fmt.Sprintf("specgraph: approved node %s version 1: %s (line 1 of its document)", quoted(id), v.want)
 				}
 				if got := fmt.Sprint(err); err == nil && want != "" || err != nil && got != want {
 					t.Errorf("%q: the approved spec gives %v; want %q", v.v, err, want)
@@ -521,8 +533,8 @@ func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			n.ID = nodesOf(mustParse(t, block))[0].id
-			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Block: block})
+			n.ID = Nodes(mustParse(t, block))[0].NodeID()
+			n.Versions = append(n.Versions, ApprovedVersion{Version: i + 1, At: time.Date(2026, 11, 10+i, 0, 0, 0, 0, time.UTC), Document: block})
 		}
 		return n
 	}
@@ -543,25 +555,25 @@ func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *test
 		}, ""},
 		{"version 1 names no node, and version 2 names pages", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{versions(t, statement("no-such-statement"), statement("pages"))}
-		}, `specgraph: approved node "a-page-shows-it" version 1: bad-approved-block: parent "no-such-statement" names no node of the approved spec (line 1 of its block)`},
+		}, `specgraph: approved node "a-page-shows-it" version 1: bad-approved-document: parent "no-such-statement" names no node of the approved spec (line 1 of its document)`},
 		{"control: the current text of a component is under a component that no version marks as an interface", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{versions(t, component("envoy-delivery", "envoy"))}
 		}, ""},
 		{"the current text of a component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"))}
-		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
 		{"control: version 1 of a component is under a component that the newest text of that one marks as an interface, and version 2 under envoy", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy-to-dispatch"), component("envoy-delivery", "envoy"))}
 		}, ""},
 		{"version 2 of a component, its current text, is under a component that its newest text marks as an interface, and version 1 under envoy", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), versions(t, component("envoy-delivery", "envoy"), component("envoy-delivery", "envoy-to-dispatch"))}
-		}, `specgraph: approved node "envoy-delivery" version 2: bad-approved-block: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its block)`},
+		}, `specgraph: approved node "envoy-delivery" version 2: bad-approved-document: parent "envoy-to-dispatch" names an interface, not a component (line 1 of its document)`},
 		{"control: a removed component is under a component that its newest text marks as an interface", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "envoy-to-dispatch")))}
 		}, ""},
 		{"a removed component is under no node", func(t *testing.T) []ApprovedNode {
 			return []ApprovedNode{interfaceOfTheNewestText(t), removed(versions(t, component("envoy-delivery", "no-such-component")))}
-		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-block: parent "no-such-component" names no node of the approved spec (line 1 of its block)`},
+		}, `specgraph: approved node "envoy-delivery" version 1: bad-approved-document: parent "no-such-component" names no node of the approved spec (line 1 of its document)`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -600,7 +612,7 @@ func TestOnlyTheCurrentTextOfANodeIsJudgedByTheKindOfTheNodesThatItNames(t *test
 // mustParse is the tree of the one file text, and fails the test when Parse finds a problem.
 func mustParse(t *testing.T, text string) Tree {
 	t.Helper()
-	tree, problems := Parse(map[string][]byte{"x.md": []byte(text)})
+	tree, problems := Parse(map[string][]byte{"x.yaml": []byte(text)})
 	if len(problems) != 0 {
 		t.Fatalf("Parse: %+v", problems)
 	}
@@ -610,8 +622,8 @@ func mustParse(t *testing.T, text string) Tree {
 // idsOf is the set of the ids of the nodes of tree.
 func idsOf(tree Tree) map[string]bool {
 	ids := map[string]bool{}
-	for _, n := range nodesOf(tree) {
-		ids[n.id] = true
+	for _, n := range Nodes(tree) {
+		ids[n.NodeID()] = true
 	}
 	return ids
 }
@@ -625,9 +637,9 @@ func idsOf(tree Tree) map[string]bool {
 // whole number from 1, without that bound.
 func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
 	t.Parallel()
-	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>","block":"<block>"}, …]}, …]}`
-	version := func(n, at, block string) string {
-		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"block":` + block + `}]}]}`
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>","document":"<document>"}, …]}, …]}`
+	version := func(n, at, document string) string {
+		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"document":` + document + `}]}]}`
 	}
 	for _, row := range []struct{ name, json, want string }{
 		{"a list in the place of the file", `[]`, notInTheForm},
@@ -639,7 +651,7 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 		{"a version number that no Go int holds", version(`1000000000000000000000000000000`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
 		{"a time that is not RFC 3339", version(`1`, `"2026-11-10"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
 		{"a time with a lower-case t and z", version(`1`, `"2026-11-10t00:00:00z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
-		{"a list in the place of a block", version(`1`, `"2026-11-10T00:00:00Z"`, `["x"]`), notInTheForm + `: the value at "/nodes/0/versions/0/block" is of another type`},
+		{"a list in the place of a document", version(`1`, `"2026-11-10T00:00:00Z"`, `["x"]`), notInTheForm + `: the value at "/nodes/0/versions/0/document" is of another type`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -653,28 +665,28 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 
 // The lines of ReadApproved and WriteApproved cut a node id as decodeJSON cuts a place: whole up
 // to 100 bytes, else its first and its last 50 bytes with … between them, so a line that names an
-// id of 256 KiB, the writer's longName or a long id that a block can hold, stays one short line.
+// id of 256 KiB, the writer's longName or a long id that a document can hold, stays one short line.
 func TestTheLinesOfTheApprovedSpecCutALongNodeID(t *testing.T) {
 	t.Parallel()
 	y := func(n int) string { return strings.Repeat("y", n) }
 	longSlug := "key-" + y(1<<18-8) + "-end"
 	cutName, cutSlug := `"KEY\n`+y(46)+`…`+y(46)+`\tEND"`, `"key-`+y(46)+`…`+y(46)+`-end"`
-	block := func(id string) string {
-		return `":::requirement{#` + id + ` kind=\"behavior\"}\nThe page shows it.\n:::\n"`
+	document := func(id string) string {
+		return `"---\ntype: requirement\nid: ` + id + `\nkind: behavior\ntext:\n  - The page shows it.\n"`
 	}
-	node := func(id, n, block string) string {
-		return `{"id":` + id + `,"versions":[{"version":` + n + `,"at":"2026-11-10T00:00:00Z","block":` + block + `}]}`
+	node := func(id, n, document string) string {
+		return `{"id":` + id + `,"versions":[{"version":` + n + `,"at":"2026-11-10T00:00:00Z","document":` + document + `}]}`
 	}
 	for _, row := range []struct{ name, json, want string }{
 		{"a node with no version", `{"nodes":[{"id":` + jsonLongName + `,"removed":true,"versions":[]}]}`,
 			`specgraph: approved node ` + cutName + `: it has no version`},
-		{"version 0", `{"nodes":[` + node(jsonLongName, "0", block("a-page-shows-it")) + `]}`,
+		{"version 0", `{"nodes":[` + node(jsonLongName, "0", document("a-page-shows-it")) + `]}`,
 			`specgraph: approved node ` + cutName + ` version 0: the versions are 1 and more, oldest first`},
-		{"a block of another node", `{"nodes":[` + node(jsonLongName, "1", block("a-page-shows-it")) + `]}`,
-			`specgraph: approved node ` + cutName + ` version 1: bad-approved-block: the block holds node "a-page-shows-it", not ` + cutName + ` (line 1 of its block)`},
-		{"a block of a node with a long id", `{"nodes":[` + node(`"a-page-shows-it"`, "1", block(longSlug)) + `]}`,
-			`specgraph: approved node "a-page-shows-it" version 1: bad-approved-block: the block holds node ` + cutSlug + `, not "a-page-shows-it" (line 1 of its block)`},
-		{"one long id on two nodes", `{"nodes":[` + node(`"`+longSlug+`"`, "1", block(longSlug)) + `,` + node(`"`+longSlug+`"`, "1", block(longSlug)) + `]}`,
+		{"a document of another node", `{"nodes":[` + node(jsonLongName, "1", document("a-page-shows-it")) + `]}`,
+			`specgraph: approved node ` + cutName + ` version 1: bad-approved-document: the document is of node "a-page-shows-it", not ` + cutName + ` (line 1 of its document)`},
+		{"a document of a node with a long id", `{"nodes":[` + node(`"a-page-shows-it"`, "1", document(longSlug)) + `]}`,
+			`specgraph: approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node ` + cutSlug + `, not "a-page-shows-it" (line 1 of its document)`},
+		{"one long id on two nodes", `{"nodes":[` + node(`"`+longSlug+`"`, "1", document(longSlug)) + `,` + node(`"`+longSlug+`"`, "1", document(longSlug)) + `]}`,
 			`specgraph: approved spec: node ` + cutSlug + ` is in the approved spec two times`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -689,7 +701,7 @@ func TestTheLinesOfTheApprovedSpecCutALongNodeID(t *testing.T) {
 	t.Run("a node under another long id", func(t *testing.T) {
 		t.Parallel()
 		at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-		a := Approved{Nodes: map[string]ApprovedNode{longName: {ID: longSlug, Versions: []ApprovedVersion{{Version: 1, At: at, Block: "x"}}}}}
+		a := Approved{Nodes: map[string]ApprovedNode{longName: {ID: longSlug, Versions: []ApprovedVersion{{Version: 1, At: at, Document: "x"}}}}}
 		err := WriteApproved(&bytes.Buffer{}, a)
 		if err == nil {
 			t.Fatal("WriteApproved wrote the approved spec")
@@ -712,7 +724,7 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
-	if got := ids(nodesOf(current), func(n anyNode) string { return n.id }); !reflect.DeepEqual(got, []string{
+	if got := ids(Nodes(current), Node.NodeID); !reflect.DeepEqual(got, []string{
 		"acme-keeps-each-order", "an-order-survives-a-restart", "orders-reach-billing-only-through-the-interface",
 		"a-restart-keeps-each-order", "no-order-skips-the-interface",
 		"billing", "orders", "orders-to-billing", "shipping", "order",
@@ -744,8 +756,8 @@ func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
 func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	block := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
-	files, problems := Parse(map[string][]byte{"spec.md": []byte(block)})
+	document := "---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"
+	files, problems := Parse(map[string][]byte{"spec.yaml": []byte(document)})
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
@@ -760,7 +772,7 @@ func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			a := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: row.removed,
-				Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}}
+				Versions: []ApprovedVersion{{Version: 1, At: at, Document: document}}}}}
 			current, problems := a.Current()
 			_, held := current.StatementByID("a-page-shows-it")
 			_, compared := Compare(files, a).Holds["a-page-shows-it"]
@@ -771,25 +783,27 @@ func TestCurrentReadsRemovedAsTheCallerSetsIt(t *testing.T) {
 	}
 }
 
-// An approved spec that a caller builds, as the pilot builds it from the store, can hold a block
-// that does not parse. Current leaves that node out and names it with its version; Compare
+// An approved spec that a caller builds, as the pilot builds it from the store, can hold a document
+// that the reader refuses. Current leaves that node out and names it with its version; Compare
 // counts no text of it as approved.
-func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
+func TestCurrentNamesADocumentThatDoesNotRead(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	broken := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n::: and more\n:::\n"
+	broken := "---\n# A comment.\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"
 	approved := Approved{Nodes: map[string]ApprovedNode{
-		"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false, Versions: []ApprovedVersion{{Version: 1, At: at, Block: broken}}},
+		"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Document: broken}}},
 	}}
 	current, problems := approved.Current()
 	if len(current.Statements) != 0 {
 		t.Errorf("Current holds %+v, want no statement", current.Statements)
 	}
-	want := []Problem{{Pos: Position{"approved a-page-shows-it version 1", 3}, Node: "a-page-shows-it", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode}}
+	want := []Problem{{Pos: Position{"approved a-page-shows-it version 1", 2}, Node: "a-page-shows-it", Rule: "not-printed",
+		Detail: `not-printed: line 2 is "# A comment.\n", and print writes "type: requirement\n" there (a comment); spec-check print writes each node in that form`,
+		Effect: LosesNode}}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("Current problems:\n got %+v\nwant %+v", problems, want)
 	}
-	files, _ := Parse(map[string][]byte{"spec.md": []byte(broken)})
+	files, _ := Parse(map[string][]byte{"spec.yaml": []byte(broken)})
 	if got := Compare(files, approved).Problems; len(got) != 1 || got[0].Rule != "unapproved-text" {
 		t.Errorf("Compare: %+v, want one unapproved-text", got)
 	}
@@ -800,12 +814,12 @@ func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
 func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
 	t.Parallel()
 	day := func(d int) time.Time { return time.Date(2026, 11, d, 0, 0, 0, 0, time.UTC) }
-	a := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
-	b := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows all.\n:::\n"
-	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false, Versions: []ApprovedVersion{
-		{Version: 1, At: day(10), Block: a}, {Version: 2, At: day(11), Block: b}, {Version: 3, At: day(12), Block: a},
+	a := "---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"
+	b := "---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows all.\n"
+	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{
+		{Version: 1, At: day(10), Document: a}, {Version: 2, At: day(11), Document: b}, {Version: 3, At: day(12), Document: a},
 	}}}}
-	files, problems := Parse(map[string][]byte{"spec.md": []byte(a)})
+	files, problems := Parse(map[string][]byte{"spec.yaml": []byte(a)})
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
@@ -844,16 +858,17 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 		})
 	}
 	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
-	block := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
+	document := "---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\ntext:\n  - The page shows it.\n"
 	for _, row := range []struct {
 		name string
 		a    Approved
 		want string
 	}{
-		{"a node under another id", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-all": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
+		{"a node under another id", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-all": {ID: "a-page-shows-it",
+			Versions: []ApprovedVersion{{Version: 1, At: at, Document: document}}}}},
 			`node "a-page-shows-it" is under the id "a-page-shows-all"`},
-		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Removed: false, PartlyChecked: false,
-			Versions: []ApprovedVersion{{Version: 1, Block: block}}}}},
+		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it",
+			Versions: []ApprovedVersion{{Version: 1, Document: document}}}}},
 			`approved node "a-page-shows-it" version 1: it has no time`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -866,7 +881,7 @@ func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
 	}
 	t.Run("a node that leaves removed and partly_checked false", func(t *testing.T) {
 		t.Parallel()
-		kept := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}}
+		kept := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Document: document}}}}}
 		var written bytes.Buffer
 		if err := WriteApproved(&written, kept); err != nil || !strings.Contains(written.String(), `"removed":false,"partly_checked":false`) {
 			t.Fatalf("WriteApproved = %v, and wrote %q; want removed and partly_checked false", err, written.String())

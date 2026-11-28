@@ -109,7 +109,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	tick := newClock()
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
-		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 		Origins:   []string{dispatchOrigin},
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
@@ -313,6 +313,82 @@ func TestATokenThatIsNoSessionsCredentialIsRefused(t *testing.T) {
 	rig.broker.Says(sound, liveToken(caller.jkt, time.Hour))
 	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, sound)); err != nil {
 		t.Fatalf("a session's own token was refused: %v", err)
+	}
+}
+
+// TestAConsentedTokenCarriesOnlyConsentableScopes holds the new project-scope word to the exact
+// shape the broker mints. Changing the consented arm to accept a missing person, a missing
+// sign-in, read, a cut, a word no sign-in may hold or a word named twice makes one of the refusal
+// rows pass. The non-consentable word is legion-status, not approve: approveShapeOf refuses any
+// answer holding approve before the consented arm runs, so a row holding approve reaches no code
+// of that arm. p0 is consentable (dispatch://INFRA-5943/ask/3dfbf22b-74af-4e6d-af17-3bf368aac9fa),
+// beside person or alone, so taking it out of the consentable list makes those two rows fail. A
+// run goes beside a results token alone, and shapeOf refuses it beside every other token before
+// the consented arm runs, so the row with a run fails where that rule stops covering a consented
+// token. The Caller carries the answer's sign-in, from which its principal is built
+// (Caller.Principal).
+func TestAConsentedTokenCarriesOnlyConsentableScopes(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	const signIn = "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
+	consented := liveToken(caller.jkt, time.Hour)
+	consented.ProjectScope, consented.Projects, consented.Scope, consented.SignIn = ciphertoken.ProjectScopeConsented, nil, oauthwire.ScopePerson, signIn
+	empty := consented
+	empty.Scope = ""
+	withP0 := consented
+	withP0.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopeP0
+	p0Alone := consented
+	p0Alone.Scope = oauthwire.ScopeP0
+	for name, tc := range map[string]struct {
+		answer ciphertoken.Introspection
+		want   ciphertoken.Caller
+	}{
+		"person": {consented, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{oauthwire.ScopePerson}, SignIn: signIn}},
+		"empty":  {empty, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{}, SignIn: signIn}},
+		"person and p0": {withP0, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson,
+			Consented: []string{oauthwire.ScopePerson, oauthwire.ScopeP0}, SignIn: signIn}},
+		"p0 alone": {p0Alone, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", ProjectScope: ciphertoken.ProjectScopePerson, Consented: []string{oauthwire.ScopeP0}, SignIn: signIn}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			token := "consented-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, tc.answer)
+			got, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Verify(%s) = %+v, %v; want %+v", name, got, err, tc.want)
+			}
+		})
+	}
+
+	noPerson := consented
+	noPerson.Person, noPerson.Service = "", "example-fleet"
+	noSignIn := consented
+	noSignIn.SignIn = ""
+	read := consented
+	read.Scope = oauthwire.ScopePerson + " " + ciphertoken.ScopeRead
+	cut := consented
+	cut.AsOf = "2026-11-26T08:00:00Z"
+	nonConsentable := consented
+	nonConsentable.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopeLegionStatus
+	twice := consented
+	twice.Scope = oauthwire.ScopePerson + " " + oauthwire.ScopePerson
+	withRun := consented
+	withRun.CI = resultsRun()
+	for name, answer := range map[string]ciphertoken.Introspection{
+		"without a person":                noPerson,
+		"without a sign-in":               noSignIn,
+		"with read":                       read,
+		"with a cut":                      cut,
+		"with a word no sign-in may hold": nonConsentable,
+		"with a word named twice":         twice,
+		"with a run":                      withRun,
+	} {
+		t.Run(name, func(t *testing.T) {
+			token := "invalid-consented-" + strings.ReplaceAll(name, " ", "-")
+			rig.broker.Says(token, answer)
+			if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) {
+				t.Fatalf("Verify(%s) = %v, want ErrNotASession", name, err)
+			}
+		})
 	}
 }
 
@@ -1078,16 +1154,47 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	}
 }
 
+// A broker URL holding a made-up token, as the user name or in the query, that cannot be reached:
+// the unreachable outcome holds no part of the token, though net/http's error quotes the request's
+// URL with only a password masked. Boot refuses such a DISPATCH_AGENT_SECRETS_URL; the verifier
+// prints none of it all the same.
+func TestAnUnreachableBrokerURLWithACredentialPrintsNoneOfIt(t *testing.T) {
+	const token = "madeUpBrokerToken0123"
+	refused := testport.Refused(t)
+	for name, brokerURL := range map[string]string{
+		"a token as the user name": "http://" + token + "@" + refused,
+		"a token in the query":     "http://" + refused + "?token=" + token,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newRig(t, func(o *ciphertoken.Options) { o.BrokerURL = brokerURL })
+			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, "a-token-nobody-can-be-asked-about"))
+			if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) {
+				t.Fatalf("Verify = %v, want ErrBrokerUnreachable", err)
+			}
+			if strings.Contains(err.Error(), token[:10]) {
+				t.Errorf("Verify = %v, which holds part of the broker URL's token", err)
+			}
+		})
+	}
+}
+
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
-// its deployment's failure, so it is the unreachable outcome and the error names the file.
+// its deployment's failure, so it is the unreachable outcome and the error names the setting that
+// holds the file and why it could not be read, never the path, which here is a made-up token, as
+// one pasted where the path goes is.
 func TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "nothing-here")
-	rig := newRig(t, func(o *ciphertoken.Options) { o.Account = ciphertoken.NewAccountToken(missing) })
+	const pasted = "madeUpAccountTokenPath0123456789"
+	missing := filepath.Join(t.TempDir(), pasted)
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", missing)
+	})
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-never-asked-about"))
-	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), missing) {
-		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming %s", err, missing)
+	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) ||
+		!strings.Contains(err.Error(), "read the ServiceAccount token DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names: its file cannot be read: it does not exist") ||
+		strings.Contains(err.Error(), pasted[:10]) {
+		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming the setting and why, and not the path", err)
 	}
 	var unreadable *ciphertoken.AccountTokenError
 	if !errors.As(err, &unreadable) {
@@ -1169,7 +1276,7 @@ func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 				Origins:   origins,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
@@ -1190,7 +1297,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	options := func() ciphertoken.Options {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 			Origins:   []string{dispatchOrigin},
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}
