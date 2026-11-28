@@ -739,7 +739,7 @@ merge_when_clean() {
   for flag in "$@"; do [ "$flag" != --delete-branch ] || delete_branch=1; done
   merge_when_clean_by='' merge_when_clean_commit=''
   note "waiting up to ${bound}s for $repo_name#$pr to merge: merged, enqueued or auto-merge armed is left to land; the proof human merges by hand only once it reads CLEAN with nothing armed"
-  while ((SECONDS - started < bound)); do
+  while :; do
     polls=$((polls + 1))
     merge_when_clean_read "$repo_name" "$pr"
     [ "$pull_request_state" != MERGED ] || break
@@ -749,6 +749,10 @@ merge_when_clean() {
       note "$repo_name#$pr is armed ($armed; mergeStateStatus $pull_request_merge_state): no hand merge, waiting for it to land"
     fi
     [ -n "$pull_request_armed" ] || [ "$pull_request_merge_state" != CLEAN ] || break
+    # The bound is checked after the read, never before the first one: SECONDS counts whole seconds,
+    # so a check before it can find a short bound already spent, and the timeout would have no read
+    # to name.
+    ((SECONDS - started < bound)) || break
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
       note "still waiting for $repo_name#$pr to merge: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"
@@ -775,10 +779,12 @@ merge_when_clean() {
 # by hand: the merge is the merger agent's step — `gh pr merge --squash --match-head-commit` at the
 # head it read, with the subject and the empty body it passes itself, or an enqueue on a
 # merge-queue base — so a hand merge here would perform the product's own step and hide its
-# failure. It polls merge_when_clean_read within merge_when_clean's bound and poll, fails at once
-# on a pull request closed without a merge, and on a timeout names the state, what is armed and
-# every unsettled check. merge_when_clean_by is "the merger's own merge", and --delete-branch
-# deletes the head branch once it has merged (merge_when_clean_record).
+# failure. It polls merge_when_clean_read at merge_when_clean's poll until merge_when_clean's
+# bound is spent, checking the bound after each read as merge_when_clean does, so it always reads
+# the pull request at least once; it fails at once on a pull request closed without a merge, and on
+# a timeout names the state, what is armed and every unsettled check. merge_when_clean_by is "the
+# merger's own merge", and --delete-branch deletes the head branch once it has merged
+# (merge_when_clean_record).
 await_merger_merge() {
   local repo_name=$1 pr=$2 delete_branch=
   [ "${3:-}" != --delete-branch ] || delete_branch=1
@@ -786,11 +792,12 @@ await_merger_merge() {
   local started=$SECONDS beat=$SECONDS polls=0
   merge_when_clean_by='' merge_when_clean_commit=''
   note "waiting up to ${bound}s for the merger of $repo_name#$pr to merge it; nothing merges it by hand"
-  while ((SECONDS - started < bound)); do
+  while :; do
     polls=$((polls + 1))
     merge_when_clean_read "$repo_name" "$pr"
     [ "$pull_request_state" != MERGED ] || break
     [ "$pull_request_state" != CLOSED ] || fail "$repo_name#$pr was closed without a merge"
+    ((SECONDS - started < bound)) || break
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
       note "still waiting for the merger to merge $repo_name#$pr: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"

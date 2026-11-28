@@ -279,6 +279,18 @@ describe("merge_when_clean", () => {
     expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
   });
 
+  test("a bound already spent still reads the pull request once and names what it reads", () => {
+    const r = run([blocked], "--squash --delete-branch", { bound: 0 });
+    expect(r.status).toBe(1);
+    expect(r.reads).toHaveLength(1);
+    expect(r.merges).toHaveLength(0);
+    expect(r.deletes).toHaveLength(0);
+    expect(r.stderr).toMatch(
+      /^FAIL daemon-merge: timed out after \ds \(1 polls\) waiting for sjawhar\/legion-smoke#7 to merge: it reads OPEN, mergeStateStatus BLOCKED, nothing armed; unsettled checks: \[\{"name":"gate"/
+    );
+    expect(r.stderr.trimEnd().split("\n")).toHaveLength(1);
+  });
+
   test("armed past the bound fails naming what is armed", () => {
     const r = run([autoMerge], "--squash --delete-branch", { bound: 1 });
     expect(r.status).toBe(1);
@@ -327,6 +339,17 @@ describe("await_merger_merge", () => {
     expect(r.deletes).toHaveLength(0);
     expect(r.stderr).toContain("timed out after");
     expect(r.stderr).toContain("mergeStateStatus CLEAN");
+  });
+
+  test("a bound already spent still reads the pull request once and names what it reads", () => {
+    const r = run([blocked], "--delete-branch", { fn, bound: 0 });
+    expect(r.status).toBe(1);
+    expect(r.reads).toHaveLength(1);
+    expect(r.merges).toHaveLength(0);
+    expect(r.deletes).toHaveLength(0);
+    expect(r.stderr).toContain("timed out after");
+    expect(r.stderr).toContain("(1 polls)");
+    expect(r.stderr).toContain("it reads OPEN, mergeStateStatus BLOCKED, nothing armed");
   });
 
   test("without --delete-branch the merged pull request keeps its branch", () => {
