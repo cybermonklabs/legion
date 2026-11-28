@@ -194,8 +194,20 @@ func TestAContinuingStepKeepsItsBoundBranchUntilItEnds(t *testing.T) {
 	if facts := r.startFactsIn(phase.Testing); facts.Fix != 1 || facts.Branch != tester || facts.Kept {
 		t.Fatalf("a resume of the tester after fix 1 ended with its way pending is told %+v, want fix 1 on the branch its start is bound to, %s", facts, tester)
 	}
+	bound := r.stepStartAt(2)
+	if bound.Run != record.RunOpen || bound.PushBranch != tester {
+		t.Fatalf("UNKNOWN: the tester's start before its completion is %+v, want open and bound to %s", bound, tester)
+	}
+	// The testing move waits for the head's set of checks, so the set at headTwo comes first: the
+	// tester's completion then ends its step.
+	r.allCIPasses(headTwo)
 	if result := r.testerCompletesAt(headTwo, "test-1"); result.Refusal != nil {
 		t.Fatalf("the tester's completion was refused: %+v", result.Refusal)
+	}
+	// The bound start must have ended, and no later start of the place may stand in its stead:
+	// otherwise the read below holds nothing about an ended step's binding.
+	if after := r.stepStartAt(2); after.Starts != bound.Starts || after.Run == record.RunOpen {
+		t.Fatalf("UNKNOWN: after its completion the tester's place holds start %+v, want the bound start %d ended, so this cannot read what boundBranch answers for an ended step", after, bound.Starts)
 	}
 	var branch, pushed string
 	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -209,6 +221,18 @@ func TestAContinuingStepKeepsItsBoundBranchUntilItEnds(t *testing.T) {
 	if branch != "" || pushed != "" {
 		t.Fatalf("after the tester's step ended, boundBranch answers branch %q pushed %q for its place, want none: the binding outlived its step", branch, pushed)
 	}
+}
+
+// stepStartAt is the newest start of step place of LEGION-208's task a, as the store holds it.
+func (r *fixRig) stepStartAt(place int) record.StepStart {
+	r.t.Helper()
+	var start record.StepStart
+	onStored(r.t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		var err error
+		start, err = r.engine.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: place})
+		return err
+	})
+	return start
 }
 
 // deletions is each deletion of branches beside the fixes of a task queued for LEGION-208, oldest
