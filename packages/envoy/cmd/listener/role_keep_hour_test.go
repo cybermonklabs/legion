@@ -16,6 +16,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/id"
@@ -289,7 +290,7 @@ func (r *hourRig) reapClaim(role string) {
 	first := r.listeners[0]
 	ageRoleClaim(r.t, first.route, role, 2*session.LiveWindow)
 	isAlive := func(sessionID string) bool {
-		return roleHolderMayBeLive(logging.New("test"), first.harness.sessions, sessionID)
+		return roleHolderMayBeLive(logging.New("test"), clock.Real(), first.harness.sessions, sessionID)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

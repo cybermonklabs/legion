@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -24,8 +25,11 @@ import (
 // roleHolderSessions is the session side of a role-holder resolution (roles.SessionLookup): this
 // listener's session registry, which judges a record on its own windows (EntryState) and
 // remembers a departed session's last registration (LastSeen) already, with the one read a
-// resolution adds.
-type roleHolderSessions struct{ *session.SessionRegistry }
+// resolution adds, its bound timed on clock.
+type roleHolderSessions struct {
+	*session.SessionRegistry
+	clock clock.Timeouts
+}
 
 // Holder is the claim holder's record for a resolution, whatever state that record is in: the
 // cached one while it reads live, and otherwise the session bucket itself (Refresh), because the
@@ -33,15 +37,15 @@ type roleHolderSessions struct{ *session.SessionRegistry }
 // registered a moment ago, or one this listener has not re-read since its bus connection came
 // back, is in the bucket before it is here, and a holder that re-registered while its cached
 // record stood stalled must be found. The bucket read is bounded by roleHolderReadTimeout within
-// ctx, as every role path's session read is, so a route answers inside the budget its own caller
-// holds.
+// ctx, timed on s.clock, as every role path's session read is, so a route answers inside the
+// budget its own caller holds.
 //
 // nats.ErrKeyNotFound is the registry's word that no record stands, a key no session can register
 // under among them (session.SessionRegistry.Refresh, bus.ErrRefused); the resolution reads it as
 // a holder with nothing to date it, and takes nothing from it either way. Any other error is a
 // read that did not answer.
 func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	return holderRecord(ctx, s.SessionRegistry, sessionID, s.Refresh)
+	return holderRecord(ctx, s.clock, s.SessionRegistry, sessionID, s.Refresh)
 }
 
 // cachedThenLeaderHolderSessions is roleHolderSessions with its bucket read, made after the cache,
@@ -64,23 +68,34 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 // then walks with no holder; that takes nothing away, since the copy waits on the lane for the
 // next handover, so the handover keeps the cache's answer. The resolutions whose miss refuses a
 // send or hands its message off, which no read takes back, read every holder from the leader
-// instead (leaderHolderSessions).
-type cachedThenLeaderHolderSessions struct{ *session.SessionRegistry }
+// instead (leaderHolderSessions). Its bucket read is bounded by roleHolderReadTimeout, timed on
+// clock.
+type cachedThenLeaderHolderSessions struct {
+	*session.SessionRegistry
+	clock clock.Timeouts
+}
 
 func (s cachedThenLeaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	return holderRecord(ctx, s.SessionRegistry, sessionID, s.RefreshFromLeader)
+	return holderRecord(ctx, s.clock, s.SessionRegistry, sessionID, s.RefreshFromLeader)
 }
 
 // holderRecord is a resolution's read of the record of its claim's holder (roles.SessionLookup's
 // Holder): the cached record while it reads live, and otherwise read's answer from the session
-// bucket, bounded by roleHolderReadTimeout within ctx.
-func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessionID string, read func(context.Context, string) (session.SessionEntry, error)) (session.SessionEntry, error) {
+// bucket, bounded by roleHolderReadTimeout within ctx, timed on clk (withRoleHolderReadBound).
+func holderRecord(ctx context.Context, clk clock.Timeouts, sessions *session.SessionRegistry, sessionID string, read func(context.Context, string) (session.SessionEntry, error)) (session.SessionEntry, error) {
 	if entry, state := sessions.Lookup(sessionID); state == session.Live {
 		return entry, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	readCtx, cancel := withRoleHolderReadBound(ctx, clk)
 	defer cancel()
 	return read(readCtx, sessionID)
+}
+
+// withRoleHolderReadBound is the context each role path's read under roleHolderReadTimeout is
+// made under: ctx bounded by roleHolderReadTimeout, timed on clk, the clock of the code that makes
+// the read (clock.WithShownTimeout, so nats.go reads a deadline on it whichever clock it is).
+func withRoleHolderReadBound(ctx context.Context, clk clock.Timeouts) (context.Context, context.CancelFunc) {
+	return clock.WithShownTimeout(clk, ctx, roleHolderReadTimeout)
 }
 
 // leaderHolderSessions is roleHolderSessions for the resolutions that read their holder from the
@@ -91,11 +106,15 @@ func holderRecord(ctx context.Context, sessions *session.SessionRegistry, sessio
 // (roles.ResolveHolder reads the holder's state again), and on a replicated bucket a copy that has
 // not applied a registration made a moment ago answers that the session has no record; either
 // would refuse a send, or hand its message off, for a holder that can take it.
-// nats.ErrKeyNotFound is the leader's word that no record stands, as it is Holder's.
-type leaderHolderSessions struct{ *session.SessionRegistry }
+// nats.ErrKeyNotFound is the leader's word that no record stands, as it is Holder's. The read is
+// bounded by roleHolderReadTimeout, timed on clock.
+type leaderHolderSessions struct {
+	*session.SessionRegistry
+	clock clock.Timeouts
+}
 
 func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
-	return bucketSessionEntry(ctx, s.SessionRegistry, sessionID, roleHolderReadTimeout)
+	return bucketSessionEntry(ctx, s.clock, s.SessionRegistry, sessionID, roleHolderReadTimeout)
 }
 
 // resolveRoleHolderFromLeaders resolves role's holder within ctx (roles.ResolveHolder) from the
@@ -111,7 +130,7 @@ func (s leaderHolderSessions) Holder(ctx context.Context, sessionID string) (ses
 // live holder can take, or give it to the daemon of a stopped agent while the holder never
 // receives it.
 func resolveRoleHolderFromLeaders(ctx context.Context, d *listenerDeps, role string) (roles.Resolution, error) {
-	return roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderHolderSessions{d.sessions}, role)
+	return roles.ResolveHolder(ctx, leaderRoleClaims{d.registry}, leaderHolderSessions{d.sessions, d.clk()}, role)
 }
 
 // writeRoleHolderError writes the 404 of a role whose claim has no live holder
@@ -200,10 +219,12 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // and the state the record really carries for the second, so a caller can report what it refused
 // on rather than call every such session gone. Any other error is a read that did not answer, on
 // which nothing is taken from a holder and no send is refused as unaddressed. The bucket read gets
-// bound, derived from ctx, so a lookup, a soft claim, a role send through the publish route and a
-// send that cannot read the bucket answer their 503 inside the deadline their own caller holds.
+// bound, derived from ctx and timed on clk, the caller's clock, so a lookup, a soft claim, a role
+// send through the publish route and a send that cannot read the bucket answer their 503 inside
+// the deadline their own caller holds.
 func liveSessionEntry(
 	ctx context.Context,
+	clk clock.Timeouts,
 	sessions *session.SessionRegistry,
 	sessionID string,
 	bound time.Duration,
@@ -213,7 +234,7 @@ func liveSessionEntry(
 	if entry, state := sessions.Lookup(sessionID); accept(state) {
 		return entry, state, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, bound)
 	defer cancel()
 	entry, err := read(readCtx, sessionID)
 	if err != nil {
@@ -246,10 +267,10 @@ func liveSessionEntry(
 //
 // nats.ErrKeyNotFound is the leader's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read
-// gets bound, derived from ctx, so a route answers its 503 inside the deadline its own caller
-// holds.
-func bucketSessionEntry(ctx context.Context, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+// gets bound, derived from ctx and timed on clk, the caller's clock, so a route answers its 503
+// inside the deadline its own caller holds.
+func bucketSessionEntry(ctx context.Context, clk clock.Timeouts, sessions *session.SessionRegistry, sessionID string, bound time.Duration) (session.SessionEntry, error) {
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, bound)
 	defer cancel()
 	return sessions.RefreshFromLeader(readCtx, sessionID)
 }
@@ -411,11 +432,11 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // The error is non-nil only with roleHolderUnread, a holderSessionUnread naming the read that
 // failed and the session it read. A key the bucket does not hold is that bucket's word that the
 // session is gone, not a failure; every other read failure takes nothing from a holder. Both
-// reads are bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget
-// its own caller holds.
-func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
+// reads are bounded by roleHolderReadTimeout within ctx, timed on clk, so the route answers inside
+// the budget its own caller holds.
+func roleSupersessionVerdict(ctx context.Context, clk clock.Timeouts, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
-		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive, sessions.RefreshFromLeader)
+		_, _, err := liveSessionEntry(ctx, clk, sessions, holder, roleHolderReadTimeout, sessionIsLive, sessions.RefreshFromLeader)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
@@ -425,7 +446,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 			return roleStaysWithHolder, nil
 		}
 	}
-	predecessor, err := bucketSessionEntry(ctx, sessions, holder, roleHolderReadTimeout)
+	predecessor, err := bucketSessionEntry(ctx, clk, sessions, holder, roleHolderReadTimeout)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil
@@ -486,4 +507,10 @@ func sessionIsLive(state session.State) bool { return state == session.Live }
 // roleLaneClaims) is bounded by its caller's context as well, and so ends at the earlier of the
 // two; the role lane's resolution holds no deadline of its own, so each of its two reads has the
 // whole of this bound.
+//
+// A role path's read times this bound on the clock of the code that makes it
+// (withRoleHolderReadBound, liveSessionEntry, bucketSessionEntry): a route's on listenerDeps.clock,
+// the delivery paths' on listenerDeliveryHandlerConfig.clock, a reaper's and a Legion hand-off's on
+// the clock it is given; so a test that asserts the bound moves a clocktest.Fake past it rather
+// than waiting it out.
 const roleHolderReadTimeout = 2 * time.Second

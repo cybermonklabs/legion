@@ -223,7 +223,7 @@ type roleSend struct {
 // did not answer fails closed to naming no holder rather than refusing a delivery that still happens.
 // A nil scope names result as it is, at no read's cost.
 func (s *roleSend) shownHolder(result roles.Resolution) roles.Resolution {
-	readCtx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	readCtx, cancel := withRoleHolderReadBound(s.ctx, s.d.clk())
 	defer cancel()
 	shown, err := s.scope.holderConfirmed(readCtx, s.d.sessions, result)
 	if err != nil {
@@ -298,7 +298,7 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 			err = mayBeOwnUnread{err}
 		}
 		if recipient != s.holder {
-			readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+			readCtx, cancel := withRoleHolderReadBound(ctx, s.d.clk())
 			named, namedErr := s.scope.namesHolderConfirmed(readCtx, s.d.sessions, recipient)
 			cancel()
 			if namedErr != nil || !named {
@@ -353,7 +353,7 @@ func (s *roleSend) resolve(ctx context.Context) (roles.Resolution, error) {
 	if s.keepTellsNobody() {
 		return resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	}
-	return roles.ResolveHolder(ctx, s.d.registry, roleHolderSessions{s.d.sessions}, s.role)
+	return roles.ResolveHolder(ctx, s.d.registry, roleHolderSessions{s.d.sessions, s.d.clk()}, s.role)
 }
 
 // noHolder answers a role with no live holder. A Legion role whose newest session's daemon
@@ -523,7 +523,7 @@ func (s *roleSend) missConfirmed() bool {
 	if s.keepTellsNobody() {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	ctx, cancel := withRoleHolderReadBound(s.ctx, s.d.clk())
 	defer cancel()
 	confirmed, err := resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	if err != nil {

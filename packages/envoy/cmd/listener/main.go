@@ -198,20 +198,20 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // would have removed for its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
-// with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
-// waits.
-func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
+// with roleHolderReadTimeout as its bound, timed on clk, the same bound each read of role
+// delivery's resolution waits.
+func sessionMayBeLive(clk clock.Timeouts, sessions *session.SessionRegistry, sessionID string) (bool, error) {
+	_, _, err := liveSessionEntry(context.Background(), clk, sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
 	return true, err
 }
 
-// roleHolderMayBeLive is the role reaper's liveness check (sessionMayBeLive), logging a read that
-// did not answer, on which the claim is kept for the next cycle.
-func roleHolderMayBeLive(logger *logging.Logger, sessions *session.SessionRegistry, sessionID string) bool {
-	live, err := sessionMayBeLive(sessions, sessionID)
+// roleHolderMayBeLive is the role reaper's liveness check (sessionMayBeLive, its bound timed on
+// clk), logging a read that did not answer, on which the claim is kept for the next cycle.
+func roleHolderMayBeLive(logger *logging.Logger, clk clock.Timeouts, sessions *session.SessionRegistry, sessionID string) bool {
+	live, err := sessionMayBeLive(clk, sessions, sessionID)
 	if err != nil {
 		logger.Warn("role claim reaper kept a claim whose holder's session it could not read", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}
@@ -1933,8 +1933,8 @@ func runListener(credentialWait time.Duration) {
 	// period moves when a gone holder's role is freed and nothing else.
 	kvLoopsCtx, kvLoopsCancel := context.WithCancel(context.Background())
 	kvLoopsDone := []<-chan struct{}{
-		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
-		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
+		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(clock.Real(), sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
+		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, clock.Real(), sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
 		// The session reaper is the one loop that deletes a session's record, and the one place
 		// the bucket's maximum age is settled while the listener runs (session.ReapSessions). It
 		// deletes the session consumer of each record it deletes, so the stream holds a consumer

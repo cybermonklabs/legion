@@ -18,6 +18,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -108,7 +109,7 @@ func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testi
 			} else {
 				rewriteAsEarlierBuild(t, rig.harness.client.Conn, sessionID)
 				awaitEarlierBuildRecord(t, rig.harness.sessions, sessionID)
-				if live, err := sessionMayBeLive(rig.harness.sessions, sessionID); err != nil || !live {
+				if live, err := sessionMayBeLive(clock.Real(), rig.harness.sessions, sessionID); err != nil || !live {
 					t.Fatalf("sessionMayBeLive(%s) = %t, %v; want true: the reapers would take its claims and row", sessionID, live, err)
 				}
 			}

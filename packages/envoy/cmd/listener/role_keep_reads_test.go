@@ -53,7 +53,7 @@ func TestAKeptCopyWithAnExpectsReplyWordThisBuildDoesNotKnowIsReadAlikeByTheWalk
 	} else if kept.sequence != ack.Sequence {
 		t.Errorf("the keep holds the copy at sequence %d, want %d", kept.sequence, ack.Sequence)
 	}
-	wakes, err := keptLaneWakesItsRole(ctx, harness.client, role, ack.Sequence, time.Now())
+	wakes, err := keptLaneWakesItsRole(ctx, harness.client, role, ack.Sequence, time.Now(), roleKeepScanMax)
 	if err != nil {
 		t.Fatalf("scan role %s's kept lane: %v", role, err)
 	}

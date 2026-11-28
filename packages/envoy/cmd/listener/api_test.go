@@ -24,6 +24,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -1033,7 +1034,7 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 	// session bucket has lost.
 	ageRoleClaim(t, claimant, "lapsed-claim", 2*observer.sessions.TTL())
 	live := func(sessionID string) bool {
-		return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
+		return roleHolderMayBeLive(logging.New("test"), clock.Real(), observer.sessions, sessionID)
 	}
 	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL()); err != nil || sweep.Reaped != 1 {
 		t.Fatalf("reap role claims = %+v, %v; want the one claim whose holder left the bucket", sweep, err)
@@ -1089,7 +1090,9 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 		t.Fatal("the observer's session cache already holds ses_fresh, so the reaper's bucket read is not under test")
 	}
 
-	reaped, err := observer.registry.Reap(func(sessionID string) (bool, error) { return sessionMayBeLive(observer.sessions, sessionID) }, 10*time.Minute)
+	reaped, err := observer.registry.Reap(func(sessionID string) (bool, error) {
+		return sessionMayBeLive(clock.Real(), observer.sessions, sessionID)
+	}, 10*time.Minute)
 	if err != nil || reaped != 1 {
 		t.Fatalf("reap interests = %d, %v; want the one interest whose session left the bucket", reaped, err)
 	}
@@ -1282,7 +1285,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)
 		live := func(sessionID string) bool {
-			return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
+			return roleHolderMayBeLive(logging.New("test"), clock.Real(), observer.sessions, sessionID)
 		}
 		// A live window of zero so the claim's own renewal keeps nothing here: what must keep
 		// it is the session bucket the reaper cannot read.
@@ -1576,7 +1579,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		t.Fatalf("the claim after the grace and a lookup = %q, %v; want %q, since a lookup releases nothing", holder, err, sessionID)
 	}
 	sweep, err := restoredRegistry.ReapRoleClaims(context.Background(), func(id string) bool {
-		return roleHolderMayBeLive(logging.New("test"), restoredSessions, id)
+		return roleHolderMayBeLive(logging.New("test"), restoredState.clk(), restoredSessions, id)
 	}, live, live)
 	if err != nil || sweep.Reaped != 1 {
 		t.Fatalf("the role reaper released %+v, %v; want the one claim whose holder is gone", sweep, err)

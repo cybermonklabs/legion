@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -66,6 +67,18 @@ type legionHandoff struct {
 	sessions *session.SessionRegistry
 	agents   *legionAgentRegistry
 	logger   *logging.Logger
+	// clock is what the bound of its session read, roleHolderReadTimeout, is timed on. Nil is
+	// clock.Real (clk), which main.go and every test that does not drive time hold.
+	clock clock.Clock
+}
+
+// clk is the clock h's session read is bounded on: the one a test gave it, and clock.Real for a
+// hand-off built without one.
+func (h *legionHandoff) clk() clock.Clock {
+	if h.clock == nil {
+		return clock.Real()
+	}
+	return h.clock
 }
 
 // legionHandedOff is a hand-off handOffToLegion published: the body, the subject it was published
@@ -156,7 +169,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	// bucket leader's, as every read that takes something from a session on a miss is
 	// (liveSessionEntry): a copy that has not applied a registration made a moment ago would hand a
 	// live session's message to its daemon.
-	_, _, err = liveSessionEntry(ctx, h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
+	_, _, err = liveSessionEntry(ctx, h.clk(), h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 	case err != nil:

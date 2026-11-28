@@ -429,7 +429,7 @@ func sessionLiveNow(ctx context.Context, cfg listenerDeliveryHandlerConfig, sess
 	if cfg.sessions == nil {
 		return false, errors.New("this listener holds no session registry")
 	}
-	_, _, err := liveSessionEntry(ctx, cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
+	_, _, err := liveSessionEntry(ctx, cfg.clk(), cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return false, nil

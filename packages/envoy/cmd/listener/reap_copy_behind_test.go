@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -88,7 +89,7 @@ func TestTheInterestReaperKeepsTheInterestOfASessionACopyBehindAnswersAbsent(t *
 			})
 			behindForSession(t, observer, sessionID)
 
-			reaped, err := observer.registry.Reap(func(id string) (bool, error) { return sessionMayBeLive(observer.sessions, id) }, 10*time.Minute)
+			reaped, err := observer.registry.Reap(func(id string) (bool, error) { return sessionMayBeLive(clock.Real(), observer.sessions, id) }, 10*time.Minute)
 			want := map[bool]int{true: 0, false: 1}[tc.registered]
 			if err != nil || reaped != want {
 				t.Errorf("reap interests = %d, %v; want %d", reaped, err, want)
@@ -136,7 +137,7 @@ func TestTheRoleReaperKeepsTheClaimOfAHolderACopyBehindAnswersAbsent(t *testing.
 			behindForSession(t, observer, holder)
 
 			live := func(sessionID string) bool {
-				return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
+				return roleHolderMayBeLive(logging.New("test"), clock.Real(), observer.sessions, sessionID)
 			}
 			sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL())
 			want := map[bool]int{true: 0, false: 1}[tc.registered]
