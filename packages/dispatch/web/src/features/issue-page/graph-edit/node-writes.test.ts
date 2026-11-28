@@ -30,6 +30,7 @@ import { mergeTreePages } from "../tree-read/tree-nodes";
 import {
   outlineQuery,
   readNextTreePage,
+  readOlderComments,
   type TreeAnswer,
   type TreeAnswerNode,
 } from "../tree-read/tree-read";
@@ -3105,6 +3106,87 @@ test("a node left at a guessed place after a refused page shows nothing on its n
   ]);
 });
 
+/** A comment on the third statement older than any the read holds: the one comment of the older
+ *  comment page `underQuestionOwnMemo` names once it names one (`comments_before`). */
+const olderComment: TreeAnswerNode = {
+  ...nodeOf(firstPage, COMMENT_ON_TEXT),
+  id: "<older-comment>",
+  made_at: "2025-01-01T00:00:00Z",
+};
+
+// The same outdent, its next page refused, and then an older comment page read into Graph's held
+// read: its comment stands in the third statement's subtree, before the paragraph, so the cache
+// holds a new object for each node after it, the paragraph among them. The paragraph still stands
+// where the outdent's answer was guessed, so on Move up it shows nothing of the conversation: the
+// place is not shown, the memo stays first, and the next page is read again. R7's re-read is held
+// out.
+test("a node left at a guessed place shows nothing on its next move after an older comment page", async () => {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const query = new URL(request.url).searchParams;
+      if (query.has("comments_before")) {
+        return Response.json({
+          ...firstPage,
+          comments_before: null,
+          cursor: null,
+          nodes: [olderComment],
+          tuples: [],
+        });
+      }
+      const cursor = query.get("cursor");
+      cursors.push(cursor);
+      if (cursor === null) return new Promise<never>(() => {});
+      return Response.json({ code: "UNAVAILABLE", error: "unavailable" }, { status: 503 });
+    })
+  );
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches(
+    { body: { after: "<memo>", parent, placement_seq: OUTDENT_SEQ }, status: 200 },
+    { body: { after: null, parent, placement_seq: "<seq:tree/paragraph>@3" }, status: 200 }
+  );
+  const { client, writes } = mount({ ...underQuestionOwnMemo, comments_before: "<older>" });
+  await act(async () => {
+    await writes().move(PAGED, "outdent");
+  });
+  await waitFor(() =>
+    expect(cursors, "the reads after the outdent").toEqual([firstPage.cursor, null])
+  );
+  await act(async () => {
+    await readOlderComments(client, KEY, "graph");
+  });
+  expect(heldNode(client, olderComment.id)?.parent?.id, "the older comment's parent").toBe(
+    STATEMENT
+  );
+  const ids = heldIds(client);
+  expect(
+    ids.indexOf(olderComment.id),
+    "the older comment stands before the paragraph"
+  ).toBeLessThan(ids.indexOf(PAGED));
+  await act(async () => {
+    await writes().move(PAGED, "move_up");
+  });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ parent }, { after: null, parent }]);
+  await waitFor(() =>
+    expect(
+      cursors.filter((each) => each === null),
+      "R7's re-read did not go"
+    ).toHaveLength(2)
+  );
+  await waitInAct(50);
+  expect(cursors, "the reads after Move up").toEqual([
+    firstPage.cursor,
+    null,
+    firstPage.cursor,
+    null,
+  ]);
+  expect(heldChildIds(client, KEY), "the issue's children once Move up is taken").toEqual([
+    "<memo>",
+    "<question>",
+    PAGED,
+  ]);
+});
+
 // The same outdent, its next page refused, and then R7's re-read, which the server answers with
 // the paragraph where the outdent's answer was written, as the held read holds it: the cache keeps
 // the node it held, at that same index, but the server now stands it there. Move up then puts it
@@ -3163,5 +3245,82 @@ test("a node a read of the server stands where its place was guessed shows the p
     "<question>",
     PAGED,
     "<memo>",
+  ]);
+});
+
+// On the first page alone, Outdent on the paragraph leaves it at a guessed place, its next page
+// refused. The second statement is then placed under the issue, first of the spec's blocks,
+// answered with no `after`: right before the paragraph, the first child past its band the page
+// holds. The paragraph stands at a guessed place, so the place only seems shown: the next page is
+// read for it, refused, the memo stays first, and the statement stands at a guessed place too.
+// So the first statement, placed right after the second, reads the next page once more. R7's
+// re-read is held out.
+test("a place right before or right after a node at a guessed place reads the next page", async () => {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      if (cursor === null) return new Promise<never>(() => {});
+      return Response.json({ code: "UNAVAILABLE", error: "unavailable" }, { status: 503 });
+    })
+  );
+  const parent = `issue/${KEY}`;
+  const first = { after: null, parent };
+  const second = { after: "<statement-2>", parent };
+  answerPatches(
+    { body: { after: "<memo>", parent, placement_seq: OUTDENT_SEQ }, status: 200 },
+    { body: { ...first, placement_seq: STATEMENT_2_SEQ }, status: 200 },
+    { body: { ...second, placement_seq: "<seq:statement-1>@2" }, status: 200 }
+  );
+  const { client, writes } = mount(underQuestionOwnMemo);
+  const reread = async (count: number) => {
+    await waitFor(() =>
+      expect(
+        cursors.filter((each) => each === null),
+        "R7's re-read did not go"
+      ).toHaveLength(count)
+    );
+    await waitInAct(50);
+  };
+  await act(async () => {
+    await writes().move(PAGED, "outdent");
+  });
+  await reread(1);
+  expect(cursors, "the reads after the outdent").toEqual([firstPage.cursor, null]);
+  await act(async () => {
+    await placeNode(client, KEY, "<statement-2>", first, "new_below");
+  });
+  await reread(2);
+  expect(cursors, "the reads after the second statement is placed").toEqual([
+    firstPage.cursor,
+    null,
+    firstPage.cursor,
+    null,
+  ]);
+  expect(heldChildIds(client, KEY), "the issue's children once the second is placed").toEqual([
+    "<memo>",
+    "<question>",
+    "<statement-2>",
+    PAGED,
+  ]);
+  await act(async () => {
+    await placeNode(client, KEY, "<statement-1>", second, "new_below");
+  });
+  await reread(3);
+  expect(cursors, "the reads after the first statement is placed").toEqual([
+    firstPage.cursor,
+    null,
+    firstPage.cursor,
+    null,
+    firstPage.cursor,
+    null,
+  ]);
+  expect(heldChildIds(client, KEY), "the issue's children once the first is placed").toEqual([
+    "<memo>",
+    "<question>",
+    "<statement-2>",
+    "<statement-1>",
+    PAGED,
   ]);
 });

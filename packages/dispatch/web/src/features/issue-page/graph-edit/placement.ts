@@ -355,16 +355,6 @@ export function standsAt(
   return children[at + 1] === place.child;
 }
 
-/** Whether `held` holds the place of a taken move or placing (`TakenPlace`) for `node`, a node it
- *  holds: the node the answer's `parent` names, and the place there that `siblingPlace` gives,
- *  where `held` shows it (`SiblingPlace`'s `shown`). `node` itself, which the place was written
- *  into `held` with (`node-writes.ts`' `movedIn`), shows nothing of that place. */
-export function holdsPlace(held: TreeAnswer, node: TreeAnswerNode, taken: TakenPlace): boolean {
-  const under = (held.nodes ?? []).find((each) => names(each, taken.answer.parent));
-  if (under === undefined) return false;
-  return placeAmong(held.issue, walkOf(held), under.id, node, taken, false).shown;
-}
-
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the
  *  walk's order, and the nodes whose children may go on past the pages loaded. */
 function walkOf(held: TreeAnswer): Walk {

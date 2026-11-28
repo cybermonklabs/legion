@@ -26,7 +26,6 @@ import {
 import {
   type Entry,
   type GreyReason,
-  holdsPlace,
   type MoveBody,
   type MoveEntry,
   memoIn,
@@ -72,11 +71,11 @@ import {
  * children that stand before the place the body asked for - each child of the earlier bands where
  * the body's `after` was null, each child of the node's band otherwise. That is read on the read
  * the answer is written into, as it stands before the node and the issue's memo move there
- * (`movedIn`), and on each page read after it (`placement.ts`' `holdsPlace`). If no pages are
- * needed, the next act goes out within the answer's own reaction, before the write store's hold
- * on the tree reads ends (`subscribeTreeFreshness`). The editor's move keys check
- * `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather than being judged
- * on the read that act's answer is about to change.
+ * (`movedIn`), and on each page read after it (`lacksPlace`). If no pages are needed, the next act
+ * goes out within the answer's own reaction, before the write store's hold on the tree reads ends
+ * (`subscribeTreeFreshness`). The editor's move keys check `NodeWrites.busy` so a key pressed
+ * while an act is out waits its turn, rather than being judged on the read that act's answer is
+ * about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -289,16 +288,21 @@ interface Container {
 }
 
 /** The chains and the lines of one client, as `tree-read.ts` keeps the pages out: one for the
- *  app, whichever hook pressed an act. */
+ *  app, whichever hook pressed an act. `guessed` holds, by issue, the read ids of the nodes Graph's
+ *  held read holds where a taken move's answer was written at a place the read did not show
+ *  (`movedIn`): where such a node stands shows nothing, for its own place or a later one
+ *  (`placement.ts`' `siblingPlace`, `nodeTrusted`), whatever write of the read keeps it there. */
 interface NodeWriteState {
   readonly chains: Map<string, Chain>;
   readonly lines: Map<string, ReadonlyMap<string, NodeLine>>;
   readonly listeners: Set<() => void>;
+  readonly guessed: Map<string, Set<string>>;
 }
 
 const states = new WeakMap<QueryClient, NodeWriteState>();
 
 const NO_LINES: ReadonlyMap<string, NodeLine> = new Map();
+const NO_GUESSES: ReadonlySet<string> = new Set();
 const TAKEN = { status: "taken" } as const;
 const DROPPED = { status: "dropped" } as const;
 const FAILED = { status: "failed" } as const;
@@ -306,13 +310,13 @@ const READ_NEXT: Next = { kind: "read_next" };
 const GONE: Next = { kind: "drop", reason: undefined };
 
 /** `client`'s state, made on its first use, which then has the cache's reads of the server
- *  clear `guessed` (`trustServerReads`). */
+ *  clear its `guessed` (`trustServerReads`). */
 function stateOf(client: QueryClient): NodeWriteState {
   let state = states.get(client);
   if (state === undefined) {
-    state = { chains: new Map(), lines: new Map(), listeners: new Set() };
+    state = { chains: new Map(), guessed: new Map(), lines: new Map(), listeners: new Set() };
     states.set(client, state);
-    trustServerReads(client);
+    trustServerReads(client, state);
   }
   return state;
 }
@@ -532,74 +536,68 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
   return place.child === undefined ? subtreeEnd(nodes, from) : nodes.indexOf(place.child);
 }
 
-/** The nodes Graph's held reads hold where a taken move's answer was written past the pages
- *  loaded, at a place the read did not show (`movedIn`): where such a node stands shows nothing,
- *  for its own place or a later one (`placement.ts`' `siblingPlace`, `nodeTrusted`). The cache's
- *  copy of such a node is one too (`writeHeld`), and a read of the server clears them all
- *  (`trustServerReads`). */
-const guessed = new WeakSet<TreeAnswerNode>();
-
-/** Takes out of `guessed` every node a read of the server answers for Graph's outline of an issue,
- *  once `client`'s cache holds it: the read stands each node where the walk stands it, though the
- *  cache keeps the object it held where the read answers a node as it held it, at the same index
- *  (`replaceEqualDeep`). A fetch's answer is no `manual` one; a next page's merge and this
- *  module's own writes are (`setQueryData`), and change no mark. */
-function trustServerReads(client: QueryClient): void {
+/** Takes out of `state`'s `guessed` an issue's nodes once `client`'s cache holds a read of the
+ *  server of Graph's outline of that issue, which stands each node where the walk stands it, or no
+ *  longer holds that outline. A fetch's answer is no `manual` one. A next page's merge, an older
+ *  comment page and this module's own writes are (`setQueryData`), and change no mark: a mark is
+ *  a read id, which each of them keeps. */
+function trustServerReads(client: QueryClient, state: NodeWriteState): void {
   client.getQueryCache().subscribe((event) => {
-    if (event.type !== "updated" || event.action.type !== "success") return;
-    if (event.action.manual === true) return;
+    const read =
+      event.type === "updated" && event.action.type === "success" && event.action.manual !== true;
+    if (!read && event.type !== "removed") return;
     const [, issue] = event.query.queryKey;
     if (typeof issue !== "string") return;
     if (event.query.queryHash !== hashKey(outlineQuery(issue, "graph").queryKey)) return;
-    for (const node of (event.action.data as TreeAnswer | undefined)?.nodes ?? []) {
-      guessed.delete(node);
-    }
+    state.guessed.delete(issue);
   });
 }
 
 /** `held` with `taken`, the taken move of `node` (its answer, and the body it answered), written
- *  into it (`read`), and whether `held` shows that place (`shown`, `placement.ts`'
- *  `SiblingPlace`): the node's whole subtree, on every page it stands on (`cutSubtree`), under
- *  the answer's `parent`, among all of that parent's children the pages hold, after the answer's
- *  `after`, or at the place the body asked for where the pages hold no child that `after` names
- *  (`placeIn`), in the walk's order, so each later body reads it there, and the node's
- *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
- *  `memo`), goes where the walk then stands it: right after the node's subtree where the place
- *  stands before it by rank and `held` shows that place, and first among the issue's children
- *  otherwise, until a page shows the place. The place and whether it is shown are both read on
- *  `held` as it stands, the node set aside where it stands there (`siblingPlace`). Where the node
- *  stands there shows the place, as a memo held at its rank does, unless an earlier answer was
- *  written there at a place not shown (`guessed`). Where `held` holds no such node, it is answered
- *  as it stands; where it holds no such parent, the node keeps its place and takes the answer's
- *  `placement_seq` alone. Neither shows the place. A node written at a place not shown is
- *  `guessed`. */
+ *  into it (`read`), whether the server's walk, as `held` holds it, shows that place (`shown`),
+ *  and whether the node stands at a guessed place once written (`guessed`): the node's whole
+ *  subtree, on every page it stands on (`cutSubtree`), under the answer's `parent`, among all of
+ *  that parent's children the pages hold, after the answer's `after`, or at the place the body
+ *  asked for where the pages hold no child that `after` names (`placeIn`), in the walk's order,
+ *  so each later body reads it there, and the node's `placement_seq` the answer's. The issue's
+ *  memo, where that parent holds one (`SiblingPlace`'s `memo`), goes where the walk then stands
+ *  it: right after the node's subtree where the place stands before it by rank and is shown, and
+ *  first among the issue's children otherwise, until a page shows the place. The place and
+ *  whether `held` shows it are both read on `held` as it stands, the node set aside where it
+ *  stands there (`siblingPlace`). Where the node stands there shows the place, as a memo held at
+ *  its rank does, unless its read id is among `guessedIds`, the issue's nodes at a guessed place.
+ *  A place right after or right before a node at a guessed place only seems shown, and is not.
+ *  The node stands at a guessed place where the place is not shown. Where `held` holds no such
+ *  node, it is answered as it stands, and the node's mark stays as it was; where it holds no such
+ *  parent, the node keeps its place and takes the answer's `placement_seq` alone, at a guessed
+ *  place. Neither shows the place. */
 function movedIn(
   held: TreeAnswer,
   node: string,
-  taken: TakenPlace & { readonly answer: NodeMoved }
-): { readonly read: TreeAnswer; readonly shown: boolean } {
+  taken: TakenPlace & { readonly answer: NodeMoved },
+  guessedIds: ReadonlySet<string>
+): { readonly read: TreeAnswer; readonly shown: boolean; readonly guessed: boolean } {
   const { answer } = taken;
   const nodes = held.nodes ?? [];
   const at = nodes.findIndex((each) => each.id === node);
   const own = nodes[at];
-  if (own === undefined) return { read: held, shown: false };
+  if (own === undefined) return { guessed: guessedIds.has(node), read: held, shown: false };
   const renewed = { ...own, placement_seq: answer.placement_seq };
   const { rest, subtree } = cutSubtree(nodes, at);
   const from = rest.findIndex((each) => names(each, answer.parent));
   const parent = rest[from];
   if (parent === undefined) {
-    guessed.add(renewed);
     const read = { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
-    return { read, shown: false };
+    return { guessed: true, read, shown: false };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const place = siblingPlace(held, parent.id, own, taken, !guessed.has(own));
-  const { memo, shown } = place;
+  const place = siblingPlace(held, parent.id, own, taken, !guessedIds.has(own.id));
+  const { memo } = place;
+  const shown = shownByServer(place, guessedIds);
   const to = placeIn(rest, from, place);
   const top = { ...renewed, parent: ref };
-  if (!shown) guessed.add(top);
   const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
-  if (memo === undefined) return { read: { ...held, nodes: moved }, shown };
+  if (memo === undefined) return { guessed: !shown, read: { ...held, nodes: moved }, shown };
   const cut = cutSubtree(moved, moved.indexOf(memo.node));
   const end =
     memo.first || !shown
@@ -609,29 +607,31 @@ function movedIn(
     ...held,
     nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)],
   };
-  return { read, shown };
+  return { guessed: !shown, read, shown };
+}
+
+/** Whether the server's walk, as a held read holds it, shows `place` (`SiblingPlace`'s `shown`):
+ *  a child the place stands right after or right before only seems to show it where that child
+ *  is among `guessedIds`, the issue's nodes at a guessed place. */
+function shownByServer(place: SiblingPlace, guessedIds: ReadonlySet<string>): boolean {
+  return place.shown && !(place.child !== undefined && guessedIds.has(place.child.id));
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
- *  put on it, as `readNextTreePage` does. The cache shares what it held with `answer`
- *  (`replaceEqualDeep`), so it holds a copy of each node it did not hold as it was, at the node's
- *  own index: the copy of a `guessed` node is `guessed` too. */
+ *  put on it, as `readNextTreePage` does. */
 function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void {
   const { queryKey } = outlineQuery(issue, "graph");
   const stale = client.getQueryCache().find({ exact: true, queryKey })?.state.isInvalidated;
-  const kept = client.setQueryData(queryKey, answer)?.nodes ?? [];
-  (answer.nodes ?? []).forEach((node, at) => {
-    const copy = kept[at];
-    if (copy !== undefined && guessed.has(node)) guessed.add(copy);
-  });
+  client.setQueryData(queryKey, answer);
   if (stale === true) {
     void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
   }
 }
 
 /** Writes `taken`, the taken move of `node` (its answer, and the body it answered), into Graph's
- *  held read of `issue` (`movedIn`), and answers whether that read shows the place; false where
- *  no read is held. */
+ *  held read of `issue` (`movedIn`), marks the node as at a guessed place or no longer at one
+ *  (`NodeWriteState`'s `guessed`), and answers whether that read shows the place; false where no
+ *  read is held. */
 function placeHeld(
   client: QueryClient,
   issue: string,
@@ -640,19 +640,32 @@ function placeHeld(
 ): boolean {
   const held = heldRead(client, issue);
   if (held === undefined) return false;
-  const { read, shown } = movedIn(held, node, taken);
-  writeHeld(client, issue, read);
-  return shown;
+  const { guessed } = stateOf(client);
+  const ids = guessed.get(issue) ?? new Set<string>();
+  const moved = movedIn(held, node, taken, ids);
+  if (moved.guessed) guessed.set(issue, ids.add(node));
+  else ids.delete(node);
+  writeHeld(client, issue, moved.read);
+  return moved.shown;
 }
 
 /** Whether `held` names a next page and lacks `place`, where a taken move put the node of read id
  *  `node` (its answer, and the body it answered), which the read the answer was written into did
- *  not show (`movedIn`): it lacks that node, or holds it and not the place (`placement.ts`'
- *  `holdsPlace`). */
-function lacksPlace(held: TreeAnswer, node: string, place: TakenPlace): boolean {
+ *  not show (`movedIn`): it lacks that node or the parent the answer names, or holds them and the
+ *  server's walk, as `held` holds it, does not show the place (`shownByServer`), the node itself
+ *  set aside where it stands there, written at the place, and `guessedIds` the issue's nodes at a
+ *  guessed place. */
+function lacksPlace(
+  held: TreeAnswer,
+  node: string,
+  place: TakenPlace,
+  guessedIds: ReadonlySet<string>
+): boolean {
   if (nextTreeCursor(held) === undefined) return false;
   const moved = held.nodes?.find((each) => each.id === node);
-  return moved === undefined || !holdsPlace(held, moved, place);
+  const under = held.nodes?.find((each) => names(each, place.answer.parent));
+  if (moved === undefined || under === undefined) return true;
+  return !shownByServer(siblingPlace(held, under.id, moved, place, false), guessedIds);
 }
 
 /** `held` without the earlier copy of each node `ids` names that a next page merged into it holds
@@ -814,7 +827,8 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
 function advance(client: QueryClient, chain: Chain): void {
   if (chain.place !== undefined) {
     const held = heldRead(client, chain.issue);
-    if (held !== undefined && lacksPlace(held, chain.node, chain.place)) {
+    const guessedIds = stateOf(client).guessed.get(chain.issue) ?? NO_GUESSES;
+    if (held !== undefined && lacksPlace(held, chain.node, chain.place, guessedIds)) {
       readToPlace(client, chain, held);
       return;
     }
@@ -856,7 +870,8 @@ function advance(client: QueryClient, chain: Chain): void {
  * refused. Queued acts wait in the meantime. If a page contains the moved node, or the issue's
  * memo (`placement.ts`' `memoIn`), removes the copy the held read held before the page
  * (`withoutMovedCopies`) before TanStack notifies observers, so neither the next act nor the
- * outline sees two copies.
+ * outline sees two copies; the moved node the page holds stands where the walk stands it, at no
+ * guessed place (`NodeWriteState`'s `guessed`).
  */
 function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void {
   const before = held.nodes?.length ?? 0;
@@ -866,6 +881,9 @@ function readToPlace(client: QueryClient, chain: Chain, held: TreeAnswer): void 
     () => {
       try {
         const merged = heldRead(client, chain.issue);
+        if (merged?.nodes?.some((each, at) => at >= before && each.id === chain.node)) {
+          stateOf(client).guessed.get(chain.issue)?.delete(chain.node);
+        }
         const kept = merged === undefined ? undefined : withoutMovedCopies(merged, ids, before);
         if (kept !== undefined) writeHeld(client, chain.issue, kept);
       } finally {
