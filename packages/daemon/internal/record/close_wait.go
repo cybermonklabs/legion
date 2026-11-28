@@ -184,9 +184,6 @@ func CloseWaitOf(f CloseFacts) CloseWait {
 	if len(f.Beneath) > 0 {
 		wait.Beneath = f.Beneath
 	}
-	if len(f.OpenChildren) > 0 {
-		wait.OpenChildren = f.OpenChildren
-	}
 	for _, defect := range f.Defects {
 		switch {
 		case !defect.Open() || defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction:
