@@ -179,21 +179,23 @@ type RetryPolicy struct {
 	// deadline. Zero selects deadline mode if the context has a deadline and LockTimeoutAttempts
 	// otherwise. A negative count is refused.
 	Attempts int
-	// Pause is how long the runner holds nothing between attempts.
+	// Pause is how long the runner holds nothing between attempts; a negative Pause acts as 0.
 	Pause time.Duration
 }
 
-// ProductionRetryPolicy is the policy a runner uses in production, and wherever a context carries
-// none: LockTimeoutAttempts attempts with LockTimeoutRetryPause between them, so a deploy stalled
-// behind a stray holder fails, and is noticed, rather than waiting it out.
-// A context error comes back unchanged. When the context cuts a contended wait and the
-// watch has read the lock, this is the *LockTimeoutError that execWatched builds.
-// The error names the lock, and errors.Is still finds the context error.
-var ProductionRetryPolicy = RetryPolicy{Attempts: LockTimeoutAttempts, Pause: LockTimeoutRetryPause}
+// ProductionRetryPolicy returns the policy a runner uses in production and when its context
+// carries none: LockTimeoutAttempts attempts with LockTimeoutRetryPause between them.
+// A deploy stalled behind a stray holder fails instead of waiting indefinitely.
+// This policy returns a context error as the attempt returned it. If the watch had read the
+// lock when the context cut the wait, the error is a *LockTimeoutError that names the lock
+// and still lets errors.Is find the context error. Otherwise it is the attempt's context error.
+func ProductionRetryPolicy() RetryPolicy {
+	return RetryPolicy{Attempts: LockTimeoutAttempts, Pause: LockTimeoutRetryPause}
+}
 
 // DeadlineRetryPolicy uses the context's deadline and pauses LockTimeoutRetryPause between
 // attempts. It stops when the remaining time is less than the pause plus the last attempt's
-// duration. See retryLockTimeouts for the deadline-mode give-up error.
+// duration. See [RetryLockTimeouts] for the deadline-mode error.
 // If the context has no deadline, the policy allows at most LockTimeoutAttempts attempts.
 // The store test harnesses use it: there the holder of a contended lock is a peer runner
 // migrating its own template, which will finish.
@@ -215,7 +217,7 @@ func policyFromContext(ctx context.Context) RetryPolicy {
 	if policy, ok := ctx.Value(retryPolicyKey{}).(RetryPolicy); ok {
 		return policy
 	}
-	return ProductionRetryPolicy
+	return ProductionRetryPolicy()
 }
 
 // retryLimit returns a positive attempt cap or, in deadline mode, zero and the context's deadline.
@@ -233,14 +235,9 @@ func (p RetryPolicy) retryLimit(ctx context.Context) (int, time.Time, error) {
 	}
 }
 
-// pause is the policy's wait between attempts, never negative: a negative Pause has no meaning — a
-// runner cannot wait less than no time — so it is clamped to 0. The public Pause field keeps the
-// caller's value; only its use is clamped, so a mis-set policy degrades to no pause.
+// pause is Pause, or 0 where Pause is negative.
 func (p RetryPolicy) pause() time.Duration {
-	if p.Pause < 0 {
-		return 0
-	}
-	return p.Pause
+	return max(p.Pause, 0)
 }
 
 // attemptsField is the value the retry logs under "attempts": the cap for a counted bound, or a note
@@ -257,7 +254,12 @@ func attemptsField(attemptCap int) any {
 // It logs each timed-out attempt at WARN with its LockTimeoutError, which names the lock and its
 // holders. Before trying again, it waits the policy's pause (LockTimeoutRetryPause by default).
 // On reaching a counted cap it wraps the last timeout with the attempt count.
-// See retryLockTimeouts for the deadline-mode give-up error.
+//
+// In deadline mode, errors.As finds a *LockTimeoutError if any attempt timed out
+// or the watch read the lock the interrupted attempt was waiting for. If the context
+// cuts an attempt before any timeout and before the watch reads a lock, the returned
+// error wraps only the context error as "after N attempts: ...".
+//
 // A runner that applies all migrations in one transaction cannot use this function.
 // Rolling back an attempt would roll back earlier migrations too, and retrying without
 // rolling back would hold their locks across the pause.
@@ -281,14 +283,12 @@ func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt fu
 	}, attempt)
 }
 
+func contextEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // retryLockTimeouts retries lock timeouts for what, logging name under key.
 // Context errors are never retried, even if timedOut would classify them as lock timeouts.
-//
-// For a migration run through Exec in deadline mode, errors.As finds a *LockTimeoutError
-// in the give-up error once any attempt has timed out or the watch has read the lock the
-// interrupted attempt was waiting for. If the context cuts an attempt before any timeout
-// and before the watch reads a lock, the give-up wraps only the context error as
-// "after N attempts: ...".
 func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut func(error) bool, attempt func(context.Context) error) error {
 	policy := policyFromContext(ctx)
 	attemptCap, deadline, err := policy.retryLimit(ctx)
@@ -305,15 +305,14 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 			return nil
 		}
 		// Classify the returned error, not ctx.Err(): another error can arrive as the context ends.
-		contextError := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
-		if contextError || !timedOut(err) {
-			// See retryLockTimeouts for what the deadline-mode give-up wraps.
-			if attemptCap == 0 && contextError {
-				if lastTimeout != nil {
-					return fmt.Errorf("after %d attempts: %w; %w", n, lastTimeout, err)
-				}
-				return fmt.Errorf("after %d attempts: %w", n, err)
+		contextError := contextEnded(err)
+		if contextError && attemptCap == 0 {
+			if lastTimeout != nil {
+				return fmt.Errorf("after %d attempts: %w; %w", n, lastTimeout, err)
 			}
+			return fmt.Errorf("after %d attempts: %w", n, err)
+		}
+		if contextError || !timedOut(err) {
 			return err
 		}
 		lastTimeout = err
@@ -438,8 +437,10 @@ func ResetSession(ctx context.Context, conn *pgx.Conn) error {
 //
 // Postgres cancels a statement whose lock wait outlasts lock_timeout saying only "canceling
 // statement due to lock timeout", so Exec reports that cancellation as a *LockTimeoutError naming
-// the migration, the lock it wanted and the sessions holding it, as the watch last saw them. Any
-// other error comes back prefixed with the migration's file name.
+// the migration, the lock it wanted and the sessions holding it, as the watch last saw them.
+// If the context cuts a wait the watch has read, Exec also returns a *LockTimeoutError.
+// It has no file name prefix or diagnoses, and its Err is the context error.
+// Any other error comes back prefixed with the migration's file name.
 func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
@@ -488,22 +489,22 @@ func execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signI
 		return nil
 	}
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable {
-		timedOut := &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
-		if wait != nil {
-			timedOut.Diagnoses = diagnoseHolders(ctx, dial, wait.Holders)
-		}
-		return timedOut
+	lockTimedOut := errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable
+	contextCut := wait != nil && contextEnded(err)
+	if !lockTimedOut && !contextCut {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	// The context cut the statement while the watch had already read a lock it was queued behind:
-	// name that lock, even though the 55P03 timeout never fired, since diagnosis cannot run on a done
-	// context but the watch has what it would have found. The *LockTimeoutError's Unwrap carries the
-	// context error, so errors.As finds the lock and errors.Is still finds the deadline. A context
-	// error with no wait is not a lock contention and comes back below as the migration's own error.
-	if (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) && wait != nil {
-		return &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
+	lockErr := &LockTimeoutError{
+		Migration:        migration.Name,
+		NonTransactional: migration.NonTransactional,
+		Wait:             wait,
+		WatchErr:         watchErr,
+		Err:              err,
 	}
-	return fmt.Errorf("migration %s: %w", migration.Name, err)
+	if lockTimedOut && wait != nil {
+		lockErr.Diagnoses = diagnoseHolders(ctx, dial, wait.Holders)
+	}
+	return lockErr
 }
 
 // diagnoseHolders reads holderDiagnosis for each of holders on a connection of its own, in a
@@ -637,9 +638,9 @@ type LockTimeoutError struct {
 	// WatchErr is the last error the watch's reads met, which is why Wait can be nil.
 	WatchErr error
 	// Diagnoses are the holders' diagnoses (holderDiagnosis), read just after the cancellation,
-	// one for each of Wait.Holders.
+	// one for each of Wait.Holders. It is nil when the context cut the wait before lock_timeout.
 	Diagnoses []string
-	// Err is Postgres's own cancellation.
+	// Err is Postgres's 55P03 cancellation, or the context error that cut the wait.
 	Err error
 }
 
@@ -652,12 +653,14 @@ func (e *LockTimeoutError) Error() string {
 	// The migration gave up either because its own lock_timeout fired (a 55P03 cancellation) or because
 	// the caller's context deadline or cancellation cut it while it waited. Say which, so a deadline cut
 	// does not claim a lock_timeout that never ran out.
-	reason := fmt.Sprintf("when its lock_timeout ran out (%s unless the migration sets its own)", LockTimeout)
+	var reason string
 	switch {
 	case errors.Is(e.Err, context.DeadlineExceeded):
 		reason = "when the caller's deadline passed while it waited"
 	case errors.Is(e.Err, context.Canceled):
 		reason = "when the caller cancelled while it waited"
+	default:
+		reason = fmt.Sprintf("when its lock_timeout ran out (%s unless the migration sets its own)", LockTimeout)
 	}
 	if e.Wait == nil {
 		fmt.Fprintf(&b, "migration %s gave up waiting for a lock %s%s; the lock watch did not see which lock", e.Migration, reason, effect)

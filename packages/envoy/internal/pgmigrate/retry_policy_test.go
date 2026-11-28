@@ -12,40 +12,41 @@ import (
 // A context without an explicit retry policy uses ProductionRetryPolicy.
 func TestPolicyFromContextDefaultsToProductionAndRoundTrips(t *testing.T) {
 	t.Parallel()
-	if got := policyFromContext(context.Background()); got != ProductionRetryPolicy {
-		t.Errorf("policyFromContext(Background) = %+v, want ProductionRetryPolicy %+v", got, ProductionRetryPolicy)
+	production := ProductionRetryPolicy()
+	if got := policyFromContext(context.Background()); got != production {
+		t.Errorf("policyFromContext(Background) = %+v, want ProductionRetryPolicy() %+v", got, production)
 	}
 	want := RetryPolicy{Attempts: 7, Pause: 3 * time.Second}
 	if got := policyFromContext(WithRetryPolicy(context.Background(), want)); got != want {
 		t.Errorf("policyFromContext(WithRetryPolicy(ctx, %+v)) = %+v, want it back", want, got)
 	}
-	if ProductionRetryPolicy.Attempts != LockTimeoutAttempts || ProductionRetryPolicy.Pause != LockTimeoutRetryPause {
-		t.Errorf("ProductionRetryPolicy = %+v, want the constants (%d attempts, %s pause)", ProductionRetryPolicy, LockTimeoutAttempts, LockTimeoutRetryPause)
+	if production.Attempts != LockTimeoutAttempts || production.Pause != LockTimeoutRetryPause {
+		t.Errorf("ProductionRetryPolicy() = %+v, want the constants (%d attempts, %s pause)", production, LockTimeoutAttempts, LockTimeoutRetryPause)
 	}
 }
 
 func TestRetryLimit(t *testing.T) {
 	t.Parallel()
-	deadline := time.Now().Add(time.Hour)
-	withDeadline, cancel := context.WithDeadline(context.Background(), deadline)
+	wantDeadline := time.Now().Add(time.Hour)
+	withDeadline, cancel := context.WithDeadline(context.Background(), wantDeadline)
 	defer cancel()
 
 	for _, tc := range []struct {
-		name     string
-		policy   RetryPolicy
-		ctx      context.Context
-		cap      int
-		deadline time.Time
+		name       string
+		policy     RetryPolicy
+		ctx        context.Context
+		attemptCap int
+		deadline   time.Time
 	}{
-		{name: "default without a deadline", policy: ProductionRetryPolicy, ctx: context.Background(), cap: LockTimeoutAttempts},
-		{name: "counted cap with a deadline", policy: RetryPolicy{Attempts: 7}, ctx: withDeadline, cap: 7},
-		{name: "deadline mode", policy: DeadlineRetryPolicy(), ctx: withDeadline, deadline: deadline},
-		{name: "deadline policy without a deadline", policy: DeadlineRetryPolicy(), ctx: context.Background(), cap: LockTimeoutAttempts},
+		{name: "default without a deadline", policy: ProductionRetryPolicy(), ctx: context.Background(), attemptCap: LockTimeoutAttempts},
+		{name: "counted cap with a deadline", policy: RetryPolicy{Attempts: 7}, ctx: withDeadline, attemptCap: 7},
+		{name: "deadline mode", policy: DeadlineRetryPolicy(), ctx: withDeadline, deadline: wantDeadline},
+		{name: "deadline policy without a deadline", policy: DeadlineRetryPolicy(), ctx: context.Background(), attemptCap: LockTimeoutAttempts},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cap, end, err := tc.policy.retryLimit(tc.ctx)
-			if cap != tc.cap || end != tc.deadline || err != nil {
-				t.Errorf("retryLimit = (%d, %v, %v), want (%d, %v, nil)", cap, end, err, tc.cap, tc.deadline)
+			attemptCap, deadline, err := tc.policy.retryLimit(tc.ctx)
+			if attemptCap != tc.attemptCap || deadline != tc.deadline || err != nil {
+				t.Errorf("retryLimit = (%d, %v, %v), want (%d, %v, nil)", attemptCap, deadline, err, tc.attemptCap, tc.deadline)
 			}
 		})
 	}
@@ -68,8 +69,8 @@ func TestRetryLimitRefusesNegativeAttempts(t *testing.T) {
 	ctx := context.Background()
 	policy := RetryPolicy{Attempts: -2}
 	const want = "pgmigrate: RetryPolicy.Attempts is -2: a retry count cannot be negative"
-	if cap, end, err := policy.retryLimit(ctx); cap != 0 || end != (time.Time{}) || err == nil || err.Error() != want {
-		t.Errorf("retryLimit = (%d, %v, %v), want (0, zero time, %q)", cap, end, err, want)
+	if attemptCap, deadline, err := policy.retryLimit(ctx); attemptCap != 0 || deadline != (time.Time{}) || err == nil || err.Error() != want {
+		t.Errorf("retryLimit = (%d, %v, %v), want (0, zero time, %q)", attemptCap, deadline, err, want)
 	}
 	ran := false
 	err := RetryLockTimeouts(WithRetryPolicy(ctx, policy), "0001_x.up.sql",

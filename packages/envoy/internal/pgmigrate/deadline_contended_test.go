@@ -3,6 +3,7 @@ package pgmigrate
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -28,8 +29,8 @@ func TestADeadlineThatCutsTheFirstContendedAttemptNamesTheLock(t *testing.T) {
 			t.Parallel()
 			ctx := context.Background()
 			url := testpg.URL(t)
-			admin := connect(t, ctx, url)
-			if _, err := admin.Exec(ctx, "create table things (kind text)"); err != nil {
+			runner := connect(t, ctx, url)
+			if _, err := runner.Exec(ctx, "create table things (kind text)"); err != nil {
 				t.Fatal(err)
 			}
 			holderConn := connect(t, ctx, url)
@@ -41,7 +42,6 @@ func TestADeadlineThatCutsTheFirstContendedAttemptNamesTheLock(t *testing.T) {
 			if _, err := holder.Exec(ctx, "lock table things in access share mode"); err != nil {
 				t.Fatal(err)
 			}
-			runner := connect(t, ctx, url)
 			bounded, cancel := context.WithTimeout(ctx, tc.deadline)
 			defer cancel()
 			bounded = WithRetryPolicy(bounded, DeadlineRetryPolicy())
@@ -66,11 +66,7 @@ func TestADeadlineThatCutsTheFirstContendedAttemptNamesTheLock(t *testing.T) {
 				t.Fatalf("the named error's wait is %+v, want the lock on things", named.Wait)
 			}
 			pid := holderConn.PgConn().PID()
-			found := false
-			for _, h := range named.Wait.Holders {
-				found = found || h.PID == pid
-			}
-			if !found {
+			if !slices.ContainsFunc(named.Wait.Holders, func(h Session) bool { return h.PID == pid }) {
 				t.Errorf("the named error's holders are %+v, want the holder's pid %d among them", named.Wait.Holders, pid)
 			}
 		})

@@ -85,17 +85,17 @@ func Open(t testing.TB) *store.Store {
 	return OpenFrom(t, openKey, func(databaseURL string) error { return migrateWithThisTree(t, databaseURL) })
 }
 
-// MigrateContext returns a context for an in-process test migration. It ends at
+// MigrationContext returns a context for an in-process test migration. It ends at
 // testdb.ConnectEnd when bounded or when t ends, whichever comes first. It carries
 // pgmigrate.DeadlineRetryPolicy so retries can wait for a peer's migration to finish.
-func MigrateContext(t testing.TB) context.Context {
+func MigrationContext(t testing.TB) context.Context {
 	return pgmigrate.WithRetryPolicy(testdb.ConnectContext(t), pgmigrate.DeadlineRetryPolicy())
 }
 
 // migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
 // template. It closes its pool before it returns, so the template is left with no connection.
 func migrateWithThisTree(t testing.TB, databaseURL string) error {
-	ctx := MigrateContext(t)
+	ctx := MigrationContext(t)
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)

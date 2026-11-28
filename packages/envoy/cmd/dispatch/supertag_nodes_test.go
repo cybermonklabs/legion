@@ -99,7 +99,7 @@ const releasedThroughTheBackfill = 290
 func openAtTheBackfill(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, fmt.Sprintf("this tree's runner through %d (openAtTheBackfill)", backfillVersion), func(databaseURL string) error {
-		ctx := storetest.MigrateContext(t)
+		ctx := storetest.MigrationContext(t)
 		database, err := store.Open(ctx, databaseURL)
 		if err != nil {
 			return fmt.Errorf("open the database: %w", err)
