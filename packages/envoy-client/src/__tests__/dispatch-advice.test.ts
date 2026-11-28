@@ -51,19 +51,46 @@ function withAdvice<T extends Record<string, unknown>>(
   return advice === undefined ? body : { ...body, advice };
 }
 
+/** An issue as a row reads it on the chain from DSP-42 up: its project, labels and parent. */
+interface ChainIssue {
+  project: string;
+  labels: string[];
+  parent: string | null;
+}
+
 /** A write the tool makes end to end. `requestPaths`, when a row passes one, collects the path
- *  of every request the whole run made, so a row can hold what the run did NOT read. */
+ *  of every request the whole run made, so a row can hold what the run did NOT read. `chain`
+ *  answers the read of each issue it names, DSP-42 included, in place of the read below; a key
+ *  it maps to "refused" answers 403. */
 async function executeWrite(
   tool: string,
   args: Record<string, unknown>,
   advice?: AdviceFixture,
-  requestPaths?: string[]
+  requestPaths?: string[],
+  chain: Record<string, ChainIssue | "refused"> = {}
 ) {
   const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const target = new URL(String(url));
     requestPaths?.push(target.pathname);
     const method = init?.method ?? "GET";
     const body = init?.body === undefined ? {} : JSON.parse(String(init.body));
+
+    const issueRead =
+      method === "GET" ? /^\/api\/v1\/issues\/([^/]+)$/.exec(target.pathname)?.[1] : undefined;
+    const chained = issueRead === undefined ? undefined : chain[issueRead];
+    if (chained === "refused") {
+      return response({ code: "FORBIDDEN", message: "not this credential's project" }, 403);
+    }
+    if (chained !== undefined) {
+      return response({
+        key: issueRead,
+        title: "Chained issue",
+        status: "in_progress",
+        route: null,
+        external_links: [],
+        ...chained,
+      });
+    }
 
     if (target.pathname === "/api/v1/issues" && method === "POST") {
       return response(
@@ -399,6 +426,111 @@ describe("Dispatch write advice", () => {
       'Posted. You\'ve sent 6 messages on DSP-42 with no human response. Stop posting here until a human replies. Their reply ends this: post then what you held back. See the `dispatch` skill, "Structure over stream".'
     );
     expect(result.details.advice).toEqual(rawAdvice);
+  });
+
+  // On an issue Legion runs, the posts are records Legion's roles keep for each other and no
+  // person is meant to answer them, so the count never ends there. DSP-42 holds no label of its
+  // own, as a Legion child issue holds none: the label is on the issue above it.
+  const legionChain: Record<string, ChainIssue> = {
+    "DSP-42": { project: "DSP", labels: [], parent: "DSP-7" },
+    "DSP-7": { project: "DSP", labels: ["Legion"], parent: null },
+  };
+  const cadenceTools = [
+    ["dispatch_message", { issue: "DSP-42", body: "Progress" }],
+    ["dispatch_comment", { issue: "DSP-42", body: "Progress" }],
+    ["dispatch_ask", { issue: "DSP-42", question: "What should we do?" }],
+  ] as const;
+
+  test.each(cadenceTools)(
+    "%s prints no cadence line at six writes on an issue Legion runs",
+    async (tool, args) => {
+      const rawAdvice = advice({ session_writes_since_human: 6 });
+      const result = await executeWrite(tool, args, rawAdvice, undefined, legionChain);
+
+      expect(result.text).not.toContain("no human response");
+      expect(result.details.advice).toEqual(rawAdvice);
+    }
+  );
+
+  test.each(cadenceTools)(
+    "%s still prints the cadence line at six writes on an issue Legion does not run",
+    async (tool, args) => {
+      const result = await executeWrite(
+        tool,
+        args,
+        advice({ session_writes_since_human: 6 }),
+        undefined,
+        {
+          "DSP-42": { project: "DSP", labels: ["bug"], parent: "DSP-7" },
+          "DSP-7": { project: "DSP", labels: ["legion-ops"], parent: null },
+        }
+      );
+
+      expect(result.text).toContain(
+        "Posted. You've sent 6 messages on DSP-42 with no human response."
+      );
+    }
+  );
+
+  // Dispatch reads the label only on the issues of the issue's own project.
+  test("prints the cadence line when the legion label is on a parent in another project", async () => {
+    const result = await executeWrite(
+      "dispatch_message",
+      { issue: "DSP-42", body: "Progress" },
+      advice({ session_writes_since_human: 6 }),
+      undefined,
+      {
+        "DSP-42": { project: "DSP", labels: [], parent: "OPS-3" },
+        "OPS-3": { project: "OPS", labels: ["legion"], parent: null },
+      }
+    );
+
+    expect(result.text).toContain("no human response");
+  });
+
+  test("prints the cadence line when the read of an issue above is refused", async () => {
+    const result = await executeWrite(
+      "dispatch_message",
+      { issue: "DSP-42", body: "Progress" },
+      advice({ session_writes_since_human: 6 }),
+      undefined,
+      { "DSP-42": { project: "DSP", labels: [], parent: "DSP-7" }, "DSP-7": "refused" }
+    );
+
+    expect(result.text).toStartWith("Posted message message-1");
+    expect(result.text).toContain("no human response");
+  });
+
+  test("reads no issue for a post that prints no cadence line", async () => {
+    const requestPaths: string[] = [];
+    await executeWrite(
+      "dispatch_message",
+      { issue: "DSP-42", body: "Progress" },
+      advice({ session_writes_since_human: 2 }),
+      requestPaths,
+      legionChain
+    );
+
+    expect(requestPaths).not.toContain("/api/v1/issues/DSP-42");
+  });
+
+  // Dispatch answers legion_managed_status itself on an issue in triage, and the client takes
+  // that answer without a read of its own.
+  test("takes Dispatch's legion_managed_status in place of reading the chain", async () => {
+    const requestPaths: string[] = [];
+    const result = await executeWrite(
+      "dispatch_message",
+      { issue: "DSP-42", body: "Progress" },
+      advice({
+        issue_status: "triage",
+        legion_managed_status: true,
+        session_writes_since_human: 6,
+      }),
+      requestPaths
+    );
+
+    expect(result.text).not.toContain("no human response");
+    expect(requestPaths).not.toContain("/api/v1/issues/DSP-42");
   });
 
   test("renders the triage pointer once per issue per process", async () => {

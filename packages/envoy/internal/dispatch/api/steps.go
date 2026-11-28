@@ -60,37 +60,57 @@ const (
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} takes: the writer, and each
 // field of the run the write states. A field the body leaves out, or sends null or "", states
 // nothing, so the write leaves it to the write that knows it. A first write of a run names its
-// task, step, kind, role and generation. returned_to 0 is place 0 and states it
-// (workflowstore.StepWrite). The enum tags are the words of contracts' STEP_KINDS and
-// STEP_RESULTS, which a tag cannot name; TestTheStepRouteNamesContractsWords holds them to those.
+// task, step, kind, role and generation. returned_to 0 is place 0 and states it, and answers []
+// states a run whose agent made no call (workflowstore.StepWrite). The enum tags are the words of
+// contracts' STEP_KINDS and STEP_RESULTS, which a tag cannot name;
+// TestTheStepRouteNamesContractsWords holds them to those.
 type stepRecordInput struct {
-	Actor      *model.Actor `json:"actor"`
-	Task       *string      `json:"task"`
-	Step       *int         `json:"step"`
-	Kind       *string      `json:"kind" enum:"step,retro,merge"`
-	Role       *string      `json:"role"`
-	Type       *string      `json:"type"`
-	Agent      *string      `json:"agent"`
-	Session    *string      `json:"session"`
-	Model      *string      `json:"model"`
-	Generation *int64       `json:"generation"`
-	StartedAt  *time.Time   `json:"started_at"`
-	EndedAt    *time.Time   `json:"ended_at"`
-	Result     *string      `json:"result" enum:"passed,failed,stopped"`
-	ReturnedTo *int         `json:"returned_to"`
-	Report     *string      `json:"report"`
+	Actor      *model.Actor       `json:"actor"`
+	Task       *string            `json:"task"`
+	Step       *int               `json:"step"`
+	Kind       *string            `json:"kind" enum:"step,retro,merge"`
+	Role       *string            `json:"role"`
+	Type       *string            `json:"type"`
+	Agent      *string            `json:"agent"`
+	Session    *string            `json:"session"`
+	Model      *string            `json:"model"`
+	SetModel   *string            `json:"set_model"`
+	Answers    *[]stepAnswerInput `json:"answers"`
+	Generation *int64             `json:"generation"`
+	StartedAt  *time.Time         `json:"started_at"`
+	EndedAt    *time.Time         `json:"ended_at"`
+	Result     *string            `json:"result" enum:"passed,failed,stopped"`
+	ReturnedTo *int               `json:"returned_to"`
+	Report     *string            `json:"report"`
+}
+
+// stepAnswerInput is one entry of a step write's answers: a model that answered the run's agent
+// and its count of calls. It has the fields of workflowstore.StepAnswer and model.StepAnswer, so
+// an entry converts between the three. A field added to one of them alone fails the build rather
+// than being dropped on the way.
+type stepAnswerInput struct {
+	Model string `json:"model" required:"true"`
+	Calls int64  `json:"calls" required:"true"`
 }
 
 // write is the step write input states, each field as the body sent it: the fields the record
 // shares with the rating route's body, which adds the rating and its reason to it, and with the
 // experiment route's body, which adds the experiment and the variant.
 func (input stepRecordInput) write() workflowstore.StepWrite {
-	return workflowstore.StepWrite{
+	write := workflowstore.StepWrite{
 		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
-		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
-		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
+		Session: input.Session, Model: input.Model, SetModel: input.SetModel, Result: input.Result,
+		Report: input.Report, Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
 		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
 	}
+	if input.Answers != nil {
+		answers := make([]workflowstore.StepAnswer, len(*input.Answers))
+		for index, answer := range *input.Answers {
+			answers[index] = workflowstore.StepAnswer(answer)
+		}
+		write.Answers = &answers
+	}
+	return write
 }
 
 // stepRatingInput is the body PUT /api/v1/issues/{key}/steps/{id}/rating takes: the step write's
@@ -361,13 +381,20 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 
 // stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report, a nil Rating
 // and a nil Experiment are a run that has none, which the answer carries as null, the rating and
-// its reason both, and the experiment and the variant both; a return to place 0 carries 0.
+// its reason both, and the experiment and the variant both; a return to place 0 carries 0. Answers
+// the node does not hold are null, and an empty list of them is [].
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
 		Role: step.Role, Type: step.Type, Agent: step.Agent, Session: step.Session, Model: step.Model,
-		Generation: step.Generation, Attempt: step.Attempt, StartedAt: step.StartedAt,
-		EndedAt: step.EndedAt, Result: step.Result, ReturnedTo: step.ReturnedTo,
+		SetModel: step.SetModel, Generation: step.Generation, Attempt: step.Attempt,
+		StartedAt: step.StartedAt, EndedAt: step.EndedAt, Result: step.Result, ReturnedTo: step.ReturnedTo,
+	}
+	if step.Answers != nil {
+		record.Answers = make([]model.StepAnswer, len(*step.Answers))
+		for index, answer := range *step.Answers {
+			record.Answers[index] = model.StepAnswer(answer)
+		}
 	}
 	if step.Report != "" {
 		report := step.Report
