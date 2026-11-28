@@ -167,8 +167,9 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 		defer close(done)
 		Empty(stopsOnFatal{T: t, failed: failed, returned: done})
 	}()
-	// The bound this row proves, past the product's own: a shared wait gives up at the connect end
-	// itself, where the statement's wait, whole seconds rounded down, ends up to a second before.
+	// A hang guard, not the bound this row proves: Empty's wait ends at the connect end, whole
+	// seconds rounded down, so up to a second before it, and a shared wait gives up at that end
+	// itself; correct code reaches this timer, testwait.Margin/2 past the end, only by stalling.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {
@@ -177,6 +178,9 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 		select {
 		case message := <-failed:
 			t.Logf("Empty's statement ended %s after it began, %s before the connect end: %s", time.Since(began).Round(time.Second), left.Round(time.Second), message)
+			// A reading of the clock that load cannot fail: a loaded machine ends the statement
+			// later, so with less left, and only a bound that ended for another reason, well before
+			// the connect end, leaves more than 5 s.
 			if left > 5*time.Second {
 				t.Fatalf("Empty's statement ended %s before the connect end; want it to end at that end, its bound", left.Round(time.Second))
 			}
@@ -189,7 +193,7 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool(t *testing
 		// waits for so it does not register a cleanup on a finished test. A hang guard only, past
 		// the connect end, where every shared wait gives up, and before go test's alarm, so the
 		// cleanups still drop the hold.
-		guard := time.NewTimer(time.Until(end.Add(testwait.Margin - 5*time.Second)))
+		guard := time.NewTimer(time.Until(hangGuardAt(end)))
 		defer guard.Stop()
 		select {
 		case <-done:
@@ -298,8 +302,9 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldC
 		defer close(done)
 		Empty(stopsOnFatal{T: t, failed: failure, returned: done})
 	}()
-	// The bound this row proves, past the product's own: a shared wait gives up at the connect end
-	// itself, where Empty's wait, whole seconds rounded down, ends up to a second before.
+	// A hang guard, not the bound this row proves: Empty's wait ends at the connect end, whole
+	// seconds rounded down, so up to a second before it, and a shared wait gives up at that end
+	// itself; correct code reaches this timer, testwait.Margin/2 past the end, only by stalling.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {
@@ -319,7 +324,7 @@ func TestATestsAdminStatementEndsByTheConnectEndWhileEveryAdminConnectionIsHeldC
 		// for Empty so it does not register a cleanup on a finished test. A hang guard only, past
 		// the connect end, where every shared wait gives up, and before go test's alarm.
 		letGo()
-		guard := time.NewTimer(time.Until(end.Add(testwait.Margin - 5*time.Second)))
+		guard := time.NewTimer(time.Until(hangGuardAt(end)))
 		defer guard.Stop()
 		select {
 		case <-done:

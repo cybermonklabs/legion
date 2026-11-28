@@ -174,16 +174,7 @@ func TestTheTeardownEndsAtItsBoundChild(t *testing.T) {
 		t.Logf("the child made the template %s", entry.name)
 	}
 	templates.Unlock()
-	if failure != "" {
-		why, skip := pastEndWait(failure)
-		if skip {
-			t.Skipf("the child's OpenFrom failed because %s, too slow for the row to say anything: %s", why, failure)
-		}
-		if why != "" {
-			t.Fatalf("the child's OpenFrom failed, and %s: %s", why, failure)
-		}
-		t.Fatalf("the child's OpenFrom failed: %s", failure)
-	}
+	stepRan(t, "the child's OpenFrom", failure)
 }
 
 // plainServerAddress is the host and port the relay dials for server, or why the row cannot use

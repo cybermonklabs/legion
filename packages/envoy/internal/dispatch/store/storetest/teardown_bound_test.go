@@ -39,10 +39,10 @@ const teardownChildTimeout = 35 * time.Second
 // takes the tests' bound gets at most what is left until that end, or the bound's one-second floor
 // past it, less than the hold, and fails, and Run then exits 1 with the clone and the template left
 // on the server; a drop that waits the hold out lets the child exit 0. The row fails where the child exits other
-// than 0, where Run reports a drop it could not make, or where the child exits before any login of
-// its admin pool was held, which would mean nothing held its drops' logins. That a login was held
-// is a fact the server shows while the child runs, a login of the child's admin pool waiting in
-// the hold's pg_sleep (pg_stat_activity), which this row waits for, not how long the child took.
+// than 0, where Run reports a drop it could not make, or where no login of its admin pool was held,
+// which would mean nothing held its drops' logins. That a login was held is a lasting record the
+// hold itself writes, a sequence it advances before each sleep (heldLogins), which the row reads
+// once the child has exited, not how long the child took.
 //
 // It holds logins and runs a child binary, so it runs only where STORETEST_TEARDOWN_HOLD names
 // the hold (8s), longer than the child's 5 s to its connect end, against a server the run holds
@@ -69,8 +69,12 @@ func TestTheDropsTakeABoundOfTheirOwnNotTheTests(t *testing.T) {
 	testcleanup.Add(t, func() {
 		_, _ = control.Exec(context.Background(), "drop event trigger if exists "+trigger)
 		_, _ = control.Exec(context.Background(), "drop function if exists "+trigger+"()")
+		_, _ = control.Exec(context.Background(), "drop sequence if exists "+heldLogins(trigger))
 		_ = control.Close(context.Background())
 	})
+	if _, err := control.Exec(ctx, "create sequence "+heldLogins(trigger)); err != nil {
+		t.Fatalf("create the record of the child's held logins: %v", err)
+	}
 	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestTheDropsTakeABoundOfTheirOwnChild$", "-test.timeout="+teardownChildTimeout.String(), "-test.v")
 	child.Env = append(os.Environ(), teardownChildEnv+"="+trigger)
 	var output bytes.Buffer
@@ -80,23 +84,6 @@ func TestTheDropsTakeABoundOfTheirOwnNotTheTests(t *testing.T) {
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- child.Wait() }()
-	// The child's adminApplicationName: only a drop logs in under it once the child's hold is made.
-	admin := adminApplicationNameOf(child.Process.Pid)
-	held := testwait.Until(t, "a login of the child's admin pool held by its hold (waiting in pg_sleep, in pg_stat_activity)", func() (int, bool) {
-		select {
-		case err := <-exited:
-			if err != nil {
-				t.Fatalf("the child exited %v: its teardown failed (a drop's connect under the tests' bound, which a held login outlasts):\n%s", err, &output)
-			}
-			t.Fatalf("the child exited 0 before any login of its admin pool was held: nothing held its drops' logins, so this run proves nothing:\n%s", &output)
-		default:
-		}
-		var count int
-		if err := control.QueryRow(ctx, "select count(*) from pg_stat_activity where application_name = $1 and wait_event = 'PgSleep'", admin).Scan(&count); err != nil {
-			t.Fatalf("read the logins of the child's admin pool its hold holds: %v", err)
-		}
-		return count, count > 0
-	})
 	if err := testwait.Receive(t, "the child to exit", exited); err != nil {
 		t.Fatalf("the child exited %v: its teardown failed (a drop's connect under the tests' bound, which a held login outlasts):\n%s", err, &output)
 	}
@@ -106,7 +93,23 @@ func TestTheDropsTakeABoundOfTheirOwnNotTheTests(t *testing.T) {
 	if !strings.Contains(output.String(), "--- PASS: TestTheDropsTakeABoundOfTheirOwnChild (") {
 		t.Fatalf("the child's row did not pass, so it made no template, clone or hold to drop:\n%s", &output)
 	}
-	t.Logf("the child exited 0, its drops' logins held %s each (%d seen held at once)", hold, held)
+	// Only a drop logs in under the child's admin name once its hold is made, and the hold advances
+	// the record before it sleeps, so a record never advanced is a teardown no hold held.
+	var held int64
+	var called bool
+	if err := control.QueryRow(ctx, "select last_value, is_called from "+heldLogins(trigger)).Scan(&held, &called); err != nil {
+		t.Fatalf("read the record of the child's held logins: %v", err)
+	}
+	if !called {
+		t.Fatalf("the child exited 0 with no login of its admin pool held: nothing held its drops' logins, so this run proves nothing:\n%s", &output)
+	}
+	t.Logf("the child exited 0, its drops' logins held %s each (%d logins held)", hold, held)
+}
+
+// heldLogins is the sequence the hold named trigger advances once for each login of the child's
+// admin pool it holds, before it sleeps: the row's record that the hold held a drop's login.
+func heldLogins(trigger string) string {
+	return trigger + "_held"
 }
 
 // TestTheDropsTakeABoundOfTheirOwnChild is the child of TestTheDropsTakeABoundOfTheirOwnNotTheTests.
@@ -131,7 +134,7 @@ func TestTheDropsTakeABoundOfTheirOwnChild(t *testing.T) {
 	defer control.Close(ctx)
 	name := strings.ReplaceAll(adminApplicationName(), "'", "")
 	for _, statement := range []string{
-		fmt.Sprintf("create or replace function %s() returns event_trigger language plpgsql as $f$ begin if current_setting('application_name') = '%s' then perform pg_sleep(%f); end if; end $f$", trigger, name, hold.Seconds()),
+		fmt.Sprintf("create or replace function %s() returns event_trigger language plpgsql as $f$ begin if current_setting('application_name') = '%s' then perform nextval('%s'); perform pg_sleep(%f); end if; end $f$", trigger, name, heldLogins(trigger), hold.Seconds()),
 		"create event trigger " + trigger + " on login execute function " + trigger + "()",
 	} {
 		if _, err := control.Exec(ctx, statement); err != nil {
