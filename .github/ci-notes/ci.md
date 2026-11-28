@@ -3385,6 +3385,9 @@ no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
 time, in a file small enough to start when this one is too large to.
 
+It also holds every step a filter gates that names a declared script to a Run that cites it: rule
+4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.
+
 ## What the proof editor's offline proof shows
 
 The proof that no install of this repository fetches the proof editor's upstream sources over

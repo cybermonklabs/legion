@@ -502,7 +502,7 @@ test("ProofDocument shows content this build cannot show yet without a replace d
       version: 1,
       unsettled: false,
     });
-    await waitFor(() => expect(connections).toHaveLength(1), { timeout: 3_000 });
+    await waitFor(() => expect(connections).toHaveLength(1));
     expect(
       within(view.container).queryByText(
         "This document holds content this version of Dispatch cannot show yet. It reloads in a minute."
