@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   The structured log field `giver` of the log lines `workflow: a plan of an earlier owner is not
-  taken` and `workflow: a plan is not taken: the issue's group runs the project's default steps`
+  taken` and `workflow: a plan is not taken: the issue's group sets how it is done`
   now holds every giver of the version as one text, listed as a sentence lists them (`a`, `a and
   b`, `a, b and c`), the giver the store added last first. Before, it held the claim token of the
   one giver alone. The field `runs` of `workflow: a plan of an earlier owner is not taken`, which

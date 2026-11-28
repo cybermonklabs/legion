@@ -69,11 +69,11 @@ type RunningStep struct {
 // code and the sentence every refusal carries (Failure), and one reason for each cause, the first
 // plan.MostReasons of each kind of cause and one more that counts the rest of that kind
 // (plan.Supported and plan.Validate, intake.PlanRefused). Every other plan of an issue whose
-// experiment's group runs the project's default steps, which takes only a version that changes
-// nothing but the text of its running task default, is no such answer: it is the workflow's 409
-// PLAN_NOT_TAKEN (intake.PlanNotTaken), a Failure with no reasons. `reasons` arrived with
-// register_plan at OwnerPlanContract, and a caller below it is served the Failure alone
-// (shaping.go's refusal row), as a PauseFailure is below pauseContract.
+// experiment's group takes no plan from its owner, `default` or `owner-alone`, which takes only a
+// version that changes nothing but the text of its running task default, is no such answer: it
+// is the workflow's 409 PLAN_NOT_TAKEN (intake.PlanNotTaken), a Failure with no reasons.
+// `reasons` arrived with register_plan at OwnerPlanContract, and a caller below it is served the
+// Failure alone (shaping.go's refusal row), as a PauseFailure is below pauseContract.
 type PlanRefusal struct {
 	Failure
 	Reasons []PlanReason `json:"reasons"`
@@ -277,8 +277,8 @@ type TaskStopRequest struct {
 // workflow's (intake.TaskStopped), at the generation the route read: the workflow judges the
 // owner and the generation again under the fact lock, since an adoption or a new run can commit
 // between this read and the fact, and it answers a task the plan does not hold (TaskNotFound), one
-// that is done (TaskDone), and every task of an issue whose experiment's group runs the project's
-// default steps (intake.TaskNotStopped, PLAN_NOT_TAKEN). This route's own refusals are the early ones.
+// that is done (TaskDone), and every task of an issue whose experiment's group takes no plan from
+// its owner (intake.TaskNotStopped, PLAN_NOT_TAKEN). This route's own refusals are the early ones.
 // Each request is its own fact (requestFactID): a task the owner stops, starts again with a later
 // version and stops once more is stopped twice, and a retry of a stop already applied finds the
 // task stopped, which changes nothing.

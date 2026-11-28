@@ -35,6 +35,12 @@ func inPlanningB(key string) string {
 	return key + " is in the variant b of the experiment planning, whose issues run the project's default steps."
 }
 
+// inPlanningC is how a notice names the group of key in the variant c of the experiment planning,
+// whose owner does the whole issue itself in one step.
+func inPlanningC(key string) string {
+	return key + " is in the variant c of the experiment planning, whose owner does the whole issue itself in one step."
+}
+
 // The first step of an issue whose group runs the project's default steps takes the default steps
 // and no plan of its owner: a plan given at generation 0, before the daemon recorded the child and
 // drew it, is deleted rather than carried, and the child's architect is told in one plan-not-taken
@@ -228,7 +234,13 @@ func TestTheGroupDefaultPassesOverEveryCopyOfItsOwnersPlanOnce(t *testing.T) {
 
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
 func planNotTakenOfB(key string) *intake.Refusal {
-	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(key) +
+	return planNotTakenIn(inPlanningB(key))
+}
+
+// planNotTakenIn is the answer to a plan given for an issue of a group that takes no plan from its
+// owner, which group names (inPlanningB, inPlanningC).
+func planNotTakenIn(group string) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: group +
 		" Legion takes no plan from its owner for this issue, only a version that changes nothing but the text of its running task default. " +
 		"This plan changed nothing."}
 }
@@ -460,8 +472,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 		firstStep(t, pool, engine, root.Key)
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
-		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
+		want := stopNotTakenIn(inPlanningB(root.Key))
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}
@@ -482,6 +493,172 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 		}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation).state; got != record.TaskStopped {
 			t.Fatalf("default after its owner's stop is %s, want stopped", got)
+		}
+	})
+}
+
+// stopNotTakenIn is the answer to the owner's stop of a task of an issue of a group that takes no
+// plan from its owner, which group names (inPlanningB, inPlanningC).
+func stopNotTakenIn(group string) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: group + " Legion takes no stop of its tasks from its owner. This stop changed nothing."}
+}
+
+// ownerAloneStoredSteps is the one step of an issue whose group is owner-alone
+// (plan.OwnerAloneSteps), as the walk stores it.
+var ownerAloneStoredSteps = []string{"implementer:owner/implementation"}
+
+// assertOwnerAlonePlan fails unless key's run at generation holds the plan of the group owner-alone
+// alone (assertChosenPlan): one task, default, whose block text says that its owner does the whole
+// issue, run by default on the one step implementer:owner.
+func assertOwnerAlonePlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64) {
+	t.Helper()
+	assertChosenPlan(t, stored, key, generation, "The owner does the whole issue itself, in one step.", ownerAloneStoredSteps)
+}
+
+// An issue whose group is owner-alone runs one step, its owner's. Its first step writes version 0
+// of the source default, with no document, whose one task default says that the owner does the
+// whole issue itself, in one step, and runs on the one step implementer:owner: the issue stands
+// implementing at step 1, and its plan node names that step. Its owner's plan is answered 409
+// PLAN_NOT_TAKEN with the sentence of the group, given once or again, before the first step or
+// after it, and changes nothing. The one version taken changes nothing but the text of the
+// running task default: it keeps the source default and the one step, and the task runs on at
+// step 1. A stop of the task is answered PLAN_NOT_TAKEN too, and the task runs on. A plan given
+// before the daemon recorded the issue is passed over at its first step, and the one notice that
+// tells it names the group. The control is the same issue drawn into the arm b, whose first step
+// plans on the project's default steps.
+//
+// The faults it catches: a first step that runs the project's default steps for owner-alone
+// (defaultRows), takesNoPlan true for default alone, under which the owner's plan and stop are
+// taken, and a refusal or a notice that names the sentence of the group default. What the owner's
+// step does once it runs, the task of the step given to the owner's claim, the retro and the
+// merge, is proven where the owner's step is built, not here.
+func TestTheGroupOwnerAloneRunsOneStepOfItsOwner(t *testing.T) {
+	t.Parallel()
+	atStep := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+	// drawn is LEGION-208 at admitted, drawn into variant of planning, whose arm's plan is group.
+	drawn := func(t *testing.T, variant, group string) (*pgxpool.Pool, *Engine, record.Issue) {
+		t.Helper()
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		drawnInto(t, pool, root.Key, "planning", variant, group)
+		return pool, engine, root
+	}
+	// assertNode fails unless the plan node of key's run names the source default, no document, and
+	// the one task default on the step implementer:owner.
+	assertNode := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+		t.Helper()
+		node := planNode(issueOf(t, pool, engine, key), walkOf(t, pool, engine, key))
+		if node.Source != record.PlanSourceDefault || node.PlanDocument != nil || len(node.Tasks) != 1 ||
+			node.Tasks[0].ID != plan.DefaultTask || !reflect.DeepEqual(node.Tasks[0].Steps, []string{"implementer:owner"}) {
+			t.Fatalf("the plan node of %s = %+v, want the source default with no document and the task default on implementer:owner", key, node)
+		}
+	}
+
+	t.Run("the first step runs the owner's one step", func(t *testing.T) {
+		pool, engine, root := drawn(t, "c", "owner-alone")
+
+		firstStep(t, pool, engine, root.Key)
+
+		assertOwnerAlonePlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation)
+		want := walkStanding{phase.Implementing, atStep, record.TaskRunning, []string{"0 default"}, ownerAloneStoredSteps}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
+		}
+		if got := planRowsOf(t, pool, root.Key); got != [3]int{1, 1, 1} {
+			t.Fatalf("the plan rows of %s = %v, want one version, one task and one step", root.Key, got)
+		}
+		assertNode(t, pool, engine, root.Key)
+	})
+
+	t.Run("the owner's plan is not taken", func(t *testing.T) {
+		pool, engine, root := drawn(t, "c", "owner-alone")
+		key, gen := root.Key, root.Generation
+		id, given := planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+		refused := planNotTakenIn(inPlanningC(key))
+		before := planStandingOf(t, pool, engine, key, gen)
+
+		assertPlanRefusal(t, pool, engine, key, gen, id, applyFacts(t, pool, engine)(id, given), refused, before)
+		assertPlanRefusal(t, pool, engine, key, gen, id, applyFacts(t, pool, engine)(id, given), refused, before)
+		if got := planRowsOf(t, pool, key); got != [3]int{} {
+			t.Fatalf("the plan rows of %s = %v, want none: Legion records nothing when it takes no plan", key, got)
+		}
+
+		firstStep(t, pool, engine, key)
+		inForce := planStandingOf(t, pool, engine, key, gen)
+		assertPlanRefusal(t, pool, engine, key, gen, id, applyFacts(t, pool, engine)(id, given), refused, inForce)
+	})
+
+	t.Run("a change of the text of default alone is taken", func(t *testing.T) {
+		const now = "Start with the changelog entry."
+		pool, engine, root := drawn(t, "c", "owner-alone")
+		key, gen := root.Key, root.Generation
+		firstStep(t, pool, engine, key)
+
+		mustTake(t, "version 1, which changes only the text of default",
+			applyFacts(t, pool, engine)(planID(key, gen, 1), ownersPlan(t, key, gen, 1, defaultBlock(t, now))))
+
+		after := planStandingOf(t, pool, engine, key, gen)
+		if v := after.plan.Version; v.Source != record.PlanSourceDefault || v.Version != 1 || v.ArtifactID != planArtifact {
+			t.Fatalf("the version in force after version 1 = %+v, want version 1 of %s with the source default", v, planArtifact)
+		}
+		if text := after.task(t).BlockText; text != now {
+			t.Fatalf("the text of default after version 1 = %q, want %q", text, now)
+		}
+		want := walkStanding{phase.Implementing, atStep, record.TaskRunning, []string{"0 default", "1 default"}, ownerAloneStoredSteps}
+		if got := walkStandingOf(t, pool, engine, key, gen); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s after version 1 stands at %+v, want %+v: default running at step 1 on the owner's one step", key, got, want)
+		}
+		assertNode(t, pool, engine, key)
+	})
+
+	t.Run("the owner's stop is not taken, and the task runs on", func(t *testing.T) {
+		pool, engine, root := drawn(t, "c", "owner-alone")
+		firstStep(t, pool, engine, root.Key)
+
+		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
+		want := stopNotTakenIn(inPlanningC(root.Key))
+		if !reflect.DeepEqual(result.Refusal, want) {
+			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
+		}
+		runs := walkStanding{phase.Implementing, atStep, record.TaskRunning, []string{"0 default"}, ownerAloneStoredSteps}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, runs) {
+			t.Fatalf("%s after the refused stop stands at %+v, want %+v", root.Key, got, runs)
+		}
+	})
+
+	t.Run("a plan given before the draw is passed over and told", func(t *testing.T) {
+		const child = "LEGION-209"
+		pool := migratedPool(t)
+		engine := returnEngine()
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
+		mustTake(t, "version 1 at generation 0", applyFacts(t, pool, engine)(planID(child, 0, 1),
+			ownersPlan(t, child, 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		recordedAt(t, pool, child, "LEGION-208")
+		drawnInto(t, pool, child, "planning", "c", "owner-alone")
+
+		firstStep(t, pool, engine, child)
+
+		assertOwnerAlonePlan(t, planStandingOf(t, pool, engine, child, 1).plan, child, 1)
+		if got := planRowsOf(t, pool, child); got != [3]int{1, 1, 1} {
+			t.Fatalf("the plan rows of %s = %v, want the group's alone: the plan of generation 0 deleted", child, got)
+		}
+		told := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + child +
+			" took no plan: version 1 of document " + planArtifact + ", given by " + treeRoleToken(t, "LEGION-208", claim.RoleArchitect) +
+			". " + inPlanningC(child)}}
+		if got := noticesOf(t, pool, child, "plan-not-taken"); !reflect.DeepEqual(got, told) {
+			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, told)
+		}
+	})
+
+	t.Run("the control: drawn into the arm b, the first step plans on the default steps", func(t *testing.T) {
+		pool, engine, root := drawn(t, "b", "default")
+
+		firstStep(t, pool, engine, root.Key)
+
+		want := walkStanding{phase.Planning, atStep, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
 		}
 	})
 }

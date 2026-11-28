@@ -341,9 +341,10 @@ export interface LegionDaemonClient {
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
    * sentence (the first reasons of each kind of cause and a count of the rest of that kind), and
-   * every other plan of an issue whose experiment's group runs the project's default steps
-   * `PLAN_NOT_TAKEN`: such an issue takes only a version that changes nothing but the text of its
-   * running task `default`. */
+   * every other plan of an issue whose experiment's group takes no plan from its owner, `default`
+   * (the issue runs the project's default steps) or `owner-alone` (its owner does the whole issue
+   * itself in one step, `implementer:owner`, then its retro), `PLAN_NOT_TAKEN`: such an issue
+   * takes only a version that changes nothing but the text of its running task `default`. */
   readonly planRegister: (
     input: z.input<typeof LegionPlanRegisterRequest>
   ) => Promise<z.output<typeof LegionPlanRegisterResponse>>;

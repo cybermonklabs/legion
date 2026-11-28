@@ -77,9 +77,9 @@ func (e *Engine) addGiver(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven,
 // the one in force (taken), which planGiven writes nothing of but its giver, and the version in
 // force that only earlier owners gave, which planGiven deletes before it writes (passedOver, nil
 // for none). source is the source the version is stored with (givenRows): the owner's, but for
-// an issue whose group runs the project's default steps (takesNoPlan), whose one version taken
-// changes nothing but the text of the task default and keeps the source default, as the steps it
-// runs are still the project's.
+// an issue whose group takes no plan (takesNoPlan), whose one version taken changes nothing but
+// the text of the task default and keeps the source default, as the steps it runs are still the
+// ones Legion chose for its group.
 type givenVersion struct {
 	issue      *record.Issue
 	recorded   bool
@@ -99,9 +99,9 @@ func (g givenVersion) retextsAlone() bool {
 }
 
 // retakesDefault says whether the version is the version in force (taken) as an issue whose group
-// runs the project's default steps (takesNoPlan) stored it from its owner: one that changed
-// nothing but the text of its running task default (retextsAlone), which keeps the source default
-// (givenRows). An owner's version in force, one waiting at generation 0 among them, is not.
+// takes no plan (takesNoPlan) stored it from its owner: one that changed nothing but the text of
+// its running task default (retextsAlone), which keeps the source default (givenRows). An owner's
+// version in force, one waiting at generation 0 among them, is not.
 func (g givenVersion) retakesDefault() bool {
 	return g.taken && g.stored.Version.Source == record.PlanSourceDefault
 }
@@ -128,20 +128,20 @@ func (g givenVersion) retakesDefault() bool {
 //
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one the version in force
-// was read from is refused, but over version 0 of the default steps, which no document wrote, and
-// so is a version below it (laterVersionRefusal). A task the version changes or removes must wait
-// or be stopped, but for a running task whose text alone it changes, which it takes
-// (plan.RunningChange): every other change of a running task is refused, one reason for each, and
-// so is any change of a task that is done or left the workflow. A plan given in a lingering tree
-// is refused too, the version in force among them.
+// was read from is refused, but over version 0 of the steps Legion chose (defaultRows), which no
+// document wrote, and so is a version below it (laterVersionRefusal). A task the version changes
+// or removes must wait or be stopped, but for a running task whose text alone it changes, which
+// it takes (plan.RunningChange): every other change of a running task is refused, one reason for
+// each, and so is any change of a task that is done or left the workflow. A plan given in a
+// lingering tree is refused too, the version in force among them.
 //
-// A recorded issue whose group runs the project's default steps (groupOf, takesNoPlan) takes one
-// kind of version from its owner: a later version that changes nothing but the text of a running
-// task of the plan in force (retextsAlone), its task default. It is stored with the source
-// default, not owner: the issue still runs the project's default steps, which its plan node and
-// Dispatch's read of the project's plans say (planNode). A give of that version again is answered
-// taken, as for any issue (retakesDefault), but a give of an owner's version in force, one waiting
-// at generation 0 among them, is not. Every other version of it is answered PLAN_NOT_TAKEN once
+// A recorded issue whose group takes no plan (groupOf, takesNoPlan) takes one kind of version
+// from its owner: a later version that changes nothing but the text of a running task of the plan
+// in force (retextsAlone), its task default. It is stored with the source default, not owner: the
+// issue still runs the steps Legion chose for its group, which its plan node and Dispatch's read
+// of the project's plans say (planNode). A give of that version again is answered taken, as for
+// any issue (retakesDefault), but a give of an owner's version in force, one waiting at
+// generation 0 among them, is not. Every other version of it is answered PLAN_NOT_TAKEN once
 // the comparison is made, in place of what the comparison answered: a version whose block default
 // names steps is PLAN_NOT_TAKEN, not PLAN_REFUSED. So is a first plan, one given at generation 0
 // for an issue the daemon recorded meanwhile among them, and no plan of it is stored. The group
@@ -343,8 +343,8 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // only one earlier owners gave (record.GivenByEarlierOwners), which the step passes over
 // (passOverEarlierOwners) — so the step takes the newest plan its owner gave, or passes it over
 // too for an issue whose group takes none (planFirstStep). Once a plan of the generation is the
-// one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
-// without the one given at generation 0.
+// one its run walks, the steps Legion chose that the step wrote (defaultRows) or a plan of its
+// owner's, the run went on without the one given at generation 0.
 // versionRefusal reads the group only after this judgement, so a plan given at generation 0 for an
 // issue whose group takes none is answered PLAN_STALE_GENERATION once its run went on, and
 // PLAN_NOT_TAKEN while it still waits.
@@ -361,22 +361,22 @@ func (e *Engine) waitsAtZero(ctx context.Context, tx pgx.Tx, issue record.Issue)
 
 // sameVersion says whether next is held, the version in force, as an owner gave it: a version of
 // the same document, at the same number. Every version an owner gave names its document: an
-// owner's (record.PlanSourceOwner), and a version of the default steps whose text an owner changed
-// (versionRefusal), which keeps the source default. Version 0 of the default steps names none, so
-// no give is it. A give of held is no later version: it is the version that runs or that the first
-// step will run, and versionRefusal answers it taken, but an owner's version of an issue whose
-// group runs the project's default steps (retakesDefault).
+// owner's (record.PlanSourceOwner), and a version of the steps Legion chose whose text an owner
+// changed (versionRefusal), which keeps the source default. Version 0 of the steps Legion chose
+// (defaultRows) names none, so no give is it. A give of held is no later version: it is the
+// version that runs or that the first step will run, and versionRefusal answers it taken, but an
+// owner's version of an issue whose group takes no plan (retakesDefault).
 func sameVersion(held record.PlanVersion, next plan.Plan) bool {
 	return held.ArtifactID != "" && held.ArtifactID == next.ArtifactID && held.Version == next.Version
 }
 
 // laterVersionRefusal is the refusal of next, given for issue over held, the version in force:
 // a version of another document than the one held was read from (PlanDocumentChanged), but over
-// version 0 of the project's default steps, which no document wrote, and a version at or below
-// held (PlanVersionOld), which versionRefusal asks only of a version that is not held itself
-// (sameVersion). nil for a later version of the same document. A version of the default steps
-// that an owner changed the text of default in (versionRefusal) keeps the source default and
-// names its document, so the owner's later versions are of that document too.
+// version 0 of the steps Legion chose (defaultRows), which no document wrote, and a version at or
+// below held (PlanVersionOld), which versionRefusal asks only of a version that is not held
+// itself (sameVersion). nil for a later version of the same document. A version of the steps
+// Legion chose that an owner changed the text of default in (versionRefusal) keeps the source
+// default and names its document, so the owner's later versions are of that document too.
 func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) *intake.Refusal {
 	if held.ArtifactID != "" && next.ArtifactID != held.ArtifactID {
 		return intake.PlanDocumentChanged(issue, held.ArtifactID)
@@ -390,8 +390,8 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 // heldPlan is the plan in force of stored as its owner's blocks gave it, which a later version is
 // compared with (plan.ChangedTasks): each task's block, with the parent it names
 // (record.PlanTask.ParentRef) and the steps it names. Those are its stored steps, but for a block
-// that named none (record.PlanTask.StepsByDefault), whose stored steps are the default steps it
-// runs, which a block naming them would differ from.
+// that named none (record.PlanTask.StepsByDefault), whose stored steps are the ones Legion chose
+// for it, which a block naming them would differ from.
 func heldPlan(stored *record.StoredPlan) plan.Plan {
 	held := plan.Plan{ArtifactID: stored.Version.ArtifactID, Version: stored.Version.Version}
 	for _, task := range stored.Tasks {

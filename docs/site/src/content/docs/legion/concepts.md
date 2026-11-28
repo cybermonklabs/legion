@@ -245,15 +245,23 @@ its earlier owner gave: at its first step Legion deletes that plan, logs
 `workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
 `plan-not-taken` notice, which version it did not take and which plan the step runs instead, the
 new owner's or the default steps.
-An issue that a project's experiment drew into a group whose issues run the project's default
-steps (an arm's `plan: default`) runs the task `default`.
-Its owner can give a version that changes nothing but the text of that running task, which Legion
-takes as for any issue.
+An issue that a project's experiment drew into a group that sets how it is done takes no plan from
+its owner.
+An issue of the group whose issues run the project's default steps (an arm's `plan: default`)
+runs the task `default` on those steps.
+An issue of the group whose owner does the whole issue itself (an arm's `plan: owner-alone`) runs
+the task `default` with one step, `implementer:owner`: its owner does the whole issue in that step,
+in its own session, and then does the issue's retro.
+Legion starts no planner, implementer, tester or reviewer for it; Legion's merger merges it, and
+the production check after the merge runs, as for every issue.
+The owner of an issue of either group can give a version that changes nothing but the text of
+that running task, which Legion takes as for any issue, and which keeps the plan's source
+`default`.
 Once the daemon records the issue, every other `register_plan` of its owner and every `stop_task`
 are answered `409 PLAN_NOT_TAKEN`, naming the group.
 A plan its owner or an earlier owner gave before the issue's first step is deleted at that step.
 Each version it deletes is logged as
-`workflow: a plan is not taken: the issue's group runs the project's default steps`.
+`workflow: a plan is not taken: the issue's group sets how it is done`.
 It is not logged as an earlier owner's plan.
 The step tells them in one `plan-not-taken` notice, which names each version and the group and
 offers no `register_plan`.

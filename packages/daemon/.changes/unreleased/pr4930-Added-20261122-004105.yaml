@@ -5,9 +5,8 @@ body: |-
   architect gives its plan as before, or `default`, where the issue runs the project's default
   steps. Such an experiment must draw for each issue (`unit: issue`), every one of its variants
   must name `plan`, only one experiment of a project may set it, and `experiments.memory` may
-  not; `owner-alone` is refused, since this release does not carry it out yet. Name the key only
-  once every daemon that reads the file runs this release, since an earlier one refuses the whole
-  file.
+  not. Name the key only once every daemon that reads the file runs this release, since an
+  earlier one refuses the whole file.
 
   Each draw records the `plan` of the arm it drew, and the issue keeps that group for its whole
   run. On an issue of the group `default`, the owner's `register_plan` and `stop_task` answer

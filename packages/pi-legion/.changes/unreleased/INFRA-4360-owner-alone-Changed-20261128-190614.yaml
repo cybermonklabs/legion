@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The `legion` tool's descriptions of `register_plan` and `stop_task` name both groups of an
+  experiment that take no plan from the issue's owner, `default` and `owner-alone`: Legion answers
+  `PLAN_NOT_TAKEN` on an issue of either, and takes only a version that changes nothing but the
+  text of its running task `default`. They say that on an issue of `owner-alone` the owner does
+  the one step, `implementer:owner`, and the issue's retro itself, in its own session, and Legion
+  starts no planner, implementer, tester or reviewer for it.
+time: 2026-11-28T19:06:14Z
+custom:
+    Issue: INFRA-4360

@@ -1126,7 +1126,7 @@ func ClaimLeftViewOf(left *record.ClaimLeft) *ClaimLeftView {
 // AssignmentView is one experiment's answer for an issue as the state shows it
 // (record.Assignment): the name the project declares the experiment under, the arm the draw gave
 // the unit, the mode in force at that draw, the instant of it, and the group the arm set (Plan,
-// `owner` or `default`), as the draw recorded it.
+// `owner`, `default` or `owner-alone`), as the draw recorded it.
 //
 // Variant and Mode ride the wire whatever they hold, the empty string included, and DrawnAt is
 // absent where the row holds none: a hand-over settles a child at no arm for an experiment the

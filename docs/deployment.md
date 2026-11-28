@@ -1132,11 +1132,17 @@ provider_keys:
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
-- **An arm's `plan`** says how the issues drawn into it are done, `owner` or `default`.
+- **An arm's `plan`** says how the issues drawn into it are done, `owner`, `default` or
+  `owner-alone`.
   An issue of `owner` takes the plan its owner gives with `register_plan`.
   An issue of `default` runs the project's `default_steps`.
-  Legion takes from its owner only a version that changes nothing but the text of its running
-  task `default`.
+  An issue of `owner-alone` runs one task, `default`, of one step, `implementer:owner`: the
+  architect that owns the issue does the whole issue itself in that step, in its own session, and
+  then does the issue's retro.
+  Legion starts no planner, implementer, tester or reviewer for it; Legion's merger merges it, and
+  the production check after the merge runs, as for every issue.
+  From the owner of an issue of `default` or `owner-alone`, Legion takes only a version that
+  changes nothing but the text of its running task `default`.
   Once the daemon records such an issue, every other `register_plan` and every `stop_task` of its
   owner are answered `409 PLAN_NOT_TAKEN`.
   A plan its owner gave before is passed over at its first step and told in a `plan-not-taken`
@@ -1145,10 +1151,15 @@ provider_keys:
   whatever the file says later.
   An experiment that names `plan` in one arm names it in every arm and is `unit: issue`, and at
   most one experiment of a project sets it.
-  The loader refuses a `plan` that is neither `owner` nor `default` (`owner-alone`, which this
-  release does not carry out, among them), an arm that names no `plan` beside one that does, an
-  experiment that sets `plan` at `unit: tree`, and a second experiment of one project that sets
-  `plan`; `legion config check` makes each of these refusals.
+  The loader refuses a `plan` that is none of the three words
+  (`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan must be owner, default or owner-alone (got "…")`),
+  an arm that names no `plan` beside one that does, an experiment that sets `plan` at
+  `unit: tree`, and a second experiment of one project that sets `plan`; `legion config check`
+  makes each of these refusals.
+  A release before the one that takes `owner-alone` refuses that word at load: before you pin one,
+  take out the arm whose `plan` is `owner-alone`, or change its word to `owner` or `default`
+  (`docs/kubernetes.md`, "Rolling back the release whose owner does a whole issue itself in one
+  step").
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).

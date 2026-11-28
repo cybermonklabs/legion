@@ -34,8 +34,16 @@ func engineRunningByDefault(t *testing.T, words ...string) *Engine {
 // default, whose block text says so and whose steps are steps, run by default.
 func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64, steps []string) {
 	t.Helper()
+	assertChosenPlan(t, stored, key, generation, "The project's default steps.", steps)
+}
+
+// assertChosenPlan fails unless key's run at generation holds the plan Legion chose for it alone
+// (defaultRows): version 0 of the source default, with no document and no giver, and one task,
+// default, whose block text is text and whose steps are steps, run by default.
+func assertChosenPlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64, text string, steps []string) {
+	t.Helper()
 	if stored == nil {
-		t.Fatalf("%s at generation %d holds no plan rows, want the default steps", key, generation)
+		t.Fatalf("%s at generation %d holds no plan rows, want the plan Legion chose", key, generation)
 	}
 	if v := stored.Version; v.Issue != key || v.Generation != generation || v.Version != 0 || v.Source != record.PlanSourceDefault ||
 		v.ArtifactID != "" || v.GivenBy != "" {
@@ -44,9 +52,8 @@ func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, gene
 	if len(stored.Tasks) != 1 {
 		t.Fatalf("the tasks of %s = %+v, want the one task default", key, stored.Tasks)
 	}
-	if task := stored.Tasks[0]; task.Task != plan.DefaultTask || task.PlanVersion != 0 || task.BlockText != "The project's default steps." ||
-		!task.StepsByDefault {
-		t.Fatalf("the one task of %s = %+v, want default of version 0, its text the project's default steps, run by default", key, task)
+	if task := stored.Tasks[0]; task.Task != plan.DefaultTask || task.PlanVersion != 0 || task.BlockText != text || !task.StepsByDefault {
+		t.Fatalf("the one task of %s = %+v, want default of version 0, its text %q, run by default", key, task, text)
 	}
 	if got := stepsOfTask(stored, plan.DefaultTask); !reflect.DeepEqual(got, steps) {
 		t.Fatalf("the steps of default = %v, want %v", got, steps)

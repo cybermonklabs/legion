@@ -186,17 +186,21 @@ projects:
   #     planning: {mode: random, unit: issue, variants: [{name: owner, plan: owner}, {name: default, plan: default}]}
   #                                    # an experiment that sets how each issue is done: an arm's
   #                                    # plan is owner, whose issues take the plan their owner
-  #                                    # gives with register_plan, or default, whose issues run
-  #                                    # this project's default_steps. Legion takes from their
-  #                                    # owner only a version that changes nothing but the text
-  #                                    # of the running task default. Once the daemon records
-  #                                    # such an issue, every other register_plan and every
-  #                                    # stop_task of its owner are answered 409
-  #                                    # PLAN_NOT_TAKEN. Every arm of it names plan, it is unit:
-  #                                    # issue, and no other experiment of the project sets plan;
-  #                                    # owner-alone is refused, since this release does not carry
-  #                                    # it out. Each issue keeps the plan of its draw for its
-  #                                    # whole life, whatever this file says later
+  #                                    # gives with register_plan, default, whose issues run this
+  #                                    # project's default_steps, or owner-alone, whose issues
+  #                                    # each run one step, implementer:owner, in which the
+  #                                    # architect that owns the issue does the whole issue
+  #                                    # itself, then the issue's retro; Legion starts no
+  #                                    # planner, implementer, tester or reviewer for it, and its
+  #                                    # merger merges it. From the owner of an issue of default
+  #                                    # or owner-alone, Legion takes only a version that changes
+  #                                    # nothing but the text of the running task default. Once
+  #                                    # the daemon records such an issue, every other
+  #                                    # register_plan and every stop_task of its owner are
+  #                                    # answered 409 PLAN_NOT_TAKEN. Every arm of it names plan,
+  #                                    # it is unit: issue, and no other experiment of the
+  #                                    # project sets plan. Each issue keeps the plan of its draw
+  #                                    # for its whole life, whatever this file says later
 # leak_check:                          # optional: the deployment's shared public leak check, which
 #   repository: example-org/deployment # the daemon reads at the worker image's pin
 #   manifest_sha256: <64 hex digits>   # (LEGION_LEAK_CHECK_TAG) and pushes to every pod: the

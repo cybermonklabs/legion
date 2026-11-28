@@ -52,11 +52,12 @@ var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 // PlanGroup is `projects.<KEY>.experiments.<name>.variants[].plan`: how the issues drawn into an
 // arm are done. PlanGroupOwner runs an issue as an issue of no experiment runs: its owner gives
 // the plan with register_plan, and an issue whose owner gives none runs the project's default
-// steps. PlanGroupDefault runs the project's default steps (Project.RunsByDefault), and Legion
-// takes from the issue's owner only a version that changes nothing but the text of its running
-// task default. PlanGroupOwnerAlone is the owner doing the whole issue
-// itself in one step, which this release refuses at load. The zero value is an arm that names no
-// plan, whose issues run as with no experiment.
+// steps. PlanGroupDefault runs the project's default steps (Project.RunsByDefault).
+// PlanGroupOwnerAlone runs one task, default, of one step, implementer:owner, which the owner of
+// the issue does itself before its retro (plan.OwnerAloneSteps). Under either of the last two,
+// Legion takes from the issue's owner only a version that changes nothing but the text of its
+// running task default. The zero value is an arm that names no plan, whose issues run as with no
+// experiment.
 type PlanGroup string
 
 const (
@@ -439,8 +440,7 @@ func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 // arm names none), optional `config_files` read as `role_config_files`' lists are
 // (readOverlayFiles), an optional `instructions` path the daemon reads at boot, and an optional
 // `plan`, one of the words of PlanGroup. Neither file key is required: the arm that names no file
-// is the control the others are measured against. `plan: owner-alone` is refused: this release
-// does not carry it out.
+// is the control the others are measured against.
 func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of variant blocks", key)
@@ -496,12 +496,9 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		if err != nil {
 			return nil, err
 		}
-		switch variant.Plan = PlanGroup(plan); {
-		case plan == "":
-		case !slices.Contains(planGroups, variant.Plan):
-			return nil, fmt.Errorf("%s.plan must be owner or default (got %q)", field, plan)
-		case variant.Plan == PlanGroupOwnerAlone:
-			return nil, fmt.Errorf("%s.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.", field)
+		variant.Plan = PlanGroup(plan)
+		if plan != "" && !slices.Contains(planGroups, variant.Plan) {
+			return nil, fmt.Errorf("%s.plan must be %s (got %q)", field, orList(planGroups), plan)
 		}
 		variants = append(variants, variant)
 	}
