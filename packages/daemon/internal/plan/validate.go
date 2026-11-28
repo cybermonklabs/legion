@@ -91,7 +91,7 @@ const (
 	taskMerges
 	acceptanceNoKey
 	stepKey
-	roleTwice
+	secondAgent
 	noImplementer
 	readsBeforeImplementer
 	implementationAfter
@@ -116,7 +116,7 @@ var causeWords = [causes]string{
 	taskMerges:             "tasks that name merges",
 	acceptanceNoKey:        "steps that name acceptance with no key",
 	stepKey:                "steps that name a key this release does not take",
-	roleTwice:              "roles a task names at two steps",
+	secondAgent:            "agents that start with the role another agent of their task started with",
 	noImplementer:          "tasks with no step implementer",
 	readsBeforeImplementer: "steps that read a pull request with no implementer step before them",
 	implementationAfter:    "steps of the type implementation after the step implementer",
@@ -135,10 +135,10 @@ var causeWords = [causes]string{
 // the order the checks find them in. Every cause of either check is added here with its kind, so
 // each kind a plan has is named at least once, and a plan whose blocks give a cause for each of
 // their items (each `needs` word that names no task, each role nobody defines, each step's key this
-// release does not take, each step that reads a pull request with no implementer before it) gets
-// a refusal of at most MostReasons + 1 reasons of each kind, however many items it holds: one
-// reason for each item answered a 1 MiB attribute in 34 MB (its `needs` words), 44 MB (roles) or
-// 66 MB (keyed steps).
+// release does not take, each agent that starts with the role another agent started with, each
+// step that reads a pull request with no implementer before it) gets a refusal of at most
+// MostReasons + 1 reasons of each kind, however many items it holds: one reason for each item
+// answered a 1 MiB attribute in 34 MB (its `needs` words), 44 MB (roles) or 66 MB (keyed steps).
 type reasons struct {
 	named []namedReason
 	found [causes]int // the causes of each kind found, named or not
@@ -452,15 +452,16 @@ func cycleFrom(needs [][]int, component, parent []int, task int) (path []int) {
 // task that no task needs (Sinks, over the task ids FromBlocks reads), whose work would each
 // merge by itself where this release merges an issue's work as one change, a role block, and,
 // for each task, `needs`, `owner`, a task that is a part of another (Places) and `merges`, the
-// key owner on a role but acceptance, acceptance with a key but owner or with none, a role named
-// at two steps, no implementer, each step of a role that reads the implementer's pull request
-// with no implementer step before it, and each step after the implementer's whose role d gives
-// the type implementation, since Legion's retro is done by the implementer. Any other key is
-// taken: it names the agent of its steps (AgentOf). Its steps stand in any other order: the
-// planner at any place, the tester, the reviewer and the acceptance in any order after the
-// implementer, and a role of the deployment at any place. A task that names no steps runs the
-// project's default steps, which the configuration loader holds to these same checks, so none of
-// its step causes apply. Its reasons are bounded as reasons bounds each kind.
+// key owner on a role but acceptance, acceptance with a key but owner or with none, a second agent
+// that starts with the role of another, no implementer, each step of a role that reads the
+// implementer's pull request with no implementer step before it, and each step after the
+// implementer's whose role d gives the type implementation, since Legion's retro is done by the
+// implementer. Any other key is taken: it names the agent of its steps (AgentOf), and a role can
+// stand at two steps. Its steps stand in any other order: the planner at any place, the tester,
+// the reviewer and the acceptance in any order after the implementer, and a role of the deployment
+// at any place. A task that names no steps runs the project's default steps, which the
+// configuration loader holds to these same checks, so none of its step causes apply. Its reasons
+// are bounded as reasons bounds each kind.
 func Supported(p Plan, d Deployment) []Refusal {
 	var found reasons
 	if len(p.Tasks) > 1 {
@@ -517,15 +518,16 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 
 // stepReasons adds Supported's causes in the steps of t to found, in this order: each step that
 // names the key owner on a role but acceptance, or acceptance with a key but owner or with none, in
-// step order; each role named at two steps, at its first two; no implementer; each step of a role
-// that reads a pull request with no implementer step before it, in step order, named by its word
-// as the plan writes it; and each step after the implementer's whose role d gives the type
-// implementation, in step order. The owner does the accepting step in this release, so a key on
-// it but owner would name an agent Legion does not run it in.
+// step order; the first step of each agent that starts with the role another agent of t started
+// with before it, in step order; no implementer; each step of a role that reads a pull request with
+// no implementer step before it, in step order, named by its word as the plan writes it; and each
+// step after the implementer's whose role d gives the type implementation, in step order. The owner
+// does the accepting step in this release, so a key on it but owner would name an agent Legion does
+// not run it in. An agent other than the owner is named by the role it starts with, and this
+// release runs one agent that starts with each role for an issue, so a second agent of one first
+// role has no name, while an agent that starts with another role can work a step of that role; the
+// owner's claim is the tree's architect, and it takes no name.
 func stepReasons(t Task, d Deployment, found *reasons) {
-	firstAt := map[string]int{}
-	var roles []string // each role once, in the order of its first step
-	secondAt := map[string]int{}
 	implementerAt := 0 // the place of the first step of the implementer, 0 before it
 	for i, step := range t.Steps {
 		at := i + 1
@@ -538,22 +540,29 @@ func stepReasons(t Task, d Deployment, found *reasons) {
 		case step.Key != "" && (step.Key == "owner") != (step.Role == "acceptance"):
 			found.yet(stepKey, t.ID, func() string { return fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, quoted(step.Key)) })
 		}
-		if _, seen := firstAt[step.Role]; !seen {
-			firstAt[step.Role] = at
-			roles = append(roles, step.Role)
-		} else if _, seen := secondAt[step.Role]; !seen {
-			secondAt[step.Role] = at
-		}
 		if implementerAt == 0 && step.Role == "implementer" {
 			implementerAt = at
 		}
 	}
-	for _, role := range roles {
-		if second, ok := secondAt[role]; ok {
-			found.yet(roleTwice, t.ID, func() string {
-				return fmt.Sprintf("task %s names the role %s at steps %d and %d.", t.ID, quoted(role), firstAt[role], second)
-			})
+	agentSeen := map[Agent]bool{}
+	startsAt := map[string]int{} // the first step of the first agent that starts with each role
+	for i, step := range t.Steps {
+		at := i + 1
+		agent := AgentOf(t.ID, at, step)
+		if agentSeen[agent] || agent.Owner() {
+			continue
 		}
+		agentSeen[agent] = true
+		role := step.Role // the agent's first step, so the role it starts with
+		first, taken := startsAt[role]
+		if !taken {
+			startsAt[role] = at
+			continue
+		}
+		found.yet(secondAgent, t.ID, func() string {
+			return fmt.Sprintf("step %d of task %s needs an agent of its own beside the agent of step %d, and both agents start with the role %s, and this release runs one agent that starts with each role for an issue.",
+				at, t.ID, first, quoted(role))
+		})
 	}
 	if implementerAt == 0 {
 		found.yet(noImplementer, t.ID, func() string { return fmt.Sprintf("task %s has no step implementer.", t.ID) })

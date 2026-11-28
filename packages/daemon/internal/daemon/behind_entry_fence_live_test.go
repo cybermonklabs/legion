@@ -4,12 +4,14 @@
 // entry: a completion of an entry the issue has moved past is taken when the commit it names is the
 // head the daemon's record holds, because a verdict is a fact about a head and the phase was
 // entered again at that same head (intake.BehindEntryClause), and is refused when it
-// names any other commit or none, or when the move that entered the phase again moved the issue
-// back. Such a move sends the work back at the head that is already there, so the two heads read
-// alike and the heads alone would take a verdict over an entry that exists to have the work done
-// again. The record says which move it was (record.PhaseRow.EntryMovedBack, written by the
-// transition that raises the entry), and the fence reads it. A behind completion from a role that
-// no longer works the phase the issue stands in is neither taken nor refused that way: the fence
+// names any other commit or none, when the move that entered the phase again moved the issue
+// back, or when the entry it serves is of another step of its role (record.OtherStepsEntry), which
+// no completion here is, since the tester stands at one step. A move back sends the work back at
+// the head that is already there, so the two heads read alike and the heads alone would take a
+// verdict over an entry that exists to have the work done again. The record says which move it
+// was (record.PhaseRow.EntryMovedBack, written by the transition that raises the entry), and the
+// fence reads it. A behind completion from a role that no longer works the phase the issue stands
+// in is neither taken nor refused that way: the fence
 // answers it HANDOFF_NOT_CURRENT_PHASE, in the engine's words (intake.NotCurrentPhase), rather
 // than tell the worker a task is owed to it that the daemon drops unsent, since the issue has left
 // the phase that task was queued for.

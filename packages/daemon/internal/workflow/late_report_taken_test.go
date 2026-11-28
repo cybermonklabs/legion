@@ -36,7 +36,7 @@ func reviewApprovedNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 		if err != nil {
 			return err
 		}
-		reviewer, err := engine.phaseRow(ctx, tx, key, claim.RoleReviewer)
+		reviewer, err := engine.phaseRow(ctx, tx, *issue, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}

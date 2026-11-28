@@ -15,7 +15,7 @@ const deploymentRolesVersion = 20261124192838
 // wayBackOpening opens the way back in a migration's header, and wayBackClosing ends it: what
 // stands between them is what psql reads on its standard input.
 const (
-	wayBackOpening = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackOpening = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackClosing = "SQL"
 )
 

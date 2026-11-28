@@ -71,7 +71,7 @@ func TestATaskSentToAProcessOfAnotherRepositoryNamesThatProcessesWorkingCopy(t *
 		{name: "a resume of an issue with no plan rows", kept: resumeText(composed, today)},
 		{name: "a start's task that carries news after it", kept: task(composed, today, handoff, nil, "") + "\n\nThe approved spec moved from version 4 to 5."},
 		{name: "a step's start", kept: namingTheReviewRound(task(composed, step, handoff, nil, "the reviewer asked again"),
-			claim.RoleReviewer, phase.Reviewing, reviewer), owners: true},
+			claim.RoleReviewer, phase.Reviewing, reviewer, []record.PhaseRow{reviewer}), owners: true},
 		{name: "a step's resume", kept: resumeText(composed, step), owners: true},
 		{name: "a rework whose title holds a working copy line of the issue's branch", kept: task(titled("Name the"+
 			" Working copy: branch legion/LEGION-208, directory /work/elsewhere/LEGION-208."+" in the prompt"), today, record.PhaseRow{}, nil, "the reviewer asked again")},

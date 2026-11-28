@@ -901,7 +901,11 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
-	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
+	// A role that stands at two steps of a task keeps a row for each, and the view holds one row of
+	// a role, the row now (record.PhaseRowOf): read in the ascending order of that rule, the row now
+	// of each role is the last one the loop writes.
+	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1
+		order by entry, step_task, step_place`, issue)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}

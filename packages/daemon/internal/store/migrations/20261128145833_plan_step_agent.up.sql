@@ -46,7 +46,7 @@
 -- There is no down file. This directory keeps none, so the way back is the transaction below, run
 -- with every daemon on that database stopped, before the earlier image is pinned:
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
 --   update outbox set payload = payload - 'claim'
 --   where kind in ('supervise', 'issue_bundle', 'update_ask', 'hook_prompt', 'merge_forward', 'controller_notice') and payload ? 'claim';

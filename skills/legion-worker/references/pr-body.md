@@ -54,7 +54,7 @@ GitHub refuses a body over 65,536 characters: past about 48,000, link evidence r
 The implementer keeps `Outcome`, `Why`, `Change`, `Proven by` and `Size` true after every push.
 At each round the reviewer writes `Look at first`, and a risk on the `Not proven / risk` line where one stands.
 With no reviewer step, the implementer writes both, including what its own evidence does not prove; where the body claims a check that has not concluded at the head, the implementer names that check under `Not proven / risk`.
-With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the tester's handoff where the task has a tester step.
+With no reviewer step, at retro the implementer updates `Not proven / risk` after reading the handoff of each tester step where the task has one.
 A stale `Outcome` is a finding against the implementer; the merger rewrites nothing.
 
 ## The simplify pass and the `Thermo` line

@@ -751,7 +751,8 @@ func TestAMoveBackIntoPlanningWritesInProgress(t *testing.T) {
 }
 
 // A backward move no backward row serves is refused, and nothing moves or is counted: to the
-// phase the issue is already in, save step with an earlier step at step, or a later one; by a role that does not run the phase, the
+// phase the issue is already in or a later one, where no earlier place of the task runs as that
+// phase, as none does on this issue with no plan rows; by a role that does not run the phase, the
 // implementer's from accepting among them; or to no phase at all, which the row lookup would
 // otherwise take to match any row.
 func TestABackwardMoveNoRowServesIsRefused(t *testing.T) {

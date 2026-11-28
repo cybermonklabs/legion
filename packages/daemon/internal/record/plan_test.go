@@ -197,8 +197,9 @@ func TestAPhaseRowCarriesItsStep(t *testing.T) {
 // The step a phases row runs is a step of one generation's plan, whose task ids the next
 // generation's plan need not share, so a new generation clears it with the entry's task: the row
 // reads no step until the new generation's own start of the role writes one. Its entry stays, as
-// ClearGeneration keeps every entry. The row reads its step before the clear, which is the
-// control: a store that never kept the step would read none after it too.
+// ClearGeneration keeps each role's highest entry, into which it folds the role's other rows. The
+// row reads its step before the clear, which is the control: a store that never kept the step
+// would read none after it too.
 func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

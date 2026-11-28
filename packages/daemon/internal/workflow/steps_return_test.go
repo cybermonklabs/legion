@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -70,7 +71,7 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
-		reviewer, err := engine.phaseRow(ctx, tx, key, claim.RoleReviewer)
+		reviewer, err := engine.phaseRow(ctx, tx, *issue, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}
@@ -139,8 +140,14 @@ func roleRowOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, rol
 	t.Helper()
 	var row record.PhaseRow
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		row, err = engine.phaseRow(ctx, tx, key, role)
+		issue, err := engine.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue == nil {
+			return fmt.Errorf("the store holds no %s", key)
+		}
+		row, err = engine.phaseRow(ctx, tx, *issue, role)
 		return err
 	})
 
@@ -545,8 +552,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 // the task again at its implementer. The fail is a report of a run the daemon ended without it
 // (leftItsPhase), and returnTo names no step of the task now, so it is refused 409 RETURN_REFUSED
 // with what to send instead, and records nothing, as every returnTo the task's steps cannot take
-// is. The same fail naming no step is then taken on the tester's own row and moves nothing. Before,
-// the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the same fail.
+// is. The same fail naming no step is then taken on the row of the tester's run, step 2, and moves
+// nothing. Before, the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the
+// same fail.
 func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -585,8 +593,8 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 		t.Fatalf("the tester's late fail sent again without returnTo was refused: %+v", result.Refusal)
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleTester); !row.Completed() || row.HandoffRecord != "test-1" {
-		t.Fatalf("the tester's row = %+v, want its late fail recorded, naming test-1", row)
+	if row := roleRowNow(t, pool, engine, root.Key, claim.RoleTester); !row.Completed() || row.HandoffRecord != "test-1" || row.StepPlace != 2 {
+		t.Fatalf("the tester's row now = %+v, want its late fail recorded on the row of its run, step 2, naming test-1", row)
 	}
 }
 

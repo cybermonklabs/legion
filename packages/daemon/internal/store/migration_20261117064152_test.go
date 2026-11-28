@@ -86,12 +86,14 @@ func (s rollBackStore) issue(key, tree, phase, heldFrom string, generation int) 
 }
 
 // entry raises the entry of role on key, as each start that hands a phase worker its work does
-// (workflow's enter), every release's.
+// (workflow's enter), every release's: on the one row of the role, which an issue with no plan
+// rows has under either key of phases, so the same statement writes before the way back, under
+// the key of a phases row by its step, and after it, under the key (issue, role).
 func (s rollBackStore) entry(key, role string) {
 	s.t.Helper()
-	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry)
-		values ('%s', '%s', '', '', 0, '', 0, 1)
-		on conflict (issue, role) do update set entry = phases.entry + 1`, key, role))
+	s.exec(fmt.Sprintf(`with raised as (update phases set entry = entry + 1 where issue = '%[1]s' and role = '%[2]s' returning 1)
+		insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry)
+		select '%[1]s', '%[2]s', '', '', 0, '', 0, 1 where not exists (select 1 from raised)`, key, role))
 }
 
 // pullRequest is key's pull request, #number, in state.
@@ -136,17 +138,22 @@ func (s rollBackStore) recordID(place string) string {
 	return id
 }
 
-// wayBack runs the way back an operator runs with the daemon stopped.
+// wayBack runs the way back an operator runs with the daemon stopped. A rollback past the release
+// that keys a phases row by its step runs that migration's way back first (docs/kubernetes.md),
+// which writes the key (issue, role) again: the earlier release's upsert of a phases row names it
+// (entry), and no unique index of the newer key answers it.
 func (s rollBackStore) wayBack() {
 	s.t.Helper()
+	s.exec(wayBackOf(s.t, phaseStepKeyVersion, phaseStepKeyRelease))
 	s.exec(wayBackOf(s.t, migrations.StepRecordsRollForward, stepRecordsRelease))
 }
 
-// rollForward is the newer image's Migrate, which applies the roll forward the way back re-armed.
+// rollForward is the newer image's Migrate, which applies the two migrations the way back
+// re-armed: the roll forward and the key of a phases row by its step.
 func (s rollBackStore) rollForward() {
 	s.t.Helper()
-	if applied, err := s.store.Migrate(s.t.Context()); err != nil || applied != 1 {
-		s.t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
+	if applied, err := s.store.Migrate(s.t.Context()); err != nil || applied != 2 {
+		s.t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the two the way back re-armed", applied, err)
 	}
 }
 

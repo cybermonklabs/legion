@@ -202,8 +202,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
 	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
 	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — so
-	// the issue and the role do not name the claim, and the worker's token does.
+	// step of another role, beside that role's own claim of an earlier version of the plan, or two
+	// agents at two steps of the role — so the issue and the role do not name the claim, and the
+	// worker's token does.
 	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
 		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
@@ -326,9 +327,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		}
 
 		rows := phases[issue.Key]
-		// The reviewer's own row, the single row of its role (the phases table is keyed by issue
-		// and role): the round's decision is read from it, and so is what the round waits on from
-		// GitHub (mergeWaitView). The zero row is an issue whose reviewer has never had one.
+		// The reviewer's row now (record.PhaseRowOf), the row with the highest entry: a role that
+		// stands at two steps of a task has a row for each, and the reviewer's row now is the
+		// round's: its decision is read from it, and so is what the round waits on from GitHub
+		// (mergeWaitView). The zero row is an issue whose reviewer has never had one.
 		reviewer := record.PhaseRowOf(rows, claim.RoleReviewer)
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
@@ -693,10 +695,14 @@ type shownWorker struct {
 //   - an issue's own record decides its phase, its tree and its wait (record.ObservationOf);
 //   - an issue the record holds shows the slot it holds, and a slot of a key the record does not
 //     hold is shown nowhere;
-//   - a phases row whose claim token names a claim of claims shows that claim: the architect's row
-//     as the issue's `architect`, which is no worker of its `workers`, and every other role's row as
-//     that role's entry of `workers`. A row whose claim is not among claims shows nothing, so a
-//     worker's view, and the counts its row carries, exist only while its claim does;
+//   - each role's phases row now (record.PhaseRowOf), the row with the highest entry, whose claim
+//     token names a claim of claims shows that claim: the architect's row as the issue's
+//     `architect`, which is no worker of its `workers`, and every other role's row as that role's
+//     entry of `workers`. A role that stands at two steps of a task has a row for each, and its
+//     worker is served from the row of the step it works now or worked last, the row the admission
+//     pass weighs it against; its other rows show nothing. A row whose claim is not among claims
+//     shows nothing, so a worker's view, and the counts its row carries, exist only while its claim
+//     does;
 //   - then each claim, in claims' order, that no row showed: on its issue's `architect` where that
 //     is empty, and on its role's entry of `workers` where that is empty, and otherwise, where
 //     neither shows it already, among the issue's `otherClaims`. The daemon's own
@@ -716,6 +722,9 @@ func listIssues(issues []record.Issue, phases map[string][]record.PhaseRow, slot
 		rows := phases[issue.Key]
 		for i := range rows {
 			row := &rows[i]
+			if now := record.PhaseRowOf(rows, row.Role); now.StepTask != row.StepTask || now.StepPlace != row.StepPlace {
+				continue
+			}
 			shown, live := byToken[row.Claim]
 			if !live {
 				continue

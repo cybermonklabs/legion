@@ -22,8 +22,9 @@ import (
 //
 // A row is read by the claim it names (record.UpdateAsk.Claim): two claims of one issue can hold
 // one role — the agent of a key on a step of another role, beside that role's own claim of an
-// earlier version of the plan — and the one's ask in flight is no ask of the other. A row the
-// release before wrote names no claim, and stands for each claim of its role.
+// earlier version of the plan, or two agents at two steps of the role — and the one's ask in
+// flight is no ask of the other. A row the release before wrote names no claim, and stands for
+// each claim of its role.
 //
 // One read answers for every claim of the issue, and it reads the outbox through its issue index
 // (outbox_issue), so it costs one indexed query for an issue the sweep asks and nothing for one it

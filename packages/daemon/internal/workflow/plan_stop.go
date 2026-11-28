@@ -335,7 +335,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	// The role of the task's first step (Walk.RoleAt), so a first step of a role the deployment
 	// defines starts that role again.
 	role := w.RoleAt(record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, w, role); err != nil {
 		return err
 	}
 	if err := e.start(ctx, tx, issue, w, role, told, phase.Held, true); err != nil {

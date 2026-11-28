@@ -521,35 +521,6 @@ func checksRedNotice(t *testing.T, pool *pgxpool.Pool) (reason string, stays pha
 	return reason, phase.Phase(named)
 }
 
-// phaseStartKeys is every key a phase worker's start payload carries here
-// (record.SuperviseRequest): the operation, the issue's tree, the role, its task, the issue
-// generation, the phase the start serves, the phase entry that task is of, and whether it waits
-// for a slot. It names no claim: a phase worker's start reaches the claim of the worker on the
-// role's step when it runs (the outbox's workerToken), here the role's own claim. The list is
-// asserted whole rather than key by key, so a start that grows a field nobody meant it to carry —
-// a role to wait for before it acts, say — fails here.
-const phaseStartKeys = "entry,generation,needsSlot,op,phase,role,task,tree"
-
-// implementerStart is the task of the implementer's start the outbox holds, the one row a phase
-// worker's start is (workflow.StartOrOwe); the task tells it from a start admission writes for a
-// role it brings back beside a worker, which carries none. That row carries phaseStartKeys and
-// nothing else, no claim among them; needsSlot is among them,
-// because the delivery of a worker's task is the one part of a transition that waits, for the
-// issue's admission slot.
-func implementerStart(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	var task, keys string
-	if err := pool.QueryRow(context.Background(), `select payload->>'task',
-		(select string_agg(key, ',' order by key) from jsonb_object_keys(payload) as key)
-		from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> '' and payload->>'role' = 'implementer'`).Scan(&task, &keys); err != nil {
-		t.Fatalf("read the implementer's start: %v", err)
-	}
-	if keys != phaseStartKeys {
-		t.Fatalf("the implementer's start carries %s, want %s", keys, phaseStartKeys)
-	}
-	return task
-}
-
 // applyRefusingNothing applies each fact as its own event, and fails the test on a refusal.
 func applyRefusingNothing(t *testing.T, pool *pgxpool.Pool, engine *Engine, facts ...intake.Fact) {
 	t.Helper()

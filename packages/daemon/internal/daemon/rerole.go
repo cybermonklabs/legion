@@ -99,9 +99,10 @@ func suspendUntilIdle(ctx context.Context, machine *supervise.Machine, token cla
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its
 // issue asks of the role, read from the record again: whether every fence of the outbox's run of
-// the row holds (startFenceOf), the one judgment of them. The suspension and the re-role a start asks of
-// its claim judge it again under the machine's lock (supervise.Standing, reroleForStep), since a
-// move or a later entry can commit between the fences' read and that lock.
+// the row holds (startFenceOf, whose entry fence is record.StartLeft), the one judgment of them. The
+// suspension and the re-role a start asks of its claim judge it again under the machine's lock
+// (supervise.Standing, reroleForStep), since a move or a later entry can commit between the fences'
+// read and that lock.
 func (r *outbox) stepStands(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	stands := false
 	err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {

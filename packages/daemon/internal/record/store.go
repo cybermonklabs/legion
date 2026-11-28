@@ -578,11 +578,17 @@ func (s *Postgres) UnnamedIssues(ctx context.Context, tx pgx.Tx, project string)
 	return s.issuesWhere(ctx, tx, "project = $1 and repo <> '' and github_repo = ''", project, "with no GitHub spelling of their repository")
 }
 
+// HandedOffWithoutOpenOrMergedPullRequest reads each issue of project in implementing whose
+// implementer's row now holds a handoff commit and that has no open or merged pull request. The
+// row is the implementer's row now, as PhaseRowOf picks it (the highest entry, then the later
+// step): an implementer that stands at two steps of a task has a row for each, and an earlier
+// step's commit is no handoff of the step that runs.
 func (s *Postgres) HandedOffWithoutOpenOrMergedPullRequest(ctx context.Context, tx pgx.Tx, project string) ([]HandedOff, error) {
 	const what = "in implementing with a recorded handoff and no open or merged pull request"
 	rows, err := tx.Query(ctx, "select "+issueColumns+", implementer.handoff_commit from issues"+
-		" join (select issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"' and handoff_commit <> '')"+
-		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key"+
+		" join (select distinct on (issue) issue, handoff_commit from phases where role = '"+string(claim.RoleImplementer)+"'"+
+		" order by issue, entry desc, step_task desc, step_place desc)"+
+		" implementer (implementer_issue, handoff_commit) on implementer.implementer_issue = issues.key and implementer.handoff_commit <> ''"+
 		" where project = $1 and github_repo <> '' and phase = '"+string(phase.Implementing)+"'"+
 		" and key not in (select issue from pull_requests where state = any($2))"+
 		" order by key", project, implementationMoveSQLStates)
@@ -850,9 +856,11 @@ func scanIssue(row scanner) (*Issue, error) {
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
 const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place`
 
+// Phases is every phases row of issue: one row for each step a role ran of the issue's plan, and
+// for an issue with no plan rows one row for each role, in the order of role, task and place.
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
-		where issue = $1 order by role`, issue)
+		where issue = $1 order by role, step_task, step_place`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
 	}
@@ -873,15 +881,17 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 
 // listedPhaseColumns is the columns of a phases row that AllPhases reads, in scanListedPhase's
 // order: the columns the state route reads of a row (projection.Project, projection.Observe).
-const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, backward_moves, decision, entry`
+const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, backward_moves, decision, entry, step_task, step_place`
 
 // AllPhases is the phases rows of project's issues, by issue, in one statement. Each issue's rows
-// are the rows Phases answers for that issue, in the same order (by role), with the columns the
-// state route reads (listedPhaseColumns): the issue, the role, the claim, the handoff commit, the
-// pass, the handoff record and its version, the rounds, the counts of the moves back, the review
-// decision and the entry. Every other field of a row is zero. An issue with no row has no entry,
-// which reads as the empty list Phases answers for it. The state route reads it in place of one
-// statement for each issue it lists.
+// are the rows Phases answers for that issue, in the same order (by role, task and place), with
+// the columns the state route reads (listedPhaseColumns): the issue, the role, the claim, the
+// handoff commit, the pass, the handoff record and its version, the rounds, the counts of the
+// moves back, the review decision, the entry and the step the row ran, which with the entry picks
+// a role's row now among its rows (PhaseRowOf): a role that stands at two steps of a task has a
+// row for each. Every other field of a row is zero. An issue with no row has no entry, which reads
+// as the empty list Phases answers for it. The state route reads it in place of one statement for
+// each issue it lists.
 //
 // The database is shared by every project's daemon, and a row is keyed by an issue, so the
 // project of a row is the project of the issue record it is keyed by: the statement keeps the
@@ -889,7 +899,7 @@ const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_re
 // project's issue.
 func (s *Postgres) AllPhases(ctx context.Context, tx pgx.Tx, project string) (map[string][]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select `+listedPhaseColumns+` from phases
-		where issue in (select key from issues where project = $1) order by issue, role`, project)
+		where issue in (select key from issues where project = $1) order by issue, role, step_task, step_place`, project)
 	if err != nil {
 		return nil, fmt.Errorf("list the phases of the issues of %s: %w", project, err)
 	}
@@ -910,15 +920,18 @@ func (s *Postgres) AllPhases(ctx context.Context, tx pgx.Tx, project string) (ma
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised, whether
 // a resume raised it (entry_awaiting holds a wait), and the claim and step the row names, in one
-// statement, keyed by issue and role. The rows of an issue the record holds none of are simply
-// absent, which every reader takes as the zero entry. entry_raised_at is null on a row no entry
-// has been raised on (PutPhase), and reads back as the zero moment.
+// statement, keyed by issue and role: for a role that stands at two steps, the row PhaseRowOf
+// picks from the issue's rows, the one with the highest entry, then the later step, so the two
+// readings take one row. The rows of an issue the record holds none of are simply absent, which
+// every reader takes as the zero entry. entry_raised_at is null on a row no entry has been raised
+// on (PutPhase), and reads back as the zero moment.
 func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
 	entries := make(map[PhaseRole]PhaseEntry, len(issues))
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_awaiting is not null, claim, step_task from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select distinct on (issue, role) issue, role, entry, entry_raised_at, entry_awaiting is not null, claim, step_task from phases
+		where issue = any($1) order by issue, role, entry desc, step_task desc, step_place desc`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -943,6 +956,8 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 	return entries, nil
 }
 
+// PutPhase writes phase as the row of its issue, role and step (StepTask, StepPlace): a role that
+// stands at two steps of a task has a row for each.
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
 	if phase.Given.Generation > maxInt64 {
 		return fmt.Errorf("put %s phase on %s: the generation %d of its given task does not fit a bigint", phase.Role, phase.Issue, phase.Given.Generation)
@@ -984,7 +999,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	tag, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
 		decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
-		on conflict (issue, role) do update set claim = excluded.claim,
+		on conflict (issue, role, step_task, step_place) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
@@ -1002,6 +1017,20 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
+	}
+	noteRowsWritten(ctx, tag)
+	return nil
+}
+
+// MovePhaseToStep writes task and place on role's row of no step on issue, where the role has
+// one and no row of that step stands; it writes nothing otherwise.
+func (s *Postgres) MovePhaseToStep(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, task string, place int) error {
+	tag, err := tx.Exec(ctx, `update phases set step_task = $3, step_place = $4
+		where issue = $1 and role = $2 and step_task = '' and step_place = 0
+		and not exists (select 1 from phases where issue = $1 and role = $2 and step_task = $3 and step_place = $4)`,
+		issue, string(role), task, place)
+	if err != nil {
+		return fmt.Errorf("move the %s's row of no step on %s to step %d of task %s: %w", role, issue, place, task, err)
 	}
 	noteRowsWritten(ctx, tag)
 	return nil
@@ -1048,7 +1077,7 @@ func scanListedPhase(row scanner) (PhaseRow, error) {
 	var role, token string
 	var decision, backwardMoves []byte
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds,
-		&backwardMoves, &decision, &phase.Entry); err != nil {
+		&backwardMoves, &decision, &phase.Entry, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
 	}
 	var err error
@@ -2017,10 +2046,11 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last. The
-// re-admission raises the generation of the root alone, whose key is tree: every other member
-// keeps its generation, its plan and its task's place, so its phases rows keep the steps they ran
-// and the claim each step's entry wrote (clearGeneration), and the worker of its step is still
-// that step's agent (WorkerClaim), a keyed agent's on a step of another role among them.
+// re-admission raises the generation of the root alone (admit's readmit), the issue whose key is
+// the tree's (claim.IsTreeRoot): every other member keeps its generation, its plan and its task's
+// place, so its phases rows keep the steps they ran and the claim each step's entry wrote
+// (clearGeneration), and the worker of its step is still that step's agent (WorkerClaim), a keyed
+// agent's on a step of another role among them.
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of tree %s", tree)
 	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
@@ -2157,9 +2187,9 @@ func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedC
 
 // clearGeneration runs each statement with key as $1, where selecting the cleared issues' rows by
 // their issue column (clearedIssue, clearedTree). The issue keyed $1 is the one whose generation
-// the clear raises, whose phases rows alone leave their steps. The design gates go with them, in a
-// statement of their own (clearGates), whose emptied issues it answers, and the rows of what each
-// issue's holders took of those gates go beside them.
+// the clear raises, whose phases rows alone leave their steps, in statements of their own after the
+// others. The design gates go with them, in a statement of their own (clearGates), whose emptied
+// issues it answers, and the rows of what each issue's holders took of those gates go beside them.
 //
 // A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
 // event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
@@ -2206,16 +2236,6 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb, statuses = '[]'::jsonb, merge_forward = null where " + where,
-		// The step each phases row ran (step_task, step_place) is a step of the plan of its issue's
-		// generation, so it goes only for the issue whose generation the clear raises, $1: the issue
-		// a rerun or an adoption takes to its next generation, or the root of a re-admitted tree,
-		// whose new plan need not share the last one's task ids. Every other member of a
-		// re-admitted tree keeps its generation, its plan and its task's place, so its rows keep
-		// their steps and the claim each step's entry wrote, which every reader of the role's worker
-		// reads (WorkerClaim): a row of no step would be read as the role's own token while the
-		// member's step is a keyed agent's, and a retry of the held member's phase would send the
-		// step's work to another agent.
-		"update phases set step_task = '', step_place = 0 where issue = $1",
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the first run of the re-admitted tree — its promotion, or
@@ -2254,6 +2274,35 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// design_news_current), and a prompt of it whose turn starts after the clear confirms
 		// nothing for the next run: the news stays owed to that run, which its own start tells.
 		"delete from design_news_told where " + where,
+	} {
+		tag, err := tx.Exec(ctx, statement, key)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		noteRowsWritten(ctx, tag)
+	}
+	// The step each phases row ran (step_task, step_place) is a step of the plan of its issue's
+	// generation, so it goes only for the issue keyed $1, whose generation the clear raises: the
+	// issue a rerun or an adoption takes to its next generation, or the root of a re-admitted tree.
+	// The new generation's plan need not share the last one's task ids, and its first entry of each
+	// role moves the role's row of no step to its step (workflow's enter). Every other member of a
+	// re-admitted tree keeps its generation, its plan and its task's place, so its rows keep their
+	// steps, a row for each step a role ran, each naming the claim of the step's agent its entry
+	// wrote, which every reader of the role's worker reads (WorkerClaim) and every start of that step
+	// names (workflow's startClaim). A row of no step would be read as the role's own token while the
+	// member's step is a keyed agent's, so a retry of a held member's phase would queue the step's
+	// work for its agent and every reader would send it to another.
+	//
+	// A role of that issue that stood at two steps has a row for each, and the statement after the
+	// fold gives every row of the role the same step, ('', 0), so the rows of one role fold first
+	// into the one PhaseRowOf picks, the highest entry, then the later step: the number the role's
+	// next entry rises from, which is never reset. The other rows are the last generation's steps,
+	// whose reports go with the generation. A claim whose rows go keeps the entry it was last given
+	// on its claims row, which its next step's entry also rises above (workflow's enter).
+	for _, statement := range []string{
+		"delete from phases p where p.issue = $1 and exists (select 1 from phases q where q.issue = p.issue and q.role = p.role " +
+			"and (q.entry, q.step_task, q.step_place) > (p.entry, p.step_task, p.step_place))",
+		"update phases set step_task = '', step_place = 0 where issue = $1",
 	} {
 		tag, err := tx.Exec(ctx, statement, key)
 		if err != nil {
@@ -3486,10 +3535,11 @@ func roleHoldingPairs() (states, sources []string) {
 }
 
 // RoleHolder is one claim of an issue that holds its role (RoleHolders), the role it holds and the
-// session that holds it: Claim is the claim's token, and WorksStep whether the claim is the worker
-// on its role's step (WorkerClaim), the claim the record gives the step. Two claims of one issue
-// can hold one role — the agent of a key on a step of another role, beside that role's own claim
-// of an earlier version of the plan — and each is a holder of its own.
+// session that holds it: Claim is the claim's token, and WorksStep whether the claim works its
+// role's step that started last (WorkerClaim, which reads the role's row now), the claim the record
+// gives that step. Two claims of one issue can hold one role — the agent of a key on a step of
+// another role, beside that role's own claim of an earlier version of the plan, or two agents at
+// two steps of the role — and each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
@@ -3849,11 +3899,11 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
 // admission slot and that no live lease holds, oldest first by the pair the waiting line orders
 // them on (OwedStart), with the write mark of the write that last set each row's payload, the
-// role, phase and generation each row serves and the lease token it still carries. A row a lane
-// holds now is left out: its slot came, so it is neither waiting in the line nor safe for
-// admission's repair to finish. A row whose lease has lapsed is not that — the lane that held
-// it is gone and only a finished delivery removes a row — so it is listed, exactly as the
-// outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
+// role, phase and generation each row serves, the claim it names and the lease token it still
+// carries. A row a lane holds now is left out: its slot came, so it is neither waiting in the
+// line nor safe for admission's repair to finish. A row whose lease has lapsed is not that — the
+// lane that held it is gone and only a finished delivery removes a row — so it is listed, exactly
+// as the outbox's own due predicate lists it again (outboxUnleasedDue); left out, its issue would
 // stand in no part of the line and nothing would ever deliver or repair it.
 //
 // The lapse is judged against the database's own clock, the one moment a read with no caller's
@@ -3861,7 +3911,7 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 // daemon's clock, which the deployment keeps on the same time.
 func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([]OwedStart, error) {
 	rows, err := tx.Query(ctx, `select issue, created_at, id, write_mark, coalesce(payload->>'role', ''),
-			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), lease_token
+			coalesce(payload->>'phase', ''), coalesce((payload->>'generation')::bigint, 0), coalesce(payload->>'claim', ''), lease_token
 		from outbox where kind = $1 and split_part(issue, '-', 1) = $2
 			and payload->>'op' = 'start' and payload->>'needsSlot' = 'true'
 			and (lease_until is null or lease_until <= now())
@@ -3874,7 +3924,7 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 	for rows.Next() {
 		var start OwedStart
 		if err := rows.Scan(&start.Issue, &start.CreatedAt, &start.ID, &start.WriteMark, &start.Role, &start.Phase,
-			&start.Generation, &start.LeaseToken); err != nil {
+			&start.Generation, &start.Claim, &start.LeaseToken); err != nil {
 			return nil, fmt.Errorf("list the starts %s owes its workers: %w", project, err)
 		}
 		owed = append(owed, start)
@@ -4736,8 +4786,8 @@ type IssueClaim struct {
 // IssueClaims is every stored claim of issue in project, the claims' project token as
 // claims.project holds it, in any state, with its stored role, ordered by token. Two claims of an
 // issue can hold one role — a keyed agent on a step of another role, beside that role's own claim
-// from an earlier version of the plan — so a walk over every claim of an issue reads them here
-// rather than one claim for each role.
+// from an earlier version of the plan, or two agents at two steps of the role — so a walk over
+// every claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
 	rows, err := tx.Query(ctx, `select token, role from claims where project = $1 and issue = $2 order by token`, project, issue)
 	if err != nil {
@@ -4773,7 +4823,8 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
 // `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
 // role of an issue at one generation — the agent of a key on a step of another role, beside that
-// role's own claim of an earlier version of the plan — so one identity can stand for several keys.
+// role's own claim of an earlier version of the plan, or two agents at two steps of the role — so
+// one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string
@@ -4823,10 +4874,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			issues = append(issues, key.Issue)
 		}
 	}
-	// A row that names a claim (SuperviseRequest.Claim) is that claim's alone: a keyed agent on a
-	// step of another role holds the role beside the role's own claim from an earlier version, and
-	// a start that names one is no queued run of the other. A row that names none is the run of the
-	// claim it reaches, the worker on its role's step.
+	// A row that names a claim (SuperviseRequest.Claim) is that claim's alone, read as a run of that
+	// claim where keys ask for it at the row's issue, role and generation: every phase worker's start
+	// names the claim it was queued for, and two claims can hold one role — two agents of a role in
+	// one task, or a keyed agent on a step of another role beside the role's own claim — so a start
+	// of one is no queued run of the other, whichever of them keys ask for that role by. A row that
+	// names none, one the release before wrote, is the run of the claim it reaches, the worker on its
+	// role's step.
 	reaches := func(row queuedIdentity, entries map[PhaseRole]PhaseEntry) claim.Token {
 		wanted := candidates[row.roleRunIdentity]
 		var token claim.Token

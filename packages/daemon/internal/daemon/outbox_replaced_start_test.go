@@ -127,7 +127,7 @@ func TestAStartWrittenOverAnOwedRowStillReachesTheWorker(t *testing.T) {
 			got, nextTask)
 	}
 	if got.Pending.Task != nextTask || got.Pending.Entry != nextEntry {
-		t.Fatalf("the task the start gave = %+v, want %q of entry %d: a completion of any entry behind it is refused HANDOFF_STALE_ENTRY",
+		t.Fatalf("the task the start gave = %+v, want %q of entry %d: a completion of an entry behind it is refused HANDOFF_STALE_ENTRY at any head but the one the record holds (intake.EntryFence)",
 			got.Pending, nextTask, nextEntry)
 	}
 	if len(runtime.Calls()) != 0 {

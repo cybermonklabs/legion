@@ -196,10 +196,11 @@ var stepRecordsSeven = []stepWant{
 // A rollback of this release and its roll forward, through the whole daemon and the store it
 // left. The walk stops with Dispatch down and the review sent back, so the implementer's second
 // run is open and the outbox holds the issue's step records and its other writes unsent, beside a
-// count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
-// the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
-// every outbox row and every count stands after it as it stood before. The earlier release came
-// before the owner's plan too, so the rollback also takes the way back of the plan's migration
+// count of starts of each step that ran. With the daemon stopped, the operator's way backs run,
+// newest first: the key of a phases row by its step (rollBackStepKey), then the roll forward's as
+// its header carries it (internal/textcheck holds it to docs/kubernetes.md), and every outbox row
+// and every count stands after them as it stood before. The earlier release came before the
+// owner's plan too, so the rollback also takes the way back of the plan's migration
 // (rollBackOwnersPlans), which drops the issue's plan rows: kept, the place of its task would stand
 // at implementing while the earlier release moves the issue to testing. The earlier release's move
 // is then written as the rows this release reads of it: the issue in testing, and the tester's
@@ -240,6 +241,11 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from plan_tasks where issue = $1`, r.key).Scan(&tasks); err != nil || tasks != 1 {
 		t.Fatalf("at the rollback %s holds %d plan tasks (%v), want its one task default: a way back that drops nothing proves nothing", r.key, tasks, err)
 	}
+	// The witness the step records' way back keeps reads one phases row of each role
+	// (step_run_witness), so the step key's way back, which keeps one, runs first: this issue has one
+	// row of each role, but the database is the whole run's, whose other issues can hold a role at
+	// two steps.
+	r.rollBackStepKey()
 	r.rollBackStepRecords()
 	// The way back keeps the moment of the rollback beside the issue's witness, and the roll forward
 	// writes it as the end of a run the earlier release ended (step_starts_rollback.taken_at).
@@ -383,14 +389,28 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 	r.exec(block)
 }
 
+// rollBackStepKey runs the way back of the key of a phases row by its step (phaseStepKeyMigration)
+// as an operator runs it with the daemon stopped, before the way back of any older release
+// (docs/kubernetes.md, "Rolling back the release that keys a phases row by its step"): it keeps the
+// row of each role with the highest entry and writes the key (issue, role) again. The step
+// records' way back reads one row of each role (step_run_witness), and the owner's plan's drops
+// step_task and step_place, and the key by step with them: left recorded, that key's version would
+// keep the roll forward from writing it again, and every later write of a phases row would fail
+// for a conflict target no unique index answers.
+func (r *stepRecordsRig) rollBackStepKey() {
+	r.t.Helper()
+	r.exec(r.headerTransaction(phaseStepKeyMigration))
+}
+
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
 // (inFlightPlanMigration) as an operator runs it with the daemon stopped: the transaction that
 // ends its header (migrations.WayBack), with <PROJECT> the run's project. A rollback of the
 // release whose owner's plan picks the steps to any release before it takes that way back too
 // (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty. The name of each
-// step's agent (planStepAgentMigration) adds a column to plan_steps, so its way back runs first,
-// as the guide's list says: left recorded, its version would keep the roll forward from adding the
+// the plan's tables and columns, so the roll forward creates them again empty. The way back of the
+// key of a phases row by its step runs before it (rollBackStepKey), and so does that of the name of
+// each step's agent (planStepAgentMigration), as the guide's list says: that migration adds a
+// column to plan_steps, and left recorded, its version would keep the roll forward from adding the
 // column to the plan_steps it creates again, and every later write of a plan would fail. Its
 // header gives that way back as a psql heredoc, which headerTransaction reads. The way back of the
 // givers of a plan version, in the header of the migration whose name ends
@@ -447,6 +467,11 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 // planStepAgentMigration is the migration that adds plan_steps.agent, the name of each step's
 // agent.
 const planStepAgentMigration = "_plan_step_agent.up.sql"
+
+// phaseStepKeyMigration is the migration that keys a phases row by its step, so a role that
+// stands at two steps of a task keeps a row for each; its way back writes the key (issue, role)
+// again, which every release before it writes its phases rows by.
+const phaseStepKeyMigration = "_phase_step_key.up.sql"
 
 // The record of a member of a tree: a child's acceptance is the work of the architect that owns
 // the child when its step starts, so the record of its step 5 names that architect, with the

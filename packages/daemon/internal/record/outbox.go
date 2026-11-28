@@ -304,6 +304,10 @@ type OwedStart struct {
 	Role       claim.Role
 	Phase      phase.Phase
 	Generation uint64
+	// Claim is the claim the start names (SuperviseRequest.Claim): the claim it was queued for,
+	// which the outbox acts on. A row the release before wrote names none, and acts on the claim
+	// of the worker on Role's step (WorkerClaim).
+	Claim      claim.Token
 	LeaseToken string
 }
 
@@ -1350,9 +1354,10 @@ type SuperviseRequest struct {
 	Op   SuperviseOp `json:"op"`
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
-	// Claim is the claim the request acts on where its producer holds it: a row that stands for
-	// one stored claim of the issue names it. A row that names none acts on the claim of the
-	// worker on Role's step (WorkerClaim), which is what a row the release before wrote reaches.
+	// Claim is the claim the request acts on where its producer holds it: a phase worker's start
+	// names the claim it was queued for (workflow's started), and a row that stands for one stored
+	// claim of the issue names it. A row that names none acts on the claim of the worker on Role's
+	// step (WorkerClaim), which is what a row the release before wrote reaches.
 	Claim claim.Token `json:"claim,omitempty"`
 	Task  string      `json:"task,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
@@ -2582,8 +2587,9 @@ const (
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
-	// MergeForwardReview asks the reviewer to read the merge that landed on an issue whose task's
-	// reviewer step already ran, and to approve the new head or request changes.
+	// MergeForwardReview asks the reviewer of the step that started last to read the merge that
+	// landed on an issue where a reviewer step of its task already ran, and to approve the new head
+	// or request changes.
 	MergeForwardReview MergeForwardStep = "review"
 	// MergeForwardWithdrawn tells the implementer that the merge forward it was asked for is no
 	// longer its work: the merger is asked for the same head (workflow's mergeForward), and one

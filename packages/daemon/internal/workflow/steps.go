@@ -285,30 +285,24 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	return true, e.enqueue(ctx, tx, issue, write)
 }
 
-// reportEndedStep writes report, the handoff role's completion of at named, onto the record of
-// the run of at's step that ended before that completion landed: a review the review event moved
-// on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
-// record's report is the handoff the ending role's completion named, whichever of the two lands
-// first. The run is the latest of the place of role's step on the walk of issue's run (stepAt): of
-// at's place where at stands once in the line, and of the step role runs at step, where two steps
-// can run, ended, since the issue has left it and no start of it came since (handoff's current).
+// reportEndedStep writes report, the handoff a completion of at named, onto the record of the run
+// of at's step that ended before that completion landed: a review the review event moved on, whose
+// end the transition wrote with no report, since the reviewer had not completed yet. A record's
+// report is the handoff the ending role's completion named, whichever of the two lands first. The
+// run is the latest of the place of the step whose run row holds (Walk.runPlace), row being the
+// role's row of the run the completion reports (Walk.completionRow): a role can stand at two steps,
+// and the issue has left the one this completion is of, which its served entry names, wherever the
+// task stands now, and no start of it came since (handoff's current). w is the walk of issue's run.
 // The write carries the run's identity and the report alone, and Dispatch writes each field once,
 // so it and the end merge in either order (record.StepRecord). A completion that names no handoff
 // writes nothing, and neither does a place whose latest run is not marked ended (record.RunEnded)
 // — none ran, one is open, or one an earlier release started after a rollback, whose record this
 // release has not written — nor a record key that is no issue key.
-func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role, report string) error {
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, at phase.Phase, row record.PhaseRow, report string) error {
 	if report == "" {
 		return nil
 	}
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	place, ok := w.PlaceOf(at)
-	if at == phase.Step {
-		place, ok = w.placeOfRole(role)
-	}
+	place, ok := w.runPlace(row, at)
 	if !ok {
 		return nil
 	}
@@ -349,13 +343,13 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 		agent, err := e.startAgent(ctx, tx, issue, at)
 		return agent, time.Time{}, err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, worker)
+	row, err := e.phaseRow(ctx, tx, issue, worker)
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	if at == phase.Merging {
 		// The retro's completion is recorded on the row of the role that works the retro.
-		retro, err := e.phaseRow(ctx, tx, issue.Key, phase.RoleFor(phase.Retro))
+		retro, err := e.phaseRow(ctx, tx, issue, phase.RoleFor(phase.Retro))
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -386,12 +380,18 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // placeToken is the claim token of the agent of the work issue stands in at, read on the walk of
-// issue's run (stepToken), and role's own token where the walk holds no place for at.
+// issue's run (walkToken).
 func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role) (claim.Token, error) {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
+	return e.walkToken(issue, w, at, role)
+}
+
+// walkToken is the claim token of the agent of the work issue stands in at, read on w, issue's
+// walk (stepToken), and role's own token where w holds no place for at.
+func (e *Engine) walkToken(issue record.Issue, w Walk, at phase.Phase, role claim.Role) (claim.Token, error) {
 	place, ok := w.placeIn(at)
 	if !ok {
 		return stepClaim(issue, issue.Key, role)

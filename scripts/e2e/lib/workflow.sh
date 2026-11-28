@@ -1025,18 +1025,19 @@ close_unpassed_run_pull_requests() {
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
-# The record keeps each role's phase row: what the role's `handoff_complete` reported at the
-# completion the daemon accepted — for a file-backed phase (planning, implementing, testing,
-# reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
-# session, its id and version, which the daemon read back from Dispatch and held to the claim's
-# session, and the head that record's body names, which the `legion` tool holds to be the commit
-# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
-# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
-# and the merger the commit the workspace stands on — emptied when the role's next phase starts,
-# and, on the implementer's row, the review round (its returns to implementing). The issue moves
+# The record keeps a phases row for each step a role runs, and one for the implementer's retro:
+# what the role's `handoff_complete` reported at the completion the daemon accepted — for a
+# file-backed phase (planning, implementing, testing, reviewing) the Dispatch handoff record the
+# role wrote with `dispatch handoff-write` under its own session, its id and version, which the
+# daemon read back from Dispatch and held to the claim's session, and the head that record's body
+# names, which the `legion` tool holds to be the commit the workspace stands on, pushed to
+# `legion/<issue>@origin`, for the implementer's implementing round and which a planner's, a
+# tester's or a reviewer's record naming none leaves out; for retro and the merger the commit the
+# workspace stands on — emptied when that row's step runs again, and, on the implementer's one row
+# of an issue with no plan rows, the review round (its returns to implementing). The issue moves
 # out of every phase but merging on that phase's completion, and out of merging on the daemon's
 # read of the merged pull request, so a checker reads the row right after the transition it
-# follows, before the role's next phase can empty it. A production check's look is no phase: its
+# follows, before the step's next run can empty it. A production check's look is no phase: its
 # report moves no phase and writes no handoff (a verdict and a summary, no commit, no record), so
 # it is read from the daemon's state's `check`, below, never from this record.
 
@@ -1054,7 +1055,8 @@ role_handoff() {
 # review_round ISSUE prints the issue's review round (its returns to implementing): 0 before its
 # first return. The daemon keeps it where it keeps every count of returns (record.ReturnCounts): on
 # the task the plan runs, for an issue with plan rows at its generation, and on the implementer's
-# phases row for one with none.
+# one phases row for one with none; the implementer has a row for each step it runs and one for the
+# retro, so no read of all its rows names one round.
 review_round() {
   local planned
   planned=$(db_value "select exists (select 1 from issue_plans p join issues i on i.key = p.issue and i.generation = p.generation
@@ -1063,7 +1065,7 @@ review_round() {
     db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
       where t.issue = '$1' and t.state = 'running'), 0)"
   else
-    db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+    db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer' and step_task = ''), 0)"
   fi
 }
 # handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
@@ -1256,8 +1258,15 @@ assert_review_of_head() {
   note "the reviewer's round $2 $3 review names $head, the pull request's head, with nothing pushed above it"
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of
-# retro.
-retro_reported() { [ -n "$(role_handoff "$1" implementer merging done)" ]; }
+# retro. Every issue's retro has a row of its own beside the implementer's steps' (place 0 of its
+# task; the one row of no step for an issue with no plan rows), so the commit is read from that row
+# alone, never from an implementing step's row that still holds its own.
+retro_reported() {
+  [ -n "$(db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
+    where p.issue = '$1' and p.role = 'implementer' and p.step_place = 0 and p.handoff_commit <> ''
+    and i.phase in ('merging', 'done')
+    and (p.step_task = '' or p.step_task in (select t.task from plan_tasks t where t.issue = i.key and t.generation = i.generation))")" ]
+}
 # assert_round_handoff ISSUE ROUND: the issue reached testing on the implementer's own completion
 # of that implementing round (its pushed tip reported beside its record), never on a push alone.
 assert_round_handoff() {

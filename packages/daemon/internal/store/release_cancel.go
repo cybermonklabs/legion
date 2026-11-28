@@ -598,8 +598,9 @@ type releasedRole struct {
 // stops suspended (issue_releases.suspended), or of the claims its stops that the mark does not
 // record stopped (unrecordedStops), that are still suspended as `released`, in token order. Two
 // claims can hold one role — a keyed agent on a step of another role, beside that role's own claim
-// from an earlier version of the plan — and only the ones the release suspended are its to resume:
-// another claim of the role an earlier release left released is not.
+// from an earlier version of the plan, or two agents at two steps of the role — and only the ones
+// the release suspended are its to resume: another claim of the role an earlier release left
+// released is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil

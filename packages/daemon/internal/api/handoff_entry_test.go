@@ -215,7 +215,7 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	}
 	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
 	// instruction is still the text the refusal ends with, whichever clause it carries.
-	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
+	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false, false)
 	for clause, pending := range map[string]*supervise.Delivery{
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2, and " + decided + "; nothing was recorded": nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session":                                                                       {ID: "outbox:78", Entry: 2},
@@ -353,13 +353,14 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	}
 }
 
-// The entry says a completion is behind; what the worker reported says whether that matters. A
-// verdict is a fact about a head, and a phase can be handed to its role again at the head the
-// role is already reporting on — the issue left the phase and came back with nothing pushed in
-// between — where the second entry's task asks for the very work this turn did. The phase ends
-// with a handoff record, which names the phase it is of, so the completion is readable as this
-// phase's answer; the commit it names is the head the record holds. It is taken, and the fact it
-// reports moves the issue on to reviewing.
+// The entry says a completion is behind; what the worker reported, and which step the entry is
+// of, say whether that matters. A verdict is a fact about a head, and a phase can be handed to its
+// role again at the head the role is already reporting on — the issue left the phase and came back
+// with nothing pushed in between — where the second entry's task asks for the very work this turn
+// did, since the tester stands at one step here (an entry of another step of a role is refused even
+// at that head, record.OtherStepsEntry). The phase ends with a handoff record, which names the
+// phase it is of, so the completion is readable as this phase's answer; the commit it names is the
+// head the record holds. It is taken, and the fact it reports moves the issue on to reviewing.
 func TestABehindCompletionAtTheRecordedHeadIsTaken(t *testing.T) {
 	h, _, facts := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -766,10 +767,10 @@ func queuedStart(t *testing.T, h *harness, issue string, role claim.Role) (int64
 	return id, request
 }
 
-// takeStart hands the claim the newest start queued for its role, as the outbox runner does, and
-// answers the entry that start is of. The turn the claim is in ends first, which retires the task
-// it held: the outbox's delivery waits for that anyway, since a machine refuses a second delivery
-// while one is pending.
+// takeStart hands the claim the newest start queued for its role, standing in for the outbox
+// runner, which hands a start to the claim it names, and answers the entry that start is of.
+// The turn the claim is in ends first, which retires the task it held: the outbox's delivery waits
+// for that anyway, since a machine refuses a second delivery while one is pending.
 func takeStart(t *testing.T, h *harness, token claim.Token, issue string, role claim.Role) int64 {
 	t.Helper()
 	row, start := queuedStart(t, h, issue, role)

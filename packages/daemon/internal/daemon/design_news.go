@@ -624,10 +624,10 @@ type startNews struct {
 // A start of the reviewer or of a role of the deployment (workflow.NamesTheRound) queued for news
 // alone carries no task, so the workflow's queue named no round on it. Where it carries news, its
 // task is named here, in the same read: the daemon's sentences of the round, read from the phase
-// the issue stands in and that role's own row (workflow.RoundTask), which the news goes before and
-// which the delivery then carries as
-// named, so the claim's send adds no second pair (supervise's Delivery.message). A record that
-// holds no reviewed commit or no entry's task names `none` for it, as the queue does.
+// the issue stands in and the row of the role that the start's own claim ran last
+// (workflow.RoundTask, record.AgentsRowOf), which the news goes before and which the delivery then
+// carries as named, so the claim's send adds no second pair (supervise's Delivery.message). A
+// record that holds no reviewed commit or no entry's task names `none` for it, as the queue does.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
 	carried := record.DeliveryNews{Task: payload.Task}
 	sent := renderedNews{task: payload.Task}
@@ -644,7 +644,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 			return nil
 		}
 		if payload.News && workflow.NamesTheRound(payload.Role) && !roundNamed {
-			if carried.Task, err = workflow.RoundTask(ctx, tx, r.records, issue.Key, payload.Role, carried.Task); err != nil {
+			if carried.Task, err = workflow.RoundTask(ctx, tx, r.records, issue.Key, payload.Role, token, carried.Task); err != nil {
 				return err
 			}
 			roundNamed = true

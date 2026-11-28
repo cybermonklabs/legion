@@ -110,7 +110,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusInternalServerError, "the daemon reads no issue record, so it cannot say what this claim owes")
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), c.Issue, c.Role)
+	position, err := s.handoffPosition(r.Context(), c.Issue)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the record of a claim's issue could not be read for what it owes", "claim", req.ClaimToken)
 		s.refuse(w, r, http.StatusInternalServerError, "read the issue record: "+err.Error())
@@ -153,10 +153,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // its running step), and owner the architect that owns c
 // (owningArchitect), which every answer about a recorded issue names, owed or not. Three sources
 // can each seem to say: the claim's pending delivery and what it was left serving
-// (supervise.Claim.Pending, ServingCheck), the issue's phase with the role's own row of it
-// (record.PhaseRow.Entry and Completed) against the entry the claim was given
-// (supervise.Claim.GivenEntry), and the issue's production check. They disagree, and the rule is
-// this.
+// (supervise.Claim.Pending, ServingCheck), the issue's phase with the role's row where the task
+// stands (completionPosition.roleRow: record.PhaseRow.Entry and Completed) against the entry the
+// claim was given (supervise.Claim.GivenEntry), and the issue's production check. They disagree,
+// and the rule is this.
 //
 // The record decides whether anything is owed. The pending delivery is a copy of the workflow's
 // decision taken when the task was queued, and the process's memory of its turn is a copy taken
@@ -169,14 +169,14 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // the rest of its tree leaves.
 //
 // Where the role's row runs a step of the plan, the role's phase is owed only by the claim that
-// row names (completionPosition's stepClaim, read in the transaction that reads the row), the one
-// rule the completion route refuses a report by (workflow's HANDOFF_NOT_THE_STEPS_WORKER). Two
-// claims of one issue can hold one role — the agent of a key re-roled onto a step of another
-// role, beside that role's own claim — and the row's entry and completion are the step worker's:
-// the other claim of the role owes nothing of the phase, since the completion route refuses its
-// report of the step and the daemon sends it none of the step's work. A row that runs no step
-// names no worker, and a claim of the role is judged by its role, as the completion route judges
-// it.
+// row names (record.NamesItsAgent, the row read in the snapshot that reads the issue), the one
+// rule the completion route refuses a report by (HANDOFF_NOT_THE_STEPS_WORKER,
+// intake.StepsWorkerFence). Two claims of one issue can hold one role — the agent of a key
+// re-roled onto a step of another role, beside that role's own claim, or two agents at two steps
+// of the role — and the row's entry and completion are the step worker's: the other claim of the
+// role owes nothing of the phase, since the completion route refuses its report of the step and
+// the daemon sends it none of the step's work. A row that runs no step names no worker, and a
+// claim of the role is judged by its role, as the completion route judges it.
 //
 // Within the role's own open phase, the two numbers the daemon closes the difference between
 // decide, read as the daemon reads them, so this answer and the daemon's sending of the entry's
@@ -223,11 +223,12 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token) O
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
 	}
-	notTheStepsWorker := position.stepClaim != "" && c.Token != "" && c.Token != position.stepClaim
+	row := position.roleRow(c.Role)
+	notTheStepsWorker := record.NamesItsAgent(row) && c.Token != "" && c.Token != row.Claim
 	if position.lingers || issue.RoleAt(issue.Phase) != c.Role || notTheStepsWorker || position.merged() {
 		return nothing
 	}
-	if behind := c.GivenEntry < position.entry; !behind && position.completed {
+	if behind := c.GivenEntry < row.Entry; !behind && row.Completed() {
 		return nothing
 	}
 	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key), Architect: owner}

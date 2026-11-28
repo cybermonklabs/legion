@@ -116,6 +116,116 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 	}
 }
 
+// A start acts on the claim it was queued for, which every phase worker's start names
+// (record.SuperviseRequest.Claim, workflow's started), and never on the claim the role's row
+// names by the time it runs. In `implementer:a reviewer:b implementer:b`, key b's start of step 3
+// at entry 3 waited on its row's backoff:
+//   - while the task went back to step 1, whose row, key a's, was raised above every row of its
+//     role, to 4: the outbox finishes it without acting, and no claim is made or handed a task. A
+//     step's start raises its entry above every row of its role, so no row of the role stands on
+//     the entry key b's start carries;
+//   - while the implementer's row stood on no step at entry 3, naming key b's claim: it starts key
+//     b, the claim it was queued for, with its task. A start that named no claim acted on the
+//     claim the row gave the role, its own token, which is key a's. The record leaves such a row
+//     for no issue standing at step 3, since the clear of a tree keeps the steps of a member whose
+//     generation it keeps (record.Store.ClearTreeGeneration); the case holds the outbox to the
+//     claim a start names whatever row it reads.
+//
+// The controls: key b's start with the task at its step 3 starts key b; and a start the release
+// before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and on
+// the row of no step the role's own token, key a's.
+func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
+	t.Parallel()
+	const key = stepStartKey
+	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
+	earlier, later := time.Now().Add(-time.Minute), time.Now()
+	stepOne := func(entry int64, at time.Time) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyA, Entry: entry,
+			EntryTask: "Implement it. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: at, StepTask: "a", StepPlace: 1}
+	}
+	stepThree := func(at time.Time) record.PhaseRow {
+		return record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyB, Entry: 3,
+			EntryTask: "Implement it again. Issue: LEGION-208. Phase: implementing.", EntryRaisedAt: at, StepTask: "a", StepPlace: 3}
+	}
+	cleared := record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: keyB, Entry: 3, EntryRaisedAt: earlier}
+	for _, tc := range []struct {
+		name   string
+		at     int
+		rows   []record.PhaseRow
+		named  claim.Token
+		starts claim.Token
+	}{
+		{"key b's start of step 3 with the task back at key a's step 1", 1, []record.PhaseRow{stepOne(4, later), stepThree(earlier)}, keyB, ""},
+		{"key b's start of step 3 with the role's row on no step", 3, []record.PhaseRow{cleared}, keyB, keyB},
+		{"the control: key b's start with the task at its step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, keyB, keyB},
+		{"a start the release before wrote with the task at step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, "", keyB},
+		{"a start the release before wrote with the role's row on no step", 3, []record.PhaseRow{cleared}, "", keyA},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: key,
+				Title: "Workflow", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+			putOutboxIssue(t, pool, records, issue)
+			openTree(t, pool, "LEGION", issue.Tree)
+			holdSlot(t, pool, issue.Key)
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+					GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+				task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+				steps := []record.PlanStep{
+					{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a"},
+					{Issue: key, Generation: 2, Task: "a", Position: 2, Role: "reviewer", Type: "review", AgentKey: "b"},
+					{Issue: key, Generation: 2, Task: "a", Position: 3, Role: "implementer", Type: "implementation", AgentKey: "b"},
+				}
+				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
+					return err
+				}
+				if err := records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning); err != nil {
+					return err
+				}
+				for _, row := range tc.rows {
+					if err := records.PutPhase(ctx, tx, row); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatalf("seed the plan of %s at step %d: %v", key, tc.at, err)
+			}
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now,
+				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+				},
+			}
+			const task = "Implement it again. Issue: LEGION-208. Phase: implementing."
+			start := mustOutboxRow(t, key, record.SuperviseRequest{Op: "start", Tree: key, Role: claim.RoleImplementer, Claim: tc.named, Generation: 2,
+				Phase: phase.Implementing, Task: task, Entry: 3}, time.Now())
+			start.ID = 94
+			if err := runner.execute(ctx, start); err != nil {
+				t.Fatalf("run key b's start of step 3: %v", err)
+			}
+			for _, token := range []claim.Token{keyA, keyB} {
+				machine, found := sup.Machine(token)
+				var pending string
+				if found {
+					machine.Wait()
+					if p := machine.Claim().Pending; p != nil {
+						pending = p.Task
+					}
+				}
+				if want := token == tc.starts; found != want || (want && pending != task) {
+					t.Fatalf("the start of step 3 naming %q made %s's claim %t with the task %q pending; want it made %t, with step 3's task", tc.named, token,
+						found, pending, want)
+				}
+			}
+		})
+	}
+}
+
 // The outbox judges a start on its own read of the issue (record.Issue.HoldsQueued), and the
 // workflow's move of the task does not wait on that read: the move can commit after it and before
 // the start brings the claim back. Here the linter's start of step 3 passed the read with the task

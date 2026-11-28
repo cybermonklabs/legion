@@ -243,9 +243,15 @@ func TestClaimOwedIsThePhaseOfTheClaimThatWorksTheStepAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The tester's one row, written in place of the one before it, as a new generation's clear
+	// moves the row of a role to no step (record.Store.ClearGeneration): a phases row is keyed by
+	// its step, so a write at another step would add a second row rather than move this one.
 	putTesterRow := func(stepTask string, place int) {
 		t.Helper()
 		if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `delete from phases where issue = $1 and role = $2`, key, string(claim.RoleTester)); err != nil {
+				return err
+			}
 			return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleTester, Claim: keyed,
 				StepTask: stepTask, StepPlace: place, Entry: 2, EntryTask: "Test the change."})
 		}); err != nil {
@@ -405,7 +411,8 @@ func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing
 		t.Fatalf("the tester's confirmed testing task serves look %d, want the look it served before, 2, kept in place", served.Look)
 	}
 	check := func(closedAt *time.Time) completionPosition {
-		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2}, entry: 3,
+		return completionPosition{issue: &record.Issue{Key: "LEGION-208", Phase: phase.Testing, Generation: 2},
+			rows:  []record.PhaseRow{{Issue: "LEGION-208", Role: claim.RoleTester, Entry: 3}},
 			check: &record.ProductionCheck{Issue: "LEGION-208", OpenedAt: opened, ClosedAt: closedAt, Role: claim.RoleTester, Looks: 2, LookOpen: closedAt == nil}}
 	}
 	if got, want := owedBy(tester, check(&closed), ""), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-208"}); got != want {

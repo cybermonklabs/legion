@@ -4,8 +4,9 @@
 -- issue_releases.suspended (20261102170500) held the roles whose claims the release's own stops
 -- suspended as `released`. Two claims can hold one role of an issue: the agent of a key works a
 -- step of another role than its name, beside that role's own claim of an earlier version of the
--- plan. A set of roles then named claims the release never suspended, and three decisions read it
--- wrong: the stop of the second claim of a role read the first, which this release had suspended,
+-- plan, or two agents work two steps of the role. A set of roles then named claims the release
+-- never suspended, and three decisions read it wrong: the stop of the second claim of a role read
+-- the first, which this release had suspended,
 -- as "a claim this release suspended that is no longer suspended as `released`"; it read the
 -- second the same way, as did the teardown a failed or retired claim of the role, so the release
 -- was cancelled and the pod kept at every idle period (store.releaseOvertaken); and a cancel

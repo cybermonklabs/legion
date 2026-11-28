@@ -332,15 +332,15 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 	why := record.ConflictCheckNotGreen
 	for _, tc := range []struct {
 		name string
-		send func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error
+		send func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, token claim.Token, row record.PhaseRow) error
 	}{
-		{name: "the silence repair", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error {
-			return e.repairSilence(ctx, tx, issue, issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+		{name: "the silence repair", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, token claim.Token, row record.PhaseRow) error {
+			return e.repairSilence(ctx, tx, issue, issue, token, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleTester, Generation: 1, LastStep: e.now().Add(-2 * time.Hour), Bound: time.Hour},
 				e.now())
 		}},
-		{name: "admission's send of an owed entry", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error {
-			return e.SendOwedEntry(ctx, tx, issue, claim.RoleTester, row)
+		{name: "admission's send of an owed entry", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, token claim.Token, row record.PhaseRow) error {
+			return e.SendOwedEntry(ctx, tx, issue, claim.RoleTester, token, row)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -351,11 +351,15 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				row, err := engine.phaseRow(ctx, tx, "LEGION-208", claim.RoleTester)
+				row, err := engine.phaseRow(ctx, tx, *issue, claim.RoleTester)
 				if err != nil {
 					return err
 				}
-				return tc.send(ctx, tx, engine, *issue, row)
+				token, err := engine.workerClaim(ctx, tx, *issue, claim.RoleTester)
+				if err != nil {
+					return err
+				}
+				return tc.send(ctx, tx, engine, *issue, token, row)
 			})
 			want := []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why),
 				heldIn(t, claim.RoleTester, phase.Testing, why)}
