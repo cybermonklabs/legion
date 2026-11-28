@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The planner sets `parent` on each task block in its plan so it stands under the block of its
+  task. For the `default` task, the planner writes the `default` block first if the plan has
+  none. When a planner's task blocks stand at the top and there is no `default` block, the
+  owner adds `default` and sets `parent` on each of the planner's blocks.
+time: 2026-11-28T19:00:00Z
+custom:
+    Issue: planner-blocks-under-task

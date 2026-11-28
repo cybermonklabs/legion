@@ -80,7 +80,7 @@ place as the root specification (never post a second "spec" artifact — that re
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
 this problem is normally solved, as `skill://legion-architect`, section 1, says, and write what
 you found in the spec. Your decomposition, the order its work lands in and how each outcome is proven go in the
-child issues and each issue's `plan.md` (your task block, and a planner step's plan below it),
+child issues and each issue's `plan.md` (your task block, and a planner step's task blocks under it),
 not the root spec. Mark each requirement of the
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)
 with it: one `check` block per thing that must be proved, each with `serves` naming the requirements, its

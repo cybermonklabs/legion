@@ -2,9 +2,8 @@
 // (ownerStepsRig, owner_steps_rig_test.go). The issue's plan.md holds the owner's task block and
 // the planner's task blocks under it, by their parent. Each planner's block is an element of the
 // owner's task, and Legion carries out the owner's task alone. An owner's version that changes
-// only the text of its block leaves each planner's block as it was. The scratch Dispatch creates
-// the elements its manifest stages for the next version (createStaged), so the test can write
-// parent.
+// only the text of its block leaves each planner's block as it was. The test writes parent, which
+// this tree's Dispatch creates.
 package daemon
 
 import (
@@ -398,11 +397,8 @@ func (r *ownerStepsRig) standsAsItWas(after, task, before string) {
 // reviewer's start task holds the owner's text.
 func TestOnePlanHoldsTheOwnersTextAndThePlannersBlocks(t *testing.T) {
 	t.Parallel()
-	// The scratch Dispatch creates the parent its manifest reads now and creates from the next
-	// version, which every write of a parent here needs.
-	staged := scratchDispatchOptions{createStaged: true}
 	t.Run("default steps with a planner", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, staged), 4, config.Project{})
+		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 4, config.Project{})
 		r.ownersTextOverThePlannersBlocks()
 		r.on(r.issues[1].key)
 		r.ownersPlanOverThePlannersBlocks()
@@ -412,7 +408,7 @@ func TestOnePlanHoldsTheOwnersTextAndThePlannersBlocks(t *testing.T) {
 		r.ownerLeavesABlockAtTheTop()
 	})
 	t.Run("default steps with no planner", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, staged), 1,
+		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1,
 			config.Project{DefaultSteps: []planwords.Step{{Role: "implementer"}, {Role: "reviewer"}}})
 		r.ownerWritesThePlan()
 	})
