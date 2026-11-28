@@ -981,6 +981,45 @@ describe("the thinking level the return sets", () => {
     expect(pane.last()?.arming).toBeUndefined();
   });
 
+  // At the pinned tag nothing stands between a switch's `model_change` and the level it sets, and
+  // this plugin's arming record follows both. A build that writes an entry between them must not
+  // make the switch's own level read as a person's.
+  test("is set when an entry no turn wrote stands between the fallback's switch and its level", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    pane.hostFallback(KIMI);
+    pane.branch.push({ type: "custom", id: "record-1", customType: "legion-model-fallback" });
+    pane.thinkingLevel("max");
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.live.thinkingLevel).toBe("xhigh");
+  });
+
+  test("leaves a level set after a turn on a fallback whose switch set none", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    // The fallback's selector names no level, so the switch keeps `xhigh` and writes no entry.
+    pane.hostFallback(KIMI);
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+    pane.branch.push({ type: "message", id: "turn-1", message: { role: "assistant" } });
+    // A person's `/thinking` after that turn: the first level entry after the switch, and no
+    // entry of the switch's own.
+    pane.thinkingLevel("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.live.thinkingLevel).toBe("high");
+  });
+
   test("stays the level before the first step when a second step continues the walk", async () => {
     const pane = fixture();
     pane.modelChange(OPUS);

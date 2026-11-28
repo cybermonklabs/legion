@@ -266,15 +266,32 @@ function newestModelChange(ctx: ModelFallbackContext): NewestChange | undefined 
 
 /**
  * Whether the level changed after the switch the `model_change` at `at` made: whether the branch
- * holds a `thinking_level_change` after it other than the one that switch wrote itself. A switch
- * writes its level, when it changes one, as the entry right after its `model_change` (the host's
- * walk at `session/turn-recovery.ts:3153-3155`, `setModel` at `session/model-controls.ts:331-349`
- * at tag `v18.18.6-sami.20261127-055727`), so that entry is the fallback's own, and any later one
- * is a person's `/thinking` or another change since.
+ * holds a `thinking_level_change` after it other than the one that switch wrote itself.
+ *
+ * At tag `v18.18.6-sami.20261127-055727` a switch writes its level, when it changes one, as the
+ * entry right after its `model_change`: the host's walk at `session/turn-recovery.ts:3153`
+ * (`appendModelChange`) and `:3155` (`setThinkingLevel`, which appends at
+ * `session/model-controls.ts:597` or `:620`), `pi.setModel` at `model-controls.ts:331` and `:349`.
+ * What follows comes after the level: `syncAfterModelChange` (`turn-recovery.ts:3169`,
+ * `model-controls.ts:350`), the host's `retry_fallback_applied` (`turn-recovery.ts:3170`), and this
+ * plugin's arming record (`ModelFallbackDeps.saveState`). The first level entry after the
+ * `model_change` is read as the switch's own past any entry no turn wrote, so a custom entry
+ * written between the two by another build is no change since. A turn's message (`type:
+ * "message"`, `session/session-entries.ts:120`) before any level entry means the switch set none,
+ * and every level entry after it is a change since.
  */
 function levelChangedAfter(branch: readonly unknown[], at: number): boolean {
   let index = at + 1;
-  if (isThinkingLevelChange(branch[index])) index += 1;
+  while (index < branch.length) {
+    const entry = branch[index];
+    if (isThinkingLevelChange(entry)) {
+      index += 1;
+      break;
+    }
+    if (typeof entry === "object" && entry !== null && "type" in entry && entry.type === "message")
+      break;
+    index += 1;
+  }
   for (; index < branch.length; index += 1) {
     if (isThinkingLevelChange(branch[index])) return true;
   }
