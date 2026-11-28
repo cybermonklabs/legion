@@ -155,13 +155,15 @@ func skeletonOtherDocuments() []int {
 }
 
 // skeletonIssue is one issue of the corpus as seeded: its key, its role documents' ids, the ids of
-// its other documents, and how many decision blocks its spec holds.
+// its other documents, how many decision blocks its spec holds, and the id of each comment the
+// seeding wrote on it, as each write answered it (requireSkeletonNewestComments).
 type skeletonIssue struct {
 	skeletonShape
 	key                      string
 	spec, verification, plan string
 	documents                []string
 	decisions                int
+	written                  []string
 }
 
 // ───── the two servers and the run's database ─────────────────────────────
@@ -695,10 +697,21 @@ func seedSkeleton(t *testing.T, s *readCostServer, conn *pgx.Conn, decides bool)
 			s.expect(t, fmt.Sprintf("answer ask %d of %s", index+1, issue.key), http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", readCostWriter,
 				map[string]any{"selected": []string{"Yes"}, "text": fmt.Sprintf("Yes, answer %d: we take that way.", index+1), "expected_edited_at": nil}, http.StatusOK)
 		}
+		issue.written = make([]string, shape.comments)
 		skeletonInParallel(t, "write the comments of "+issue.key, shape.comments, func(index int) error {
-			_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue.key+"/comments", readCostWriter,
+			answer, err := s.write(http.MethodPost, "/api/v1/issues/"+issue.key+"/comments", readCostWriter,
 				map[string]any{"body": fmt.Sprintf("Comment %d of %s: a note on the work.", index+1, issue.key)}, http.StatusCreated)
-			return err
+			if err != nil {
+				return err
+			}
+			var comment struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(answer.body, &comment); err != nil || comment.ID == "" {
+				return fmt.Errorf("read comment %d of %s back: %v: %s", index+1, issue.key, err, answer)
+			}
+			issue.written[index] = comment.ID
+			return nil
 		})
 		issues = append(issues, issue)
 		t.Logf("c-tree-read-bound: seeded %s, the issue of %s (%s): %d requirements, %d decisions, %d checks, %d plan tasks, %d comments, %d asks of which %d answered, %d other documents",
@@ -730,7 +743,8 @@ func skeletonSpecIndexed(t *testing.T, s *readCostServer, conn *pgx.Conn, key st
 // skeletonStatements reads pg_stat_statements for the top-level statements of the run's database
 // and role, over a connection to a database of its own, as c-read-cost reads it
 // (readCostStatements on the root's branch): a snapshot before a batch of readings and one after,
-// and their difference per reading over the statements that ran at least once per reading.
+// and the delta of their total_exec_time, over every statement of that database and role, divided
+// by the readings (skeletonDatabaseTimeOf).
 type skeletonStatements struct {
 	conn     *pgx.Conn
 	database uint32
@@ -773,15 +787,21 @@ type skeletonStatementTotal struct {
 }
 
 // skeletonDatabaseTime is the database time of one interval per reading of the batch it is read
-// against: ms and calls of the statements that ran at least once per reading, otherMS and others of
-// those that ran fewer times, the calls per reading of each statement by its normalized text, and
-// the time per reading of each statement that ran at least once per reading, by its text; and, for
-// a batch, the window arm's backlog before it and after the idle interval that follows it.
+// against, as c-tree-read-bound measures it: ms, the delta of pg_stat_statements' total_exec_time
+// over every top-level statement of the run's database and role, divided by the readings, and calls,
+// the delta of their calls so divided. Beside them it keeps the part of each that a narrower
+// measure leaves out: onceMS, the time of the statements that ran at least once per reading alone,
+// the measure the medians of testdata/tree-read-bound-recorded.json were taken with, and otherMS and
+// others, the time and the count of the statements that ran fewer times, which ms holds and onceMS
+// does not. It keeps the calls per reading of each statement by its normalized text, the time per
+// reading of each statement by its text, and, for a batch, the window arm's backlog before it and
+// after the idle interval that follows it.
 type skeletonDatabaseTime struct {
 	readings   int
 	length     time.Duration
 	ms         float64
 	calls      float64
+	onceMS     float64
 	otherMS    float64
 	others     int
 	evicted    int64
@@ -854,7 +874,10 @@ func newSkeletonStatements(t *testing.T, databaseURL string, runConn *pgx.Conn) 
 	return s
 }
 
-// snapshot reads pg_stat_statements for the run's database and role.
+// snapshot reads pg_stat_statements for the run's database and role. It reads the top-level
+// statements alone: with pg_stat_statements.track=all a statement that a top-level statement runs
+// inside it, a function's or a trigger's, is recorded beside it as well, and the top-level
+// statement's total_exec_time already holds its time, so a sum over both would count it twice.
 func (s *skeletonStatements) snapshot(ctx context.Context) (skeletonSnapshot, error) {
 	snapshot := skeletonSnapshot{at: time.Now(), statements: map[int64]skeletonStatementTotal{}}
 	if err := s.conn.QueryRow(ctx, `select dealloc from pg_stat_statements_info`).Scan(&snapshot.evicted); err != nil {
@@ -905,7 +928,11 @@ func (s *skeletonStatements) measure(t *testing.T, readings int, batch func()) (
 	return database, skeletonDatabaseTimeOf(after, rested, readings)
 }
 
-// skeletonDatabaseTimeOf is the database time between two snapshots per reading of a batch.
+// skeletonDatabaseTimeOf is the database time between two snapshots per reading of a batch: the
+// delta of total_exec_time over every statement the second snapshot holds, a statement the first
+// does not hold, or whose calls fell meanwhile (an entry evicted and written again), counted from
+// zero, divided by readings. No statement is left out of ms for how often it ran; onceMS is the
+// part of ms that the statements which ran at least once per reading hold.
 func skeletonDatabaseTimeOf(before, after skeletonSnapshot, readings int) *skeletonDatabaseTime {
 	spent := &skeletonDatabaseTime{readings: readings, length: after.at.Sub(before.at), evicted: after.evicted - before.evicted,
 		byText: map[string]float64{}, spentBy: map[string]float64{}}
@@ -915,21 +942,23 @@ func skeletonDatabaseTimeOf(before, after skeletonSnapshot, readings int) *skele
 			was = skeletonStatementTotal{}
 		}
 		calls, ms := now.calls-was.calls, now.ms-was.ms
+		spent.ms += ms
+		spent.calls += float64(calls)
 		switch {
 		case calls >= int64(readings):
-			spent.ms += ms
-			spent.calls += float64(calls)
-			spent.spentBy[strings.Join(strings.Fields(now.query), " ")] += ms / float64(readings)
+			spent.onceMS += ms
 		case calls > 0:
 			spent.otherMS += ms
 			spent.others++
 		}
 		if calls > 0 {
+			spent.spentBy[strings.Join(strings.Fields(now.query), " ")] += ms / float64(readings)
 			spent.byText[skeletonNormalized(now.query)] += float64(calls) / float64(readings)
 		}
 	}
 	spent.ms /= float64(readings)
 	spent.calls /= float64(readings)
+	spent.onceMS /= float64(readings)
 	spent.otherMS /= float64(readings)
 	return spent
 }
@@ -945,12 +974,12 @@ func skeletonNormalized(query string) string {
 
 // line is the database time a read's line prints beside its percentiles.
 func (spent *skeletonDatabaseTime) line(idle *skeletonDatabaseTime) string {
-	line := fmt.Sprintf("database time %.2f ms per reading in %.1f statements, beside %.2f ms per reading in %d statements that ran fewer than %d times",
+	line := fmt.Sprintf("database time %.2f ms per reading in %.1f statements, %.2f ms of it in %d statements that ran fewer than %d times",
 		spent.ms, spent.calls, spent.otherMS, spent.others, spent.readings)
 	evicted := spent.evicted
 	if idle != nil {
 		line += fmt.Sprintf(", and %.2f ms per reading over an idle %s after the batch, %.2f ms of it in statements that ran %d times or more",
-			idle.ms+idle.otherMS, idle.length.Round(time.Millisecond), idle.ms, idle.readings)
+			idle.ms, idle.length.Round(time.Millisecond), idle.onceMS, idle.readings)
 		evicted += idle.evicted
 	}
 	if evicted > 0 {
@@ -1135,19 +1164,21 @@ func (filter skeletonFilter) oldMS(old map[string]float64) float64 {
 
 // measureSkeletonOld reads each of the old page's reads of each issue on s, the build of
 // BASELINE_SHA, each line naming the issue, the read and its request, and answers each read's
-// database time per reading, by issue and by name.
-func measureSkeletonOld(t *testing.T, statements *skeletonStatements, s *readCostServer, issues []*skeletonIssue) map[string]map[string]float64 {
+// database time per reading, by issue and by name: old, as the check measures it (ms), and once,
+// the time of its statements that ran at least once per reading alone (onceMS).
+func measureSkeletonOld(t *testing.T, statements *skeletonStatements, s *readCostServer, issues []*skeletonIssue) (old, once map[string]map[string]float64) {
 	t.Helper()
-	old := map[string]map[string]float64{}
+	old, once = map[string]map[string]float64{}, map[string]map[string]float64{}
 	for _, issue := range issues {
 		reads := skeletonOldReads(issue)
-		old[issue.key] = map[string]float64{}
+		old[issue.key], once[issue.key] = map[string]float64{}, map[string]float64{}
 		for _, name := range slices.Sorted(maps.Keys(reads)) {
 			what := fmt.Sprintf("%s (%s) old page, %s, GET %s", issue.key, issue.label, name, reads[name])
-			old[issue.key][name] = measureSkeletonRead(t, statements, s, what, reads[name]).database.ms
+			database := measureSkeletonRead(t, statements, s, what, reads[name]).database
+			old[issue.key][name], once[issue.key][name] = database.ms, database.onceMS
 		}
 	}
-	return old
+	return old, once
 }
 
 // ───── the pages this head answers ─────────────────────────────────────────
@@ -1629,32 +1660,39 @@ func requireSmallPages(t *testing.T) {
 
 // ───── the test ────────────────────────────────────────────────────────────
 
-// TestTheTreeReadAnswersTheSkeletonWithinItsBounds is c-tree-read-bound. It first reads its two
-// cases of a smaller node limit on a test server of its own (requireSmallPages). Then it boots the
-// build of BASELINE_SHA over a database of its own, seeds the four issues of skeletonShapes, with
-// the view content each holds, through that build's routes, waits until no document owes its block
-// index and the block index's window arm owes no document and no item its windows, and reads on
-// each issue each of the old page's reads. Then it stops that build, boots this checkout's over the
-// same database, waits until the boot's backfill is done, each issue holds its mark, no document
-// owes its block index and the window arm owes nothing, follows each read of skeletonFilters on each
-// issue through its cursor (walkSkeletonPages), holds each corpus to its shape, and reads each read
-// of skeletonFilters on each issue. Each read is read skeletonReadings times after skeletonWarmUps
-// warm-ups, after an analyze, and its line prints its p50, p90 and p99, its bytes, its database
-// time and statements per reading, the idle interval after it, and the window arm's backlog before
-// it and after that interval. Last, on this head, it writes the comments on the largest spec's
-// blocks (requireCommentedSpec) and the 12,050 plan tasks (requirePagedPlan).
+// TestTheTreeReadAnswersTheSkeletonWithinItsBounds is c-tree-read-bound. It first holds every Go
+// file of packages/envoy outside the _test.go files to no write of Deps.IssueTreePageSize, in any
+// form (requireIssueTreePageSizeUnset), and reads its two cases of a smaller node limit on a test
+// server of its own (requireSmallPages). Then it boots the build of BASELINE_SHA over a database of
+// its own, seeds the four issues of skeletonShapes, with the view content each holds, through that
+// build's routes, waits until no document owes its block index and the block index's window arm
+// owes no document and no item its windows, and reads on each issue each of the old page's reads.
+// Then it stops that build, boots this checkout's over the same database, waits until the boot's
+// backfill is done, each issue holds its mark, no document owes its block index and the window arm
+// owes nothing, follows each read of skeletonFilters on each issue through its cursor
+// (walkSkeletonPages), holds each corpus to its shape and the read with no view of each to the
+// newest of the comments the seeding wrote on it (requireSkeletonNewestComments), and reads each
+// read of skeletonFilters on each issue. Each read is read skeletonReadings times after
+// skeletonWarmUps warm-ups, after an analyze, and its line prints its p50, p90 and p99, its bytes,
+// its database time and statements per reading, the idle interval after it, and the window arm's
+// backlog before it and after that interval. Last, on this head, it writes the comments on the
+// largest spec's blocks (requireCommentedSpec) and the 12,050 plan tasks (requirePagedPlan).
 //
 // It prints, for each issue and each read of skeletonFilters, `c-tree-read-bound: database time per
 // reading: fixture=<label> read=<filter> old=<ms> new=<ms>`, which the median stage judges over three
 // Jobs against the medians recorded in testdata/tree-read-bound-recorded.json
-// (tree-read-db-medians.sh). It fails where a read's p90 is above skeletonBoundMS, and where a
-// statement of a loader the read with no view sends runs more than once per reading of it or is not
-// in pg_stat_statements, and it records each count, page and bound it reads otherwise and goes on.
+// (tree-read-db-medians.sh): each value the delta of pg_stat_statements' total_exec_time over every
+// statement of the run's database and role, divided by the readings (skeletonDatabaseTimeOf). Beside
+// it, a line of its own prints the narrower measure those medians were taken with, which nothing
+// judges. It fails where a read's p90 is above skeletonBoundMS, and where a statement of a loader
+// the read with no view sends runs more than once per reading of it or is not in
+// pg_stat_statements, and it records each count, page and bound it reads otherwise and goes on.
 func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-tree-read-bound: TestTheTreeReadAnswersTheSkeletonWithinItsBounds took %s of wall time", time.Since(began).Round(time.Second))
 	})
+	requireIssueTreePageSizeUnset(t)
 	baseCommit := skeletonBaseCommit(t)
 	requireSmallPages(t)
 	databaseURL := skeletonDatabase(t)
@@ -1685,7 +1723,7 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	waitSkeletonOwed(t, conn, "release before's corpus", nil)
 	statements.waitWindowsOwed(t, "release before")
 	skeletonAnalyze(t, conn, "old side")
-	old := measureSkeletonOld(t, statements, base, issues)
+	old, oldOnce := measureSkeletonOld(t, statements, base, issues)
 	stopSkeletonServer(t, base)
 
 	// ───── second: this head over the same database ─────
@@ -1740,6 +1778,7 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 		}
 	}
 	requireSkeletonShape(t, head, issues, walks)
+	requireSkeletonNewestComments(t, conn, issues, walks)
 	loaders := skeletonLoaders(t, issues[0].key)
 
 	// ───── third: this head's reads, the two cases written on this head, and the bounds ─────
@@ -1764,6 +1803,8 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 		key, label, filter := read.issue.key, read.issue.label, read.filter.name
 		t.Logf("c-tree-read-bound: database time per reading: fixture=%s read=%s old=%.3f new=%.3f", label, filter,
 			read.filter.oldMS(old[key]), read.reading.database.ms)
+		t.Logf("c-tree-read-bound: the narrower database time, of the statements that ran at least once per reading alone, as the recorded medians were taken: "+
+			"fixture=%s read=%s old=%.3f new=%.3f", label, filter, read.filter.oldMS(oldOnce[key]), read.reading.database.onceMS)
 		if p90 := msOf(read.reading.p90); p90 > skeletonBoundMS {
 			t.Errorf("%s (%s), filter %s, has p90 %.1f ms, above %.0f", key, label, filter, p90, skeletonBoundMS)
 		}
