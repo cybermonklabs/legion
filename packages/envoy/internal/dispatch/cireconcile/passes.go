@@ -110,16 +110,22 @@ const prunePasses = `delete from ci_reconcile_passes where started_at < now() - 
 // running or as ended without completing.
 //
 // It writes on a bounded context of its own, the one endPass writes on (duty.LeaseCall), and
-// never on the pass's. The pass's caller cancels the pass's context when the process shuts
-// down, and a cancellation that lands while the insert is in flight -- after Postgres has
-// committed the row, before the pass has read its id back -- fails that read and parts the pass
-// from its own row: the pass then closes nothing, and the row reads as PassStateAbandoned once
-// the pass is over (until then it is the newest row of a live process holding the lease, which
-// RecentPasses reads as running), a process killed in the middle of a pass, where what happened
-// is a pass its caller cancelled, which records outcomeCancelled. Within its five-second bound,
-// a pass whose row was written holds that row's id: the bound is a deadline, and pgx fails the
-// read on a deadline as it does on a cancellation, so an insert Postgres takes longer than that
-// to answer parts the pass from its row in the same way.
+// never on the pass's. The pass's caller cancels the pass's context when the process shuts down.
+// Were the insert on the pass's context, a cancellation while the insert was in flight -- after
+// Postgres had committed the row but before the pass had read its id back -- would fail that read
+// and part the pass from its row. The pass would close nothing, and the row would read as
+// PassStateAbandoned once the pass was over (until then RecentPasses would read it as running).
+// That would report a process killed in the middle of a pass instead of a pass its caller
+// cancelled, which records outcomeCancelled. Within its five-second bound, a pass whose row was
+// written holds that row's id: the bound is a deadline, and pgx fails the read on a deadline as
+// it does on a cancellation, so an insert Postgres takes longer than that to answer parts the
+// pass from its row in the same way.
+//
+// r.Pool.QueryRow acquires its connection from the shared pool on that same context, so the
+// five-second bound also limits the wait for a connection. The pass's own context used to bound
+// that wait only at the pass's interval. A pass that gets no connection within the bound writes
+// no row, logs "ci reconcile pass recorded no start", and records nothing at its end (endPass
+// skips an id of zero).
 func (r *Reconciler) beginPass() int64 {
 	if r.Instance == nil {
 		return 0
