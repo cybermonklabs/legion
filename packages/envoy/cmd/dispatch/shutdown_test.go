@@ -2035,7 +2035,7 @@ func (p *dispatchProcess) openEditor(t *testing.T, artifactID, want string) *doc
 func (p *dispatchProcess) openEditorAs(t *testing.T, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
-	if err := editor.WaitForText(markdown, want, 10*time.Second); err != nil {
+	if err := editor.AwaitText(t, markdown, want); err != nil {
 		t.Fatalf("%v:\n%s", err, p.Output.String())
 	}
 	return editor
