@@ -130,8 +130,11 @@ readonly start end
 access_log "textPayload:\"route=$route \"" "timestamp>=\"$start\"" "timestamp<\"$end\""
 
 # Fourth: the lines of GET answered 200, each form told by its bytes. The fields before `path` are
-# the first a line holds, and `status`, `elapsed_ms` and `bytes` the last but `credential` and
-# `aborted`, so each is read where the handler writes it and never out of a quoted user agent.
+# the first a line holds, and `status`, `elapsed_ms` and `bytes` come after `user_agent`, with only
+# fields the server writes after them (the four timings `db_ms`, `db_calls`, `db_wait_ms` and
+# `roster_wait_ms`, then `credential`, `search_key`, `search_shape` and `aborted` where a line
+# carries them). So the last run of the three is the one the handler wrote, never one out of a
+# quoted user agent.
 readonly head_fields=' msg="dispatch: request" method=([^ ]*) route=([^ ]*) path='
 readonly tail_fields='^.* status=([0-9]+) elapsed_ms=([0-9]+) bytes=([0-9]+) '
 declare -A reads=() smallest=() largest=()

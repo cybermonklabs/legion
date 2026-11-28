@@ -7,7 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +91,75 @@ func TestACompletedRequestIsNotMarkedAborted(t *testing.T) {
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
 	if got := line(t, logged); strings.Contains(got, "aborted") {
 		t.Fatalf("access-log line %q is marked aborted", got)
+	}
+}
+
+// timings is the run of the line's fields from status on: status, elapsed_ms and bytes next to
+// each other, as a production look reads them
+// (packages/dispatch/e2e/acceptance/priorities-production.sh), then the four timings, then the
+// line's end or its next field.
+var timings = regexp.MustCompile(` status=\d+ elapsed_ms=\d+ bytes=\d+ db_ms=(\d+) db_calls=(\d+) db_wait_ms=(\d+) roster_wait_ms=(\d+)(?: |$)`)
+
+// timingsOf is the four timings got carries where the line writes them, in their order: db_ms,
+// db_calls, db_wait_ms and roster_wait_ms. A line that does not carry them there fails the test.
+func timingsOf(t *testing.T, got string) [4]int64 {
+	t.Helper()
+	match := timings.FindStringSubmatch(got)
+	if match == nil {
+		t.Fatalf("access-log line %q does not carry status, elapsed_ms, bytes, db_ms, db_calls, db_wait_ms and roster_wait_ms in one run", got)
+	}
+	var read [4]int64
+	for index := range read {
+		read[index], _ = strconv.ParseInt(match[index+1], 10, 64)
+	}
+	return read
+}
+
+// A request that waits on nothing writes its four timings as 0: they are on every line, right
+// after bytes and before the fields a line may leave out, so status, elapsed_ms and bytes stay
+// next to each other.
+func TestARequestThatWaitsOnNothingWritesItsTimingsAsZero(t *testing.T) {
+	logged := capture(t)
+	Handler("/r", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		Note(r.Context(), KindSharedToken, "")
+		Note(r.Context(), KindSession, "session-0123456789abcdef")
+		_, _ = w.Write([]byte("hello"))
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
+	got := line(t, logged)
+	if read := timingsOf(t, got); read != [4]int64{} {
+		t.Fatalf("a request that waited on nothing wrote db_ms, db_calls, db_wait_ms and roster_wait_ms %v, want all 0", read)
+	}
+	carries(t, got, ` bytes=5 db_ms=0 db_calls=0 db_wait_ms=0 roster_wait_ms=0 credential=shared-token`)
+}
+
+// The line writes what its request's Timing was given, from any goroutine of the request: each sum
+// is kept in nanoseconds and cut to milliseconds once, so eight adds of 1.5 ms write 12, where
+// eight cuts would write 8. A context that carries no line, the server's own or one Detached masks,
+// has no Timing, and an add to that nil Timing reaches no line.
+func TestTheLineSumsWhatItsTimingWasGivenFromEveryGoroutine(t *testing.T) {
+	logged := capture(t)
+	if TimingOf(context.Background()) != nil {
+		t.Fatal("a context no request made has a Timing")
+	}
+	Handler("/r", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if TimingOf(Detached(r.Context())) != nil {
+			t.Error("a detached context has its request's Timing")
+		}
+		var adds sync.WaitGroup
+		for range 8 {
+			adds.Go(func() {
+				timing := TimingOf(r.Context())
+				timing.AddDatabase(1500*time.Microsecond, 2)
+				timing.AddPoolWait(1250 * time.Microsecond)
+				timing.AddRosterWait(750 * time.Microsecond)
+			})
+		}
+		adds.Wait()
+		TimingOf(Detached(r.Context())).AddDatabase(time.Second, 1)
+		TimingOf(context.Background()).AddRosterWait(time.Second)
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/r", nil))
+	if read, want := timingsOf(t, line(t, logged)), [4]int64{12, 16, 10, 6}; read != want {
+		t.Fatalf("db_ms, db_calls, db_wait_ms and roster_wait_ms = %v, want %v", read, want)
 	}
 }
 

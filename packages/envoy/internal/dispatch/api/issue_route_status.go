@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -188,10 +189,18 @@ type rosterFetch struct {
 // found the row stale - by this process's fetch, or by another process's later one, which counts
 // as storeRouteRoster counts it - and it is the answer the read would have waited for had it
 // reached the lock a moment sooner.
+//
+// The time a read takes - its read of the stored row and any wait on a fetch - goes on its
+// request's access-log line as roster_wait_ms (accesslog.Timing), so an operator can tell a list
+// that waited on the listener from one that waited on the database; a read with no listener
+// configured reads no roster and adds nothing. The fetch itself runs on the server's lifetime, so
+// its listener call and its write of the stored row add nothing to any request's line.
 func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if s.deps.Envoy == nil {
 		return routeRoster{reason: model.RouteReasonUnreachable}, nil
 	}
+	started := time.Now()
+	defer func() { accesslog.TimingOf(ctx).AddRosterWait(time.Since(started)) }()
 	if s.deps.ListenerRosterUncached {
 		// An end-to-end test process: every read asks the listener itself, with no stored answer,
 		// no shared fetch and nothing kept.

@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -191,6 +193,74 @@ func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("access-log line %q does not carry %q", lines[0], want)
 		}
+	}
+}
+
+// accessTimings is the run of an access-log line's fields from status on: status, elapsed_ms and
+// bytes next to each other, then the four timings.
+var accessTimings = regexp.MustCompile(` status=\d+ elapsed_ms=\d+ bytes=\d+ db_ms=(\d+) db_calls=(\d+) db_wait_ms=(\d+) roster_wait_ms=(\d+)(?: |$)`)
+
+// lineTimings is the four timings line carries where it writes them, in their order: db_ms,
+// db_calls, db_wait_ms and roster_wait_ms.
+func lineTimings(t *testing.T, line string) [4]int64 {
+	t.Helper()
+	match := accessTimings.FindStringSubmatch(line)
+	if match == nil {
+		t.Fatalf("access-log line %q does not carry status, elapsed_ms, bytes, db_ms, db_calls, db_wait_ms and roster_wait_ms in one run", line)
+	}
+	var read [4]int64
+	for index := range read {
+		read[index], _ = strconv.ParseInt(match[index+1], 10, 64)
+	}
+	return read
+}
+
+// A list read with a routed issue reads the listener's session list, and its line says how long
+// that took as roster_wait_ms. The stored copy is stale at every read (a TTL of zero), so the read
+// waits on a fetch from a listener that answers 40 ms late, and its roster_wait_ms is at least
+// that. A list with no routed issue reads no roster, and its line carries 0 there. Both lines
+// count the statements their reads ran.
+func TestAListReadsLineNamesItsWaitForTheListenersSessions(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
+	const late = 40 * time.Millisecond
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions" {
+			http.NotFound(w, r)
+			return
+		}
+		testwait.Pause(late)
+		_, _ = w.Write([]byte(`[{"session_id":"ses-sre","title":"worker","roles":["sre"]}]`))
+	}))
+	t.Cleanup(listener.Close)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Minute})
+	served.rosters.ttl, served.rosters.silenceTTL, served.rosters.timeout = 0, 0, time.Minute
+	key := routedIssueKey(t, handler, "role:sre")
+	seedTestProject(t, database)
+	logged := captureLog(t)
+
+	routed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST", nil, "alice")
+	if routed.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues?project=TEST = %d: %s", routed.Code, routed.Body.String())
+	}
+	rows := decodeBody[[]routedIssue](t, routed)
+	row := slices.IndexFunc(rows, func(issue routedIssue) bool { return issue.Key == key })
+	if row < 0 || reachText(rows[row].RouteStatus, rows[row].RouteHolder) != "live ses-sre" {
+		t.Fatalf("the list of TEST reads %+v, want %s live ses-sre: the read did not read the listener's answer", rows, key)
+	}
+	unrouted := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=ACCESS", nil, "alice")
+	if unrouted.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues?project=ACCESS = %d: %s", unrouted.Code, unrouted.Body.String())
+	}
+
+	lines := accessLines(t, logged)
+	if len(lines) != 2 {
+		t.Fatalf("two requests wrote %d access-log lines:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if read := lineTimings(t, lines[0]); read[3] < late.Milliseconds() || read[1] == 0 {
+		t.Errorf("the routed list's db_ms, db_calls, db_wait_ms and roster_wait_ms = %v, want a roster_wait_ms of at least the listener's %d ms and statements counted", read, late.Milliseconds())
+	}
+	if read := lineTimings(t, lines[1]); read[3] != 0 || read[1] == 0 {
+		t.Errorf("the unrouted list's db_ms, db_calls, db_wait_ms and roster_wait_ms = %v, want a roster_wait_ms of 0 and statements counted", read)
 	}
 }
 

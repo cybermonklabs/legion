@@ -5084,7 +5084,7 @@ Dispatch writes one line per served request, always, with no setting to turn it 
 It is written at INFO when the request ends, through the process's own logger:
 
 ```
-time=2026-10-25T05:55:15.446Z level=INFO msg="dispatch: request" method=POST route=/api/v1/issues path=/api/v1/issues caller_kind=session caller=session-0123456789abcdef host=a.example.test address=203.0.113.9 user_agent=dispatch-cli/1.0 status=201 elapsed_ms=10 bytes=412 credential=shared-token
+time=2026-10-25T05:55:15.446Z level=INFO msg="dispatch: request" method=POST route=/api/v1/issues path=/api/v1/issues caller_kind=session caller=session-0123456789abcdef host=a.example.test address=203.0.113.9 user_agent=dispatch-cli/1.0 status=201 elapsed_ms=10 bytes=412 db_ms=6 db_calls=4 db_wait_ms=0 roster_wait_ms=0 credential=shared-token
 ```
 
 Each item below names a field of the line, then what it holds.
@@ -5159,6 +5159,29 @@ Each item below names a field of the line, then what it holds.
   The response body the handler wrote.
   A websocket upgrade is `101` with `0` bytes: its frames are written on the connection it took.
 
+- `db_ms`
+
+  The milliseconds the request spent in database statements made on its own context: each statement from its send to its end, as the store's pgx tracer sees it (`store.requestTimer`).
+  A query ends when its rows close, so the time the handler spends reading and scanning its rows is inside its time; a batch runs from its send to the close of its results.
+  Statements the request runs side by side each add their own time, so `db_ms` can pass `elapsed_ms`.
+  Work Dispatch runs on a context of its own adds nothing: the listener fetch behind `roster_wait_ms` and its write of the stored copy, background work, and a websocket's heartbeat checks of its caller.
+
+- `db_calls`
+
+  How many statements those were: each statement sent on its own (a transaction's `begin` and `commit` among them), each query of a batch, and each copy.
+  When pgx prepares a statement before it runs it, the prepare is inside that statement's time and is not counted on its own.
+
+- `db_wait_ms`
+
+  The milliseconds the request waited for a pooled connection: from the start of each acquire to the connection the pool handed over, which takes in the time to open a connection when the pool opens one for it.
+  It is not part of `db_ms`.
+
+- `roster_wait_ms`
+
+  The milliseconds the request spent reading the listener's session list for a `route_status` or an agents list (`readRouteRoster`): its read of the stored copy every process shares, and any wait for a fetch from the listener when that copy is older than 5 s.
+  `0` when the request read no roster, as a list with no routed issue does.
+  The read of the stored copy is a statement, so its time is in `db_ms` and `db_calls` too.
+
 - `credential`
 
   Only on a `session` line: the credential behind the session.
@@ -5184,6 +5207,7 @@ Each item below names a field of the line, then what it holds.
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
+The four fields after `bytes` are on every line, `0` when the request spent nothing there, and they come right after it: a production look (`packages/dispatch/e2e/acceptance/priorities-production.sh`) reads `status`, `elapsed_ms` and `bytes` as fields next to each other, so no field goes between them.
 The line never carries a token, a cookie, a query string, a request body or a response body; a search's line carries `search_key` in place of its query.
 The text in it a caller wrote, `method`, `path`, a session's `caller`, `host`, `address` and `user_agent`, is each cut to 256 bytes.
 

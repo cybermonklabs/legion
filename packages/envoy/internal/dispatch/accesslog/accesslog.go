@@ -4,9 +4,11 @@
 // callers behind the requests it was serving. Handler wraps one route and logs, when the request
 // ends, the method, the route pattern (never a path's ids alone), the caller the authentication
 // layer resolved and the credential behind it, the Host the request was sent to, the address and
-// user agent it came from, the status, the time it took and the bytes of body it wrote. The Host
-// is how an operator sees which of the server's addresses each caller still uses before one is
-// retired. A request refused before any route read it writes the same line (Refused).
+// user agent it came from, the status, the time it took and the bytes of body it wrote, and how
+// much of that time went to the database, to waits for a pooled connection and to reads of the
+// listener's session list (Timing). The Host is how an operator sees which of the server's
+// addresses each caller still uses before one is retired. A request refused before any route read
+// it writes the same line (Refused).
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
 // A search's line carries the keyed hash of the search in place of its query string (NoteSearch):
@@ -27,6 +29,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/clock"
@@ -108,6 +111,60 @@ type recorder struct {
 	request context.Context
 	// closedByClient is set by MarkClosedByClient, on the handler's goroutine as status is.
 	closedByClient bool
+	// timing is what the request spent waiting on others (TimingOf), added from any goroutine.
+	timing Timing
+}
+
+// Timing is what a request's line counts of the time the request spent waiting on others, so an
+// operator can split its elapsed_ms: its database statements, as db_ms and db_calls (the store's
+// pool tracer adds each statement's time from its send to its end, and how many it sent), its
+// waits for a pooled connection, as db_wait_ms (that tracer again), and its reads of the
+// listener's session list, as roster_wait_ms (api's readRouteRoster). They add through the
+// request's context (TimingOf), so work run on another context - the server's lifetime, a
+// background worker's, a context Detached masks - adds nothing to the line. Each add is atomic:
+// statements a request runs side by side each add their own time, so db_ms can pass elapsed_ms.
+// The time is the real clock's, whatever clock elapsed_ms is read on (HandlerOn), and each sum
+// is kept in nanoseconds and cut to milliseconds once, when the line is written.
+type Timing struct {
+	database   atomic.Int64
+	statements atomic.Int64
+	poolWait   atomic.Int64
+	rosterWait atomic.Int64
+}
+
+// TimingOf is the Timing of the request whose line ctx carries, or nil for a context that carries
+// none: one no request made, or one Detached masks. Every method of a nil *Timing does nothing, so
+// a caller adds to what it is given without asking first.
+func TimingOf(ctx context.Context) *Timing {
+	rec, _ := ctx.Value(callerKey{}).(*recorder)
+	if rec == nil {
+		return nil
+	}
+	return &rec.timing
+}
+
+// AddDatabase adds one send to the database: spent, from its send to its end, and statements, how
+// many statements it sent (one for a statement sent on its own, a batch's count of queries).
+func (t *Timing) AddDatabase(spent time.Duration, statements int) {
+	if t == nil {
+		return
+	}
+	t.database.Add(int64(spent))
+	t.statements.Add(int64(statements))
+}
+
+// AddPoolWait adds one wait for a pooled connection.
+func (t *Timing) AddPoolWait(waited time.Duration) {
+	if t != nil {
+		t.poolWait.Add(int64(waited))
+	}
+}
+
+// AddRosterWait adds one read of the listener's session list.
+func (t *Timing) AddRosterWait(waited time.Duration) {
+	if t != nil {
+		t.rosterWait.Add(int64(waited))
+	}
 }
 
 func (rec *recorder) WriteHeader(status int) {
@@ -323,6 +380,10 @@ func (rec *recorder) write(route string, r *http.Request, address string, elapse
 			status = http.StatusInternalServerError
 		}
 	}
+	// The four timings come right after bytes and before every field a line may leave out, on
+	// every line: a production look reads status, elapsed_ms and bytes as one run of adjacent
+	// fields (packages/dispatch/e2e/acceptance/priorities-production.sh), so nothing goes between
+	// them.
 	attrs := []any{
 		"method", clip(r.Method),
 		"route", route,
@@ -336,6 +397,10 @@ func (rec *recorder) write(route string, r *http.Request, address string, elapse
 		"status", status,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"bytes", rec.written,
+		"db_ms", time.Duration(rec.timing.database.Load()).Milliseconds(),
+		"db_calls", rec.timing.statements.Load(),
+		"db_wait_ms", time.Duration(rec.timing.poolWait.Load()).Milliseconds(),
+		"roster_wait_ms", time.Duration(rec.timing.rosterWait.Load()).Milliseconds(),
 	}
 	if credential != "" {
 		attrs = append(attrs, "credential", credential)
