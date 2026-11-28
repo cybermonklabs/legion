@@ -17,6 +17,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 )
 
 // ErrNestedAcquire is the shared pool refusing a second connection to a caller that already
@@ -48,9 +51,12 @@ var ErrNestedAcquire = errors.New(
 
 // holding records whether the context's caller holds a connection of this pool: its
 // transaction, or one it acquired directly. One writer sets it and one reader tests it, so a
-// flag is the whole state - a transaction never opens a second transaction of its own.
+// flag is the whole state - a transaction never opens a second transaction of its own. wrote
+// records that a test's statement tracer saw the transaction write (OpenXidWindow), which is what
+// gives it its transaction id; the release that clears connection clears it too.
 type holding struct {
 	connection atomic.Bool
+	wrote      atomic.Bool
 }
 
 type holdingKey struct{}
@@ -85,7 +91,10 @@ func hold(ctx context.Context) func() {
 		return nil
 	}
 	state.connection.Store(true)
-	return sync.OnceFunc(func() { state.connection.Store(false) })
+	return sync.OnceFunc(func() {
+		state.connection.Store(false)
+		state.wrote.Store(false)
+	})
 }
 
 func holdsConnection(ctx context.Context) bool {
@@ -100,6 +109,30 @@ func holdsConnection(ctx context.Context) bool {
 // ErrNestedAcquire refuses, and for optional work a quiet skip is better than that refusal, whose
 // stack names a call site that is working as intended.
 func HoldsPooledConnection(ctx context.Context) bool { return holdsConnection(ctx) }
+
+// InXidWindow reports whether ctx's caller holds one of this pool's connections and its
+// transaction is inside its xid window: a test's statement tracer saw a statement of it write
+// (OpenXidWindow), so it holds a transaction id from there until it ends. The xid window rigs'
+// collaborator check (storetest/collabtest) reads it. Nothing in production opens a window, so
+// there it is always false, and nothing in production reads it.
+func InXidWindow(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	return ok && state.connection.Load() && state.wrote.Load()
+}
+
+// OpenXidWindow is the xid window rigs' hook: storetest.XidTracer, a pgx tracer a test installs on
+// its pool, calls it with the context of the first statement whose own result says it wrote, inline
+// or in a batch, and from then until the transaction ends InXidWindow answers true for that context
+// and every context derived from it. It reports whether it marked anything: a context the pool
+// cannot see, or one that holds no connection, has nothing to mark. No production code calls it.
+func OpenXidWindow(ctx context.Context) bool {
+	state, ok := ctx.Value(holdingKey{}).(*holding)
+	if !ok || !state.connection.Load() {
+		return false
+	}
+	state.wrote.Store(true)
+	return true
+}
 
 // ForConcurrentRead returns a context for one of a caller's reads that run side by side: ctx's
 // deadline, cancellation and values, with a hold mark of its own, so that read takes one
@@ -175,6 +208,19 @@ func logRefusal() {
 // Pool is the shared Dispatch connection pool. Every way it hands out a connection refuses one
 // asked for while the caller already holds one; see ErrNestedAcquire. The pgx pool is private
 // so no caller can reach past the refusal.
+//
+// Under a context that carries a cut (asof.WithCut), the pool binds each statement that it
+// sends to the cut (asof.Bind) before it sends it: a statement of Query, QueryRow, Exec or
+// SendBatch, and each statement of a transaction that Begin or BeginTx opens and of its
+// savepoints. Each of them runs in a read-only transaction, so the database refuses a write that
+// Bind cannot see, such as a read that calls nextval: a transaction that Begin or BeginTx opens is
+// read-only, and a statement of Query, QueryRow or Exec, and a batch, run in a read-only
+// transaction of their own (pool_cut.go says what that costs). A statement that Bind refuses is
+// not sent, and the call returns the refusal. The pool refuses a connection that it hands out
+// (Acquire, AcquireFunc, Listener, Dedicated) and a copy (RefusedAtCutError). The separate pools
+// that Rooms, RoomAppends, Compaction and Horizon hand out check no cut: a statement sent through
+// one of them goes as the caller wrote it. Under a context with no cut, the pool sends each
+// statement as the caller wrote it.
 type Pool struct {
 	pool *pgxpool.Pool
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
@@ -238,12 +284,14 @@ const RoomsPoolSize = 4
 const roomsApplicationName = "dispatch-rooms"
 
 // roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
-// (Pool.RoomAppends). Only the browser batch path takes one: a room's queued browser updates are
+// (Pool.RoomAppends). The docs package's appendRoomTx takes one for each transaction it runs, a
+// room's batch of browser updates and the append of its parked bytes among them, and a room's load
+// can open one ahead of its first batch (warmRoomAppends). A room's queued browser updates are
 // stored together, in one transaction, so a room holds a connection for its batch's few round
-// trips and starts at most one batch per linger window, and a handful of connections serve many
-// rooms writing at once. Eight is twice the rooms pool and an eighth of the shared one: every
-// connection here is one more in the server's total against the database's limit, so it is small
-// on purpose, and a room that finds all eight held waits for another batch to commit.
+// trips, and a handful of connections serve many rooms writing at once. Eight is twice the rooms
+// pool and an eighth of the shared one: every connection here is one more in the server's total
+// against the database's limit, so it is small on purpose, and a room that finds all eight held
+// waits until one is given back.
 //
 // It cannot deadlock. A batch holds its connection and the document's advisory lock and takes no
 // other connection (store.HoldsConnection stays on its context, so a read of the shared pool under
@@ -319,7 +367,37 @@ func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
 // answering; once Close has closed every other pool it closes this one and Healthy refuses
 // (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
+	return p.HealthyOn(ctx, clock.Real())
+}
+
+// HealthyOn is Healthy with healthProbeTimeout armed on c, for a caller whose own waits run on a
+// clock a test moves, such as a shutdown that counts failed probes toward its decision to exit
+// and whose test ends each probe by moving a clocktest.Fake to the bound. The bound is the read's,
+// armed on c alone with no wall-clock bound beneath it, so a read on a fake ends when the test
+// moves the fake there and never because the test was slow to: on a fake, the read's context
+// reports no deadline of its own (TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock). It is not a
+// cold dial's: pgxpool's two-minute ConnectTimeout bounds a dial on the wall clock
+// (healthProbeTimeout). Healthy is HealthyOn on clock.Real, and a nil c is clock.Real.
+func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
+	return p.HealthyOnBy(ctx, c, clock.Deadline{})
+}
+
+// HealthyOnBy is HealthyOn with its bound the end a test process gave it (d, a clock.Deadline) in
+// healthProbeTimeout's place, armed on c as d.WithTimeout arms it: the zero value keeps
+// healthProbeTimeout, a moment bounds the read there on c, and no end arms nothing, so only the
+// caller's context bounds the read. A deployment passes the zero value.
+func (p *Pool) HealthyOnBy(ctx context.Context, c clock.Clock, d clock.Deadline) (int, error) {
+	if c == nil {
+		c = clock.Real()
+	}
+	health, err := p.healthPool()
+	if err != nil {
+		return 0, err
+	}
+	// Derived from the caller's context, as HealthyWithin's bound is.
+	ctx, cancel := d.WithTimeout(c, ctx, healthProbeTimeout)
+	defer cancel()
+	return readSchemaVersion(ctx, health)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
@@ -340,6 +418,12 @@ func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, err
 	// it instead of holding the probe's one connection for the full bound.
 	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
+	return readSchemaVersion(ctx, health)
+}
+
+// readSchemaVersion is the health probe's read on health, under the bound ctx carries: the highest
+// schema migration Postgres has applied.
+func readSchemaVersion(ctx context.Context, health *pgxpool.Pool) (int, error) {
 	// The cast holds the result at bigint whichever type the column has: a connection that
 	// prepared this read while schema_migrations.version was an integer would otherwise fail it
 	// once after a boot widens the column ("cached plan must not change result type").
@@ -373,6 +457,9 @@ const listenerPoolSize = 1
 // of the shared pool held that long would be one fewer for every request, and a LISTEN on a
 // pooled connection would end when the pool recycled it.
 func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Listener"); err != nil {
+		return nil, err
+	}
 	listen, err := p.separate(&p.listen, listenerPoolSize, "listener", "")
 	if err != nil {
 		return nil, err
@@ -393,6 +480,9 @@ func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
 // processes are listening (docs.ListenerApplicationPrefix), and the document rooms' NOTIFY sender
 // (docs/room_sync.go), which a request inside a transaction sends through.
 func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Dedicated"); err != nil {
+		return nil, err
+	}
 	conn, err := p.Listener(ctx)
 	if err != nil {
 		return nil, err
@@ -859,6 +949,9 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.queryAtCut(ctx, cut, sql, args)
+	}
 	rows, err := p.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
@@ -912,6 +1005,9 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.queryRowAtCut(ctx, cut, sql, args)
+	}
 	return p.pool.QueryRow(ctx, sql, args...)
 }
 
@@ -920,12 +1016,18 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.execAtCut(ctx, cut, sql, args)
+	}
 	return p.pool.Exec(ctx, sql, args...)
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it.
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err := p.guard(ctx); err != nil {
+		return nil, err
+	}
+	if err := refuseAtCut(ctx, "Acquire"); err != nil {
 		return nil, err
 	}
 	return p.pool.Acquire(ctx)
@@ -936,12 +1038,19 @@ func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) er
 	if err := p.guard(ctx); err != nil {
 		return err
 	}
+	if err := refuseAtCut(ctx, "AcquireFunc"); err != nil {
+		return err
+	}
 	return p.pool.AcquireFunc(ctx, fn)
 }
 
-// AcquireAllIdle takes every idle connection the pool holds.
+// AcquireAllIdle takes every idle connection the pool holds. Under a cut it takes none, as
+// Acquire refuses one: its only caller is a test with no cut.
 func (p *Pool) AcquireAllIdle(ctx context.Context) []*pgxpool.Conn {
 	if err := p.guard(ctx); err != nil {
+		return nil
+	}
+	if _, atCut := asof.CutFrom(ctx); atCut {
 		return nil
 	}
 	return p.pool.AcquireAllIdle(ctx)
@@ -957,6 +1066,9 @@ func (p *Pool) CopyFrom(
 	if err := p.guard(ctx); err != nil {
 		return 0, err
 	}
+	if err := refuseAtCut(ctx, "CopyFrom"); err != nil {
+		return 0, err
+	}
 	return p.pool.CopyFrom(ctx, table, columns, source)
 }
 
@@ -964,6 +1076,9 @@ func (p *Pool) CopyFrom(
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
 	if err := p.guard(ctx); err != nil {
 		return errBatchResults{err: err}
+	}
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return p.sendBatchAtCut(ctx, cut, batch)
 	}
 	return p.pool.SendBatch(ctx, batch)
 }
@@ -1002,18 +1117,31 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 // so a refusal records the caller that asked for the transaction rather than one of this
 // pool's own frames. A transaction with nothing to do at either end - no hold mark to clear and no
 // BeforeCommit step to take - is handed on as pgx opened it: a trackedTx around it would only
-// forward its Commit and Rollback.
+// forward its Commit and Rollback. A transaction opened under a cut is read-only, whatever access
+// mode options name, and binds its statements to that cut (cutTx), around whatever begin would
+// hand on without one. A begin query that options name (pgx.TxOptions.BeginQuery) sets its own
+// access mode, so under a cut the pool refuses it.
 func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	cut, atCut := asof.CutFrom(ctx)
+	if atCut {
+		if options.BeginQuery != "" {
+			return nil, &RefusedAtCutError{Method: "BeginTx with BeginQuery", Cut: cut}
+		}
+		options.AccessMode = pgx.ReadOnly
+	}
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
 	release := hold(ctx)
 	beforeCommit, _ := ctx.Value(beforeCommitKey{}).(BeforeCommit)
-	if release == nil && beforeCommit == nil {
-		return tx, nil
+	if release != nil || beforeCommit != nil {
+		tx = &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}
 	}
-	return &trackedTx{Tx: tx, release: release, beforeCommit: beforeCommit}, nil
+	if atCut {
+		tx = &cutTx{Tx: tx, cut: cut}
+	}
+	return tx, nil
 }
 
 // BeforeCommit is a step every transaction a request opens takes just before its COMMIT, inside

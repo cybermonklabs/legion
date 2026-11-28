@@ -64,8 +64,8 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 // Bedrock answers nothing until the row ends. callBound is shrunk to 300 ms, and the caller gives
 // the call 5 s: unbounded, the call ends with the caller's own deadline, which is no outage.
 func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
-	// Not parallel: it shortens callBound (shortenForTest), which every Embed call the queue makes reads.
-	shortenForTest(t, &callBound, 300*time.Millisecond)
+	// Not parallel: it shortens callBound (setForTest), which every Embed call the queue makes reads.
+	setForTest(t, &callBound, 300*time.Millisecond)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

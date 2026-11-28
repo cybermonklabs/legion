@@ -15,6 +15,7 @@
 
 import { hostname } from "node:os";
 import {
+  type DeviceAuthorization,
   deviceLoginBroker,
   deviceLoginHost,
   finishDeviceLogin,
@@ -46,15 +47,25 @@ export interface LoginIo {
   readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
-/** The flags `argv` sets, or the problem with them. */
+/** The flags `argv` sets, or the problem with them. `--scope` is read for its syntax alone:
+ *  `none`, or comma-separated words, each trimmed; `startDeviceLogin` holds each word, and the
+ *  reason's length, to what a Dispatch sign-in may ask. */
 type ParsedLogin =
   | { readonly kind: "help" }
-  | { readonly kind: "login"; readonly device: boolean; readonly person: string | undefined }
+  | {
+      readonly kind: "login";
+      readonly device: boolean;
+      readonly dispatchScopes: readonly string[] | undefined;
+      readonly person: string | undefined;
+      readonly reason: string | undefined;
+    }
   | { readonly kind: "refused"; readonly problem: string };
 
 function parseLogin(argv: readonly string[]): ParsedLogin {
   let device = false;
   let person: string | undefined;
+  let scope: string | undefined;
+  let reason: string | undefined;
   for (let at = 0; at < argv.length; at += 1) {
     const word = argv[at] as string;
     if (word === "--help" || word === "-h") return { kind: "help" };
@@ -67,11 +78,29 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
       at += 1;
     } else if (word.startsWith("--person=")) {
       person = word.slice("--person=".length);
+    } else if (word === "--scope") {
+      const next = argv[at + 1];
+      if (next === undefined) return { kind: "refused", problem: "--scope needs a list" };
+      scope = next;
+      at += 1;
+    } else if (word.startsWith("--scope=")) {
+      scope = word.slice("--scope=".length);
+    } else if (word === "--reason") {
+      const next = argv[at + 1];
+      if (next === undefined) return { kind: "refused", problem: "--reason needs text" };
+      reason = next;
+      at += 1;
+    } else if (word.startsWith("--reason=")) {
+      reason = word.slice("--reason=".length);
     } else {
       return { kind: "refused", problem: `unknown argument ${JSON.stringify(word)}` };
     }
   }
-  return { kind: "login", device, person };
+  if (scope === undefined) {
+    return { kind: "login", device, dispatchScopes: undefined, person, reason };
+  }
+  const dispatchScopes = scope.trim() === "none" ? [] : scope.split(",").map((word) => word.trim());
+  return { kind: "login", device, dispatchScopes, person, reason };
 }
 
 /**
@@ -86,8 +115,14 @@ function parseLogin(argv: readonly string[]): ParsedLogin {
  * (`tokenFilesSet`), no `--device`, no person (`--person`, else `AGENT_SECRETS_PERSON`), no broker
  * (`AGENT_SECRETS_URL`) a device login may use (https, or http on this machine's loopback), a
  * login directory others may write to, another user owns, or this user cannot enter and write to,
- * or a login file setting that names something other than a regular file (a directory, a named
- * pipe, a socket, a device, a loop of links).
+ * a login file setting that names something other than a regular file (a directory, a named
+ * pipe, a socket, a device, a loop of links), or a `--scope` word no Dispatch sign-in may ask for
+ * or a `--reason` longer than the broker takes, which `startDeviceLogin` refuses with a
+ * `RangeError` before it asks.
+ *
+ * A Dispatch sign-in (`--scope`) names itself as one, with its `--reason` where one is given, and
+ * never as this machine's login at the broker, which would read as a machine login's sessions and
+ * secrets: each line names the login as `startDeviceLogin` describes it.
  */
 export async function loginCommand(
   argv: readonly string[],
@@ -151,16 +186,29 @@ export async function loginCommand(
     return refuse(messageFor(error), USAGE);
   }
   const host = deviceLoginHost(hostname());
+  let started: DeviceAuthorization;
   try {
-    const started = await startDeviceLogin({
+    started = await startDeviceLogin({
       brokerUrl,
+      dispatchScopes: parsed.dispatchScopes,
       person,
       host,
+      reason: parsed.reason,
       fetch: io.fetchImpl,
     });
+  } catch (error) {
+    // What a Dispatch sign-in may not ask for is refused before any request, as a RangeError.
+    if (error instanceof RangeError)
+      return refuse(`${error.message}. Run dispatch login --help.`, USAGE);
+    io.print(`dispatch login: ${messageFor(error)}`);
+    return REFUSED;
+  }
+  try {
+    const naming =
+      parsed.reason === undefined ? host : `${JSON.stringify(parsed.reason)} on ${host}`;
     io.print(
       [
-        `dispatch login: to log this machine (${host}) in at the secrets broker at ${urlForText(started.brokerUrl, BROKER_URL_VAR)}, ${person} approves it:`,
+        `dispatch login: for ${person} to approve ${started.describe} (${naming}) through the secrets broker at ${urlForText(started.brokerUrl, BROKER_URL_VAR)}:`,
         `  open ${started.verificationUriComplete ?? started.verificationUri}`,
         `  and enter the code ${started.userCode}`,
         `dispatch login: the code is good until ${started.expiresAt.toISOString()}; waiting for the approval.`,
@@ -169,9 +217,16 @@ export async function loginCommand(
     // The login it replaced is read under the lock its save holds: its credential stays live at
     // the broker until it lapses or is revoked, so the person is told which to revoke.
     const login = await finishDeviceLogin(started, { path, fetch: io.fetchImpl, sleep: io.sleep });
+    // A machine login's line is byte for byte the one earlier builds print, which the packed
+    // terminal tests read; a sign-in's names it in the same words (`started.describe`).
     const lines = [
-      `dispatch login: approved. This machine's device login is kept in ${DEVICE_LOGIN_FILE_NAMED}; its launcher credential ${login.credentialId} lasts until ${login.expiresAt.toISOString()}, and each refresh moves that on.`,
+      `dispatch login: approved. ${started.describe.charAt(0).toUpperCase()}${started.describe.slice(1)} is kept in ${DEVICE_LOGIN_FILE_NAMED}; its launcher credential ${login.credentialId} lasts until ${login.expiresAt.toISOString()}, and each refresh moves that on.`,
     ];
+    if (login.dispatchScopes !== null) {
+      lines.push(
+        `dispatch login: approved Dispatch scopes: ${login.dispatchScopes.join(", ") || "none"}.`
+      );
+    }
     if (login.lockLeft !== "") {
       // The login is kept and in use, so this names no credential to revoke.
       lines.push(`dispatch login: the login is kept, but ${login.lockLeft}.`);

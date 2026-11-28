@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -174,10 +175,17 @@ func signInRule(boot bootConfig) identity.SignInRule {
 // (oidc.CodeFlow.Run, which main starts at boot, or the first request), so a sign-in issuer that
 // is down at boot delays sign-ins and nothing else.
 func signInFlow(boot bootConfig) *oidc.CodeFlow {
+	return signInFlowOn(boot, clock.Real())
+}
+
+// signInFlowOn is signInFlow with each revocation's bound, oidc.TokenTimeout, armed on c
+// (oidc.NewCodeFlowOn): clock.Real from signInFlow, and a test's clocktest.Fake, which ends a
+// revocation the pool holds only where the test moves it.
+func signInFlowOn(boot bootConfig, c clock.Clock) *oidc.CodeFlow {
 	if boot.SignInIssuer == "" {
 		return nil
 	}
-	return oidc.NewCodeFlow(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain)
+	return oidc.NewCodeFlowOn(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain, c)
 }
 
 // openPeople is the people store main serves boot with over pool, and the keys session cookies are
@@ -198,12 +206,12 @@ func openPeople(boot bootConfig, dataDir string, pool *store.Pool, signIn *oidc.
 }
 
 // retirePlainRefreshTokens is the boot's retirement of the refresh tokens people holds in plain
-// text (store.PgPeopleStore.RetirePlainRefreshTokens), bounded by timeout (bootTask): a pool that
-// does not answer, or has not been discovered, fails each token not yet revoked, and the start goes
-// on. It logs the counts, never a token; each token the pool did not revoke has its own ERROR line,
-// and stays for the next boot.
-func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: retire the refresh tokens stored in plain text", "dispatch: retired the refresh tokens stored in plain text",
+// text (store.PgPeopleStore.RetirePlainRefreshTokens), bounded by timeout on clk (bootTask): a pool
+// that does not answer, or has not been discovered, fails each token not yet revoked, and the start
+// goes on. It logs the counts, never a token; each token the pool did not revoke has its own ERROR
+// line, and stays for the next boot.
+func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, clk bootClock, timeout time.Duration) {
+	bootTask(ctx, clk, timeout, "dispatch: retire the refresh tokens stored in plain text", "dispatch: retired the refresh tokens stored in plain text",
 		func(ctx context.Context) ([]any, error) {
 			retired, failed, err := people.RetirePlainRefreshTokens(ctx)
 			return []any{"retired", retired, "failed", failed}, err
@@ -223,7 +231,7 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // deployment configured, and not from signIn.
 func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow) identity.Identity {
 	if boot.IdentityHeader != "" {
-		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+		return identity.HeaderIdentity{People: people}
 	}
 	if boot.IAPAudience != "" {
 		return identity.IAPIdentity{

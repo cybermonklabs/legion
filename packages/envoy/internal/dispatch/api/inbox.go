@@ -3,10 +3,13 @@ package api
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type inboxIssue struct {
@@ -53,10 +56,14 @@ type askReach struct {
 
 type inboxAsk struct {
 	shapedAsk
-	Issue     *inboxIssue         `json:"issue,omitempty"`
-	Document  *inboxDocument      `json:"document,omitempty"`
-	Priority  *int                `json:"priority"`
-	LastReply *model.AskLastReply `json:"last_reply"`
+	Issue    *inboxIssue    `json:"issue,omitempty"`
+	Document *inboxDocument `json:"document,omitempty"`
+	Priority *int           `json:"priority"`
+	// ResolvedPriority and PriorityFrom are the ask's issue's (model.Issue's), null on a project
+	// document's ask, which has no issue.
+	ResolvedPriority *int                `json:"resolved_priority"`
+	PriorityFrom     *string             `json:"priority_from"`
+	LastReply        *model.AskLastReply `json:"last_reply"`
 	// SnoozedUntil is the caller's own snooze on this row, null when they have not snoozed it.
 	// It is surfaced, never filtered: the row stays in everyone's inbox including its snoozer's,
 	// who folds it away while this moment is still ahead and sees it again once it passes.
@@ -85,6 +92,16 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 	}
 }
 
+// inboxListedAsks is the filter of the asks the Inbox lists, over the ask aliased a, its issue i and
+// its own document ar (the joins of askReadFrom): an open ask, on an open issue where it has one,
+// of the project $1 names, or of any where $1 is empty. listInbox reads it twice, as its own filter
+// and as the filter of `subjects`, the issues its priority walk climbs from, so the walk climbs
+// from the issue of every ask the read can list: a change of which asks the Inbox lists moves the
+// walk with it, and no listed ask reads a resolved priority of null for want of a climb.
+const inboxListedAsks = `a.state = 'open'
+		  and (i.key is null or i.closed_at is null)
+		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)`
+
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -107,21 +124,49 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	// i, its own document as ar and their project as p - so this read joins none of them itself
 	// and reads the document's columns off the shared join. `unassigned` is left standing for
 	// the caller that sends it: every question reaches a person now, so it answers nothing.
+	//
+	// The rows are ordered by the priority each ask's issue resolves to (refs.IssuePriorityTerms:
+	// its own, else the nearest issue's above it), so an ask on a child that takes P0 from a parent
+	// stands with the P0 asks. `subjects` is the issues of the asks this read can list
+	// (inboxListedAsks), so the walk climbs once for the page rather than once per row, and from no
+	// issue the read cannot answer.
+	//
+	// At a cut the inbox applies the same rule to the records at the cut (decision 10 of
+	// INFRA-4620's plan). The caller's snoozes keep no history, so the read joins none and each
+	// row leaves its snooze out (inboxAtTheCut). An ask whose person rests on a project default
+	// that the records at the cut do not give has no person at the cut, which is neither the
+	// filter's person nor nobody, so it is in no ?assignee= answer.
+	//
+	// The caller's login is bound only where the snooze join that reads it is added, and the join
+	// names it by the place it is appended at, so no other argument moves it.
+	_, atCut := asof.CutFrom(r.Context())
+	args := []any{project, assigneeMode, assigneeLogin}
+	snoozeColumn, snoozeJoin := `null::timestamptz`, ``
+	if !atCut {
+		args = append(args, model.CanonicalLogin(caller.ID))
+		snoozeColumn, snoozeJoin = `sn.snoozed_until`, `
+		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $`+strconv.Itoa(len(args))
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+		with recursive subjects as (
+			select distinct i.key
+			from asks a
+			join issues i on i.key = a.issue_key
+			left join artifacts ar on ar.id = a.artifact_id
+			where `+inboxListedAsks+`
+		), `+refs.IssuePriorityTerms+`
 		select `+askReadColumns+`,
-		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
-		       sn.snoozed_until
+		       i.key, i.title, i.assignee, i.priority, `+refs.IssuePriorityColumns+`,
+		       ar.project_key, ar.slug, ar.name, `+snoozeColumn+`
 		`+askReadFrom+`
-		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
-		where a.state = 'open'
-		  and (i.key is null or i.closed_at is null)
-		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
+		`+refs.IssuePriorityJoin+snoozeJoin+`
+		where `+inboxListedAsks+`
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
-		order by i.priority asc nulls last, waiting_on desc,
+		order by `+refs.IssuePriorityResolved+` asc nulls last, waiting_on desc,
 		         coalesce(lr.created_at, a.created_at) desc, a.id desc
-	`, project, assigneeMode, assigneeLogin, model.CanonicalLogin(caller.ID))
+	`, args...)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -132,10 +177,13 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		var ask inboxAsk
 		var issueKey, issueTitle, issueAssignee, documentProject, documentSlug, documentName *string
 		var snoozedUntil *time.Time
-		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &documentProject, &documentSlug, &documentName, &snoozedUntil)
+		row, reply, err := scanAskRead(rows, &issueKey, &issueTitle, &issueAssignee, &ask.Priority, &ask.ResolvedPriority, &ask.PriorityFrom, &documentProject, &documentSlug, &documentName, &snoozedUntil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if atCut && assigneeMode != "" && row.WaitingOnPerson == "" {
+			continue
 		}
 		ask.Ask = row
 		ask.LastReply = reply
@@ -167,7 +215,8 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	// The Inbox's asks and the threads under them are one read of the stored trees: each row
 	// registers its texts with this reader, and one query answers the page.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	reader := s.readDisplayTrees(r.Context(), trees)
 	threads, err := s.loadAskThreads(r.Context(), caller, askIDs, reader)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -181,5 +230,9 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		asks[index].shape(reader)
 	}
 	reader.resolve()
+	if err := s.inboxAtTheCut(r.Context(), asks, trees); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, asks)
 }

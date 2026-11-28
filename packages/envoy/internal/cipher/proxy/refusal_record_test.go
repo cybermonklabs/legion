@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -146,6 +148,9 @@ const boundCaller = testGrantID + "@" + testEnrollID
 // chosen and how many that is (secrets_count, and never secrets_omitted), the host, and the
 // answer id, which the answer carries in its X-Broker-Answer-Id header and at the end of its text
 // body; no call line beside it; and the refusal counted. No record holds a value or a placeholder.
+// The hold's two rows need Postgres (storetest.Open), so they skip when BROKER_TEST_DATABASE_URL
+// is unset. The check that the table drove every site then leaves their sites out and logs them;
+// with a database every site counts.
 func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	registry := metrics.New()
 	answers := answer.NewAnswers(registry)
@@ -162,6 +167,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	}
 
 	drove := map[string]bool{}
+	needsDatabase := map[string]bool{}
 	for _, row := range []struct {
 		site, name string
 		rig        func(t *testing.T) *rig
@@ -175,6 +181,9 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 		path       string
 		// challenge is the Proxy-Authenticate the answer carries, "" for none.
 		challenge string
+		// database says the row's rig needs Postgres: storetest.Open skips the row when
+		// BROKER_TEST_DATABASE_URL is unset.
+		database bool
 	}{
 		{
 			site: siteNotAProxyRequest, name: "an ordinary GET of the port", rig: plain,
@@ -216,7 +225,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			status: http.StatusForbidden, code: codeSecretNotInStore, reason: refused.Error(), host: boundHost,
 		},
 		{
-			site: siteHeldConnection, name: "a CONNECT of ada's grant once Dispatch holds her", rig: holding,
+			site: siteHeldConnection, name: "a CONNECT of ada's grant once Dispatch holds her", rig: holding, database: true,
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				held.dispatch.SetHeld(heldPerson, true)
 				return connectAnswer(t, r, net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
@@ -272,7 +281,7 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, host: boundHost, path: "/v1/things",
 		},
 		{
-			site: siteHeldRequest, name: "the second call of ada's connection, Dispatch holding her since the first", rig: holding,
+			site: siteHeldRequest, name: "the second call of ada's connection, Dispatch holding her since the first", rig: holding, database: true,
 			drive: func(t *testing.T, r *rig) proxyAnswer {
 				client := r.client(workerPlaceholder)
 				if first, body := r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder); first.StatusCode != http.StatusOK {
@@ -406,6 +415,9 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
 		},
 	} {
+		if row.database {
+			needsDatabase[row.site] = true
+		}
 		t.Run(row.site+": "+row.name, func(t *testing.T) {
 			r := row.rig(t)
 			labels := `outcome="refused",code="` + row.code + `",caller_class="` + answer.CallerAirlock + `"`
@@ -462,13 +474,21 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			}
 		})
 	}
-	var missing []string
+	noDatabase := os.Getenv(storetest.DatabaseURLEnv) == ""
+	var missing, leftOut []string
 	for _, site := range refusalSites {
-		if !drove[site] {
+		switch {
+		case drove[site]:
+		case noDatabase && needsDatabase[site]:
+			leftOut = append(leftOut, site)
+		default:
 			missing = append(missing, site)
 		}
 	}
-	if len(drove) < len(refusalSites) || len(missing) != 0 {
+	if len(leftOut) != 0 {
+		t.Logf("%s is unset, so the rows that need Postgres skipped; the check leaves out their sites %v", storetest.DatabaseURLEnv, leftOut)
+	}
+	if len(drove)+len(leftOut) < len(refusalSites) || len(missing) != 0 {
 		t.Fatalf("the table drove %d of the proxy port's %d refusal sites; it never drove %v", len(drove), len(refusalSites), missing)
 	}
 }

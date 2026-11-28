@@ -50,6 +50,8 @@ function actionFailure(
 }
 
 interface CommentActionQueueOptions<TContext> {
+  /** The issue whose comments these are, which the actions' requests do not name. */
+  issue?: string;
   /** The queries `onMutate`'s optimistic value stands in, whose reads wait until Dispatch has
    *  taken the action (`KeyedWriteOptions.holds`). */
   holds?(input: CommentActionInput): ReadHold;
@@ -81,6 +83,7 @@ function submitCommentAction({ id, kind }: CommentActionInput, bounds: WriteBoun
  */
 export function useCommentActionQueue<TContext = undefined>({
   holds,
+  issue,
   onError,
   onMutate,
   onSuccess,
@@ -93,6 +96,7 @@ export function useCommentActionQueue<TContext = undefined>({
   const action = useKeyedWrite<unknown, CommentActionInput, TContext>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
+    issue,
     label: ({ kind }) => ACTION_LABELS[kind],
     holds,
     // Every action is a `POST` of its own route (`submitCommentAction`).
