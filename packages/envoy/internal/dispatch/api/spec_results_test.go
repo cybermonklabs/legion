@@ -364,10 +364,7 @@ func newSpecResultsRigOn(t *testing.T, serving testServerOptions) *specResultsRi
 		files:     map[string]map[string]string{specResultsCommit: specResultsFiles},
 		workflows: map[string]map[string]string{specResultsCommit: {specResultsWorkflowPath: specResultsWorkflow}},
 	}
-	pemText, err := fixtureAppKey()
-	if err != nil {
-		t.Fatalf("generate App key: %v", err)
-	}
+	pemText := fixtureAppPEM(t)
 	serving.app = &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}
 	serving.githubAPIBase = github.serve(t)
 	rig := newBrokerTokenRigOn(t, serving)

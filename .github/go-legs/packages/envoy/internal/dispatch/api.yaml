@@ -1829,7 +1829,7 @@
   - TestTheRateRefusalCarriesTheWaitInItsHeader  # 0.2 s
   - TestTheReadListsTasksInTheOrderOfTheirFirstStep  # 0.6 s
   - TestTheReadOfAProjectNamesEachIssuesVariant  # 1.4 s
-  - TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte  # added by INFRA-6351 from TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork
+  - TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte
   - TestTheReferenceTargetsETagAnswers304UntilAMemberChanges  # 1.0 s
   - TestTheReferenceTargetsETagCoversABlocksWholeText  # 1.0 s
   - TestTheRelaysFirstStartDoesNotReadTheWholeEventLog  # 6.9 s

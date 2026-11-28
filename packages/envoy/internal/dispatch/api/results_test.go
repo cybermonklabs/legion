@@ -760,6 +760,16 @@ var fixtureAppKey = sync.OnceValues(func() (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
 })
 
+// fixtureAppPEM is fixtureAppKey's PEM text, failing t when the key could not be generated.
+func fixtureAppPEM(t testing.TB) string {
+	t.Helper()
+	pemText, err := fixtureAppKey()
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	return pemText
+}
+
 // resultsGitHubOptions is the server resultsGitHubServed builds, as options a test can add to
 // before it builds the server itself: its own store and the rename pairs read from it
 // (renamedRepositoryStore).
@@ -772,10 +782,7 @@ func resultsGitHubOptions(
 	routes ...gitHubRoute,
 ) testServerOptions {
 	t.Helper()
-	pemText, err := fixtureAppKey()
-	if err != nil {
-		t.Fatalf("generate fixture key: %v", err)
-	}
+	pemText := fixtureAppPEM(t)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if !repos[r.PathValue("owner")+"/"+r.PathValue("repo")] {

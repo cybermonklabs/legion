@@ -514,27 +514,31 @@ func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
 	}
 }
 
-// keptKeyFormingWords is every word the rule keeps of those built around the issue key ACME-12
-// with one rune from first through last that is neither a letter, a digit nor plain punctuation
-// (and no blank, which ends a word): that rune at the key's start, in its middle and at its end,
-// and beside a plain punctuation rune, each rune beside the next one of the set in turn. Each kept
-// word is named by its rune, in the order of the runes.
-func keptKeyFormingWords(words lineWords, first, last rune) []string {
+// keptKeyFormingWords is every word the rule and the control each keep of those built around the
+// issue key ACME-12 with one rune from first through last that is neither a letter, a digit nor
+// plain punctuation (and no blank, which ends a word): that rune at the key's start, in its middle
+// and at its end, and beside a plain punctuation rune, each rune beside the next one of the set in
+// turn. The runes it visits and the words it builds read plainPunctuation, not the rule's or the
+// control's punctuation, so each word is built once and judged by both. Each kept word is named by
+// its rune, in the order of the runes.
+func keptKeyFormingWords(rule, control lineWords, first, last rune) (ruleKept, controlKept []string) {
 	const key = "ACME-12"
 	punctuation := []rune(plainPunctuation)
-	var kept []string
 	for r := first; r <= last; r++ {
 		if !utf8.ValidRune(r) || unicode.IsSpace(r) || plainWord(string(r), plainPunctuation) {
 			continue
 		}
 		s, p := string(r), string(punctuation[int(r)%len(punctuation)])
 		for _, form := range []string{s + key, key[:4] + s + key[4:], key + s, key + p + s, s + p + key} {
-			if !words.drops(form) {
-				kept = append(kept, fmt.Sprintf("U+%04X in %q", r, form))
+			if !rule.drops(form) {
+				ruleKept = append(ruleKept, fmt.Sprintf("U+%04X in %q", r, form))
+			}
+			if !control.drops(form) {
+				controlKept = append(controlKept, fmt.Sprintf("U+%04X in %q", r, form))
 			}
 		}
 	}
-	return kept
+	return ruleKept, controlKept
 }
 
 // unicodePlanes is how many planes of 65,536 code points hold every code point, U+0000 through
@@ -543,10 +547,11 @@ const unicodePlanes = (unicode.MaxRune + 1) >> 16
 
 // Every rune outside the plain set drops a word built around an issue key, wherever it stands in
 // the word, so no rune can split, join, hide or forge a key. The control lets one rune, the
-// zero-width space, back into the set: the property then fails, and names that rune. The rule and
-// the control each sweep every code point a plane to a subtest, which run beside each other, since
-// one sweep costs seconds under -race; each joins its planes' kept words in plane order, the order
-// one sweep of every code point keeps them in.
+// zero-width space, back into the set: the property then fails, and names that rune. One sweep of
+// every code point judges each word by the rule and by the control (keptKeyFormingWords), a plane
+// to a subtest, and the subtests run beside each other, since the sweep costs seconds under -race;
+// the rule's kept words and the control's are each joined in plane order, the order one sweep of
+// every code point keeps them in.
 func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
 	t.Parallel()
 	words := lineWordsFor([]string{"ACME"}, testOrigins)
@@ -556,13 +561,9 @@ func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
 	t.Run("planes", func(t *testing.T) {
 		for plane := range unicodePlanes {
 			first, last := plane<<16, plane<<16|0xFFFF
-			t.Run(fmt.Sprintf("rule, plane %02d", plane), func(t *testing.T) {
+			t.Run(fmt.Sprintf("plane %02d", plane), func(t *testing.T) {
 				t.Parallel()
-				rule[plane] = keptKeyFormingWords(words, first, last)
-			})
-			t.Run(fmt.Sprintf("control, plane %02d", plane), func(t *testing.T) {
-				t.Parallel()
-				control[plane] = keptKeyFormingWords(widened, first, last)
+				rule[plane], control[plane] = keptKeyFormingWords(words, widened, first, last)
 			})
 		}
 	})

@@ -131,18 +131,16 @@ func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
 	}
 
 	largest, second, third := corpus.priorities[0], corpus.priorities[1], corpus.priorities[2]
-	moment := func(place int) string {
-		return url.QueryEscape(corpus.start.Add(time.Duration(place) * time.Minute).Format(time.RFC3339))
-	}
 	// The corpus starts thirty days before the run, so a moment's text changes from run to run. A
 	// subtest's name writes each moment as its distance from the corpus's start instead, so every
-	// leaf keeps one name across runs.
+	// leaf keeps one name across runs: moment records each moment's text beside that name.
 	var moments []string
-	for _, place := range []int{listCorpusIssues / 3, listCorpusIssues / 2, 2 * listCorpusIssues / 3} {
-		moments = append(moments, moment(place), fmt.Sprintf("start+%dm", place))
+	moment := func(place int) string {
+		text := url.QueryEscape(corpus.start.Add(time.Duration(place) * time.Minute).Format(time.RFC3339))
+		moments = append(moments, text, fmt.Sprintf("start+%dm", place))
+		return text
 	}
-	stable := strings.NewReplacer(moments...)
-	for _, filter := range []struct {
+	filters := []struct {
 		query string
 		// total is the count the merge base's answer must carry, 0 for any count above none, and
 		// empty marks a filter that matches no issue.
@@ -187,7 +185,9 @@ func TestAPriorityListAnswersAsTheMergeBaseAnswers(t *testing.T) {
 		{query: "advances=any&own=true"},
 		{query: "advances=none&own=true", empty: true},
 		{query: "advances=any&own=true&status=backlog&status=icebox&moved=true"},
-	} {
+	}
+	stable := strings.NewReplacer(moments...)
+	for _, filter := range filters {
 		name := "filter (none)"
 		if filter.query != "" {
 			name = "filter " + stable.Replace(filter.query)

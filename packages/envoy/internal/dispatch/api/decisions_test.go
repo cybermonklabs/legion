@@ -71,16 +71,17 @@ func linkTargets(decision model.Decision) []string {
 
 // decisionsFixture is one issue whose spec holds two linkable blocks and whose decisions.md holds
 // an agent decision linking both, a person's decision linking an answered ask and one of them, an
-// unsure decision, and a replaced one. spec and seed are the markdown it created the issue's spec
-// and decisions.md with, so a test can write another issue as the fixture wrote its own.
+// unsure decision, and a replaced one. spec and decisionsMarkdown are the markdown the fixture
+// created its issue's spec and decisions.md with; the decisions markdown names the fixture's own
+// issue and ask in its links.
 type decisionsFixture struct {
-	handler    http.Handler
-	database   *store.Store
-	deps       Deps
-	issue      model.Issue
-	decisions  model.Artifact
-	askID      string
-	spec, seed string
+	handler                 http.Handler
+	database                *store.Store
+	deps                    Deps
+	issue                   model.Issue
+	decisions               model.Artifact
+	askID                   string
+	spec, decisionsMarkdown string
 }
 
 const (
@@ -129,7 +130,7 @@ Replaced by the table above.
 	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md", markdown)
 	return decisionsFixture{
 		handler: handler, database: database, deps: deps, issue: issue, decisions: decisions, askID: askID,
-		spec: specText, seed: markdown,
+		spec: specText, decisionsMarkdown: markdown,
 	}
 }
 
@@ -1301,7 +1302,7 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 			issue := requireCreatedIssue(t, createIssueRequest(t, fixture.handler, map[string]any{
 				"project": fixture.issue.Project, "title": document.name, "spec": fixture.spec, "force": true,
 			}))
-			decisions := uploadIssueDocument(t, fixture.handler, issue.Key, "decisions.md", fixture.seed)
+			decisions := uploadIssueDocument(t, fixture.handler, issue.Key, "decisions.md", fixture.decisionsMarkdown)
 			id := decisions.ID
 			if left {
 				response := issueDocumentUpload(t, fixture.handler, issue.Key, "decisions.md", document.markdown)
@@ -1922,17 +1923,14 @@ func TestIssueDecisionsListTheSpecsOpenQuestions(t *testing.T) {
 // deadline (testwait.Until), and its failure prints the questions it last read.
 func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want int) (issueDecisions, []string) {
 	t.Helper()
-	type read struct {
-		view      issueDecisions
-		questions []string
-	}
-	got := testwait.Until(t, fmt.Sprintf("the issue's decisions to hold %d open questions", want), func() (read, bool) {
-		view := readIssueDecisions(t, handler, key)
+	var view issueDecisions
+	questions := testwait.Until(t, fmt.Sprintf("the issue's decisions to hold %d open questions (the questions last read)", want), func() ([]string, bool) {
+		view = readIssueDecisions(t, handler, key)
 		questions := []string{}
 		for _, question := range view.OpenQuestions {
 			questions = append(questions, question.Question)
 		}
-		return read{view, questions}, len(questions) == want
+		return questions, len(questions) == want
 	})
-	return got.view, got.questions
+	return view, questions
 }

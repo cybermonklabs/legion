@@ -38,6 +38,11 @@ func boundStatements(body string, count int) string {
 	return document.String()
 }
 
+// boundBrokenStatements is how many boundBroken statements make a document of boundDocumentBytes.
+func boundBrokenStatements() int {
+	return (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
+}
+
 // heapAllocated is the bytes that the process has allocated on the heap since it started.
 func heapAllocated() uint64 {
 	sample := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
@@ -82,7 +87,7 @@ func (c *cancelAtPoll) Err() error {
 func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{})
 	served := tree.deps.SpecForm
-	statements := (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
+	statements := boundBrokenStatements()
 	documents := map[string]model.Artifact{
 		"broken": uploadFormDocument(t, tree.handler, tree.root, "broken.md", boundStatements(boundBroken, statements)),
 		"clean":  uploadFormDocument(t, tree.handler, tree.root, "clean.md", boundStatements(boundClean, statements)),
@@ -154,16 +159,14 @@ func TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte(t *testi
 	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{})
 	served := tree.deps.SpecForm
-	statements := (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
-	documents := map[string]model.Artifact{
-		"broken": uploadFormDocument(t, tree.handler, tree.root, "broken.md", boundStatements(boundBroken, statements)),
-	}
-	awaitSettled(t, tree.database, documents["broken"].ID)
+	statements := boundBrokenStatements()
+	broken := uploadFormDocument(t, tree.handler, tree.root, "broken.md", boundStatements(boundBroken, statements))
+	awaitSettled(t, tree.database, broken.ID)
 
-	// judge judges the document name and gives the count of its findings. It reads no heap and no
-	// CPU time, so a judgment beside it moves nothing it gives.
-	judge := func(ctx context.Context, name string) (int, error) {
-		named := []model.AskApprovalDocument{{ArtifactID: documents[name].ID, Name: documents[name].Name, Version: 1}}
+	// judge judges the broken document and gives the count of its findings. It reads no heap and
+	// no CPU time, so a judgment beside it moves nothing it gives.
+	judge := func(ctx context.Context) (int, error) {
+		named := []model.AskApprovalDocument{{ArtifactID: broken.ID, Name: broken.Name, Version: 1}}
 		result, err := served.specFormOf(ctx, tree.database.Pool, named, actRead)
 		if err != nil {
 			return 0, err
@@ -172,11 +175,11 @@ func TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte(t *testi
 	}
 	t.Run("the findings it answers", func(t *testing.T) {
 		t.Parallel()
-		findings, err := judge(context.Background(), "broken")
+		findings, err := judge(context.Background())
 		if err != nil {
 			t.Fatalf("judge the broken document: %v", err)
 		}
-		response := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+documents["broken"].ID+"/spec-form", nil, "alice")
+		response := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+broken.ID+"/spec-form", nil, "alice")
 		if response.Code != http.StatusOK {
 			t.Fatalf("read the broken document's form: status=%d body=%.300s", response.Code, response.Body.String())
 		}
@@ -197,7 +200,7 @@ func TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte(t *testi
 		// before the judgment poll it a few times at most, and the judgment once for each
 		// statement's text.
 		ctx := &cancelAtPoll{Context: inner, cancel: cancel, poll: int64(statements / 2)}
-		_, err := judge(ctx, "broken")
+		_, err := judge(ctx)
 		polls := ctx.polls.Load()
 		t.Logf("the judgment polled its context %d times, and ended at poll %d with the error %v", polls, ctx.poll, err)
 		if !errors.Is(err, context.Canceled) || polls != ctx.poll {
