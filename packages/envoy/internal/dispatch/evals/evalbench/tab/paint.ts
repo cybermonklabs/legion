@@ -35,6 +35,19 @@
 // long task of the page from the navigation to the paint, its start and its length. The server's
 // times are its debug lines (lib.ts's LOGGED) in the log --server-log names.
 //
+// A split run also traces Chromium from the timed navigation to the paint (to the narrowed cards'
+// drawing, in the author case), and its `RESULT tab paint main` line splits the page's main
+// thread from the navigation to the paint, every task of it however short, where the long tasks
+// show none under 50 ms; it tests whether the page's handling and drawing of each frame, each
+// under 50 ms, holds the next frame's message event back (T33): how long the thread was busy and
+// how long idle, by part (script, style and layout, paint, garbage collection, parse, other);
+// every React commit's moment; for each frame of the first payload, in the order they arrived, how
+// long the page's own handlers of it ran, how long the thread was busy, by part, between its write
+// and its arrival, and, from its arrival to the next frame's (the paint's, for the last), the time
+// busy by part and the commits; and every task of 2 ms or more, its start, its length and what it
+// was (`frame:<view>`, the task whose handler read that frame; `react`, one that ended a commit;
+// else what started it, lib.ts's mainThreadTasks).
+//
 //   bun paint.ts --url <server> --database <url> --project INFRA --case <84d-compare|28d|84d-author> \
 //     [--warmed <file> --restarted <file>] [--split 1 --server-log <file>] [--rate stated|ten] \
 //     [--quiet 30] [--catalog 65] [--timeout 120] [--author <login>] \
@@ -74,6 +87,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 
 import {
+  busyIn,
   busyWithin,
   type Counted,
   counted,
@@ -91,6 +105,7 @@ import {
   type Logged,
   launchChromium,
   logSize,
+  mainThreadTasks,
   mark,
   ms,
   need,
@@ -106,6 +121,10 @@ import {
   signIn,
   sleep,
   splitOf,
+  TASK_PARTS,
+  type Task,
+  type TaskPart,
+  TRACE_CATEGORIES,
   type View,
 } from "./lib";
 
@@ -294,9 +313,12 @@ result(
 );
 
 // The paint: pg_stat_statements reset, the navigation in the warm browser, every first-paint
-// section painted, and pg_stat_statements read then; the server's log is read from here on.
+// section painted, and pg_stat_statements read then; the server's log is read from here on. A
+// split run traces Chromium from just before the navigation (TRACE_CATEGORIES) until the paint, or
+// the narrowed cards' drawing in the author case, has been read.
 const logFrom = serverLog === undefined ? 0 : logSize(serverLog);
 await resetStatements(db);
+if (split) await browser.startTracing(page, { categories: TRACE_CATEGORIES, screenshots: false });
 const called = Date.now();
 await page.goto(`${base}${path}`, { waitUntil: "commit", timeout: timeoutMs });
 let paintedAt = 0;
@@ -325,6 +347,7 @@ if (chosen.narrowed && paintedAt > 0) {
     );
   }
 }
+const trace = split ? await browser.stopTracing() : null;
 const record: Instrumented = await readInstrument(page);
 const warmBundle = await bundleOf(page);
 const boot = await bootOf(page);
@@ -626,6 +649,75 @@ if (split) {
     `long_tasks=[${tasks.map((task) => `${ms(fromStart(task.at))}+${ms(task.ms)}`).join(" ")}]`
   );
   result(`tab paint split case=${which} rate=${rate} ${fields.join(" ")}`);
+
+  // The page's main thread to the paint, from the trace (the header): each frame of the first
+  // payload in the order it arrived, then every task of 2 ms or more, named by the frame whose
+  // handler it ran or the commit it ended, else by what started it.
+  const main = trace === null ? null : mainThreadTasks(JSON.parse(trace.toString("utf8")), path);
+  const mainFields = [
+    `trace_events=${main?.events ?? 0}`,
+    `main_thread=${main === null ? "none" : "found"}`,
+  ];
+  if (main !== null && firstPaint !== null) {
+    const partsText = (parts: Record<TaskPart, number>) =>
+      TASK_PARTS.map((part) => `${part}:${ms(parts[part])}`).join(",");
+    const tasks = main.tasks.filter((task) => task.at < firstPaint);
+    const commits = record.commits.map((at) => at - record.start).filter((at) => at <= firstPaint);
+    const frames = snapshots.flatMap((one) => {
+      const arrived = timeOf(one.name, "arrived_ms");
+      if (one.name.startsWith("narrowed.") || arrived === null) return [];
+      const entry = record.frames.find(
+        (frame) => frame.socket === one.frame.socket && frame.index === one.frame.index
+      );
+      return [
+        {
+          arrived,
+          handled: entry?.handled ?? null,
+          name: one.name,
+          written: timeOf(one.name, "written_ms"),
+        },
+      ];
+    });
+    frames.sort((a, b) => a.arrived - b.arrived);
+    const kindOf = (task: Task) => {
+      const end = task.at + task.ms;
+      const frame = frames.find((one) => one.arrived >= task.at && one.arrived < end);
+      if (frame !== undefined) return `frame:${frame.name}`;
+      return commits.some((at) => at >= task.at && at <= end) ? "react" : task.started;
+    };
+    const whole = busyIn(tasks, 0, firstPaint);
+    mainFields.push(
+      `until_ms=${ms(firstPaint)}`,
+      `busy_ms=${ms(whole.ms)}`,
+      `idle_ms=${ms(firstPaint - whole.ms)}`,
+      `busy_parts=[${partsText(whole.parts)}]`,
+      `tasks=${tasks.length}`,
+      `tasks_over_50_ms=${tasks.filter((task) => task.ms >= 50).length}`,
+      `commits=[${commits.map((at) => ms(at)).join(" ")}]`
+    );
+    frames.forEach((one, place) => {
+      const next = frames[place + 1]?.arrived ?? firstPaint;
+      const before = one.written === null ? null : busyIn(tasks, one.written, one.arrived);
+      const after = busyIn(tasks, one.arrived, next);
+      mainFields.push(
+        `${one.name}.arrived_ms=${ms(one.arrived)}`,
+        `${one.name}.handler_ms=${ms(one.handled)}`,
+        `${one.name}.busy_before_arrival_ms=${ms(before?.ms)}`,
+        `${one.name}.busy_before_arrival_parts=[${before === null ? "none" : partsText(before.parts)}]`,
+        `${one.name}.until_next_ms=${ms(next - one.arrived)}`,
+        `${one.name}.until_next_busy_ms=${ms(after.ms)}`,
+        `${one.name}.until_next_parts=[${partsText(after.parts)}]`,
+        `${one.name}.until_next_commits=${commits.filter((at) => at >= one.arrived && at < next).length}`
+      );
+    });
+    mainFields.push(
+      `task_list=[${tasks
+        .filter((task) => task.ms >= 2)
+        .map((task) => `${ms(task.at)}+${ms(task.ms)}:${kindOf(task)}`)
+        .join(" ")}]`
+    );
+  }
+  result(`tab paint main case=${which} rate=${rate} ${mainFields.join(" ")}`);
 }
 
 let narrowedAt: number | null = null;

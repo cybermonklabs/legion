@@ -119,6 +119,13 @@ export interface Browser {
   newContext(options: Record<string, unknown>): Promise<BrowserContext>;
   close(): Promise<void>;
   version(): string;
+  /** Chromium's tracing of every one of its processes (Playwright's `browser.startTracing`), the
+   *  page's main thread among them, until stopTracing answers the trace as JSON. */
+  startTracing(
+    page: Page | undefined,
+    options: { categories: readonly string[]; screenshots: boolean }
+  ): Promise<void>;
+  stopTracing(): Promise<Buffer>;
 }
 
 export interface BrowserContext {
@@ -183,10 +190,14 @@ export async function launchChromium(): Promise<Browser> {
  *  (`dispatch:live-snapshot:<sub>`, api/live-socket.ts), and a section or a CI job list committed
  *  its drawing (`dispatch:evals-section:<id>`, `dispatch:evals-job-list:<id>`, useDrawnMark.ts);
  *  and every long task of the page's main thread, a task of 50 ms or more, with its start and
- *  length (`longTasks`), which says whether the thread was busy between two frames. Every time of
- *  a DOM change is read twice: `at`, the change, and `painted`, two animation frames later, once
- *  the browser has presented it. Times are milliseconds since the epoch, so they compare with the
- *  database's commit timestamps and the server's log; the navigation's own start is `start`. */
+ *  length (`longTasks`), which says whether the thread was busy between two frames; how long the
+ *  page's own handlers of each live frame ran (each frame's `handled`, the app's `message`
+ *  listeners of the socket, timed around each call); and the moment each React commit ended
+ *  (`commits`), through the hook React's production build calls at the end of every commit, which
+ *  React's developer tools install. Every time of a DOM change is read twice: `at`, the change,
+ *  and `painted`, two animation frames later, once the browser has presented it. Times are
+ *  milliseconds since the epoch, so they compare with the database's commit timestamps and the
+ *  server's log; the navigation's own start is `start`. */
 export function instrument(split: boolean): string {
   const splitParts = !split
     ? ""
@@ -213,7 +224,34 @@ export function instrument(split: boolean): string {
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries())
       record.longTasks.push({ at: performance.timeOrigin + entry.startTime, ms: entry.duration });
-  }).observe({ type: "longtask", buffered: true });`;
+  }).observe({ type: "longtask", buffered: true });
+  record.commits = [];
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, isDisabled: false, renderers: new Map(),
+    inject: () => 1, onCommitFiberRoot: () => { record.commits.push(now()); }, onPostCommitFiberRoot: () => {},
+    onCommitFiberUnmount: () => {}, setStrictMode: () => {} };
+  const timed = new WeakMap();
+  Measured.prototype.addEventListener = function (type, listener, options) {
+    if (type !== "message" || this.__evalbenchSocket === undefined || typeof listener !== "function")
+      return listen.call(this, type, listener, options);
+    let wrapped = timed.get(listener);
+    if (wrapped === undefined) {
+      wrapped = function (event) {
+        const began = now();
+        try {
+          return listener.call(this, event);
+        } finally {
+          const frame = this.__evalbenchFrame;
+          if (frame !== undefined) frame.handled = (frame.handled || 0) + now() - began;
+        }
+      };
+      timed.set(listener, wrapped);
+    }
+    return listen.call(this, type, wrapped, options);
+  };
+  const unlisten = Native.prototype.removeEventListener;
+  Measured.prototype.removeEventListener = function (type, listener, options) {
+    return unlisten.call(this, type, (typeof listener === "function" && timed.get(listener)) || listener, options);
+  };`;
   return `(() => {
   const record = { start: performance.timeOrigin, sections: {}, jobLists: {}, narrowing: {}, frames: [], sockets: 0 };
   window.__evalbench = record;
@@ -225,6 +263,7 @@ export function instrument(split: boolean): string {
   };
   let opened = null;
   const Native = window.WebSocket;
+  const listen = Native.prototype.addEventListener;
   class Measured extends Native {
     constructor(url, protocols) {
       super(url, protocols);
@@ -233,9 +272,10 @@ export function instrument(split: boolean): string {
       this.__evalbenchSocket = socket;
       if (opened !== null) opened(socket, this);
       let index = 0;
-      this.addEventListener("message", () => {
+      listen.call(this, "message", () => {
         const entry = { socket, index: index++ };
         record.frames.push(entry);
+        this.__evalbenchFrame = entry;
         stamp(entry);
       });
     }
@@ -284,7 +324,9 @@ export interface Instrumented {
   sections: Record<string, Stamp & { state: string }>;
   jobLists: Record<string, Stamp & { failed: boolean }>;
   narrowing: { loading?: Stamp; narrowed?: Stamp };
-  frames: (Stamp & { socket: number; index: number })[];
+  /** Each live frame: its socket and place, and in a split run how long the page's own handlers of
+   *  it ran (`handled`, ms). */
+  frames: (Stamp & { socket: number; index: number; handled?: number })[];
   /** Each live socket the page made, when it made it and when it opened (none before). */
   opened: { socket: number; made: number; open?: number }[];
   /** Each subscribe frame the page sent, by its socket and sub, when it sent it. */
@@ -293,6 +335,8 @@ export interface Instrumented {
   marks: Mark[];
   /** Every long task of the page's main thread: when it began and how long it ran. */
   longTasks: { at: number; ms: number }[];
+  /** When each React commit ended. */
+  commits: number[];
 }
 
 /** Reads the instrument's record off the page, its frames from `fromFrame` on: in a split run, the
@@ -305,7 +349,7 @@ export async function readInstrument(page: Page, fromFrame = 0): Promise<Instrum
          .map((entry) => ({ name: entry.name, at: performance.timeOrigin + entry.startTime }));
        return { start: r.start, sections: r.sections, jobLists: r.jobLists, narrowing: r.narrowing,
          frames: r.frames.slice(${fromFrame}), opened: r.opened || [], sends: r.sends || [],
-         marks: (r.marks || []).concat(held), longTasks: r.longTasks || [] }; })()`
+         marks: (r.marks || []).concat(held), longTasks: r.longTasks || [], commits: r.commits || [] }; })()`
   );
   const seen = new Set<string>();
   record.marks = record.marks.filter((one) => {
@@ -332,6 +376,255 @@ export function busyWithin(record: Instrumented, from: number, to: number): numb
   for (const task of record.longTasks)
     busy += Math.max(0, Math.min(to, task.at + task.ms) - Math.max(from, task.at));
   return busy;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The page's main thread, from Chromium's trace
+
+/** What a split run traces: every task each thread runs (`toplevel`), what each task ran, as
+ *  DevTools' Performance panel draws it (`devtools.timeline` and its detail: script, style and
+ *  layout, paint and garbage collection), and the user timing marks, among them the navigation's
+ *  start. */
+export const TRACE_CATEGORIES: readonly string[] = [
+  "toplevel",
+  "devtools.timeline",
+  "disabled-by-default-devtools.timeline",
+  "blink.user_timing",
+];
+
+/** What a task of the main thread spent its time on: the page's script (event handlers, timers,
+ *  animation frame callbacks, microtasks, compiles), style and layout, paint (pre-paint, paint,
+ *  layerize and the commit to the compositor), garbage collection, the parse of HTML and CSS, and
+ *  whatever else it ran. */
+export type TaskPart = "script" | "style_layout" | "paint" | "gc" | "parse" | "other";
+
+export const TASK_PARTS: readonly TaskPart[] = [
+  "script",
+  "style_layout",
+  "paint",
+  "gc",
+  "parse",
+  "other",
+];
+
+/** The part each trace event's time is, by its name; an event of no part named here counts toward
+ *  the event of a part it runs inside, or `other` inside none. */
+const PART_OF: Readonly<Record<string, TaskPart>> = {
+  EventDispatch: "script",
+  EvaluateScript: "script",
+  FireAnimationFrame: "script",
+  FireIdleCallback: "script",
+  FunctionCall: "script",
+  RunMicrotasks: "script",
+  TimerFire: "script",
+  "v8.compile": "script",
+  "v8.compileModule": "script",
+  "v8.evaluateModule": "script",
+  XHRReadyStateChange: "script",
+  HitTest: "style_layout",
+  Layout: "style_layout",
+  RecalculateStyles: "style_layout",
+  UpdateLayoutTree: "style_layout",
+  Commit: "paint",
+  CompositeLayers: "paint",
+  Layerize: "paint",
+  Paint: "paint",
+  PrePaint: "paint",
+  UpdateLayer: "paint",
+  MajorGC: "gc",
+  MinorGC: "gc",
+  ParseAuthorStyleSheet: "parse",
+  ParseHTML: "parse",
+};
+
+/** The names Chromium gives a task a thread runs. */
+const TASK_NAMES: Readonly<Record<string, true>> = {
+  RunTask: true,
+  "ThreadControllerImpl::RunTask": true,
+};
+
+/** One task of the page's main thread: when it began, in milliseconds from the navigation, how
+ *  long it ran, its self time by part, and what started it: `timer`, `message` (a message event,
+ *  a socket's frame or a MessagePort's, React's scheduler's among them), `animation-frame`,
+ *  `render` (style, layout or paint and no script), else its largest part. */
+export interface Task {
+  at: number;
+  ms: number;
+  parts: Record<TaskPart, number>;
+  started: string;
+}
+
+/** One event of a trace, as Chromium writes it in JSON. */
+interface TraceEvent {
+  name: string;
+  ph: string;
+  ts: number;
+  dur?: number;
+  pid: number;
+  tid: number;
+  args?: { data?: Record<string, unknown> } & Record<string, unknown>;
+}
+
+/** One span of one thread: a complete event, or a begin and its end. */
+interface Span {
+  name: string;
+  ts: number;
+  end: number;
+  data: Record<string, unknown>;
+}
+
+function noParts(): Record<TaskPart, number> {
+  return { script: 0, style_layout: 0, paint: 0, gc: 0, parse: 0, other: 0 };
+}
+
+/** The events of a trace in Chromium's JSON form: an array of them, or `{traceEvents: [...]}`. */
+function traceEvents(trace: unknown): TraceEvent[] {
+  const events = Array.isArray(trace) ? trace : asRecord(trace).traceEvents;
+  return Array.isArray(events)
+    ? events.filter(
+        (event): event is TraceEvent =>
+          typeof event === "object" &&
+          event !== null &&
+          typeof event.name === "string" &&
+          typeof event.ts === "number"
+      )
+    : [];
+}
+
+/** The spans of one thread's events, in order of their start, the longer first of two that start
+ *  together: each complete event (`X`), and each begin (`B`) with the end (`E`) that closes it. */
+function spansOf(events: readonly TraceEvent[]): Span[] {
+  const spans: Span[] = [];
+  const open: TraceEvent[] = [];
+  for (const event of [...events].sort((a, b) => a.ts - b.ts)) {
+    if (event.ph === "X") {
+      spans.push({
+        name: event.name,
+        ts: event.ts,
+        end: event.ts + (event.dur ?? 0),
+        data: event.args?.data ?? {},
+      });
+    } else if (event.ph === "B") {
+      open.push(event);
+    } else if (event.ph === "E") {
+      const at = open.findLastIndex((begun) => event.name === "" || begun.name === event.name);
+      const begun = at < 0 ? undefined : open.splice(at, 1)[0];
+      if (begun !== undefined)
+        spans.push({ name: begun.name, ts: begun.ts, end: event.ts, data: begun.args?.data ?? {} });
+    }
+  }
+  return spans.sort((a, b) => a.ts - b.ts || b.end - a.end);
+}
+
+/** The self time of each part within one task (`inside`, the spans that start in it, in spansOf's
+ *  order), in microseconds: each span of a part less the spans of a part inside it, and the task's
+ *  time outside every span of a part as `other`. */
+function partsWithin(task: Span, inside: readonly Span[]): Record<TaskPart, number> {
+  const parts = noParts();
+  const stack: { end: number; part: TaskPart; self: number }[] = [];
+  let covered = 0;
+  const close = (until: number) => {
+    for (let top = stack.at(-1); top !== undefined && top.end <= until; top = stack.at(-1)) {
+      stack.pop();
+      parts[top.part] += Math.max(0, top.self);
+    }
+  };
+  for (const span of inside) {
+    const part = PART_OF[span.name];
+    if (part === undefined) continue;
+    close(span.ts);
+    const end = Math.min(span.end, task.end);
+    const top = stack.at(-1);
+    if (top === undefined) covered += end - span.ts;
+    else top.self -= Math.min(end, top.end) - span.ts;
+    stack.push({ end, part, self: end - span.ts });
+  }
+  close(Number.POSITIVE_INFINITY);
+  parts.other += Math.max(0, task.end - task.ts - covered);
+  return parts;
+}
+
+/** What started a task, from the spans inside it and its parts (Task). */
+function startedBy(inside: readonly Span[], parts: Record<TaskPart, number>): string {
+  if (inside.some((span) => span.name === "TimerFire")) return "timer";
+  if (inside.some((span) => span.name === "EventDispatch" && span.data.type === "message"))
+    return "message";
+  if (inside.some((span) => span.name === "FireAnimationFrame")) return "animation-frame";
+  if (parts.script === 0 && parts.style_layout + parts.paint > 0) return "render";
+  return TASK_PARTS.reduce((most, part) => (parts[part] > parts[most] ? part : most), "other");
+}
+
+/**
+ * Every task of the page's main thread from the navigation to the trace's end, from a trace of
+ * TRACE_CATEGORIES: the main thread is the one that marked the navigation's start
+ * (`navigationStart`) of the last document whose address holds `path`, and each task is one the
+ * thread ran from then on, outside any other (Chromium nests a task in a task where one runs
+ * another), each time in milliseconds from that start, which is the page's
+ * `performance.timeOrigin`. Null where the trace marks no such navigation. `events` counts the
+ * trace's events.
+ */
+export function mainThreadTasks(
+  trace: unknown,
+  path: string
+): { events: number; tasks: Task[] } | null {
+  const events = traceEvents(trace);
+  const origin = events
+    .filter(
+      (event) =>
+        event.name === "navigationStart" &&
+        String(event.args?.data?.documentLoaderURL ?? "").includes(path)
+    )
+    .sort((a, b) => a.ts - b.ts)
+    .at(-1);
+  if (origin === undefined) return null;
+  const spans = spansOf(
+    events.filter((event) => event.pid === origin.pid && event.tid === origin.tid)
+  );
+  const tasks: Task[] = [];
+  let next = 0;
+  let open: Span | undefined;
+  for (const span of spans) {
+    if (TASK_NAMES[span.name] !== true || span.ts < origin.ts) continue;
+    if (open !== undefined && span.ts < open.end) continue;
+    open = span;
+    while (next < spans.length && (spans[next]?.ts ?? 0) < span.ts) next++;
+    const inside: Span[] = [];
+    for (let at = next; at < spans.length; at++) {
+      const candidate = spans[at];
+      if (candidate === undefined || candidate.ts >= span.end) break;
+      if (TASK_NAMES[candidate.name] !== true) inside.push(candidate);
+    }
+    const parts = partsWithin(span, inside);
+    tasks.push({
+      at: (span.ts - origin.ts) / 1000,
+      ms: (span.end - span.ts) / 1000,
+      parts: Object.fromEntries(TASK_PARTS.map((part) => [part, parts[part] / 1000])) as Record<
+        TaskPart,
+        number
+      >,
+      started: startedBy(inside, parts),
+    });
+  }
+  return { events: events.length, tasks };
+}
+
+/** How long `tasks` ran within [from, to), milliseconds from the navigation, and that time by
+ *  part: each task's parts in the share of the task the span holds. */
+export function busyIn(
+  tasks: readonly Task[],
+  from: number,
+  to: number
+): { ms: number; parts: Record<TaskPart, number> } {
+  const parts = noParts();
+  let busy = 0;
+  for (const task of tasks) {
+    const held = Math.max(0, Math.min(to, task.at + task.ms) - Math.max(from, task.at));
+    if (held === 0) continue;
+    busy += held;
+    const share = task.ms === 0 ? 0 : held / task.ms;
+    for (const part of TASK_PARTS) parts[part] += task.parts[part] * share;
+  }
+  return { ms: busy, parts };
 }
 
 /** A signed-in reader's browser context: the instrument on every page it opens, a split run's where
