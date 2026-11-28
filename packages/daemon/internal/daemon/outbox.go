@@ -2254,18 +2254,20 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return nil
 	}
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
-	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
-	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
-	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
-	// a notice held for its architect still (errNoticeWaits).
+	// and this is the wake that brings it back for it: the row waits for the launch its wake asked,
+	// as it waits for an architect that is relaunching, and publishes once the woken session holds
+	// its role. A launch of the architect the wake pacing holds is waited for until it runs, the
+	// claim read again at its turn or parkedWakeBound on, whichever comes first (parkedWait). Either
+	// wait is one for any change of the architect's claim (launchWait), so that launch and its ready
+	// make the row due at once, and the wait is a notice held for its architect still
+	// (errNoticeWaits).
 	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
-			row.ID, architect, turn.UTC().Format(time.RFC3339))))
+		return launchWait(architect, fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
+			row.ID, architect, turn.UTC().Format(time.RFC3339)))))
 	} else if waits {
-		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
+		return launchWait(architect, fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID))
 	}
 	if earlier, due, held := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// A catch-up the wake pacing still holds in its queue has no moment of its own
@@ -2343,7 +2345,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // pause's held wake, whose task says the pause stopped the session (workflow.WakeTask). The row
 // takes no wake of its own, since a delivery wake resumes the role with no task. While the wake
 // pacing holds the role's launch over no process, the row waits for that launch's turn
-// (parkedLaunch, parkedWait), as a hook prompt does.
+// (parkedLaunch, parkedWait), as a hook prompt does, and for any change of the role's claim
+// (launchWait), so the launch and its ready make it due at once.
 //
 // The debt reads no ready: the woken agent says it is ready (supervise.SaidReady) before its
 // plugin claims the role's topic, and the listener answers a publish in that gap as it answers the
@@ -2370,8 +2373,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		}
 		if stopped != 0 {
 			if turn, parked := parkedLaunch(held); parked {
-				return r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
-					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
+				return launchWait(claim.Token(payload.Role), r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
+					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339))))
 			}
 		} else if held.Released() {
 			r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",

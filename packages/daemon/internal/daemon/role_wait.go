@@ -319,6 +319,19 @@ func claimWait(token claim.Token, tree string, err error) error {
 	return err
 }
 
+// launchWait is waiting, the wait of a row of a kind that waits for its role
+// (record.OutboxKind.WaitsForRole) for a launch of token's claim still to come, as the row's event
+// wait for any change of that claim (record.WaitForClaim): the launch its own run's wake asked of
+// the released role (wakeForDelivery), the start queued that brings the role back, or the launch the
+// wake pacing holds over no process (parkedWait). That launch, its registration and its ready are
+// each a change of the claim the machine tells (supervise.Deps.ClaimChanged), so each makes the row
+// due at once, and its ready finds the row however far its backoff has climbed
+// (dispatch://INFRA-4131/spec#b-r-wait-ready). Such a wait that names its moment (wait.Until) keeps
+// it, so the row runs then at the latest.
+func launchWait(token claim.Token, waiting error) error {
+	return eventWait(record.WaitForClaim(token), waiting)
+}
+
 // issueStopWait is err, the store's answer to the authorization of a close or a release of
 // issue's pod (store.Store.IssueSuspension, store.Store.IssueRelease), as the row's event wait
 // where that answer is one of the store's waits (dispatch://INFRA-4131/spec#b-r-wait-event): the
@@ -378,13 +391,13 @@ const readyReleasedLine = "outbox rows released: their role is ready"
 
 // releaseReady makes due at once every row that waits for one of tokens' claims, each of which has
 // said it is ready (workflow's claimReady, dispatch://INFRA-4131/spec#b-r-wait-ready): a row the
-// gate holds or that waits for the role's name (record.WaitForClaim), and a row on the capped
-// waits of a refusal while the claim said it was ready (record.WaitForReady), which only a ready
-// makes due. Each row's step goes back to 0, a row a lane holds is marked woken so that its retry
-// makes it due at once, and a catch-up the wake pacing holds to a moment still ahead of now keeps
-// that moment, since its wait is the turn the operator's rate gave it and not the architect being
-// away (record.Store.ExpediteWaits). Once the release commits it writes one line naming the claims
-// and the rows it made due.
+// gate holds, that waits for the role's launch (launchWait) or that waits for the role's name
+// (record.WaitForClaim), and a row on the capped waits of a refusal while the claim said it was
+// ready (record.WaitForReady), which only a ready makes due. Each row's step goes back to 0, a row
+// a lane holds is marked woken so that its retry makes it due at once, and a catch-up the wake
+// pacing holds to a moment still ahead of now keeps that moment, since its wait is the turn the
+// operator's rate gave it and not the architect being away (record.Store.ExpediteWaits). Once the
+// release commits it writes one line naming the claims and the rows it made due.
 //
 // A row waits for the claim its last run read: a notice for the architect it was routed to then
 // (noticeArchitect), so a notice whose routing moved to another architect since runs at its next

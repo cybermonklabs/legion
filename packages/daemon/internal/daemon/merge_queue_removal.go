@@ -257,14 +257,16 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
-	// whichever comes first (parkedWait).
+	// whichever comes first (parkedWait). Either wait, for the launch this row's wake asked or for
+	// the one the pacing holds, is one for any change of the role's claim (launchWait), so that
+	// launch and its ready make the row due at once.
 	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
-			m.what, m.role, turn.UTC().Format(time.RFC3339)))
+		return launchWait(m.token, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+			m.what, m.role, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
-		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
+		return launchWait(m.token, wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role))
 	}
 	topic := notify.RoleTopicPrefix + string(m.token)
 	gate := r.roleWaitGate(row, topic)

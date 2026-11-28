@@ -122,12 +122,13 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 //     claim failed or was retired, or an hour that passed with no wake coming. It is answered as
 //     the *keptRoleMessageUndelivered, with no error, and the executor words the end.
 //   - A role whose pod was released is not "no live session holds the role": its session is intact
-//     and its pod is one wake away, so the row wakes it and waits on its backoff, and the row's
-//     first attempt after that resume has launched publishes (deliveryWake). A launch the wake
-//     pacing holds is waited for until it runs, the claim read again at its turn or
-//     parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
-//     back whatever the listener does with the publish; the listener's own report of a publish to
-//     a role with no live holder meets the role's open resume, and the pod starts once.
+//     and its pod is one wake away, so the row wakes it and waits for that launch (deliveryWake). A
+//     launch the wake pacing holds is waited for until it runs, the claim read again at its turn or
+//     parkedWakeBound on, whichever comes first (parkedWait). Either wait is one for any change of
+//     the role's claim (launchWait), so the launch, its registration and its ready each make the
+//     row due at once, and it publishes as the gate lets it (roleWaitGate). The daemon's own wake
+//     brings the pod back whatever the listener does with the publish; the listener's own report of
+//     a publish to a role with no live holder meets the role's open resume, and the pod starts once.
 //   - The publish, with keep, to the Envoy topic of the role's claim (notify.RoleTopicPrefix and
 //     the claim's token), under the row's own key, through the gate every publish of the outbox
 //     goes through (publishKept). A retry of the row while its copy is still on the role's kept
@@ -196,10 +197,10 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	if waits, turn, err := r.deliveryWake(ctx, token, wake, m.subject, row.HeldByPause); err != nil {
 		return nil, err
 	} else if !turn.IsZero() {
-		return nil, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
-			m.subject, m.role, turn.UTC().Format(time.RFC3339)))
+		return nil, launchWait(token, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",
+			m.subject, m.role, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
-		return nil, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role)
+		return nil, launchWait(token, wait.Errorf("%s waits for its %s's released pod to come back", m.subject, m.role))
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	gate := r.roleWaitGate(row, topic)

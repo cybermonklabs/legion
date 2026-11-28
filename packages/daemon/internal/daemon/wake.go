@@ -279,19 +279,21 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // nothing: the machine keeps that claim's state, and its live session can take the publish now.
 //
 // For such a park it answers the wake's turn as well (supervise.WakeWaiting.At), and each caller
-// returns the wait parkedWait builds from it: the row runs again at the turn, or parkedWakeBound
-// on when that comes first, and reads the claim again then. The turn lives only in the machine's
-// memory, and the park can end before it — an operator's request, a restart or a suspension
-// (parkedWakeBound says how) — so a row that slept to the turn could publish long after the pod
-// came back and would hold that pod from idle release the whole time; the bound caps what such an
-// early end costs. A row that climbed its backoff instead (record.RoleWaitBackoff) would read the
-// claim at 1, 2, 4 … seconds while the turn is still far off, ten reads in its first 8.5 minutes
-// where this wait makes two, and could sleep up to 5 minutes past a turn that comes sooner; either
-// way settle logs the row by its wait rather than by its attempts (logWait,
+// returns the wait parkedWait builds from it, which is a wait for any change of the claim too
+// (launchWait): the row runs again at the turn, or parkedWakeBound on when that comes first, or at
+// the launch when the park ends sooner, and reads the claim again then. The turn lives only in the
+// machine's memory, and the park can end before it — an operator's request, a restart or a
+// suspension (parkedWakeBound says how) — so a row that slept to the turn could publish long after
+// the pod came back and would hold that pod from idle release the whole time; the bound caps what
+// such an early end costs. A row that climbed its backoff instead (record.RoleWaitBackoff) would
+// read the claim at 1, 2, 4 … seconds while the turn is still far off, ten reads in its first 8.5
+// minutes where this wait makes two, and could sleep up to 5 minutes past a turn that comes sooner;
+// either way settle logs the row by its wait rather than by its attempts (logWait,
 // dispatch://INFRA-4131/spec#b-r-logged-once). A turn already past when the row settles — the row
 // ran a moment before the machine's own timer — is the backoff's (retry). A released claim this
-// call resumes answers no turn, even where the resume parks: the row waits on its backoff, and its
-// next attempt reads the park.
+// call resumes answers no turn, even where the resume parks: the row waits for that launch, made due
+// by any change of the claim (launchWait) or else at its backoff, and its next attempt reads the
+// park.
 //
 // A released claim is not woken while any release of its issue still stands, whether or not that
 // release has recorded this role (store.Store.TakeDeliveryWake). The resume here runs in process,
@@ -314,10 +316,12 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // until that start runs, though its pod never went away. While such a start is queued and the role
 // has no open resume, the call takes nothing and answers the same wait, whose text names the
 // start: a wake taken then would record a resume of a pod that no release took, and the records
-// would count that pod's return. The start resumes the role in the same pod, and the row's next
-// attempt finds the claim live and publishes. A role with an open resume refuses the take whatever
-// is queued, and the call resumes it below. A claim the cancel did not resume is still released
-// with no start queued, and the attempt wakes it in the same pod.
+// would count that pod's return. The start resumes the role in the same pod, a change of the claim
+// that makes the row due at once, since this wait is one for any change of the claim too
+// (launchWait), and the row's attempt then waits for the role's launch as for any launch. A role
+// with an open resume refuses the take whatever is queued, and the call resumes it below. A claim
+// the cancel did not resume is still released with no start queued, and the attempt wakes it in
+// the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
@@ -438,8 +442,8 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))
 	}
 	if took.StartQueued {
-		return false, time.Time{}, wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
-			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role))
+		return false, time.Time{}, launchWait(token, wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role)))
 	}
 	// The record no longer holds the claim released: a start resumed it, or a path took it over,
 	// after the machine's view above. The row waits on its backoff and reads the claim again.
@@ -503,10 +507,13 @@ func parkedLaunch(view supervise.ClaimView) (turn time.Time, parked bool) {
 // parkedWait is the wait of a delivery row whose role's launch the wake pacing has parked over no
 // process (wakeForDelivery's turn), with text as its message: the row runs again at turn, or
 // parkedWakeBound from now when that comes first, and reads the claim again then. A turn already
-// past is the backoff's, as every moment a wait.Until names is once it has passed (retry). Every
-// caller is a kind that waits for its role (record.OutboxKind.WaitsForRole), so settle logs the
-// wait by its own wait (logWait: once at start, once at 30 minutes at WARN, Debug between, once
-// at end, dispatch://INFRA-4131/spec#b-r-logged-once).
+// past is the backoff's, as every moment a wait.Until names is once it has passed (retry). A caller
+// that waits for the parked launch itself returns it as a wait for any change of the role's claim
+// too (launchWait), so the launch makes the row due at once if it comes before that moment, and
+// its ready finds the row. Every caller is a kind that waits for its role
+// (record.OutboxKind.WaitsForRole), so settle logs the wait by its own wait (logWait: once at
+// start, once at 30 minutes at WARN, Debug between, once at end,
+// dispatch://INFRA-4131/spec#b-r-logged-once).
 func (r *outbox) parkedWait(turn time.Time, text string) error {
 	at := r.now().UTC().Add(parkedWakeBound)
 	if turn.Before(at) {

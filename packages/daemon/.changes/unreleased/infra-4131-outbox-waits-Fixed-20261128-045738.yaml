@@ -7,14 +7,15 @@ body: |-
   claim, because its start is still owed, or its launch has not registered a session, the row
   publishes nothing. While a launch has not said it is ready, or the claim is suspended by any
   source but the idle release, the row publishes at most once for that launch. When the claim
-  says it is ready, every row that waits for it runs at once. A new session takes its role's name
-  only at its first turn, or 30 seconds after its ready, so a publish refused because no session
-  holds the role yet runs again at that turn, or 30 seconds after the ready. Each refusal that the
-  claim record cannot explain runs again on a backoff that doubles from 1 second and stops at 5
-  minutes, so a row runs at most 12 times an hour. Every publish of a row carries the row's own
-  key. A notice and a role message that no pause holds end with no publish when their role has no
-  claim, where before they ended after one publish. An update ask ends there with no publish, as
-  before.
+  says it is ready, every row that waits for it runs at once, a row whose own attempt woke the
+  released role, or that waits for a launch the wake pacing holds, among them. A new session takes
+  its role's name only at its first turn, or 30 seconds after its ready, so a publish refused
+  because no session holds the role yet runs again at that turn, or 30 seconds after the ready.
+  Each refusal that the claim record cannot explain runs again on a backoff that doubles from 1
+  second and stops at 5 minutes, so a row runs at most 12 times an hour. Every publish of a row
+  carries the row's own key. A notice and a role message that no pause holds end with no publish
+  when their role has no claim, where before they ended after one publish. An update ask ends
+  there with no publish, as before.
 
   A row that waits for another event of the daemon's own runs at that event. A start behind a
   pending delivery runs when a turn confirms that task, or the task is retired or dropped. A

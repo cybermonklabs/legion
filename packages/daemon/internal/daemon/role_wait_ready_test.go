@@ -521,3 +521,46 @@ func TestRoleWaitReadyDuringARunMakesTheRowDueAtOnce(t *testing.T) {
 		})
 	}
 }
+
+// S6 and S7 (R1): a row of each kind that wakes its released role itself (notice, the three kinds
+// of deliverHeld, hook_prompt and phase_ended) then waits for the launch its wake asked
+// (record.WaitForClaim), so that launch's ready makes it due at once: the run that woke the role
+// publishes nothing, the launch comes up and says it is ready, and the first run after the ready
+// publishes at the ready. The clock stands still from the wake on, so only the ready can make the
+// row due; the claims' machines tell the outbox each change and the ready route its ready, both
+// released on the test's goroutine once the ready has come.
+func TestRoleWaitReadyMakesDueARowThatWokeItsRole(t *testing.T) {
+	t.Parallel()
+	for _, tc := range roleWaitCases {
+		if !tc.wakesReleased {
+			continue
+		}
+		t.Run(string(tc.kind), func(t *testing.T) {
+			t.Parallel()
+			h := newRoleWaitHarness(t, tc, nil)
+			w := h.readyHooks(true)
+			machine := h.claim(supervise.StateSuspended, func(c *supervise.Claim) { c.SuspendedBy = supervise.SuspendedByReleased })
+			rig := h.queue()
+
+			rig.run()
+			machine.Wait()
+			if woken := machine.Claim(); woken.Released() || woken.Generation != 2 {
+				t.Fatalf("the run left %s %s by %s at generation %d, want it woken into its launch 2", woken.Token, woken.State, woken.SuspendedBy, woken.Generation)
+			}
+			if got := h.publisher.count(); got != 0 {
+				t.Fatalf("the run that woke the role published %d times, want none", got)
+			}
+			comesUp(t, machine, false)
+			readyAt := h.ready(w, machine)
+			h.release(w)
+			if due, step, key, _ := rowWait(t, h.pool, rig.id); due.After(readyAt) {
+				t.Fatalf("after the ready of the launch the row woke, the row is due at %s, %s after the ready, at step %d waiting for %q; want it due at the ready",
+					due, due.Sub(readyAt), step, key)
+			}
+			rig.endsAtItsNextRun()
+			if got, want := publishOffsets(h.publisher.publishes, h.start), []time.Duration{readyAt.Sub(h.start)}; !slices.Equal(got, want) {
+				t.Fatalf("%s published at %v, want once, at the ready (%v)", tc.kind, got, want)
+			}
+		})
+	}
+}
