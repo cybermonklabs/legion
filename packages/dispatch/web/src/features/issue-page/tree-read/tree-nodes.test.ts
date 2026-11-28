@@ -2272,6 +2272,27 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
   }
 });
 
+// Root R1 and the server's kind rule (`nodeKind` in `api/issue_tree_kinds.go`): a block node is a
+// finding only where its own id names its lens (`graphstore.ParseFindingID`); a plain block whose
+// id names none is prose wherever it stands, under a lens too, as a paragraph a reader moved
+// under a lens's node does. So the page drafts it as prose, as the read with kind answers it, and
+// never as a finding of that lens (T's tester, round 25: review 6096925363 of part W, confirmed at
+// T's head `405dc3c7`).
+test("a plain block whose parent is a lens is drafted as prose, as the server reads it by its id", () => {
+  const lens = "c3000000-0000-4000-8000-000000000005";
+  const graph = drawn(
+    answer([
+      block("r1", "requirement", KEY, SPEC, 0),
+      node(lens, "lens", KEY),
+      { ...node("f1", "block", lens), id: `lens/${lens}#f1` },
+      node("p2", "block", lens),
+    ])
+  );
+  const typeOf = (id: string) => graph.drafts.get(id)?.type;
+  expect(typeOf("f1"), "the block whose id names its lens is drafted as prose").not.toBe("prose");
+  expect(typeOf("p2"), "a plain block under a lens is not drafted as prose").toBe("prose");
+});
+
 /** A plan task's `plan` in the Plan view's answer: its place in the order the read answers, and
  *  its size in whole minutes, none where `size` is not given. */
 function place(position: number, size: string | null = null) {
