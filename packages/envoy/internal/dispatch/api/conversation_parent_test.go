@@ -76,19 +76,10 @@ func indexItemAsARouteDoes(t *testing.T, tx pgx.Tx, kind refs.ItemKind, id, body
 // firstItemBlock is the reference of the first current block of item id of kind on issueKey.
 func firstItemBlock(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey, id string) string {
 	t.Helper()
-	return itemBlockAt(t, database, kind, issueKey, id, 1)
-}
-
-// itemBlockAt is the reference of the block at place, counted from 1 among the current blocks of
-// item id of kind on issueKey. An ask's blocks are its parts.
-func itemBlockAt(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey, id string, place int) string {
-	t.Helper()
-	table := map[refs.ItemKind]string{refs.ItemAsk: "ask_blocks where ask_id",
-		refs.ItemComment: "comment_blocks where comment_id", refs.ItemMessage: "message_blocks where message_id"}[kind]
+	table := map[refs.ItemKind]string{refs.ItemComment: "comment_blocks where comment_id", refs.ItemMessage: "message_blocks where message_id"}[kind]
 	var block string
-	if err := database.Pool.QueryRow(context.Background(), `select block_id from `+table+` = $1::uuid and position is not null
-		order by position offset $2 limit 1`, id, place-1).Scan(&block); err != nil {
-		t.Fatalf("read block %d of %s %s: %v", place, kind, id, err)
+	if err := database.Pool.QueryRow(context.Background(), `select block_id from `+table+` = $1::uuid and position is not null order by position limit 1`, id).Scan(&block); err != nil {
+		t.Fatalf("read the first block of %s %s: %v", kind, id, err)
 	}
 	written, ok := text.FormatItemBlockRef(text.Ref{Kind: "block", Item: string(kind), IssueKey: issueKey, ID: id, Block: block})
 	if !ok {

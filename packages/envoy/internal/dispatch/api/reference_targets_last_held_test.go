@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -121,6 +122,24 @@ func checkLastHeld(t *testing.T, handler http.Handler, wants ...lastHeldWant) {
 			t.Errorf("%s last_held = %q, parser result %+v (%v), want %s@v%d", member.Ref, member.LastHeld, parsed, err, want.ref, want.version)
 		}
 	}
+}
+
+// itemBlockAt is the reference of the block at place, counted from 1 among the current blocks of
+// item id of kind on issueKey. An ask's blocks are its parts.
+func itemBlockAt(t *testing.T, database *store.Store, kind refs.ItemKind, issueKey, id string, place int) string {
+	t.Helper()
+	table := map[refs.ItemKind]string{refs.ItemAsk: "ask_blocks where ask_id",
+		refs.ItemComment: "comment_blocks where comment_id", refs.ItemMessage: "message_blocks where message_id"}[kind]
+	var block string
+	if err := database.Pool.QueryRow(context.Background(), `select block_id from `+table+` = $1::uuid and position is not null
+		order by position offset $2 limit 1`, id, place-1).Scan(&block); err != nil {
+		t.Fatalf("read block %d of %s %s: %v", place, kind, id, err)
+	}
+	written, ok := text.FormatItemBlockRef(text.Ref{Kind: "block", Item: string(kind), IssueKey: issueKey, ID: id, Block: block})
+	if !ok {
+		t.Fatalf("no item block reference for block %s of %s %s", block, kind, id)
+	}
+	return written
 }
 
 func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testing.T) {
