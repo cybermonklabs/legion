@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A session that comes back from a model fallback runs at the thinking level it ran at before the
+  fallback. Before, the return set only the model, and Oh My Pi keeps the current level for a model
+  that names no default level of its own. So a session on GPT-6.2 Sol at `xhigh` that fell back to
+  Kimi K3.1 Pro at `max` ran Sol at `max` after the return. The plugin now records the level from
+  the session's transcript when the fallback starts (the newest `thinking_level_change` before the
+  walk's first step, with `auto` kept as `auto`), keeps it in the transcript record with the
+  arming, and sets it again after the model. A record that an older build wrote has no level, and
+  its return sets the model alone, as before.
+time: 2026-11-28T18:50:00Z
+custom:
+  Issue: fallback-return-thinking-level

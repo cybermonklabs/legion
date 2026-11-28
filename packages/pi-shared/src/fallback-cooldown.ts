@@ -36,6 +36,11 @@ export interface FallbackArming {
   /** Why the session fell back. A refusal waits out the cooldown; anything else waits for the
    * host's own suppression to end. */
   readonly cause: FallbackCause;
+  /** The thinking level the session ran at before the fallback's first step (`xhigh`, `auto`, as
+   * the session's `thinking_level_change` entry names it), which the return sets again with the
+   * model. Absent when the branch records no level before the fallback, and in a record an older
+   * build wrote: the return then sets the model alone. */
+  readonly thinkingLevel?: string;
 }
 
 export interface FallbackCooldownState {
@@ -49,6 +54,8 @@ export type FallbackCooldownInput =
   | {
       readonly kind: "fallback-applied";
       readonly restoreTo: string;
+      /** The thinking level the session ran at before the fallback (`FallbackArming`). */
+      readonly thinkingLevel?: string;
       readonly entryId: string;
       readonly cause: FallbackCause;
       readonly now: number;
@@ -91,14 +98,17 @@ export function stepFallbackCooldown(
 ): FallbackCooldownState {
   switch (input.kind) {
     case "fallback-applied": {
-      const { restoreTo, entryId, cause, now } = input;
+      const { restoreTo, thinkingLevel, entryId, cause, now } = input;
+      // An arming with no level records no `thinkingLevel` key, as a state with no arming records
+      // no `arming` key (`recordedFallbackCooldown`).
+      const thinking = thinkingLevel === undefined ? {} : { thinkingLevel };
       if (cause === "other") {
-        return { ...state, arming: { restoreTo, entryId, dueAt: now, cause } };
+        return { ...state, arming: { restoreTo, entryId, dueAt: now, cause, ...thinking } };
       }
       const level = levelOf(state, restoreTo);
       const wait = waitMs(limits, level);
       return {
-        arming: { restoreTo, entryId, dueAt: now + wait, cause },
+        arming: { restoreTo, entryId, dueAt: now + wait, cause, ...thinking },
         levels: { ...state.levels, [restoreTo]: wait < limits.maxMs ? level + 1 : level },
       };
     }
@@ -194,18 +204,21 @@ export function recordedFallbackCooldown(state: FallbackCooldownState): Fallback
 }
 
 /** The arming one record's `arming` field holds, or undefined when it is not one this build can
- * read. */
+ * read. A record with no `thinkingLevel` (an older build's) is read with none. */
 function armingFrom(value: unknown): FallbackArming | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const restoreTo = "restoreTo" in value ? value.restoreTo : undefined;
   const entryId = "entryId" in value ? value.entryId : undefined;
   const dueAt = "dueAt" in value ? value.dueAt : undefined;
   const cause = "cause" in value ? value.cause : undefined;
+  const thinkingLevel = "thinkingLevel" in value ? value.thinkingLevel : undefined;
   if (typeof restoreTo !== "string" || restoreTo === "") return undefined;
   if (typeof entryId !== "string" || entryId === "") return undefined;
   if (typeof dueAt !== "number" || !Number.isFinite(dueAt)) return undefined;
   if (cause !== "refusal" && cause !== "other") return undefined;
-  return { restoreTo, entryId, dueAt, cause };
+  if (thinkingLevel === undefined) return { restoreTo, entryId, dueAt, cause };
+  if (typeof thinkingLevel !== "string" || thinkingLevel === "") return undefined;
+  return { restoreTo, entryId, dueAt, cause, thinkingLevel };
 }
 
 /** The levels one record's `levels` field holds, or undefined when it holds anything that is not

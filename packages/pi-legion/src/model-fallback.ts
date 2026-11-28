@@ -17,6 +17,7 @@ import type {
   ModelChangeEntry,
   RetryFallbackAppliedEvent,
   SessionContext,
+  ThinkingLevelChangeEntry,
 } from "@legion/pi-shared/pi-types";
 import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provider-refusal";
 import { turnGoesOn } from "./turn-end";
@@ -24,8 +25,8 @@ import { turnGoesOn } from "./turn-end";
 /**
  * The session's model across a provider's refusal (INFRA-956 R1): a content filter that refuses a
  * Legion role's turn sends the next request to the next model of Oh My Pi's fallback chain, in
- * the same session, and the session comes back to its own model after a cooldown that grows each
- * time that model is refused again.
+ * the same session, and the session comes back to its own model, at the thinking level it ran at
+ * before the fallback, after a cooldown that grows each time that model is refused again.
  *
  * Every collaborator is a field of `ModelFallbackDeps`, the shape
  * `packages/pi-shared/src/phase-reminder.ts` has: this module imports nothing of Oh My Pi, so a
@@ -59,6 +60,11 @@ export interface ModelFallbackDeps {
   /** `pi.setModel`: switches the session's model as `/model` does, and answers false when no
    * credential of this session serves it. */
   readonly setModel: (model: HostModel) => Promise<boolean>;
+  /** `pi.setThinkingLevel`: sets the session's thinking level as `/thinking` does. `setModel`
+   * keeps the level the session runs at, the fallback model's, for a model that names no default
+   * level of its own (`#reapplyThinkingLevel`, `session/model-controls.ts:347-349` at tag
+   * `v18.18.6-sami.20261127-055727`), so the return sets the level after the model. */
+  readonly setThinkingLevel: (level: string) => void;
   /** Persists the state where a relaunch of this worker reads it again (the Oh My Pi transcript
    * entry `LEGION_FALLBACK_ENTRY`), on every change of it. */
   readonly saveState: (state: FallbackCooldownState) => void;
@@ -105,7 +111,8 @@ export interface ModelFallback {
    * pane (`maybeRestore`). */
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
   /**
-   * The return to the model the session fell back from, which this runner makes in one place:
+   * The return to the model the session fell back from, at the thinking level the session ran at
+   * before the fallback (`FallbackArming.thinkingLevel`), which this runner makes in one place:
    * one check of whether the arming is due, with these triggers.
    *
    * - The host's `before_agent_start`, for any arming: it runs before the first request of a run
@@ -157,6 +164,9 @@ interface NewestChange {
    * branch holds none: the model the session was on before this walk down the chain, which is
    * what an arming returns to (`restoreTarget`). */
   readonly walkedFrom: ModelChangeEntry | undefined;
+  /** The thinking level the session ran at before the first step of this walk (`levelBefore`), or
+   * undefined when the branch records none: the level an arming sets again with the model. */
+  readonly walkedFromLevel: string | undefined;
 }
 
 /** A `model_change` as `getBranch()` hands it back (`ModelChangeEntry`, `src/pi-types.ts`). The
@@ -171,6 +181,17 @@ function isModelChange(entry: unknown): entry is ModelChangeEntry {
     "id" in entry &&
     typeof entry.id === "string" &&
     entry.id !== ""
+  );
+}
+
+/** A `thinking_level_change` as `getBranch()` hands it back (`ThinkingLevelChangeEntry`,
+ * `src/pi-types.ts`), read field by field as `isModelChange` reads its own. */
+function isThinkingLevelChange(entry: unknown): entry is ThinkingLevelChangeEntry {
+  return (
+    typeof entry === "object" &&
+    entry !== null &&
+    "type" in entry &&
+    entry.type === "thinking_level_change"
   );
 }
 
@@ -191,6 +212,27 @@ function modelChangeBefore(branch: readonly unknown[], end: number): number {
   return -1;
 }
 
+/**
+ * The thinking level the session ran at just before `end`: what the newest `thinking_level_change`
+ * before that index names, or undefined when the branch holds none there or that entry names no
+ * level (a model that does not think). The host writes the entry each time the level changes
+ * (`setThinkingLevel`, `session/model-controls.ts:576-626` at tag
+ * `v18.18.6-sami.20261127-055727`), and each switch of the model writes its `model_change` before
+ * the level it sets (`:331` and `:349`, and `session/turn-recovery.ts:3153-3155` for the host's
+ * own walk), so the newest entry before a walk's first step is the level the session ran at before
+ * that walk. `configured` is read first: it keeps `auto`, which `thinkingLevel` names as the level
+ * one turn resolved it to.
+ */
+function levelBefore(branch: readonly unknown[], end: number): string | undefined {
+  for (let index = Math.min(end, branch.length) - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (!isThinkingLevelChange(entry)) continue;
+    const level = entry.configured ?? entry.thinkingLevel;
+    return typeof level === "string" && level !== "" ? level : undefined;
+  }
+  return undefined;
+}
+
 function sameModel(a: HostModel | undefined, b: HostModel | undefined): boolean {
   return a !== undefined && b !== undefined && a.provider === b.provider && a.id === b.id;
 }
@@ -205,26 +247,32 @@ function newestModelChange(ctx: ModelFallbackContext): NewestChange | undefined 
   if (!isModelChange(entry)) return undefined;
   const beforeAt = modelChangeBefore(branch, at);
   const before = beforeAt < 0 ? undefined : branch[beforeAt];
+  const start = walkStart(branch, at);
+  const fromAt = modelChangeBefore(branch, start);
+  const from = fromAt < 0 ? undefined : branch[fromAt];
   return {
     entry,
     previous: isModelChange(before) ? before : undefined,
-    walkedFrom: walkedFrom(branch, at),
+    walkedFrom: isModelChange(from) ? from : undefined,
+    walkedFromLevel: levelBefore(branch, start),
   };
 }
 
-/** The model the walk ending at `at` started from, as the branch records it: the steps of one
- * walk are the run of fallback entries before `at`, so the entry this answers is the newest one
- * before them that is no step of a walk — the operator's `/model`, the host's own restore, the
- * model the session was given to begin with. */
-function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | undefined {
+/** The index of the first step of the walk ending at `at`, as the branch records it: the steps of
+ * one walk are the run of fallback entries before `at`, so this is the oldest of that run, or `at`
+ * itself when the change before it is no step of a walk. The `model_change` before this index is
+ * the model the walk started from — the operator's `/model`, the host's own restore, the model the
+ * session was given to begin with. */
+function walkStart(branch: readonly unknown[], at: number): number {
+  let start = at;
   let index = modelChangeBefore(branch, at);
   while (index >= 0) {
     const entry = branch[index];
-    if (!isModelChange(entry)) return undefined;
-    if (!isLiveFallback(entry)) return entry;
+    if (!isModelChange(entry) || !isLiveFallback(entry)) break;
+    start = index;
     index = modelChangeBefore(branch, index);
   }
-  return undefined;
+  return start;
 }
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
@@ -396,8 +444,10 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   };
 
   /**
-   * The selector a new arming returns to: the model the session was on before the first step of
-   * the walk this step belongs to, never one the chain handed it in the middle.
+   * The selector a new arming returns to, with the thinking level it returns at: the model the
+   * session was on before the first step of the walk this step belongs to, never one the chain
+   * handed it in the middle, and the level the session ran at before that first step, never the
+   * level a step of the walk set.
    *
    * Two records say what that model is, and the live arming is read first. A step continues a
    * walk when the `model_change` it arms on follows the arming's own entry: nothing moved the
@@ -408,18 +458,25 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
    *
    * The branch says it for every walk this process holds no arming for: a relaunch into a walk
    * an older build left, a host walk `ownFallback` did not claim. Its steps are the run of
-   * fallback entries before this one (`walkedFrom`), and the entry before them names the model
+   * fallback entries before this one (`walkStart`), and the entry before them names the model
    * the walk started on. A walk after any other model change — the operator's `/model`, the
    * host's own restore — finds that change there and arms on the model it is leaving, which is
-   * the same one.
+   * the same one. The level is the newest the branch records before that run (`levelBefore`).
    *
    * The cooldown keys its doubling level by this selector, so a continued walk raises the level
    * of the model the session will return to rather than one in the middle of the chain.
    */
-  const restoreTarget = (change: NewestChange, leaving: string): string => {
+  const restoreTarget = (
+    change: NewestChange,
+    leaving: string
+  ): { readonly restoreTo: string; readonly thinkingLevel: string | undefined } => {
     const arming = state.arming;
-    if (arming !== undefined && change.previous?.id === arming.entryId) return arming.restoreTo;
-    return change.walkedFrom?.model ?? leaving;
+    if (arming !== undefined && change.previous?.id === arming.entryId)
+      return { restoreTo: arming.restoreTo, thinkingLevel: arming.thinkingLevel };
+    return {
+      restoreTo: change.walkedFrom?.model ?? leaving,
+      thinkingLevel: change.walkedFromLevel,
+    };
   };
 
   /**
@@ -481,7 +538,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     save(
       step({
         kind: "fallback-applied",
-        restoreTo: restoreTarget(change, selector),
+        ...restoreTarget(change, selector),
         entryId: change.entry.id,
         cause: "refusal",
         now: deps.now(),
@@ -563,6 +620,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
           step({
             kind: "fallback-applied",
             restoreTo: state.arming.restoreTo,
+            thinkingLevel: state.arming.thinkingLevel,
             entryId: state.arming.entryId,
             cause: "refusal",
             now: deps.now(),
@@ -651,6 +709,11 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       });
       return;
     }
+    // The switch kept the level the fallback model ran at (`ModelFallbackDeps.setThinkingLevel`),
+    // so the level the session ran at before the fallback is set again with its model. An arming
+    // that records no level (the branch named none, or an older build armed it) sets the model
+    // alone, as before.
+    if (arming.thinkingLevel !== undefined) deps.setThinkingLevel(arming.thinkingLevel);
     // `restore` can replace the state while the switch is awaited: this arming's return is not
     // that state's to record.
     if (state.arming !== arming) return;
@@ -684,7 +747,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         // and the session comes back when the wait from that moment is over.
         const change = newestModelChange(ctx);
         if (change === undefined) return;
-        const { entry, walkedFrom } = change;
+        const { entry, walkedFrom, walkedFromLevel } = change;
         if (!isLiveFallback(entry)) return;
         // Where that walk started, which `restoreTarget` reads for a live one: the branch is the
         // whole record here, since a session with no arming of its own holds no other. A walk of
@@ -708,6 +771,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
           step({
             kind: "fallback-applied",
             restoreTo: walkedFrom.model,
+            thinkingLevel: walkedFromLevel,
             entryId: entry.id,
             cause: "refusal",
             now: changedAt(entry) ?? deps.now(),
@@ -750,7 +814,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
           step({
             kind: "fallback-applied",
             cause: refusal?.kind === "content-filter" ? "refusal" : "other",
-            restoreTo: restoreTarget(own, event.from),
+            ...restoreTarget(own, event.from),
             entryId: own.entry.id,
             now: deps.now(),
           })
