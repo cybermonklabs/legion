@@ -46,7 +46,7 @@ func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Se
 	var service *docs.Service
 	var counted *readCountingDocs
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		service = docs.New(docs.Deps{Store: database, ServerURL: "https://dispatch.example", Settle: time.Hour})
+		service = docs.New(docs.Deps{Store: database, Origins: testOrigins, Settle: time.Hour})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		counted = &readCountingDocs{API: service}
 		return counted
@@ -77,7 +77,7 @@ func renderedMentionExcerpt(t *testing.T, service *docs.Service, artifactID, ref
 		t.Fatalf("no block of %s holds %s at %d: %#v", artifactID, reference, offset, blocks)
 	}
 	block := blocks[holder]
-	return model.GraphExcerpt{BlockID: block.ID, Text: refs.BlockExcerpt(markdown[block.From:block.To], "https://dispatch.example")}
+	return model.GraphExcerpt{BlockID: block.ID, Text: refs.BlockExcerpt(markdown[block.From:block.To], testOrigins)}
 }
 
 // documentMention is the mention of reference written by the document artifactID, whose ref_key

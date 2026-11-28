@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
 import { api } from "../../api/client";
+import { dispatchOrigins } from "../../api/origins";
 import {
   borderDefault,
   cardHoverBorder,
@@ -381,8 +382,8 @@ export function UnfurlRead({
  * (`MarkdownBody`), having started those queries for the links in the text itself.
  */
 export function Unfurl({ body, source, surface }: UnfurlProps): ReactNode {
-  const origin = window.location.origin;
-  const written = useMemo(() => readTextReferences(body, { origin }), [body, origin]);
+  const origins = dispatchOrigins();
+  const written = useMemo(() => readTextReferences(body, { origins }), [body, origins]);
   const shaped = useMemo(
     () => referencesOnly(body, referenceWords(body, written.references)),
     [body, written]

@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ciEvidenceAt is c1, a check CI proves, holding two results at one commit, the head of the open
@@ -20,7 +21,7 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: sha}
 	check := model.CheckBlock{BlockID: "c1", IssueKey: "ACME-1", When: docs.CheckWhenBeforeMerge, SHA256: "current-digest", CICheck: "go-checks", NegativeControl: "A server that does not build."}
 	ci, derived := ciAnswerOf(check, "go-checks", delivery.NewestHead{HeadSHA: sha, Repo: "example/repo", Number: 1},
-		&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, false, lineWordsFor(nil, ""))
+		&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, false, lineWordsFor(nil, text.Origins{}))
 	project := "ACME"
 	actor := model.Actor{Kind: "session", ID: "github-actions:run-1:attempt-1:check-71", Project: &project}
 	run := oauthwire.Run{

@@ -13,13 +13,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -58,7 +60,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 		t.Fatalf("status %d: %s", status, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true, ApproverFields: true}
+	want := wireSettings{Store: aws.Name, SecretsPrefix: policytest.Prefix, KMSKeyARN: awsKeyARN, AWSAccountID: "111122223333", AWSRegion: "us-east-1", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -73,13 +75,15 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 // with none of the AWS fields, and secret_type_tag and approver_fields, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
-	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	const key = gcpKeyName
 	mux := http.NewServeMux()
-	cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+	cur, err := policy.NewCurrent(t.Context(), policytest.Loader(memory.New()), time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreGCP, SecretsPrefix: prefix, SecretsKMSKey: key})
+	deps := storeDeps(t, "gcp")
+	deps.Policy = cur
+	api.Register(mux, deps)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	resp, err := http.Get(srv.URL + "/v1/settings")
@@ -92,7 +96,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, body)
 	}
 	got := decode[wireSettings](t, body)
-	want := wireSettings{Store: secrets.StoreGCP, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
+	want := wireSettings{Store: gcp.Name, SecretsPrefix: prefix, KMSKeyName: key, GCPProject: "000000000000", SecretTypeTag: true, ApproverFields: true}
 	if got != want {
 		t.Fatalf("settings = %+v, want %+v", got, want)
 	}
@@ -104,25 +108,25 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 }
 
 // TestSettingsNameTheGoogleExchangeAudienceOnEitherStore pins the exchange audience GET
-// /v1/settings answers beside the store, on either store: the audience a machine's Google identity
-// token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's `agent-secrets` finds the
-// identity it can trade with no setting of its own, beside that store's own key field. A broker
-// that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
+// /v1/settings answers beside the store, on each store the registry holds: the audience a
+// machine's Google identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE), so a machine's
+// `agent-secrets` finds the identity it can trade with no setting of its own, beside that store's
+// own key field. A broker that accepts no machine identity names no audience at all, and none ever
+// names a Kubernetes one.
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
-	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
-		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
-		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
-	} {
-		t.Run(store.name, func(t *testing.T) {
+	for _, b := range backends.All() {
+		t.Run(b.ID(), func(t *testing.T) {
+			store := storeEnvs[b.ID()]
 			read := func(t *testing.T, google string) (map[string]any, string) {
 				t.Helper()
-				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(secrets.NewLocal()), time.Hour)
+				cur, err := policy.NewCurrent(t.Context(), policytest.Loader(memory.New()), time.Hour)
 				if err != nil {
 					t.Fatal(err)
 				}
 				mux := http.NewServeMux()
-				api.Register(mux, api.Deps{Policy: cur, SecretsStore: store.kind, SecretsPrefix: store.prefix, SecretsKMSKey: store.key,
-					GoogleExchangeAudience: google})
+				deps := storeDeps(t, b.ID())
+				deps.Policy, deps.GoogleExchangeAudience = cur, google
+				api.Register(mux, deps)
 				srv := httptest.NewServer(mux)
 				t.Cleanup(srv.Close)
 				resp, err := http.Get(srv.URL + "/v1/settings")
@@ -141,8 +145,8 @@ func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 			if got["google_exchange_audience"] != "agent-secrets-vm" {
 				t.Fatalf("settings = %s; want google_exchange_audience agent-secrets-vm", body)
 			}
-			if got["store"] != store.kind || got[store.keyField] != store.key {
-				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, store.kind, store.keyField)
+			if got["store"] != b.Name() || got[store.keyField] != store.key {
+				t.Fatalf("settings = %s; want the store %s and its %s beside the audience", body, b.Name(), store.keyField)
 			}
 
 			_, body = read(t, "")
@@ -235,17 +239,15 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 // during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	verifier, sign := oneSession(t)
-	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
-	// telling the other pods through notifier.
-	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
-		loader := policytest.Loader(local)
-		loader.Store = policytest.StoreThrough(local, client)
+	// route is the reread route over a policy of store, telling the other pods through notifier.
+	route := func(store secretstore.Store, notifier *recordingNotifier) *http.ServeMux {
+		loader := policytest.Loader(store)
 		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
 		mux := http.NewServeMux()
-		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t), NotifyReread: notifier.notify})
 		return mux
 	}
 	// signed is a session's reread of name, on ctx.
@@ -257,12 +259,12 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	local, notifier := secrets.NewLocal(), &recordingNotifier{}
-	mux := route(local, abandoningDescriber{SecretsManagerAPI: local, cancel: cancel}, notifier)
+	local, notifier := memory.New(), &recordingNotifier{}
+	mux := route(abandoningDescriber{Store: local, cancel: cancel}, notifier)
 	valueCtx, cancelValue := context.WithCancel(context.Background())
 	defer cancelValue()
-	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
-	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
+	valueLocal, valueNotifier := memory.New(), &recordingNotifier{}
+	valueMux := route(abandoningReader{Store: valueLocal, cancel: cancelValue}, valueNotifier)
 	valueLocal.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
@@ -330,33 +332,33 @@ func oneSession(t *testing.T) (*proof.Verifier, func(method, url string) string)
 	}
 }
 
-// abandoningDescriber is a caller that goes away while the reread's DescribeSecret is in flight:
-// it ends that caller's context and fails as the AWS SDK does once a context has ended. For a
-// caller whose context it does not hold, it fails as a throttled Secrets Manager does.
+// abandoningDescriber is a caller that goes away while the reread's Describe is in flight: it
+// ends that caller's context and fails as the AWS SDK does once a context has ended. For a caller
+// whose context it does not hold, it fails as a throttled Secrets Manager does.
 type abandoningDescriber struct {
-	secrets.SecretsManagerAPI
+	secretstore.Store
 	cancel context.CancelFunc
 }
 
-func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanager.DescribeSecretInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (d abandoningDescriber) Describe(ctx context.Context, _ string) (secretstore.Listing, error) {
 	d.cancel()
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
+		return secretstore.Listing{}, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", err)
 	}
-	return nil, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
+	return secretstore.Listing{}, errors.New("operation error Secrets Manager: DescribeSecret, ThrottlingException")
 }
 
 // abandoningReader is a caller that goes away while the reread's value read is in flight, its
-// DescribeSecret answered: it ends that caller's context and fails as the AWS SDK does once a
-// context has ended.
+// Describe answered: it ends that caller's context and fails as the AWS SDK does once a context
+// has ended.
 type abandoningReader struct {
-	secrets.SecretsManagerAPI
+	secretstore.Store
 	cancel context.CancelFunc
 }
 
-func (r abandoningReader) GetSecretValue(ctx context.Context, _ *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+func (r abandoningReader) Read(ctx context.Context, _ string) (string, error) {
 	r.cancel()
-	return nil, fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
+	return "", fmt.Errorf("operation error Secrets Manager: GetSecretValue, %w", ctx.Err())
 }
 
 // postReread sends one reread of name with headers, answering the status, headers and body: the

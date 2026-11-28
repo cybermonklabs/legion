@@ -24,7 +24,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { fileLimit, spawnWithin, type Wait } from "@legion/test-fixtures/row-clock";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
-import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { ownGroup, untilExecDone } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -52,7 +52,7 @@ const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} 
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
 // what they wait for: the most of a row of judge-omp's describe (JUDGE_OMP: the row's measured
 // normal work and one Docker call's bound, since a stalled call ends the row at once) and four
-// rig.sh steps, the limit of every other row. A wait of a row on its processes (untilRunning)
+// rig.sh steps, the limit of every other row. A wait of a row on its processes (untilExecDone)
 // ends rowWaitMarginMs before that limit (rowWaits).
 const waits = rowWaits(
   fileLimit(Math.max(rowLimit(RIG_STEP, RIG_STEP, RIG_STEP, RIG_STEP), rowLimit(JUDGE_OMP)))
@@ -896,9 +896,13 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // Each row's run process and its harness shell run in process groups of their own (ownGroup,
   // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
   // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
-  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
-  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
-  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
+  // Each row waits until its run process has finished its exec of sleep (untilExecDone) before it
+  // walks: the process then leads its own group, and its environment, where the walk finds the
+  // run's mark, is laid out. Inside the exec the exe link names sleep while the environment still
+  // reads empty, so the sweep row, which waited on the exe link alone, named nothing on a loaded CI
+  // runner, stopped nothing, and waited on its sleep until Bun's bound. The walk reads `proc_root`,
+  // a proc root of the row's run process alone (scripts/e2e/lib/proc-root.ts), so a row's time is
+  // its own and not the host's process count.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
       env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
@@ -925,11 +929,12 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds).
   test.skipIf(!argMaxForceHolds())(
     "names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start",
-    () => {
+    async () => {
       const dir = freshDir("env-pids");
       const scratch = freshDir("env-pids-scratch");
       const run = runProcess(dir);
       try {
+        await untilExecDone(run.pid, "sleep", waits.end());
         const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
         const forced = groupBash(
           `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
@@ -954,7 +959,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep", waits.end());
+    await untilExecDone(run.pid, "sleep", waits.end());
     try {
       const own = groupBash(
         stopScript(`stop_env_processes "$1"; echo "status $?"`),
@@ -984,7 +989,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       mode: 0o755,
     });
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep", waits.end());
+    await untilExecDone(run.pid, "sleep", waits.end());
     try {
       const failed = groupBash(
         stopScript(

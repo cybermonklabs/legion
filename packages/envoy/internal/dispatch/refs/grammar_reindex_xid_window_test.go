@@ -87,7 +87,7 @@ func TestTheGrammarReindexTakesItsTransactionIdOnlyAtItsWritePhase(t *testing.T)
 	report := tracer.Measure(t, database.Pool, func() {
 		_, reindexed = ReindexOwed(storetest.MarkXid(ctx), database.Pool, Owed{
 			Queue: BlockGrammarOwed, Kind: "comment", ID: comment, EnqueuedAt: enqueuedAt,
-		}, itemBlockServer)
+		}, testOrigins)
 	})
 	if reindexed != nil {
 		t.Fatalf("the re-index failed: %v", reindexed)

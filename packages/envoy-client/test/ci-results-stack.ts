@@ -132,11 +132,10 @@ const BROKER_COUNT = 2;
 const DISPATCH_ACCOUNT = "system:serviceaccount:example-ns:example-dispatch";
 const CLUSTER_AUDIENCE = "example-broker-pod";
 const SIGNIN_CLIENT = "ci-results-broker";
-/** The secrets the broker is started with: none, under the example prefix and key
- *  dev-broker.sh uses, since nothing here asks for a secret. */
+/** The secrets the broker is started with: none, on the memory store (the development store, the
+ *  one whose start takes the airlock's and the result grant's test settings) under the example
+ *  prefix dev-broker.sh uses, since nothing here asks for a secret. */
 const SECRETS_PREFIX = "example/agent-secrets/";
-const SECRETS_KMS_KEY_ARN =
-  "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab";
 
 /** The session and the principal a results token of the entry writes under. */
 const RESULT_SESSION = `ci-results:${REPOSITORY}/${WORKFLOW}`;
@@ -553,8 +552,8 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const dispatchLog = path.join(dispatchWork, "dispatch.log");
     const dispatchAddress = new URL(dispatch.url).host;
 
-    const fakeSecrets = path.join(work, "fake-secrets.json");
-    writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
+    const memorySecrets = path.join(work, "memory-secrets.json");
+    writeFileSync(memorySecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
     // C8's profile: a name and a proxy block alone, Dispatch's public host alone, kind dpop, the
     // placeholder in Authorization alone, and a POST under the projects' and the issues' routes
     // alone.
@@ -590,8 +589,8 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_METRICS_LISTEN_ADDR: "127.0.0.1:0",
       BROKER_DRAIN_SECONDS: "0",
       BROKER_SECRETS_PREFIX: SECRETS_PREFIX,
-      BROKER_SECRETS_KMS_KEY_ARN: SECRETS_KMS_KEY_ARN,
-      BROKER_FAKE_SECRETS_FILE: fakeSecrets,
+      BROKER_SECRETS_STORE: "memory",
+      BROKER_MEMORY_SECRETS_FILE: memorySecrets,
       BROKER_PROFILES_FILE: profilesFile,
       BROKER_AIRLOCK_LISTEN_ADDR: "127.0.0.1:0",
       BROKER_AIRLOCK_PROXY_URL: `http://${proxyFront.address}`,

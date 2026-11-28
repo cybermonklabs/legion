@@ -34,8 +34,11 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # server binds exactly that port, and an occupied one fails with "address
 # already in use". DISPATCH_E2E_LISTEN_FROM instead names the unix socket of a
 # `held-port.py keep` process, for a caller that needs the port before the
-# server starts: the server serves on that keeper's port. The server's
-# dashboard origin is its own, http://127.0.0.1:<port>.
+# server starts: the server serves on that keeper's port. The server's dashboard origin is its own,
+# http://127.0.0.1:<port>, unless DISPATCH_E2E_SERVER_URL names another: a caller that stands a
+# front door of its own before the server (e2e/served-addresses.e2e.ts, whose TLS proxy answers
+# https://a.example.test) hands the server that origin as its DISPATCH_SERVER_URL, and reaches the
+# server through that front door.
 #
 # Two processes (DISPATCH_E2E_PROCESSES=2, e2e/harness-processes.ts): the
 # harness runs this script twice, Dispatch A and B, behind the round-robin proxy
@@ -61,13 +64,17 @@ case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
     own_port="${DISPATCH_E2E_PORT:-}"
-    dashboard_origin=""
+    dashboard_origin="${DISPATCH_E2E_SERVER_URL:-}"
     ;;
   2)
     if [ -z "${DISPATCH_E2E_SIGNIN:-}" ]; then
       : "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:?DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes of DISPATCH_E2E_PROCESSES=2 one cookie key}"
     fi
     : "${DISPATCH_E2E_PORT:?DISPATCH_E2E_PORT must name the round-robin proxy (e2e/round-robin-proxy.ts) both processes of DISPATCH_E2E_PROCESSES=2 serve behind}"
+    if [ -n "${DISPATCH_E2E_SERVER_URL:-}" ]; then
+      echo "run-server.sh: DISPATCH_E2E_SERVER_URL names one server's front door; both processes of DISPATCH_E2E_PROCESSES=2 serve the round-robin proxy's origin" >&2
+      exit 2
+    fi
     own_port_variable=DISPATCH_E2E_SERVER_PORT
     own_port="${DISPATCH_E2E_SERVER_PORT:-}"
     dashboard_origin="http://127.0.0.1:$DISPATCH_E2E_PORT"
@@ -325,6 +332,18 @@ if [ -n "${DISPATCH_PARENT_STATUS_RULE+set}" ]; then
   parent_status_rule_env=(DISPATCH_PARENT_STATUS_RULE="$DISPATCH_PARENT_STATUS_RULE")
 fi
 
+# The addresses the server answers at beside its dashboard origin (DISPATCH_SERVED_ORIGINS) and the
+# ones it answered at before (DISPATCH_FORMER_ORIGINS), read before the sweep below. Unset is the
+# server's own none, which every run keeps but e2e/served-addresses.e2e.ts's, whose servers stand
+# behind that spec's own TLS proxy with DISPATCH_E2E_SERVER_URL. A caller that sets either gets
+# it passed on as it set it, and the server refuses a list it cannot serve.
+served_origins_env=()
+for name in DISPATCH_SERVED_ORIGINS DISPATCH_FORMER_ORIGINS; do
+  if [ -n "${!name+set}" ]; then
+    served_origins_env+=("$name=${!name}")
+  fi
+done
+
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -416,7 +435,8 @@ done
 # run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every
 # engine. DISPATCH_SERVER_URL is the dashboard origin above,
-# http://127.0.0.1:<port> of the port the server serves on, or in two-process
+# http://127.0.0.1:<port> of the port the server serves on, DISPATCH_E2E_SERVER_URL where a caller
+# that stands a front door before it names one, or in two-process
 # mode the round-robin proxy's: it is the origin the CSRF guard compares writes
 # against, the only Host the router serves under dev sign-in, the origin of the
 # sign-in's /auth/callback, and the Playwright config's baseURL. Dev sign-in
@@ -461,6 +481,7 @@ exec "${listen[@]}" env \
   "${delivery_reconcile_env[@]}" \
   "${hide_state_env[@]}" \
   "${parent_status_rule_env[@]}" \
+  "${served_origins_env[@]}" \
   DISPATCH_SPEC_ROOTS="$spec_roots" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \

@@ -30,7 +30,7 @@ func newUnsettledCIJobRig(t *testing.T) (*ciJobRig, *docs.Service) {
 	if err := rig.deps.Docs.(*docs.Service).SettleIssueDocuments(context.Background(), rig.issue); err != nil {
 		t.Fatal(err)
 	}
-	documents := docs.New(docs.Deps{Store: rig.database, Identity: headerIdentity(rig.database), ServerURL: testServerURL, Settle: time.Hour})
+	documents := docs.New(docs.Deps{Store: rig.database, Identity: headerIdentity(rig.database), Origins: testOrigins, Settle: time.Hour})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Error(err)

@@ -1378,6 +1378,20 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // INFRA-5491 R10: the call reads a link at another address of its server against the origins
+  // the server names (`GET /api/v1/whoami`), but a dry run asks Dispatch nothing, that read
+  // included: it reads the link against the configured address alone, and refuses it as the
+  // call refuses a link at another server.
+  test("--dry-run of a link at an address the command is not configured with asks no whoami", async () => {
+    const { code, stdout } = await run(
+      ["read", "--ref", "https://b.example.test/issues/DSP-1", "--dry-run"],
+      omp
+    );
+    expect(code, stdout).toBe(2);
+    expect(stdout).toStartWith("dispatch read was not called:");
+    expect(requests).toEqual([]);
+  });
+
   // A dry run of a command with no dry-run step reads nothing from Dispatch, so it checks and
   // prints with Dispatch off too, and prints the JSON alone.
   test("--dry-run checks and prints with Dispatch off", async () => {

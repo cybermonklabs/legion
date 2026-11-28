@@ -234,10 +234,14 @@ export interface Reading {
  * cut reads at that cut, whatever `--as-of` the call names (decision 6 of dispatch://INFRA-4620),
  * so its cut replaces the call's own. A Dispatch older than the cut names none. A token's cut
  * refuses `dispatch results --at` here, before any other request, as `check.ts` refuses `--at`
- * beside `--as-of` before any request at all.
+ * beside `--as-of` before any request at all. `whoami` is the command's one read of
+ * `GET /api/v1/whoami`, which the pre-send check may have made already (`executeDispatchTool`).
  */
-export async function readAtCut(session: SessionContext): Promise<Reading> {
-  const identity = await session.newClient().whoami();
+export async function readAtCut(
+  session: SessionContext,
+  whoami: () => Promise<WhoamiResponse>
+): Promise<Reading> {
+  const identity = await whoami();
   const tokenCut = identity.kind === "agent" ? (identity.cut ?? null) : null;
   const { tool } = session.input;
   if (

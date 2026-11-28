@@ -7,8 +7,8 @@
 // the broker's own approval page, by a browser signed in to the broker at the test's provider.
 //
 // Unlike internal/cipher/api/api_test.go's per-route unit coverage, this test's wiring mirrors
-// cmd/cipherd/main.go exactly: policy.NewCurrent runs a real policy.Loader over the fake Secrets
-// Manager and reloads it on a real ticker, so step 8 edits a secret's tags in that store and waits
+// cmd/cipherd/main.go exactly: policy.NewCurrent runs a real policy.Loader over the memory store
+// and reloads it on a real ticker, so step 8 edits a secret's tags in that store and waits
 // for the live ticker to pick the edit up rather than standing up a second policy.Current to fake
 // "a reload happened".
 //
@@ -60,6 +60,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -68,6 +70,8 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
+// "dispatch": the identity that reaches the routes Dispatch's server calls.
 const (
 	// dispatchAccount is the ServiceAccount this broker's BROKER_API_ACCOUNTS names as the caller
 	// "dispatch": the identity that reaches the routes Dispatch's server calls.
@@ -99,7 +103,7 @@ const (
 type e2eServer struct {
 	URL     string
 	Store   *store.Store
-	Secrets *secrets.Local
+	Secrets *memory.Store
 	Log     fmt.Stringer
 	// Groups is the broker's one group reader, which the policy, the request machine, its chain
 	// check and the approval page all ask who is a member of a group.
@@ -118,7 +122,7 @@ type e2eServer struct {
 // of BROKER_SERVICE_ACCOUNT_SECRETS; and the clock the group reader dates its reads by, time.Now
 // when nil.
 type e2eOptions struct {
-	secrets                                []secrets.LocalSecret
+	secrets                                []memory.Secret
 	profiles                               string
 	directoryURL, directoryAccount, iamURL string
 	anthropicURL                           string
@@ -142,7 +146,7 @@ func newE2EServer(t *testing.T) *e2eServer {
 	return newE2EServerWith(t, e2eOptions{secrets: e2eSecrets})
 }
 
-// newE2EServerWith holds o's secrets in a fake Secrets Manager and wires the full service graph —
+// newE2EServerWith holds o's secrets in the memory store and wires the full service graph —
 // enroll.Service (+ ChainVerifier), the group reader, requests.Machine, machine.Service,
 // policy.NewCurrent — the same way main.go does, minus the HTTP listener and signal handling
 // (api.Register mounts on an httptest.Server instead of a real net/http.Server, as api_test.go's
@@ -160,7 +164,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	enr := &enroll.Service{Store: st, Lease: time.Hour}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 
-	local := secrets.NewLocal(o.secrets...)
+	local := memory.New(o.secrets...)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	// The group reader as main.go's newGroupReader builds it, started on the serving context.
@@ -184,7 +188,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	}
 
 	reqMachine := &requests.Machine{
-		Store: st, Policy: current, Secrets: policytest.Store(local),
+		Store: st, Policy: current, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 		Groups:          reader,
@@ -223,7 +227,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: current, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		// People sign in to the page at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
 	})
@@ -237,14 +241,14 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	}
 }
 
-// e2eSecrets are the fake Secrets Manager's secrets. Every one testApprover owns is human-tier but
+// e2eSecrets are the memory store's secrets. Every one testApprover owns is human-tier but
 // AUTO_READ_TOKEN, so it needs their approval, and each approval-needing secret used across the
 // steps gets its own distinct name: requests.Machine.Create's reuseLiveGrant check reuses any
 // still-live grant for an exact name-set match against the same enrollment before ever evaluating
 // the policy, so two steps sharing one secret name would make a later "fresh pending request"
 // silently resolve to an earlier step's already-decided grant instead of creating the new record
 // the step means to test.
-var e2eSecrets = []secrets.LocalSecret{
+var e2eSecrets = []memory.Secret{
 	policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"),
 	policytest.Secret("SLACK_MCP_XOXP_TOKEN", testApprover, policy.TierHuman, "slack-v1"),
 	policytest.Secret("GITHUB_TOKEN", testApprover, policy.TierHuman, "github-v1"),

@@ -302,6 +302,15 @@ Each item below names a script, then what it proves.
   a delivered mention of the claimant leaves its topic out, a failed one reaches it, and a failed mention of an ask's follower still reaches the follower.
   Run against a base binary (`DISPATCH_BIN`), it is the change's negative control
 
+- `dispatch-served-addresses.sh`
+
+  Dispatch serves a list of addresses and reads links at its former ones (INFRA-5491), driven through the real `envoy-dispatch` behind a TLS front door the Go test serves for the example hosts, signing in through `dev-oidc-issuer`, against a loopback PostgreSQL the caller names:
+  a cookie write, the sign-in and a broker token's proof are each taken at a served address by the request's `Host` alone and refused at a former one, a proof naming a `DISPATCH_PROOF_ORIGINS` origin is taken beside them, a start the lists cannot be answered under is refused, and a server with no list answers as the base commit's build does;
+  each `dispatch: request` line names its `Host`, and a sign-in's callback line names its person, address and user agent;
+  a link at a served or a former address is a reference to the API, to `rebuild-refs` and to the `dispatch` command configured with either served address, and one at another address is none;
+  behind a trusted proxy each caller is logged and limited by the client the proxy appended, never by an entry it wrote, a peer in no range keeps the rightmost entry, and a range that is no network or trusts every peer refuses the start.
+  Run against a base binary (`DISPATCH_BIN`) or the base commit's command (`DISPATCH_CLI`), it is the change's negative control
+
 - `dispatch-two-builds.sh`
 
   text an older build of Dispatch writes gets this build's reference grammar with no edit and no command run, driven over HTTP through two real `envoy-dispatch` binaries against one loopback PostgreSQL the caller names — the build of the commit `--base-commit` names, taken with `git archive` into the run's own work directory, and the build of this checkout, the way a rolling release serves both at once:
@@ -4324,6 +4333,170 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 #   other seven, exit 1
 ```
 
+## dispatch-served-addresses.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [DISPATCH_BIN=<envoy-dispatch>] [BASE_BIN=<envoy-dispatch>] [BASE_COMMIT=<commit>] \
+  [ISSUER_BIN=<dev-oidc-issuer>] [DISPATCH_CLI=<bin/dispatch.ts>] \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → "dispatch served addresses e2e: PASS in <n>s: <n> subtests passed", exit 0
+```
+
+Runs on any Linux host with `go`, `bun` and this repository's `node_modules`, `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)), and `git` and `tar` where it builds the base commit — no Docker.
+It is the live proof of INFRA-5491's checks `c-l-served`, `c-l-record`, `c-l-proxy`, the API half of `c-l-refs` and `c-l-cli` (Verification v16):
+it builds the binaries and runs `TestServedAddressesLive` and `TestTrustedProxyLive` of `packages/envoy/cmd/dispatch/served_addresses_e2e_test.go` (build tag `e2e`), each of whose subtests is one step of one check and is named after it.
+
+Each item below names an input and its default, then what it means.
+
+- `LEGION_TEST_PG_DSN` — required
+
+  a PostgreSQL server on `127.0.0.1`, `localhost` or `::1`: [`lib/loopback-dsn.py`](#libloopback-dsnpy) asks libpq which host the DSN names, and the run refuses every other answer.
+  The tests make a database of their own there for each server they start, copied from a template they migrate, as every Postgres-backed Dispatch test does (`storetest.Open`), and drop them when they end
+
+- `DISPATCH_BIN` — unset
+
+  the `envoy-dispatch` every server runs but the base one of `c-l-served` (6); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+
+- `BASE_BIN` — unset
+
+  the base commit's `envoy-dispatch`, whose answers to `c-l-served` (1) to (4) this build's with no served or former list must equal (`c-l-served` (6)); unset, the script builds it from `BASE_COMMIT`'s tree, which it takes with `git archive` into its work directory, so the checkout is never touched
+
+- `BASE_COMMIT` — the script's `BASE_COMMIT` default
+
+  the commit that build is built from when `BASE_BIN` is unset: the commit of `main` that the branch's latest merge of `main` took, which must be in this checkout's history.
+  A later merge of `main` into the branch moves it: the script's header says how
+
+- `ISSUER_BIN` — unset
+
+  `dev-oidc-issuer`; unset, the script builds `./cmd/dev-oidc-issuer`
+
+- `DISPATCH_CLI` — unset
+
+  the `bin/dispatch.ts` that `c-l-cli` runs with Bun, in a tree whose dependencies are installed; unset, this checkout's `packages/envoy-client/bin/dispatch.ts`
+
+The script drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*` and `SERVED_ADDRESSES_E2E_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, and hands the tests their inputs as `SERVED_ADDRESSES_E2E_*` with `DISPATCH_TEST_DATABASE_URL`.
+Every server runs with nothing of the caller's environment or home (`startDispatchProcessWith`), cookie identity, `DISPATCH_SERVER_URL=https://a.example.test`, the sign-in through `dev-oidc-issuer` and never the dev sign-in route, and the stub broker of `internal/ciphertoken/ciphertokentest` as its secrets broker (`DISPATCH_AGENT_SECRETS_URL`, an account token file).
+The issuer signs `ada@example.test` in at every authorization as a member of the sign-in pool group the servers admit (`--sign-in-as`, `--sign-in-group`, `DISPATCH_SIGNIN_GROUP`), since Dispatch takes a Workspace domain from Google's own issuer alone.
+The server of the checks adds `DISPATCH_SERVED_ORIGINS=https://b.example.test` and `DISPATCH_FORMER_ORIGINS=https://old.example.test`.
+The issuer serves two clients, each with its one callback, since it registers one per client id:
+the one whose callback is `https://b.example.test/auth/callback`, which the server of the checks signs in through, and the canonical address's, which only the two servers of `c-l-served` (6) sign in through.
+Each server stands behind a TLS front door of its own:
+one listener on 127.0.0.1 with one certificate, from a CA the test makes in memory, for `a`, `b`, `old` and `other.example.test`, and an `httputil.ReverseProxy` that keeps the `Host`, passes on what the caller wrote, dials the process from 127.0.0.1 and writes `X-Forwarded-For` as Google's internal Application Load Balancer does:
+what the caller wrote, then the caller's address, then `10.128.0.99` for the forwarding rule, in one line.
+The test's callers resolve every example host to the front door with a dialer, trust the CA, and connect from 127.0.0.7 and 127.0.0.8, which Linux's loopback holds;
+a request to a `Host` written another way (`B.EXAMPLE.TEST`, `b.example.test.`, `b.example.test:443`, `b.example.test:8443`) is sent to the front door under that `Host`, which the front door hands on as written;
+a caller inside the cluster reaches the process itself under `Host: dispatch.test-ns.svc.cluster.local:8766`.
+The issues, the document and the comment of `c-l-refs` and `c-l-cli` are written, and the `dispatch` command runs, as an agent session on the shared agent token every test server takes (`DISPATCH_AGENT_TOKEN`);
+their project names the person `c-l-record` signed in as its default assignee, which a project needs when its creator acts for no person.
+The command reaches the example hosts through an HTTP CONNECT proxy the test serves (`HTTPS_PROXY`, which Bun's `fetch` honours, since a pod's `/etc/hosts` is not writable), and trusts the CA through `NODE_EXTRA_CA_CERTS`, a file in a directory of its own.
+Every log line a check reads is the process's own output.
+
+Each item below names a subtest, then what it requires.
+
+- `c-l-record …` — one `GET /auth/whoami` to each Host (`a`, `b`, `B.EXAMPLE.TEST`, `b.example.test.`, `b.example.test:443`, `b.example.test:8443`, `old`, `other` and the cluster's), then a browser sign-in at `b`
+
+  each `dispatch: request` line names its request's `Host` as the request wrote it;
+  the callback's line names the person, `host=b.example.test`, the browser's user agent and 302, and it is the one line written while the callback was served that names the person
+
+- `c-l-served (3) …` — `GET /auth/start` at Host `b`, the issuer's authorization of the `redirect_uri` it names, and the callback
+
+  `redirect_uri` `https://b.example.test/auth/callback`, and a session cookie `dsession` with no `Domain`
+
+- `the runtime read …` — `GET /auth/whoami` at `b` with that cookie
+
+  `origins` the canonical, the served and the former address, the list the page reads
+
+- `c-l-served (1) …` — a cookie write (`POST /api/v1/me/agent-tokens` with the session cookie) with Origin `b` to Host `b`, Origin `a` to Host `a`, and Origin `b` to Host `B.EXAMPLE.TEST`, `b.example.test.` and `b.example.test:443`
+
+  201 each
+
+- `c-l-served (2) …` — Origin `a` to Host `b`, Origin `b` with `X-Forwarded-Host: b.example.test` to Host `a`, and Origin `b` to Host `b.example.test:8443`
+
+  403 `invalid request origin` each
+
+- `c-l-served (4) …` — broker-token requests: a proof at `b` to Host `b`, the same proof again, a proof at `b` with the request's path to the cluster's Host, and a proof at `other` to Host `b`
+
+  200, 401 `BROKER_TOKEN_PROOF_INVALID`, 200 and 401 `BROKER_TOKEN_PROOF_INVALID`
+
+- `c-l-served (4b) …` — a second server with the checks' settings and `DISPATCH_PROOF_ORIGINS=http://dispatch.test-ns.svc.cluster.local:8766`: to the cluster's Host, a proof at that origin and a proof at `b`
+
+  200 each
+
+- `c-l-served (7) …` — at Host `old`: `GET /auth/start`, `GET /auth/callback`, and cookie writes with Origin `old`, with Origin `a`, and with no Origin and `Sec-Fetch-Site: same-origin`; then a document socket (`/ws/doc/<artifact>`) with the session cookie and Origin `old` at Host `old`, with and without an `Authorization` header beside the cookie, beside the same socket at Host `b`
+
+  404, 404, and 403 `invalid request origin` for each write; the socket at `b` is granted read-write and neither socket at `old` is
+
+- `c-l-refs …` — a document and a comment that hold links to four issues, at `a`, `b`, `old` and `other`;
+  `GET /api/v1/references?from=` the document, before and after `envoy-dispatch rebuild-refs` run beside the server with its settings, `?to=` each link, and `?from=` the comment;
+  cookie writes with Origin `old` to Hosts `old` and `b`, and broker-token proofs at `old` to Hosts `old` and `b`
+
+  the links at `a`, `b` and `old` are references in each read and the link at `other` is none (`?to=` it is 400 `INVALID_REFERENCE`);
+  each write is 403 `invalid request origin` and each proof 401 `BROKER_TOKEN_PROOF_INVALID`
+
+- `c-l-cli …` — `dispatch read --ref` on one issue's page at `old`, at `b` and at `other`, from the command with `DISPATCH_URL=https://a.example.test` and then `https://b.example.test`
+
+  the links at `old` and `b` read as the issue, and the link at `other` is refused (exit 2, `ref must be a valid dispatch:// reference`), from either configuration
+
+- `c-l-served (5) …` — four starts: two served addresses on one host, a served address with a path, a former address on `b`'s host, and a former address `DISPATCH_PROOF_ORIGINS` also lists
+
+  each exits non-zero before it serves, its refusal naming the setting and the entry
+
+- `c-l-served (6) …` — `c-l-served` (1) to (4) against this build with no served or former list and against the base commit's build, each signed in at the canonical address
+
+  every answer of the one equal to the other's
+
+- `c-l-proxy (1) …` — on the server of the checks with `DISPATCH_TRUSTED_PROXY_RANGES=127.0.0.1/32`, a request from 127.0.0.7 through the front door whose caller writes `X-Forwarded-For: 198.51.100.66`
+
+  its line's `address` 127.0.0.7
+
+- `c-l-proxy (2) …` — from 127.0.0.7 through the front door, distinct tokens the broker never issued, as fast as the test sends them and at most 200, until one is answered 429 `BROKER_TOKEN_RATE_LIMITED`;
+  then at once a valid token from 127.0.0.8 that no request had presented
+
+  the 429 within the 200, then 200 for 127.0.0.8, the two lines naming 127.0.0.7 and 127.0.0.8
+
+- `c-l-proxy (3) …` — two more servers, with the setting unset and with `192.0.2.0/24`, each sent from 127.0.0.1 directly `X-Forwarded-For: 198.51.100.66`, and a request on the previous shared agent token whose `X-Forwarded-For` is `198.51.100.8, 198.51.100.66`
+
+  every request line's `address` and the previous-token line's 198.51.100.66, the rightmost entry
+
+- `c-l-proxy (4) …` — from 127.0.0.1 directly to the first server, two `X-Forwarded-For` lines (198.51.100.8, then 198.51.100.66) and the single entry 198.51.100.8, each sent once more than a broker-token bucket holds with a token the broker never issued, then a token keyed on 198.51.100.8
+
+  400 `FORWARDED_FOR_INVALID` each, a line naming route `refused`, `address` 127.0.0.1 and 400, no call to the broker, and then 401 `BROKER_TOKEN_NOT_ACTIVE`, since no refusal spent a bucket keyed on 198.51.100.8
+
+- `c-l-proxy (5) …` — four starts, each with one `DISPATCH_TRUSTED_PROXY_RANGES` alone: `10.0.0.1/8`, `0.0.0.0/0`, `::/0` and `not-a-cidr`
+
+  each exits non-zero before it serves, its refusal naming the setting and the entry
+
+The last line is the verdict, read from the tests' own `--- PASS`, `--- FAIL` and `--- SKIP` lines rather than from go test's exit status alone:
+PASS with the count of subtests passed, or FAIL naming every subtest that failed and every one skipped, since a skipped subtest is a step the run did not prove, and a run whose two tests did not each print `--- PASS` fails.
+The work directory, under `TMPDIR`, holds the binaries, the base tree, the tests' temporary files and go test's output (`go-test.log`):
+removed when the run passes, kept without the binaries and the base tree, and printed, when it fails.
+
+**Negative control.**
+Each run flips one input, against the base commit, whose tree and build sit outside the checkout.
+The base commit is the script's `BASE_COMMIT` default.
+The base commit's `envoy-dispatch` as `DISPATCH_BIN` reads neither list, logs no `host` and reads no `DISPATCH_TRUSTED_PROXY_RANGES`, so it fails every subtest that holds a served or a former address, the `host` field or the proxy's client:
+the request lines name no `host`; the start at `b` names the canonical callback, which the issuer's client for `b` refuses, so no sign-in at `b` completes and each subtest that writes with its cookie or needs its person fails on it, `c-l-cli` among them; the proofs at `b` are refused in (4) and (4b), where the proof at the `DISPATCH_PROOF_ORIGINS` origin, which the base reads, is still taken;
+each of the eight starts of `c-l-served` (5) and `c-l-proxy` (5) still serves after 30 s; `c-l-proxy` (1) and (2) key both callers on `10.128.0.99`, and the refusals of (4) reach the broker.
+`c-l-served (6)` holds the base build equal to itself there, and `c-l-proxy (3)` passes by design: it proves that a peer in no range keeps the rule the base build already has.
+The base commit's `dispatch` command as `DISPATCH_CLI`, against this build's server, refuses the links at `old` and `b` with `DISPATCH_URL=https://a.example.test` and the link at `old` with `https://b.example.test`, reads only the link at its own address, and so fails `c-l-cli` alone.
+The test of `auth.ForwardedAddress` for a peer outside every range that fails with the range check removed is the unit control of `c-l-proxy`, `TestAPeerOutsideEveryRangeKeepsTheRightmostEntry`, not this script's.
+
+```sh
+base=$(mktemp -d "$TMPDIR/served-addresses-base.XXXXXX")
+git -C <the checkout> archive <the script's BASE_COMMIT default> | tar -x -C "$base"
+go -C "$base/packages/envoy" build -o "$base/envoy-dispatch" ./cmd/dispatch
+(cd "$base" && bun install --frozen-lockfile --ignore-scripts)
+LEGION_TEST_PG_DSN=… DISPATCH_BIN="$base/envoy-dispatch" BASE_BIN="$base/envoy-dispatch" \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → FAIL naming c-l-record, c-l-served (1), (2), (3), (4), (4b), (5) and its four starts, and both
+#   steps of (7), the runtime read, c-l-refs, c-l-cli, c-l-proxy (1), (2), (4), and (5) and its four
+#   starts; c-l-served (6) and c-l-proxy (3) pass, exit 1
+LEGION_TEST_PG_DSN=… DISPATCH_CLI="$base/packages/envoy-client/bin/dispatch.ts" BASE_BIN="$base/envoy-dispatch" \
+  bash scripts/e2e/dispatch-served-addresses.sh
+# → FAIL naming c-l-cli alone (old and b refused from a, old refused from b), exit 1
+```
+
 ## verification-results.sh
 
 ```sh
@@ -7470,8 +7643,12 @@ gVisor's commit 553528ee1034 (2026-10-07) sends them only when the group becomes
 A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
 `untilRunning(pid, program, end)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails at `end`, the end of the row's waits ([`lib/row-waits.ts`](#librow-waitsts)), naming both and what the pid ran instead: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
+`untilExecDone(pid, program, end)` resolves once `pid` has finished its exec of `program` as far as a walk of the processes' environments reads it: its exe link names `program` and its `/proc/<pid>/environ` reads non-empty.
+Linux names the program in the exe link before it lays out the environment, so a walk made after `untilRunning` alone can read an empty environment, name nothing, and leave the process running.
+Each row of `lib/run-processes.test.ts` whose walk must name a marked process it started, and each `run_env_pids` row of the skill-scenario rig, wait on it before the walk, and it fails at `end` as `untilRunning` does, naming the pid, what its exe link read and how many bytes its environment held.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, that `untilRunning` fails at the end it is given and not before, naming the pid, the program and what the pid runs, and that it looks once at an end that has passed.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
+It holds that `untilExecDone` resolves for a process whose environment reads, and that for a process whose environment reads empty, as one inside its exec does, it fails at the end it is given, naming what the exe link and the environment read.
 `lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`.
 The `lib/` files gate those rows on perl with `hostGate` (`@legion/test-fixtures/host-tools`): a host without perl skips them by name outside CI and fails them by name under `GITHUB_ACTIONS`; the skill-scenario rig's rows skip by name where the host has no perl
 

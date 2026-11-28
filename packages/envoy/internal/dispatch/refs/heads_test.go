@@ -23,7 +23,7 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 	core := text.Ref{Kind: "issue", IssueKey: "CORE-1", ID: "CORE-1"}
 	t.Run("a first line", func(t *testing.T) {
 		lead := strings.Repeat("x", 151)
-		if got, want := FirstLine("\n  "+lead+" CORE-1234 decides it.\nMore.", ""), lead+"…"; got != want {
+		if got, want := FirstLine("\n  "+lead+" CORE-1234 decides it.\nMore.", text.Origins{}), lead+"…"; got != want {
 			t.Fatalf("FirstLine = %q, want %q", got, want)
 		}
 	})
@@ -31,7 +31,7 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 		block := "CORE-1 " + strings.Repeat("y", 464)
 		markdown := block + " CORE-1234 follows."
 		excerpts := MentionExcerpts(markdown, []model.ArtifactBlock{{ID: "p1", From: 0, To: len(markdown)}},
-			[]text.Located{{Ref: core, Offset: 0}}, "")
+			[]text.Located{{Ref: core, Offset: 0}}, text.Origins{})
 		if got := excerpts[Target{Kind: "issue", ID: "CORE-1"}]; got != (model.GraphExcerpt{BlockID: "p1", Text: block}) {
 			t.Fatalf("the excerpt = %#v, want the block's %d runes before the key", got, len(block))
 		}
@@ -40,10 +40,10 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 		// 232 runes, so the key after them crosses the cut at 240 in both texts: the head an edge
 		// shows is the lead in both, though the first 240 runes of the two differ.
 		lead := strings.Repeat("x", 231) + " "
-		if got := EditedTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", "", []text.Ref{core}); got != nil {
+		if got := EditedTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", text.Origins{}, []text.Ref{core}); got != nil {
 			t.Fatalf("EditedTargets = %#v, want none: the head an edge shows did not move", got)
 		}
-		if got := EditedTargets("A first.", "A second.", "", []text.Ref{core}); len(got) != 1 {
+		if got := EditedTargets("A first.", "A second.", text.Origins{}, []text.Ref{core}); len(got) != 1 {
 			t.Fatalf("EditedTargets = %#v, want the cited target: the head moved", got)
 		}
 	})
