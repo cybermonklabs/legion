@@ -693,10 +693,11 @@ func (a *Admission) OnUnknownChain(wake func()) {
 
 // UnknownChains takes every key noted since the last take (NoteUnknownChain) on a Dispatch chain
 // the copy cannot read to its top (R16 of dispatch://INFRA-3320: a row missing, a key repeated, or
-// more than 32 links), an issue an admission pass found or a parent a waiting re-parent seed waits
-// on, in key order, and empties the set: the daemon reads Dispatch again for each, the key and
-// each link of its chain, outside any decision, until the chain is known. A key noted again after
-// a take is taken again.
+// more than 32 links), an issue an admission pass found, a parent a waiting re-parent seed waits
+// on, or the issue of a notice whose owner walk waits on one (the daemon's deliverNotice), in key
+// order, and empties the set: the daemon reads Dispatch again for each, the key and each link of
+// its chain, outside any decision, until the chain is known. A key noted again after a take is
+// taken again.
 func (a *Admission) UnknownChains() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()

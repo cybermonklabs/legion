@@ -906,12 +906,8 @@ func TestTheConversionStampsNoFenceOnAClaimRelease(t *testing.T) {
 		if got != release.want {
 			t.Errorf("%s after the conversion = %s, want %s as it was queued: no claim release carries a fence", release.name, got, release.want)
 		}
-		payload, err := DecodeOutboxPayload(OutboxRow{ID: release.id, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)})
-		if err != nil {
+		if _, err := DecodeOutboxPayload(OutboxRow{ID: release.id, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)}); err != nil {
 			t.Fatalf("decode %s as the executor does: %v", release.name, err)
-		}
-		if fence, carries := FenceOf(payload); carries {
-			t.Errorf("%s reads fence %+v after the conversion, want none", release.name, fence)
 		}
 	}
 	if got, want := read(message), `{"body": "The checks of the head settled.", "entry": 1, "generation": 3}`; got != want {

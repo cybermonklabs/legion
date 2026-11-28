@@ -750,23 +750,24 @@ func (r *leftRig) runningRelease(issue string) string {
 	return running[0]
 }
 
-// leftQueued is one claim release row the outbox still holds: its issue, the session it names (""
-// for a move's) and how often it has run.
+// leftQueued is one claim release row the outbox still holds: its id, its issue, the session it
+// names ("" for a move's) and how often it has run.
 type leftQueued struct {
+	id             int64
 	issue, session string
 	attempts       int
 }
 
 func (r *leftRig) queuedReleases() []leftQueued {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select issue, coalesce(payload->>'session', ''), attempts from outbox where kind = $1 order by id`,
+	rows, err := r.pool.Query(r.ctx, `select id, issue, coalesce(payload->>'session', ''), attempts from outbox where kind = $1 order by id`,
 		string(record.OutboxKindClaimRelease))
 	if err != nil {
 		r.t.Fatalf("read the queued claim releases: %v", err)
 	}
 	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (leftQueued, error) {
 		var q leftQueued
-		return q, row.Scan(&q.issue, &q.session, &q.attempts)
+		return q, row.Scan(&q.id, &q.issue, &q.session, &q.attempts)
 	})
 	if err != nil {
 		r.t.Fatalf("read the queued claim releases: %v", err)
@@ -1599,30 +1600,16 @@ func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.
 	})
 }
 
-// leftMoveRow is one claim release row of a move out of the workflow the outbox still holds (one
-// that names no session): its id and how often it has run.
-type leftMoveRow struct {
-	id       int64
-	attempts int
-}
-
 // moveReleases is each claim release row of issue that names no session, oldest first.
-func (r *leftRig) moveReleases(issue string) []leftMoveRow {
+func (r *leftRig) moveReleases(issue string) []leftQueued {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select id, attempts from outbox
-		where kind = $1 and issue = $2 and coalesce(payload->>'session', '') = '' order by id`,
-		string(record.OutboxKindClaimRelease), issue)
-	if err != nil {
-		r.t.Fatalf("read the move's claim releases of %s: %v", issue, err)
+	var moves []leftQueued
+	for _, q := range r.queuedReleases() {
+		if q.issue == issue && q.session == "" {
+			moves = append(moves, q)
+		}
 	}
-	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (leftMoveRow, error) {
-		var q leftMoveRow
-		return q, row.Scan(&q.id, &q.attempts)
-	})
-	if err != nil {
-		r.t.Fatalf("read the move's claim releases of %s: %v", issue, err)
-	}
-	return queued
+	return moves
 }
 
 // claimStates is each claim of issue as the store holds it, in token order: its token, its state,

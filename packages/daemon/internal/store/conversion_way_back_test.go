@@ -298,7 +298,7 @@ func TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		{name: "a production check's bound", issue: root, payload: record.Fenced(record.CheckBound{}, fence), refused: true, after: `{}`},
 		// A claim release carries no fence (record.FenceOf), so the release before takes it as this
 		// release queues it, and the way back leaves it so.
-		{name: "a claim release", issue: root, payload: record.Fenced(record.ClaimRelease{}, fence), after: `{}`},
+		{name: "a claim release", issue: root, payload: record.ClaimRelease{}, after: `{}`},
 		{name: "a role message", issue: root, payload: record.Fenced(record.RoleMessage{Role: "legion-legion-legion-1-implementer",
 			Body: "The checks of the head settled."}, fence), refused: true,
 			after: `{"role":"legion-legion-legion-1-implementer","body":"The checks of the head settled."}`},

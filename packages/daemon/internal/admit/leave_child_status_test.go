@@ -25,7 +25,8 @@ import (
 // lcsNotice is one child-status or child-closed notice of LEGION-500 the outbox holds, with where
 // the daemon's delivery would send it as the copy and the claims stand when it is read (lcsRoute).
 type lcsNotice struct {
-	kind, reason, routed string
+	kind           record.NoticeKind
+	reason, routed string
 }
 
 // lcsNotices is every child-status and child-closed notice of LEGION-500 the outbox holds, oldest
@@ -50,7 +51,7 @@ func lcsNotices(t *testing.T, pool *pgxpool.Pool) []lcsNotice {
 		t.Fatalf("iterate the child notices of %s: %v", rstChild, err)
 	}
 	for i := range notices {
-		notices[i].routed = lcsRoute(t, pool, rstChild, record.NoticeKind(notices[i].kind))
+		notices[i].routed = lcsRoute(t, pool, rstChild, notices[i].kind)
 	}
 	return notices
 }
@@ -151,7 +152,7 @@ func TestALeavesNoticeOnAnUnknownChainReachesTheArchitectAboveOnceTheChainIsKnow
 			}
 			unknown := lcsNotices(t, pool)
 			t.Logf("while the chain is unknown: %+v", unknown)
-			if left := lcsLeft(unknown, tc.status); len(left) != 1 || left[0].kind != string(tc.kind) || left[0].routed != "waits" {
+			if left := lcsLeft(unknown, tc.status); len(left) != 1 || left[0].kind != tc.kind || left[0].routed != "waits" {
 				t.Fatalf("the notices of %s's %s while its chain is unknown = %+v; want one %s, queued and waiting for the chain (ruling 6d77e1c1)",
 					rstChild, tc.status, left, tc.kind)
 			}

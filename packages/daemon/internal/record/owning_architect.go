@@ -29,10 +29,13 @@ var ErrNoArchitectAbove = errors.New("no architect stands above the issue")
 // owner walk's (OwningArchitect), from key's parent where NoticeStartsAtParent says so. It fails
 // with ErrChainUnknown where the walk meets an unknown chain, and with ErrNoArchitectAbove where a
 // child's close or status change (ChildNotice) would end at key's own architect: such a notice is
-// for the architect above key alone, and is not the issue's own architect to judge. Every other
-// notice keeps the walk's answer, so a root's own architect hears its own worker-died and
-// worker-stalled, and a child's close whose walk falls back to a gate root above the child, another
-// issue, goes to that gate root's architect.
+// for the architect above key alone, and is not the issue's own architect to judge. Sent to the
+// issue's own architect, a leave's notice would reach a claim that the leave suspends or retires,
+// and one the workflow queued on a chain the copy could not read to its top, which turned out to
+// have nothing above the issue, would wait for that architect's return and then tell it of its own
+// leave. Every other notice keeps the walk's answer, so a root's own architect hears its own
+// worker-died and worker-stalled, and a child's close whose walk falls back to a gate root above
+// the child, another issue, goes to that gate root's architect.
 func NoticeArchitect(project string, chains *Chains, key string, kind NoticeKind, role claim.Role, runs func(claim.Token) bool) (claim.Token, error) {
 	architect, err := OwningArchitect(project, chains, key, NoticeStartsAtParent(kind, role), runs)
 	if err == nil && ChildNotice(kind) && isArchitectOf(project, architect, key) {
@@ -76,13 +79,7 @@ func OwningArchitect(project string, chains *Chains, key string, fromParent bool
 // above it in Legion's work goes to its gate root, never past it to nobody: a failed claim is
 // passed over by the walk anyway, but a stalled one still holds its role and would be told of its
 // own stall, and on a root each such walk ends at the root, as every walk from the root does. A
-// child's close or status change is the exception (NoticeArchitect): one whose walk falls back to
-// a gate root above the issue, another issue, goes there, but one whose walk ends at the issue
-// itself goes to no architect (ErrNoArchitectAbove), since it is for the architect above the issue
-// alone. Sent to the issue's own architect, a leave's notice would reach a claim that the leave
-// suspends or retires, and one the workflow queued on a chain the copy could not read to its top,
-// which turned out to have nothing above the issue, would wait for that architect's return and
-// then tell it of its own leave.
+// child's close or status change is the exception (NoticeArchitect).
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 	aboutItsArchitect := role == claim.RoleArchitect &&
 		(kind == "worker-died" || kind == "worker-stalled" || kind == ProviderErrorsNotice)
@@ -104,8 +101,7 @@ func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 // fromParent starts the walk at the issue above key instead, for a notice the architect above the
 // issue must hear (NoticeStartsAtParent): it walks Above alone, and ends at the gate root of
 // Above's first issue where none of them holds its role. An issue with nothing above it in
-// Legion's work hears its own, at its gate root, but for a child's close or status change, which
-// NoticeArchitect sends to no architect where this walk ends at the issue itself.
+// Legion's work hears its own, at its gate root.
 //
 // The walk is "" where it reaches the end of what the copy shows of an unknown chain
 // (Chain.Known) before an architect that holds its role: the issues above the gap, and so the gate

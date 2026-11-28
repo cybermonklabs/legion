@@ -887,8 +887,9 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 
 // A notice for an architect whose claim is suspended — by the operator, or by a stop of its issue,
 // which keeps its claims suspended until Dispatch shows it in work again (R20 of
-// dispatch://INFRA-3320) — waits for it: the row is kept, and nothing is sent. One for a claim
-// that failed or retired, or that this daemon does not supervise, ends undelivered (R18). A notice
+// dispatch://INFRA-3320) — waits for it: the row is kept, nothing is sent, and nothing is noted
+// for R16's re-read (outbox.noteUnknownChain), since the chain is known. One for a claim that
+// failed or retired, or that this daemon does not supervise, ends undelivered (R18). A notice
 // whose owner walk meets a chain the copy cannot show to its top waits too, whoever runs above the
 // gap, and is delivered once a reading of Dispatch writes the missing row. A notice starts and
 // resumes no claim a stop suspended: one queued at an entry the return then raises waits through
@@ -923,13 +924,19 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", childClosed, time.Now()))
 			publisher := &holderPublisher{}
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
-			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
+			var noted []string
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
+				now: time.Now, noteUnknownChain: func(key string) { noted = append(noted, key) }}
 			err := runner.execute(context.Background(), row)
 			if _, delivered := publisher.snapshot(); len(delivered) != 0 {
 				t.Fatalf("delivered %+v, want nothing sent to an architect that holds no role", delivered)
 			}
 			if tc.waits != errors.Is(err, errNoticeWaits) {
 				t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, %s, = %v; waits %t", tc.name, err, tc.waits)
+			}
+			if tc.waits && (errors.Is(err, record.ErrChainUnknown) || len(noted) != 0) {
+				t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, %s, = %v, noted %v for the re-read; want a wait for the architect and nothing noted: the chain is known",
+					tc.name, err, noted)
 			}
 			if !tc.waits && err != nil {
 				t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, %s, = %v; want it finished undelivered", tc.name, err)
@@ -1079,10 +1086,10 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 // re-read at each attempt (outbox.noteUnknownChain): the re-read reads Dispatch again only for the
 // keys noted to it, and an issue at phase done, as LEGION-3 is here after its close, is in no
 // admission pass. A notice on a chain the copy knows notes nothing, whether it is delivered or
-// waits for its architect. Once a reading writes the missing row, the child's close goes to the
-// architect above the issue; where the known chain shows nothing above the issue, it finishes
-// undelivered (record.ErrNoArchitectAbove) and never reaches the issue's own architect, which here
-// holds its role.
+// waits for its architect (TestANoticeWaitsOrEndsByTheClaimsState). Once a reading writes the
+// missing row, the child's close goes to the architect above the issue; where the known chain
+// shows nothing above the issue, it finishes undelivered (record.ErrNoArchitectAbove) and never
+// reaches the issue's own architect, which here holds its role.
 func TestANoticeOnAnUnknownChainNotesItsIssueForTheReread(t *testing.T) {
 	t.Parallel()
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-3 is done"}
@@ -1143,29 +1150,6 @@ func TestANoticeOnAnUnknownChainNotesItsIssueForTheReread(t *testing.T) {
 		if _, delivered := publisher.snapshot(); len(delivered) != 0 || len(*noted) != 2 {
 			t.Fatalf("once the chain is known: delivered %v, noted %v; want nothing sent, not even to LEGION-3's own architect, and no further note",
 				deliveredKinds(t, delivered), *noted)
-		}
-	})
-
-	t.Run("on a chain the copy knows, waiting for its architect", func(t *testing.T) {
-		pool := isolatedOutboxPool(t)
-		records := record.NewStore()
-		noticeTree(t, pool, records, false)
-		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-		if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), Project: "legion",
-			Tree: "LEGION-1", Issue: "LEGION-1", Role: claim.RoleArchitect, State: byAStop.state, SuspendedBy: byAStop.by}, ""); err != nil {
-			t.Fatalf("create the architect claim of LEGION-1: %v", err)
-		}
-		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
-		publisher := &holderPublisher{}
-		publisher.setAbsent(architectTopic(t, "LEGION-1"))
-		var noted []string
-		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion",
-			now: time.Now, noteUnknownChain: func(key string) { noted = append(noted, key) }}
-		if err := runner.execute(context.Background(), row); !errors.Is(err, errNoticeWaits) || errors.Is(err, record.ErrChainUnknown) {
-			t.Fatalf("executing the close of LEGION-2 for LEGION-1's architect, suspended by a stop, = %v; want a wait for the architect", err)
-		}
-		if len(noted) != 0 {
-			t.Fatalf("noted %v for the re-read, want nothing: the chain is known", noted)
 		}
 	})
 }
