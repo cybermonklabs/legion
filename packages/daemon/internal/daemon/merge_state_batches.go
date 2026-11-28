@@ -349,7 +349,7 @@ func (w *workflowRuntime) climbBase(ctx context.Context, key string) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(w.mergeStateWait()):
+		case <-w.mergeStateAfter(w.mergeStateWait(), w.mergeStateWait()):
 		}
 	}
 }
@@ -391,12 +391,14 @@ func (w *workflowRuntime) followBase(ctx context.Context, key string) {
 // in it, before the wait or during it, and false when ctx ends. A wake only has it look again: at a
 // climb asked, at nothing owed, and at a pull request handed over that falls due sooner. A wake
 // that arrives after the request it was sent for was taken up leaves it waiting for the same read.
+// The wait runs on the ladders' clock (mergeStateAfter), given the wait that pull request's place
+// on its ladder set.
 func (w *workflowRuntime) baseFollowWait(ctx context.Context, key string) bool {
 	for {
 		w.mergeStateMu.Lock()
 		read := w.baseReads[key]
 		stop := read.climb || len(read.owed) == 0 || anyClimbing(read)
-		next := firstDue(read)
+		next, set := firstDue(read)
 		w.mergeStateMu.Unlock()
 		if stop {
 			return false
@@ -405,33 +407,34 @@ func (w *workflowRuntime) baseFollowWait(ctx context.Context, key string) bool {
 		if wait <= 0 {
 			return ctx.Err() == nil
 		}
-		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			timer.Stop()
 			return false
 		case <-read.wake:
-			timer.Stop()
-		case <-timer.C:
+		case <-w.mergeStateAfter(set, wait):
 			return true
 		}
 	}
 }
 
 // firstDue is the soonest moment an owed pull request of read on its ladder falls due, now for
-// one with no due time yet. Under mergeStateMu, with nothing in a climb.
-func firstDue(read *baseRead) time.Time {
+// one with no due time yet, and the wait its place's ladder step set (baseOwed.wait). That wait is
+// what the place's step gives, not the time until it falls due: where a rate limit pushed the due
+// moment out, nextPlace set it at the longer of the two, so the time left is longer than this
+// wait. Under mergeStateMu, with nothing in a climb.
+func firstDue(read *baseRead) (time.Time, time.Duration) {
 	var first time.Time
+	var set time.Duration
 	for _, place := range read.owed {
 		due := place.due
 		if due.IsZero() {
 			due = time.Now().UTC()
 		}
 		if first.IsZero() || due.Before(first) {
-			first = due
+			first, set = due, place.wait
 		}
 	}
-	return first
+	return first, set
 }
 
 // baseReading is one owed issue a read of its base's batch reads: its place in the batch and the

@@ -372,11 +372,17 @@ type workflowRuntime struct {
 	// or a read still holds. All of it is guarded by mergeStateMu, so a request moves an issue
 	// between a ladder of its own and its base's batch under one lock. baseChunk is how many pull
 	// requests one query of a batch asks for, baseReadChunk when zero, which a test shortens.
+	// mergeStateTimer is the clock the ladders' waits run on (mergeStateAfter), given the wait the
+	// ladder's place set and the wait left of it, which differ where a rate limit pushed the place
+	// out; it answers the wait's end. Nil runs time.After on the wait left, production's own
+	// schedule, which a clock that passes the second through keeps; a test that must say when a
+	// wait ends holds it.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]*record.PullRequest
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	mergeStateTimer   func(set, remaining time.Duration) <-chan time.Time
 	baseWake          *wakeSet[string]
 	baseReads         map[string]*baseRead
 	baseReadOf        map[string]string

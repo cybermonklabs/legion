@@ -114,6 +114,25 @@ func ladders(w *workflowRuntime) (running, waiting int) {
 	return len(w.mergeStateRunning) + len(w.baseReads), w.mergeStates.waiting() + w.baseWake.waiting()
 }
 
+// holdTheLongWaits puts w's ladders on a clock the test holds (workflowRuntime.mergeStateTimer),
+// which decides on the wait the ladder's place set: a wait shorter than hold runs the wait that is
+// left, as production's does, and a wait of hold or longer never ends, so the ladder stays in it
+// until a request for a read ends it (baseFollowWait) or the test does. The channel it answers
+// closes when the first such wait begins.
+func holdTheLongWaits(w *workflowRuntime, hold time.Duration) <-chan struct{} {
+	begun := make(chan struct{})
+	var once sync.Once
+	never := make(chan time.Time)
+	w.mergeStateTimer = func(set, remaining time.Duration) <-chan time.Time {
+		if set >= hold {
+			once.Do(func() { close(begun) })
+			return never
+		}
+		return time.After(remaining)
+	}
+	return begun
+}
+
 // endedWithNoRead holds that the reads after the ladder end, logging their end, with nothing
 // standing behind them, and that GitHub is read no more after that end however long their
 // longest wait is given. The count is taken once the end is logged, so a read that checked the
@@ -146,7 +165,8 @@ func (rig *readRig) endedWithNoRead(t *testing.T) {
 // or the pull request closes, after which nothing reads it. A request for a read that arrives while
 // such a read waits ends the wait and starts a climb at once. The waits are cut only through the
 // runtime's own seam (mergeStateRetry), so the waits the lines name are the production ones in a
-// smaller unit.
+// smaller unit; the row that says when a wait ends holds the ladders' clock instead
+// (mergeStateTimer).
 func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 	t.Parallel()
 	const retry = readRigWait
@@ -229,13 +249,24 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 	})
 
 	t.Run("a request while a read after the ladder waits starts a climb at once", func(t *testing.T) {
-		// A larger unit, so the wait the request ends - eight of them - is far longer than the
-		// test's own step between the read before it and the request.
-		const slower = 50 * time.Millisecond
+		// The ladder's clock is held: each wait shorter than eight of the ladder's runs the wait
+		// that is left, as production's does, and the third read after the ladder's wait, eight of
+		// them, never ends, so only the request ends it. The request lands inside that wait
+		// however long the test's own step to it takes.
 		rig := newReadRig(t, approvedCapture, forever)
-		rig.w.mergeStateRetry = slower
+		waiting := holdTheLongWaits(rig.w, 8*retry)
 		rig.start(t)
-		testwait.Eventually(t, "two reads after the ladder", func() bool { return len(rig.follows(t)) >= 2 })
+		testwait.Eventually(t, "the third read after the ladder to wait", func() bool {
+			select {
+			case <-waiting:
+				return true
+			default:
+				return false
+			}
+		})
+		if follows := rig.follows(t); len(follows) != 2 {
+			t.Fatalf("the reads after the ladder logged %v before the third one's wait, want two", follows)
+		}
 		mark := rig.reads.Load()
 		// The head's next CI settlement asks for a read of its own (workflow's askMergeState).
 		later := settledChecksOnCode()
@@ -243,9 +274,10 @@ func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 		later.CheckRuns = []record.AttemptRun{{Name: "pr-checks-result", ID: 4}}
 		applyFact(t, rig.pool, "github", "checks-on-code-again", later, rig.w.handlers...)
 		testwait.Eventually(t, "the next read after the ladder", func() bool { return len(rig.follows(t)) >= 3 })
-		// Had the request waited for the read after the ladder, that read would be attempt 3,
-		// after eight waits. The climb ran instead, and its own follow starts again from two.
-		if next := rig.follows(t)[2]; next["attempt"] != float64(1) || next["wait"] != float64(2*slower) {
+		// The third line can come only from the climb the request started: the third read's own
+		// wait never ends, so a request that did not start a climb would leave the row waiting
+		// here until the binary's deadline. The climb's own follow starts again from two.
+		if next := rig.follows(t)[2]; next["attempt"] != float64(1) || next["wait"] != float64(2*retry) {
 			t.Fatalf("the read after the request logged %v, want the first read after a new climb", next)
 		}
 		if got := rig.reads.Load() - mark; got < mergeStateLadderReads+1 {
@@ -427,26 +459,34 @@ func TestTheMergeStateReadMovesAnApprovedIssueToAccepting(t *testing.T) {
 	}
 }
 
-// Nothing is read for an issue no merge state would move: the reviewer has decided nothing, so the
-// same settlement leaves the daemon owing GitHub no read at all.
+// Nothing is owed for an issue no merge state would move: the reviewer has decided nothing, so the
+// same settlement leaves the daemon owing GitHub no read at all. A read the settlement owes is
+// asked for by a commit hook of its apply (workflow's askMergeState, review.go:1487, through
+// store.OnCommit at :1530), which queues it for the reader (queueMergeState), and a commit that
+// succeeded runs its hooks before TransactWith returns (store/commit.go:342); only a commit whose
+// reply was lost leaves them to a watcher (:508), which a healthy pool here does not do. No reader
+// runs, so a read the settlement asked for stays queued: an empty queue the moment the apply
+// returns, with no ladder recorded and nothing waiting to wake the reader, is the settlement
+// asking for none, and no span of quiet stands in for that. What GitHub was asked is not read
+// here, and a count of it could not fail: with no reader running, nothing reaches GitHub whatever
+// the engine queues.
 func TestNoMergeStateIsReadWithoutAnApprovalStanding(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim"})
-	var reads atomic.Int32
-	w := readRuntime(pool, countingPullStandIn(t, "clean", &reads).URL, quietLogger())
-	w.mergeStateRetry = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go w.readMergeStates(ctx)
+	w := readRuntime(pool, pullStandIn(t, "clean").URL, quietLogger())
 
-	if _, err := intake.ApplyFact(ctx, pool, "github", "checks-on-code", settledChecksOnCode(), w.handlers...); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "github", "checks-on-code", settledChecksOnCode(), w.handlers...); err != nil {
 		t.Fatalf("apply the CI settlement: %v", err)
 	}
-	time.Sleep(20 * w.mergeStateRetry)
-	if got := reads.Load(); got != 0 {
-		t.Fatalf("GitHub was read %d times, want none: no approval stands on the head", got)
+	w.mergeStateMu.Lock()
+	queued := len(w.mergeStateQueued)
+	w.mergeStateMu.Unlock()
+	recorded, waking := ladders(w)
+	if queued != 0 || recorded != 0 || waking != 0 {
+		t.Fatalf("after the settlement's apply %d issues are queued for a read, with %d ladders and base batches recorded and %d waiting to wake the reader, want none: no approval stands on the head",
+			queued, recorded, waking)
 	}
 }
 
