@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -39,6 +40,23 @@ type lookup interface {
 	// else: a comment only an edit asked for is left out of the batch's readings
 	// (lookups.editOnly, lookups.readings).
 	mentionFallbackKeys(commentID string) (map[string]string, error)
+}
+
+// ListenerRefresh is the API's refresh of the stored listener record (route_roster): each outbox
+// read of a session's sight whose verdict depended on a list of a record that had expired runs it
+// before it reads the sight again (plan D11, "Outbox"), as the API refreshes the record before it
+// judges a write that names a session. cmd/dispatch builds the outbox before it registers the API,
+// so it gives the outbox an empty one and binds the API's refresh into it once the API is
+// registered (Bind).
+// INFRA-6168 scaffold: work step 7 runs the bound refresh where a verdict depends on an expired list.
+type ListenerRefresh struct {
+	bound atomic.Pointer[func(context.Context)]
+}
+
+// Bind sets refresh, which asks the listener again and stores its answer for every process: the
+// API's own.
+func (l *ListenerRefresh) Bind(refresh func(context.Context)) {
+	l.bound.Store(&refresh)
 }
 
 // wanted is the lookup a batch's first pass over its events runs: it answers nothing and records

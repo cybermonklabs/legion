@@ -115,6 +115,12 @@ type Deps struct {
 	// update after a close it never hears of gives a margin past any run, so whether the update is
 	// stored is not decided by how long a loaded machine takes between the close and the update.
 	CloseMargin time.Duration
+	// Request is the request store (api.Deps.Store), whose statements run as dispatch_app under the
+	// viewer the context carries: the document socket's admission reads its room on it under the
+	// person's viewer, and so does each recheck on an access change or a heartbeat (plan D1, D11).
+	// Store stays the system store.
+	// INFRA-6168 scaffold: work step 7 reads the socket's admission and recheck on it.
+	Request *store.Store
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room

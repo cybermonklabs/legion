@@ -206,6 +206,10 @@ type AppContextOptions struct {
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
 	// See api.Deps.ParentStatusRule.
 	ParentStatusRule api.ParentStatusRule
+	// System is the system store (api.DepsInput.System): the owner's pool, which the work before
+	// the viewer and the API's own work run on, beside Store, the request store (plan D1).
+	// INFRA-6168 scaffold: work step 2 passes it to api.DepsInput.System (BuildAppContext).
+	System *store.Store
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.

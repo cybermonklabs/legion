@@ -21,7 +21,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -119,6 +121,21 @@ type rlsServerConfig struct {
 	// and empty leave the client in its "no app credentials" state.
 	app           *auth.AppConfig
 	githubAPIBase string
+	// streamHeartbeat replaces the sockets' fifteen-second heartbeat (Deps.StreamHeartbeat), on
+	// which a live socket and a document socket resolve their caller again; zero keeps it.
+	streamHeartbeat time.Duration
+	// liveSocketClock is Deps.LiveSocketClock: a socket row passes clocktest.Held(), so no pong
+	// deadline a loaded machine runs past ends a socket the row reads.
+	liveSocketClock clock.Clock
+	// agentStream is the live agent conversation relay (Deps.AgentStream); nil is the deployment
+	// with none.
+	agentStream agentstream.Source
+	// envoyURL points the listener client at a fake listener; empty leaves it unconfigured.
+	envoyURL string
+	// requestTracer, when set, sees every statement of the request store and of nothing else: the
+	// request store is opened from a traced store on database (storetest.TracedStore), and the
+	// system store stays database itself.
+	requestTracer pgx.QueryTracer
 }
 
 // rlsServer is one test server and what it was built of.
@@ -164,21 +181,27 @@ func (m *recordingMux) mounted() []string {
 }
 
 // newRLSServer builds a server on database as production builds one: Store the request store and
-// System database (testDeps), a document service on the system store, the header identity, the
-// deployment's shared token, and what config adds.
+// System database (testDeps), a document service on the system store whose socket admission reads
+// on the request store (docs.Deps.Request), the header identity, the deployment's shared token,
+// and what config adds.
 func newRLSServer(t *testing.T, database *store.Store, config rlsServerConfig) *rlsServer {
 	t.Helper()
+	requestBase := database
+	if config.requestTracer != nil {
+		requestBase = storetest.TracedStore(t, database, config.requestTracer)
+	}
 	var input DepsInput
 	if config.asOwner {
-		input = DepsInput{Store: storetest.RequestAsOwner(t, database), System: database}
+		input = DepsInput{Store: storetest.RequestAsOwner(t, requestBase), System: database}
 	} else {
-		input = testDeps(t, database)
+		input = testDeps(t, requestBase)
+		input.System = database
 	}
 	if config.system != nil {
 		input.System = config.system
 	}
 	broker := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: database, Events: broker, ServerURL: testServerURL, Settle: 20 * time.Millisecond, Identity: headerIdentity(database)})
+	documents := docs.New(docs.Deps{Store: database, Request: input.Store, Events: broker, ServerURL: testServerURL, Settle: 20 * time.Millisecond, Identity: headerIdentity(database)})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -195,6 +218,9 @@ func newRLSServer(t *testing.T, database *store.Store, config rlsServerConfig) *
 	input.HorizonStallAfter = horizontest.StallWarning
 	input.HorizonWarnEvery = horizontest.StallWarning
 	input.Embedder = config.embedder
+	input.StreamHeartbeat = config.streamHeartbeat
+	input.AgentStream = config.agentStream
+	input.EnvoyURL, input.EnvoyAccountTokenFile = config.envoyURL, testEnvoyAccountTokenFile(t, config.envoyURL)
 	input.App, input.GitHubAPIBase = config.app, config.githubAPIBase
 	input.ParentStatusRule = ParentStatusRule{on: config.parentStatusRule}
 	if config.broker != nil {
@@ -204,6 +230,7 @@ func newRLSServer(t *testing.T, database *store.Store, config rlsServerConfig) *
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	deps.LiveSocketClock = config.liveSocketClock
 	mux := newRecordingMux()
 	served := register(mux, t.Context(), deps)
 	served.readWorkers = &backgroundWork{}

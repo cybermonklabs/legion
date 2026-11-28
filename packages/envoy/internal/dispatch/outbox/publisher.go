@@ -170,6 +170,12 @@ type Deps struct {
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
 	// leaves none out of its read and takes no lock.
 	lanes *lanes
+	// ListenerRefresh renews the stored listener record (route_roster) where the verdict of a
+	// session's sight depends on a list of a record that has expired, before the sight is read
+	// again (plan D11, "Outbox"). cmd/dispatch binds the API's own refresh into it once the API
+	// is registered; nil refreshes nothing.
+	// INFRA-6168 scaffold: work step 7 runs it before each read of a session's sight it judges.
+	ListenerRefresh *ListenerRefresh
 }
 
 // forwardAckTimeout is the wait this outbox's role forwards give the stream's acknowledgement of
