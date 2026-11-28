@@ -96,7 +96,7 @@ session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
 session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
-# Writes that the kind's attempt n hangs, the fact a row's budget passes at (hangsUnder).
+# Writes that the kind's attempt n hangs, the fact a row's budget passes at (hangsUnderFacts).
 *:hang) : >"$dir/$kind.hanging.$n"; held; exit 0 ;;
 esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
@@ -190,17 +190,32 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 	}, &logged
 }
 
-// The attempt budget of the gate rigs, the boot gate's (gateUnder) and the image probe's
+// The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
 // (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
 // loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
 // again, and the probe ran once more than its case said. The slowest answering attempt measured
 // was about 8 s, at a load average of 1,200 on 288 CPUs. An attempt that answers and then hangs
 // keeps it, and its hang outlasts it, so the budget cuts it only after the answer: each such case
-// takes the budget's length. An attempt that hangs before it answers anything is cut at a fact of
-// its run instead (hangsUnder).
-const answerBudget = 20 * time.Second
+// takes the budget's length. hangBudget is the budget of a case whose cut attempts answer nothing
+// (hangsUnder), short so that each attempt it cuts off costs the suite little; such a case runs no
+// attempt that must answer in time, so no probe that answers runs before the one that hangs, and
+// its attempts are counted from the gate (its refusal and its transient lines), since an attempt
+// cut off before the fake wrote its count leaves none. Beside each such case, the same case runs
+// with each attempt cut at a fact of its run instead (hangsUnderFacts).
+const (
+	answerBudget = 20 * time.Second
+	hangBudget   = 500 * time.Millisecond
+)
 
-// hangsUnder bounds gate to attempts, where plan holds a step that hangs before it answers
+// hangsUnder gives gate hangBudget, bounded to attempts, where plan holds a step that hangs before
+// it answers anything, and leaves it as it is otherwise.
+func hangsUnder(gate *pluginGate, plan []string, attempts int) {
+	if slices.Contains(plan, "hang") {
+		gate.timeout, gate.retry.Attempts = hangBudget, attempts
+	}
+}
+
+// hangsUnderFacts bounds gate to attempts, where plan holds a step that hangs before it answers
 // anything, and has each attempt's budget pass, as the gate's own budget does
 // (testwait.StandInDeadline), once that attempt's stand-in hangs: the fake's hang step writes
 // hanging(n), for its attempt n, before it hangs, and the k-th attempt the gate runs passes once
@@ -210,7 +225,7 @@ const answerBudget = 20 * time.Second
 // gate's refusal names. An attempt that ends on its own is left to end; one whose stand-in has not
 // hung by the end of the row's bound is cancelled instead, and the row fails naming it at its
 // cleanup. A plan with no hang step leaves gate as it is.
-func hangsUnder(t *testing.T, gate *pluginGate, plan []string, attempts int, hanging func(n int) string) {
+func hangsUnderFacts(t *testing.T, gate *pluginGate, plan []string, attempts int, hanging func(n int) string) {
 	t.Helper()
 	if !slices.Contains(plan, "hang") {
 		return
@@ -516,7 +531,12 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // The session-storage probe, run on its own (verifySessionStorage), so no other probe's attempt
 // runs under a case's budget: a build that carries the setting refuses the probe's nonsense value,
 // naming the variable; a clean start is a build that predates the setting, refused; any other
-// failure is the launch dying before the setting's resolver ran, waited out.
+// failure is the launch dying before the setting's resolver ran, waited out. The case whose
+// stand-in hangs runs twice: with each attempt cut once its stand-in hangs (hangsUnderFacts), and
+// on the gate's own clock, hangBudget (hangsUnder), as main's form ran it, its attempts counted
+// from the gate, since an attempt cut off before the fake wrote its count leaves none. The stand-in
+// hangs until a signal ends it (held), so the clock's run is under testwait.Context, and a gate
+// whose clock never fires fails it by name.
 func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -532,7 +552,7 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
 			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
-			hangsUnder(t, &gate, testCase.plan, testCase.attempts, func(n int) string { return filepath.Join(f.dir, "session.hanging."+strconv.Itoa(n)) })
+			hangsUnderFacts(t, &gate, testCase.plan, testCase.attempts, func(n int) string { return filepath.Join(f.dir, "session.hanging."+strconv.Itoa(n)) })
 
 			err := gate.verifySessionStorage(context.Background())
 
@@ -552,11 +572,35 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 			}
 		})
 	}
+	t.Run("hang,on the gate's own clock", func(t *testing.T) {
+		plan, attempts := []string{"hang"}, 3
+		f := newImageOmp(t, []string{"available"}, []string{"yes"}, plan)
+		gate, logged := imageGateUnder(t, f, contractCurrent, 0)
+		hangsUnder(&gate, plan, attempts)
+
+		err := gate.verifySessionStorage(testwait.Context(t))
+
+		for _, want := range []string{"never completed within its retry budget (3 attempts)", "timed out after"} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("verifySessionStorage = %v, want a refusal saying %q", err, want)
+			}
+		}
+		if n := f.attempts(t, "session"); n > attempts {
+			t.Errorf("the session-storage probe ran %d times, want %d", n, attempts)
+		}
+		if got, want := strings.Count(logged.String(), "failed transiently"), attempts-1; got != want {
+			t.Errorf("logged %d transient failures, want %d:\n%s", got, want, logged.String())
+		}
+	})
 }
 
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
 // answers ends the build naming the budget and what the last attempt said. A probe cut off every
-// time has each attempt cut once its stand-in hangs (hangsUnder), so the fake ran each attempt.
+// time has each attempt cut once its stand-in hangs (hangsUnderFacts), so the fake ran each
+// attempt; beside it, the same case runs on the gate's own clock, hangBudget (hangsUnder), as main's
+// form ran it, its attempts counted from the gate, since an attempt cut off before the fake wrote
+// its count leaves none. The stand-in hangs until a signal ends it (held), so the clock's run is
+// under testwait.Context, and a gate whose clock never fires fails it by name.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
@@ -575,7 +619,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
 			gate, logged := imageGateUnder(t, f, contractCurrent, 3)
-			hangsUnder(t, &gate, testCase.agents, 3, func(n int) string { return filepath.Join(f.dir, testCase.kind+".hanging."+strconv.Itoa(n)) })
+			hangsUnderFacts(t, &gate, testCase.agents, 3, func(n int) string { return filepath.Join(f.dir, testCase.kind+".hanging."+strconv.Itoa(n)) })
 
 			err := gate.verifyImage(context.Background())
 
@@ -592,6 +636,26 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 			}
 		})
 	}
+	t.Run("pi.agents cut off every time,on the gate's own clock", func(t *testing.T) {
+		plan := []string{"hang"}
+		f := newImageOmp(t, plan, []string{"yes"}, []string{"refuses"})
+		gate, logged := imageGateUnder(t, f, contractCurrent, 3)
+		hangsUnder(&gate, plan, 3)
+
+		err := gate.verifyImage(testwait.Context(t))
+
+		for _, want := range []string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 500ms", strconv.Quote(f.invocation)} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("verifyImage = %v, want an error saying %q", err, want)
+			}
+		}
+		if n := f.attempts(t, "agents"); n > 3 {
+			t.Errorf("the agents probe ran %d times, want the bound, 3", n)
+		}
+		if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
+			t.Errorf("logged %d transient failures, want 2 before the bound:\n%s", got, logged.String())
+		}
+	})
 }
 
 // The daemon's boot run (ImageProbe.BootRun) makes the contract probe and the plugin load probe

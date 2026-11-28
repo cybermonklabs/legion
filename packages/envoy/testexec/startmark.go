@@ -4,11 +4,8 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
-	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -17,12 +14,10 @@ import (
 // Linux, which is also how finely /proc/uptime counts. A process's starttime truncates to the tick.
 // Linux's /proc/uptime truncates to it too, and gVisor's rounds to it, so each reading is off by
 // less than a tick, and the bias is gVisor's: there an uptime reads half a tick later on average
-// than a starttime of the same moment, so StartMark.Late reads half a tick high on average. One
-// reading is sound to a tick. A bound that sums Late over many readings must sum a number of them
-// the row fixes, not one the product chooses: under gVisor each reading the product adds adds that
-// half tick. TestTheStartClockAgreesWithTheUptimeClock checks that a process this machine starts
-// has a starttime, read by ProcStart and by its own MarkStart alike, within a tick of the span from
-// an uptime read before its Start to one read after its Wait.
+// than a starttime of the same moment. One reading is sound to a tick.
+// TestTheStartClockAgreesWithTheUptimeClock checks that a process this machine starts writes a
+// starttime, by its own MarkStart, within a tick of the span from an uptime read before its Start
+// to one read after its Wait.
 const ClockTick = 10 * time.Millisecond
 
 // MarkStart is shell that writes, to the file the shell word to names, when the kernel made the
@@ -32,7 +27,7 @@ const ClockTick = 10 * time.Millisecond
 // The shell reads both itself (`read` is a builtin), so /proc/self is its own process, the one its
 // runner started, and it forks nothing. The first time is the kernel's own record of the start:
 // nothing a loaded machine or the product does to the shell after its start moves it. The second
-// is that time plus how long the machine took to bring the shell to this line (StartMark.Late).
+// is that time plus how long the machine took to bring the shell to this line.
 //
 // A stand-in's first act writes it, so a row can count a bound from a fact of the run — the
 // stand-in's start — rather than from the call, and tell a start the machine held late from latency
@@ -64,9 +59,6 @@ func ReadNowMark(path string) (time.Duration, error) {
 // StartMark is what MarkStart wrote: when the kernel made the process, and when its shell reached
 // the mark, each as a time since boot.
 type StartMark struct{ Started, Reached time.Duration }
-
-// Late is how long the machine took to bring the shell from its start to the mark.
-func (m StartMark) Late() time.Duration { return m.Reached - m.Started }
 
 // ReadStartMark reads the mark MarkStart wrote at path: its uptime line, then its stat line, each
 // read as ParseStartMark reads it.
@@ -101,21 +93,6 @@ func ParseStartMark(uptime, stat string) (StartMark, error) {
 		return StartMark{}, err
 	}
 	return StartMark{Started: started, Reached: reached}, nil
-}
-
-// ProcStart is when the kernel made the live process pid, as a time since boot, read from its
-// /proc/<pid>/stat starttime. It is for a binary a row starts itself, which has no shell to write
-// MarkStart: the row reads it right after Start, while the process still lives.
-func ProcStart(pid int) (time.Duration, error) {
-	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, err
-	}
-	started, err := starttimeOf(strings.TrimSuffix(string(raw), "\n"))
-	if err != nil {
-		return 0, fmt.Errorf("process %d: %w", pid, err)
-	}
-	return started, nil
 }
 
 // starttimeOf is the starttime a /proc/<pid>/stat line gives, as a time since boot. Its fields are
@@ -191,42 +168,4 @@ func StartedAfter(t testing.TB, path string, called time.Duration) time.Duration
 		t.Fatalf("the command's start mark says %v, so this row cannot read when the command started", err)
 	}
 	return mark.Started - called
-}
-
-// RunFromStart starts cmd and waits for it, and kills it once it has run bound from when the kernel
-// made its process, read right after Start (ProcStart), not from this call: a loaded machine that
-// holds the start itself spends none of the bound. The start and the time since boot the kill is
-// set from are each off by less than a tick (ClockTick), so the kill waits two ticks more: no run
-// is killed before it has run bound. overran says the bound ended the run: the kill had been sent,
-// and the run's own exit status says a SIGKILL ended it, so a run that exited before the kill
-// reached it did not overrun. err is Start's or Wait's. A start the kernel dates more than two
-// ticks before the call is no start at all (checkStarted), and the row fails saying it cannot read
-// when its run started, rather than judge it.
-func RunFromStart(t testing.TB, cmd *exec.Cmd, bound time.Duration) (overran bool, err error) {
-	t.Helper()
-	called := SinceBoot(t)
-	if err := cmd.Start(); err != nil {
-		return false, err
-	}
-	started, err := ProcStart(cmd.Process.Pid)
-	if err == nil {
-		err = checkStarted(started, called)
-	}
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		t.Fatalf("read when the kernel made the process of %s: %v", cmd.Path, err)
-	}
-	var sent atomic.Bool
-	kill := time.AfterFunc(started+bound+clockSlack-SinceBoot(t), func() {
-		sent.Store(true)
-		_ = cmd.Process.Kill()
-	})
-	err = cmd.Wait()
-	kill.Stop()
-	if !sent.Load() || cmd.ProcessState == nil {
-		return false, err
-	}
-	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-	return ok && status.Signaled() && status.Signal() == syscall.SIGKILL, err
 }
