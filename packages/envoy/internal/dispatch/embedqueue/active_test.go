@@ -196,7 +196,10 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // PostgreSQL's now(), passes the same span with it, taken back off the row's last_refill_at before
 // the move, so the next reservation refills by it. A reservation also refills by what PostgreSQL's
 // clock passed on its own while the test ran, so the limit is the larger ceiling's over the window
-// and that time, read on the same clock.
+// and that time, read on the same clock. A limit that reads a clock is allowed here on two
+// conditions (dispatch://INFRA-3149/comment/6fbd1944-aff5-4aff-89a3-31349bae75ae), which the test
+// keeps: PostgreSQL stamps both ends of that time (emptied, from the update's now(), and the
+// read's now()), and the test reads it after both processes stop, so after the last grant.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
