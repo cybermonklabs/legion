@@ -1,0 +1,56 @@
+{
+  "id": 3492,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 53,
+  "type": "issue.claimed",
+  "actor": {
+    "kind": "session",
+    "id": "01a14313-f0d7-765d-91c1-f2e043218727",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+      "tmux": "lorem i",
+      "pane": "lor",
+      "session_title": "lorem ipsum dolor sit amet"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-18T06:26:29.950745Z",
+  "payload": {
+    "key": "ACME-1",
+    "claim": {
+      "at": "2026-10-18T06:26:29.956613Z",
+      "actor": {
+        "id": "01a14313-f0d7-765d-91c1-f2e043218727",
+        "kind": "session",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+          "host": "lor",
+          "pane": "lor",
+          "tmux": "lorem i",
+          "machine": "lorem ipsum d",
+          "session_title": "lorem ipsum dolor sit amet"
+        }
+      }
+    },
+    "reason": "lorem ip",
+    "status": "in_progress",
+    "previous_claim": {
+      "at": "2026-10-17T01:25:20.969257Z",
+      "actor": {
+        "id": "01a14775-63c0-7712-9928-9787182125e2",
+        "kind": "session",
+        "owner": "alice@example.com",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ips",
+          "host": "lor",
+          "machine": "lorem ipsum dolor",
+          "session_title": "lorem ipsum dolor sit ame"
+        }
+      }
+    }
+  }
+}

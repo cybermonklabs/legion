@@ -1,0 +1,81 @@
+{
+  "id": 11094,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 24,
+  "type": "ask.anchor_refreshed",
+  "actor": {
+    "kind": "session",
+    "id": "01a16220-ec30-77ce-8b02-83d31fb7399a",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum do",
+      "tmux": "lorem i",
+      "pane": "lore",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-22T16:03:55.440917Z",
+  "payload": {
+    "anchor": {
+      "artifact_id": "9399696b-411e-4137-add9-fcb27181c2c6",
+      "block_id": "e83780a9-9b1f-4a3d-9a8b-7312d0db8ea0",
+      "mark_id": "b27d4e90-a6c4-41cd-8c0f-b3a6510b5dd7",
+      "orphaned": true,
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+      "version": 1
+    },
+    "anchor_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a16220-ec30-77ce-8b02-83d31fb7399a",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum do",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lore",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+        "tmux": "lorem i"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-10-22T12:09:08.123611Z",
+    "edited_at": "2026-10-22T15:24:05.718504Z",
+    "id": "b27d4e90-a6c4-41cd-8c0f-b3a6510b5dd7",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 10989,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ip",
+        "label": "lorem ipsum d"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+        "label": "lorem ipsum dolor "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+        "label": "lorem ipsum dolor si"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "open",
+    "urgency": "med"
+  }
+}

@@ -206,6 +206,7 @@ on:
       - 'packages/envoy/internal/dispatch/architecture/*'
       - 'packages/envoy/internal/dispatch/architecture/notes/*'
       - 'packages/envoy/internal/dispatch/asks/**'
+      - 'packages/envoy/internal/dispatch/asof/*'
       - 'packages/envoy/internal/dispatch/auth/**'
       - 'packages/envoy/internal/dispatch/bytelru/**'
       - 'packages/envoy/internal/dispatch/cipher/**'
