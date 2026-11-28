@@ -52,6 +52,7 @@ import {
   putArchitectureSource,
   putIssueState,
   putProjectDefaultRepository,
+  putStep,
   replyToMessageDelivery,
   resolveAsk,
   resolveComment,
@@ -3888,7 +3889,7 @@ test("the control in the row carries what the banner carried, and narrows the In
   ).toEqual(PILL_CLASSES_AT_THE_BASE);
 });
 
-// SLOW(>=2s): nine tables across three pages, each seeded and read.
+// SLOW(>=2s): ten tables across four pages, each seeded and read.
 test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
   page,
 }) => {
@@ -3931,6 +3932,21 @@ test("every table with no controls draws its rows in the shared markup and offer
   // A daemon named for a project of its own, so the Legion daemons table draws a row of it
   // rather than its empty line.
   await seedLegionDaemon("http://legion.acme.internal:9731");
+  // One run of one step, so the issue's Steps tab draws a row of it rather than its empty state.
+  const stepped = await createIssue({ project: "CORE", title: "Records its steps" });
+  await putStep(stepped.key, crypto.randomUUID(), {
+    agent: `legion-core-${stepped.key.toLowerCase()}-implementer`,
+    ended_at: "2026-11-16T09:40:00Z",
+    generation: 1,
+    kind: "step",
+    model: "anthropic/claude-opus-5",
+    result: "passed",
+    role: "implementer",
+    started_at: "2026-11-16T09:00:00Z",
+    step: 1,
+    task: "default",
+    type: "implementation",
+  });
 
   /** Reads one plain table: it is inside the shared markup, it has data rows, and it offers no
    *  search box, no panel trigger and no sort control of its own. */
@@ -3982,6 +3998,9 @@ test("every table with no controls draws its rows in the shared markup and offer
   await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
   await page.getByRole("button", { name: /Definitions & alternatives/ }).click();
   await readPlainTable("Per day (UTC), newest first");
+
+  await page.goto(`/issues/${stepped.key}/steps`);
+  await readPlainTable("Steps of task default");
 });
 
 /** R8's reading of one row or card: what it draws, in order, and its box. */
