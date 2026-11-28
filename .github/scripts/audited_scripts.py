@@ -148,7 +148,7 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="cad7fc1677b91aac670f149e6e655c430b6725114e02a73e4f73f181b411d8dc",
+        sha256="fe7ef47be692d2001af60af1a44327d78993e02a9faac6fc13c8856765063280",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`), takes the packages to run as
     # its arguments and refuses none, reads each one's -run from go-tagged-tests.sh's natslive list

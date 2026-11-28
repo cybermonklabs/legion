@@ -19,8 +19,10 @@
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits
 # 2 on any other; it exits 1 when go list fails or keeps no package. Compile exits with go test's
-# status. Run exits with gotestsum's status: go test's own, 128+N for a signal it forwarded on
-# SIGINT, or 3 for a fault of its own. With no gotestsum on PATH, run exits 127 before testing.
+# status. Run exits with gotestsum's status: go test's own, 128+N if gotestsum forwarded signal N
+# to go test, 127 if a signal gotestsum did not forward ended go test, or 3 for gotestsum's own
+# fault. With no gotestsum on PATH, run exits 127 before testing and prints the script's own
+# "race-unit.sh: gotestsum is not on PATH" message.
 # gotestsum keeps test2json events in $RUNNER_TEMP/go-test-events/race-unit-*.jsonl for the job's
 # artifact, or in a temporary file removed on exit.
 set -euo pipefail
