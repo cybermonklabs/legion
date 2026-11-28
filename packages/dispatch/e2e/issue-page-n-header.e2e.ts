@@ -274,6 +274,55 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
   }
 });
 
+/** A style rule that narrows the header's labels' box by 170 px from the moment a reading's fit is
+ *  drawn, which is when the box loses `invisible` (`HeaderLabels`, `IssuePropertiesRow.tsx`): the
+ *  narrowing lands in the reading's own frame, through the browser's own `ResizeObserver`, as a
+ *  classic scrollbar that comes in that frame would narrow it. */
+const NARROWED_ONCE_DRAWN =
+  '[data-testid="issue-state-actions"] [data-testid="issue-header-labels"]:not(.invisible) { max-width: calc(100% - 170px) !important; }';
+
+// R21: the line draws no chip it hides, and its count names every chip left out, also where the
+// box narrows in the frame of the reading that drew its fit. At 1000 px on part P's header seed
+// with 20 labels, the reading takes the box while it is 54 px wide and draws it on to the count's
+// line with 11 chips; there it narrows, by the rule above, so that the 11th chip wraps onto the
+// line the box clips away. Read once the line holds still: every chip it holds is drawn whole,
+// and the count names the rest.
+// SLOW(>=2s): the header's seed with 20 labels written, then one load of the issue.
+test("a box the fit moves on to the count's line draws no chip it hides when it narrows in the reading's frame", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await patchIssue(seeded.key, { labels: [...HEADER_LABELS] });
+    await page.context().addInitScript((css) => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      document.documentElement.append(style);
+    }, NARROWED_ONCE_DRAWN);
+    await page.setViewportSize(viewportAt(1000));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const where = "at 1000 px, the box narrowed in the frame of the reading that drew its fit";
+    const drawn = await settledValue(`the header's labels ${where}`, async () => ({
+      ...(await labelsAgainstTheCount(page)),
+      held: await propertiesLine(page).evaluate(
+        (properties) =>
+          properties.querySelectorAll('[data-testid="issue-header-labels"] > [data-header-label]')
+            .length
+      ),
+    }));
+    expect(drawn.cut, `${where}: the labels' box cuts a chip the line holds`).toEqual([]);
+    expect(
+      drawn.held,
+      `${where}: the line holds ${drawn.held} chips and draws ${drawn.whole} of them whole on its first line`
+    ).toBe(drawn.whole);
+    expect(
+      drawn.whole + drawn.left,
+      `${where}: ${drawn.whole} chips drawn whole and a count of ${drawn.left}, of ${HEADER_LABELS.length} labels`
+    ).toBe(HEADER_LABELS.length);
+  });
+});
+
 /** The header as it is drawn at `width`, read with the page at its top, and what it took, in the
  *  run's annotations and its output. `where` names the seed. At 390 px the title is drawn whole,
  *  so the reading counts all of it. */
