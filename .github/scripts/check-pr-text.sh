@@ -43,11 +43,13 @@
 # long after a later edit's pr-title.yaml run, and both carry pr-title on the head, so a check of
 # the push's own text would report a pass over the edit's refusal. The commits are those from the
 # base branch to the event's head, and the issue comments, reviews and review comments every one
-# the pull request holds. GitHub reports a total for each list, and a list read short of its total
-# is refused loudly here, naming the list, instead of silently scanning part of it. A list that
-# changes between two pages of one run's read can miss its total that way too; the next push or
-# edit run and `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again, and
-# those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
+# the pull request holds. GitHub reports a total for each list, and its count and its items can
+# disagree for a moment while an item lands, or when the list changes between two pages of one
+# read: such a list (the commits aside: THE READ below) is read again, whole, up to twice
+# (READ AGAIN below), and one whose last read still disagrees is refused loudly here, naming the
+# list, instead of silently scanning part of it; the next push or edit run and
+# `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again,
+# and those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
 # `grep -I` treat the file as binary and skip it, is stripped first.
 #
 # Usage: GITHUB_EVENT_PATH=<payload> GITHUB_REPOSITORY=<owner>/<repo> .github/scripts/check-pr-text.sh
@@ -94,8 +96,9 @@ cutoff_file=.github/issue-key-cutoff
 # those lists alone, each from its own cursor, so a pull request with no more than 100 of each (and
 # no thread of more than 20 comments) costs one call; a review thread's later comments are read 100
 # at a time by the thread's id (ThreadComments). An answer that is no page of its list (no list of
-# nodes, no whole-number total, or a next page with no cursor), or a list whose pages add up to
-# other than its total, is refused, naming the list; the commits are the one exception, below.
+# nodes, no whole-number total, or a next page with no cursor) is refused, naming the list; a list
+# whose pages add up to other than its total is read again, whole, and refused, naming it, when
+# its third read still does (READ AGAIN below); the commits are the one exception, below.
 # GitHub's comparison takes a branch for its base, not a commit, so its commits run from the base
 # branch as it now is to the event's head, not from the payload's base sha: the two give the same
 # commits unless the head holds commits the base branch gained after that sha (the branch leaves
@@ -234,40 +237,78 @@ def fold($list; $page):
 live="$work/live.json"
 reads="$work/reads.json"
 echo '{}' > "$reads"
-asked='{"full": true, "commits": true, "history": true, "comments": true, "reviews": true, "threads": true}'
-round=0
-while :; do
-  round=$((round + 1))
-  variables=$(jq -c --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
-    --argjson number "$number" --arg head "$head" --arg marker "$cutoff_file" --argjson asked "$asked" \
-    '$asked + {owner: $owner, repo: $repo, number: $number, head: $head, marker: $marker}
-      + (to_entries | map({key: (.key + "After"), value: .value.cursor}) | from_entries)' "$reads")
-  graphql "$work/answer" PrText "$variables"
-  if [ "$round" -eq 1 ]; then jq '.data.repository.pullRequest // {}' "$work/answer" > "$live"; fi
-  jq --slurpfile answer "$work/answer" --argjson asked "$asked" "$fold_round" "$reads" > "$reads.next"
+# read_lists <list>...: reads the named lists (full, PrText's flag for the pull request's own
+# fields, among them) in rounds of PrText, folding each answer into $reads, each list from its first
+# page: what $reads held of it is dropped first. While a page says more follow, the next round asks
+# again for those lists alone, each from its own cursor. The answer of the round that asks for full,
+# which only the run's first call does, is the pull request as it is now ($live).
+read_lists() {
+  local asked variables
+  asked=$(jq -nc '{full: false, commits: false, history: false, comments: false, reviews: false,
+    threads: false} + ($ARGS.positional | map({key: ., value: true}) | from_entries)' --args "$@")
+  jq --argjson asked "$asked" 'with_entries(select($asked[.key] | not))' "$reads" > "$reads.next"
   mv "$reads.next" "$reads"
-  asked=$(jq -c '. as $read | {full: false} + ({commits, history, comments, reviews, threads} | map_values(.more == true))
-    | .commits = (.commits and $read.commits.total <= 1000)' "$reads")
-  [ "$(jq '[.[]] | any' <<< "$asked")" = true ] || break
-done
-# whole <list> <name>: refuses, naming <name>, a list GitHub answered no page of or whose pages
-# add up to other than its total.
+  while :; do
+    variables=$(jq -c --arg owner "${repository%%/*}" --arg repo "${repository#*/}" \
+      --argjson number "$number" --arg head "$head" --arg marker "$cutoff_file" \
+      --argjson asked "$asked" \
+      '$asked + {owner: $owner, repo: $repo, number: $number, head: $head, marker: $marker}
+        + (to_entries | map({key: (.key + "After"), value: .value.cursor}) | from_entries)' \
+      "$reads")
+    graphql "$work/answer" PrText "$variables"
+    if jq -e '.full' <<< "$asked" > /dev/null; then
+      jq '.data.repository.pullRequest // {}' "$work/answer" > "$live"
+    fi
+    jq --slurpfile answer "$work/answer" --argjson asked "$asked" "$fold_round" "$reads" \
+      > "$reads.next"
+    mv "$reads.next" "$reads"
+    asked=$(jq -c '. as $read
+      | {full: false} + ({commits, history, comments, reviews, threads} | map_values(.more == true))
+      | .commits = (.commits and $read.commits.total <= 1000)' "$reads")
+    [ "$(jq '[.[]] | any' <<< "$asked")" = true ] || break
+  done
+}
+read_lists full commits history comments reviews threads
+# READ AGAIN. GitHub's count of a list and the items it lists can disagree for a moment while an
+# item lands: run 46114422660 refused #5960 at 05:58:10Z with its reviews counted 5 and listed 6,
+# a review was submitted at 05:58:14Z, and a run of the same head passed at 05:59:34Z. So a list
+# whose items add up to other than its total is read again, whole, from its first page, since its
+# items are what the check scans, and is refused only when its third read still disagrees. The
+# waits are gh-read.sh's ladder: the second read GH_RETRY_SECONDS seconds (10 by default; the
+# tests set 0) after the first, the third twice as many after the second. That bound keeps a list
+# GitHub never answers whole refused by name, each such list waiting at most 30 s more.
+# read_again <read> <counts>: for a list whose read <read> (1, 2 or 3) found its <counts>
+# (`<total> <name> but listed <listed>`) disagree: after the third, refuses it, naming both counts;
+# before, says it is read again and waits for the next read.
+read_again() {
+  if [ "$1" -eq 3 ]; then
+    echo "::error::GitHub's GraphQL API reports $2, so not every one can be checked" >&2
+    exit 1
+  fi
+  local seconds=$(($1 * ${GH_RETRY_SECONDS:-10}))
+  echo "check-pr-text: GitHub's GraphQL API reports $2, so they are read again in $seconds s"
+  sleep "$seconds"
+}
+# whole <list> <name>: refuses, naming <name>, a list GitHub answered no page of, and reads again
+# one whose pages add up to other than its total (READ AGAIN), refusing it when they still do.
 whole() {
-  local list=$1 name=$2 broken listed total
-  broken=$(jq -r --arg list "$list" '.[$list].broken // empty' "$reads")
-  if [ -n "$broken" ]; then
-    echo "::error::GitHub's GraphQL API answered no page $broken of the $name, so they cannot all be" \
-      "checked" >&2
-    exit 1
-  fi
-  listed=$(jq --arg list "$list" '.[$list].nodes | length' "$reads")
-  total=$(jq --arg list "$list" '.[$list].total' "$reads")
-  # Compared as text: an integer test inside `if` that cannot parse a number would skip the refusal.
-  if [ "$listed" != "$total" ]; then
-    echo "::error::GitHub's GraphQL API reports $total $name but listed $listed, so not every one" \
-      "can be checked" >&2
-    exit 1
-  fi
+  local list=$1 name=$2 broken listed total attempt=1
+  while :; do
+    broken=$(jq -r --arg list "$list" '.[$list].broken // empty' "$reads")
+    if [ -n "$broken" ]; then
+      echo "::error::GitHub's GraphQL API answered no page $broken of the $name, so they cannot" \
+        "all be checked" >&2
+      exit 1
+    fi
+    listed=$(jq --arg list "$list" '.[$list].nodes | length' "$reads")
+    total=$(jq --arg list "$list" '.[$list].total' "$reads")
+    # Compared as text: an integer test inside `if` that cannot parse a number would skip the
+    # refusal.
+    if [ "$listed" = "$total" ]; then return 0; fi
+    read_again "$attempt" "$total $name but listed $listed"
+    attempt=$((attempt + 1))
+    read_lists "$list"
+  done
 }
 
 if ! jq -e '(.title | type == "string") and (.headRefName | type == "string")' "$live" > /dev/null 2>&1; then
@@ -376,31 +417,47 @@ if ! jq -e "$page_defs"' all(.threads.nodes[]; (.comments | is_page) and (.id | 
     "comments, so they cannot all be checked" >&2
   exit 1
 fi
-jq -c '.threads.nodes[].comments.nodes[]' "$reads" > "$work/review-comment-nodes"
-jq -r '.threads.nodes | to_entries[] | .key as $i | .value.id as $id | .value.comments
-  | select(.pageInfo.hasNextPage or (.nodes | length) != .totalCount)
+# A thread is long when its first page of comments says more follow or adds up to other than
+# their total: its comments are read on by its id, and read again from their first page while
+# they still add up to other than their total (READ AGAIN). A thread's comments reach
+# review-comment-nodes once its read is whole, so a read again leaves none of an earlier read's.
+long_defs='def long: .pageInfo.hasNextPage or (.nodes | length) != .totalCount;'
+jq -c "$long_defs"' .threads.nodes[].comments | select(long | not) | .nodes[]' "$reads" \
+  > "$work/review-comment-nodes"
+jq -r "$long_defs"' .threads.nodes | to_entries[] | .key as $i | .value.id as $id | .value.comments
+  | select(long)
   | [$i + 1, $id, (.nodes | length), .totalCount, .pageInfo.hasNextPage, (.pageInfo.endCursor // "")]
   | @tsv' "$reads" > "$work/long-threads"
-while IFS=$'\t' read -r thread thread_id listed total more cursor; do
-  while [ "$more" = true ]; do
-    graphql "$work/answer" ThreadComments \
-      "$(jq -nc --arg thread "$thread_id" --arg after "$cursor" '{thread: $thread, after: $after}')"
-    if ! jq -e "$page_defs"' .data.node.comments | is_page' "$work/answer" > /dev/null; then
-      echo "::error::GitHub's GraphQL API answered no page of the comments of review thread $thread of" \
-        "#$number past its first $listed, so they cannot all be checked" >&2
-      exit 1
-    fi
-    jq -c '.data.node.comments.nodes[]' "$work/answer" >> "$work/review-comment-nodes"
-    IFS=$'\t' read -r listed total more cursor < <(jq -r --argjson listed "$listed" '.data.node.comments
-      | [$listed + (.nodes | length), .totalCount, .pageInfo.hasNextPage, (.pageInfo.endCursor // "")]
-      | @tsv' "$work/answer")
+# The rows come on fd 3, so no command inside the loop can take them as its stdin.
+while IFS=$'\t' read -r -u 3 thread thread_id listed total more cursor; do
+  # The thread's comments of the read under way, from its first page that THE READ answered.
+  jq -c --argjson thread "$thread" '.threads.nodes[$thread - 1].comments.nodes[]' "$reads" \
+    > "$work/thread-nodes"
+  attempt=1
+  while :; do
+    while [ "$more" = true ]; do
+      # An empty cursor, a read again's, asks for the thread's first page.
+      variables=$(jq -nc --arg thread "$thread_id" --arg after "$cursor" \
+        '{thread: $thread, after: (if $after == "" then null else $after end)}')
+      graphql "$work/answer" ThreadComments "$variables"
+      if ! jq -e "$page_defs"' .data.node.comments | is_page' "$work/answer" > /dev/null; then
+        echo "::error::GitHub's GraphQL API answered no page of the comments of review thread" \
+          "$thread of #$number past its first $listed, so they cannot all be checked" >&2
+        exit 1
+      fi
+      jq -c '.data.node.comments.nodes[]' "$work/answer" >> "$work/thread-nodes"
+      IFS=$'\t' read -r listed total more cursor < <(jq -r --argjson listed "$listed" \
+        '.data.node.comments | [$listed + (.nodes | length), .totalCount, .pageInfo.hasNextPage,
+          (.pageInfo.endCursor // "")] | @tsv' "$work/answer")
+    done
+    if [ "$listed" = "$total" ]; then break; fi
+    read_again "$attempt" "$total comments in review thread $thread of #$number but listed $listed"
+    attempt=$((attempt + 1))
+    : > "$work/thread-nodes"
+    listed=0 more=true cursor=''
   done
-  if [ "$listed" != "$total" ]; then
-    echo "::error::GitHub's GraphQL API reports $total comments in review thread $thread of #$number" \
-      "but listed $listed, so not every one can be checked" >&2
-    exit 1
-  fi
-done < "$work/long-threads"
+  cat "$work/thread-nodes" >> "$work/review-comment-nodes"
+done 3< "$work/long-threads"
 jq -s 'sort_by(.fullDatabaseId // "" | tostring | [length, .])' "$work/review-comment-nodes" \
   > "$work/review-comment-nodes.json"
 # Each kind a hit is reported under, beside its nodes; the scan and the report below take the
