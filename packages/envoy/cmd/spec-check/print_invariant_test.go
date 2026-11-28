@@ -24,16 +24,17 @@ import (
 // node that they held before the run as yaml.v3 reads it, each node of the run as its approved
 // document, and no other node, each check that the run wrote is in the block of its statement, and
 // a second run changes no byte; a refused run writes nothing. The test runs print's own path after
-// its arguments (printApproved, with a bound of 4,096 bytes and no wait for the lock) over random
-// approved sets: printSeeds seeds, each a parallel subtest of seeds named by its number, of up to
-// 40 runs of 1 to 5 nodes on a directory of its own, with a new approved version of a node between
-// runs. Before one run in four it plants a fault in one file (plantFault): the same nodes with
-// other line breaks, a term in front whose name holds a line break of YAML 1.1, or a fault of the
-// YAML after the documents. The plan of no run loses a node, and print refuses a run over a file
-// whose reading stops, by its name. It replays each run with Layout.Place to name the answer that
-// each node got, and requires each answer that print can give to occur: W (written at home), M
-// (moved to the next file of its series) and T (refused, its block over the bound) for each kind
-// of node, new and replaced, and S and P (refused, its statement or its parent not in the files).
+// its arguments (printApproved, with a bound of 4,096 bytes, no wait for the lock and a sync that
+// does not flush, noFlushFS) over random approved sets: printSeeds seeds, each a parallel subtest of
+// seeds named by its number, of up to 40 runs of 1 to 5 nodes on a directory of its own, with a new
+// approved version of a node between runs. Before one run in four it plants a fault in one file
+// (plantFault): the same nodes with other line breaks, a term in front whose name holds a line
+// break of YAML 1.1, or a fault of the YAML after the documents. The plan of no run loses a node,
+// and print refuses a run over a file whose reading stops, by its name. It replays each run with
+// Layout.Place to name the answer that each node got, and requires each answer that print can give
+// to occur: W (written at home), M (moved to the next file of its series) and T (refused, its block
+// over the bound) for each kind of node, new and replaced, and S and P (refused, its statement or
+// its parent not in the files).
 //
 // The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
 // that print follows the rule. Over the seeds 1 to 2,000 of the generator before it planted faults,
@@ -100,7 +101,8 @@ func printSeeds(t *testing.T) uint64 {
 // a node got. After a run that print refuses, it puts a file with a planted fault back. Print waits
 // no time for the lock of the directory: the directory is the seed's own, so no other run takes its
 // lock, and a run that ends releases its lock at once, even while a child that another test forks
-// holds a copy of its descriptor (TestReleaseEndsTheLockWhileACopyOfItsDescriptorIsOpen).
+// holds a copy of its descriptor (TestReleaseEndsTheLockWhileACopyOfItsDescriptorIsOpen). Its sync
+// does not flush (noFlushFS): no assertion here can see a flush.
 func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 	r := rand.New(rand.NewPCG(seed, seed))
 	g := newPrintSet(r)
@@ -135,7 +137,7 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 			}
 		}
 		var stderr strings.Builder
-		code := printApproved(io.Discard, &stderr, osFileSystem{}, "approved.json", a, ids, dir, bounds)
+		code := printApproved(io.Discard, &stderr, noFlushFS{}, "approved.json", a, ids, dir, bounds)
 		for _, lost := range []string{"print would lose or change node", "print would not leave node", "which neither the files nor the run held"} {
 			if strings.Contains(stderr.String(), lost) {
 				t.Fatalf("seed %d: the plan of a run loses or changes a node, so the reader cut a file in another way than yaml.v3 reads it: %s", seed, stderr.String())
@@ -165,7 +167,7 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 		holdsTheInvariant(t, seed, dir, limit, files, run)
 		written := readDir(t, dir)
 		stderr.Reset()
-		if code := printApproved(io.Discard, &stderr, osFileSystem{}, "approved.json", a, ids, dir, bounds); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
+		if code := printApproved(io.Discard, &stderr, noFlushFS{}, "approved.json", a, ids, dir, bounds); code != 0 || !maps.EqualFunc(readDir(t, dir), written, bytes.Equal) {
 			t.Fatalf("seed %d: a second run with the same arguments exits %d or changes the files: %s", seed, code, stderr.String())
 		}
 	}
@@ -178,6 +180,18 @@ func printSeed(t *testing.T, seed uint64, limit int64) map[string]bool {
 func refusedForLock(stderr string) bool {
 	return strings.Contains(stderr, "holds the lock of the directory")
 }
+
+// noFlushFS is the file system of the process with a sync that does not flush: it answers nil and
+// puts nothing on the disk. Print's tests in the test process whose assertions cannot see a flush
+// pass it in place of osFileSystem, so they do not wait on the disk: a flush matters only after a
+// power loss, and a run that ends or a run that stops loses no page cache, so each such test checks
+// what it checked with osFileSystem (dispatch://INFRA-6355/comment/ae7b2e86-59d3-4f3b-99a2-d59050ea6136).
+// The binary passes osFileSystem, which syncs each file that print writes, and so do the tests that
+// run the built binary and the tests of osFileSystem's own calls. print_stop_test.go, which builds
+// on linux and darwin alone, reads it too, so it lives in this file, which builds everywhere.
+type noFlushFS struct{ osFileSystem }
+
+func (noFlushFS) sync(*os.File) error { return nil }
 
 // plantFault is content, a file that print wrote, as an editor or another tool can leave it, and
 // whether yaml.v3 stops reading it: the same documents with a carriage return or CR LF as each
