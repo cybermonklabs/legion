@@ -46,11 +46,11 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {

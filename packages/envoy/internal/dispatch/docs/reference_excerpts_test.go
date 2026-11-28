@@ -239,7 +239,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 // lease lines among them; nil writes them where the default logger points as each is written.
 func newExcerptServiceTo(t *testing.T, database *store.Store, persistence VersionedStore, logger *slog.Logger) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Logger: logger})
+	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }

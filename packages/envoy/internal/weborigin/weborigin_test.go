@@ -1,6 +1,7 @@
 package weborigin_test
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 
@@ -172,5 +173,45 @@ func TestGoogleRedirectHostRefusesWhatGoogleRefuses(t *testing.T) {
 		t.Run(row.host, func(t *testing.T) {
 			require.EqualError(t, weborigin.GoogleRedirectHost(row.host), row.want)
 		})
+	}
+}
+
+// SameHost compares two hosts as a request's Host names one: the name without regard to case,
+// brackets or a trailing dot, and the port as a number, a scheme's default port equal to none; and
+// SameHostName compares the names alone, at any port. Each row is a pair and what each answers.
+func TestSameHostComparesNameAndPortAndSameHostNameTheNameAlone(t *testing.T) {
+	for _, row := range []struct {
+		a, b               string
+		sameHost, sameName bool
+	}{
+		{"https://b.example.test", "https://b.example.test", true, true},
+		{"https://b.example.test", "https://B.Example.Test.", true, true},
+		{"https://b.example.test", "https://b.example.test:443", true, true},
+		{"https://b.example.test", "https://b.example.test:0443", true, true},
+		{"https://b.example.test", "http://b.example.test", true, true},
+		{"http://b.example.test", "http://b.example.test:80", true, true},
+		{"https://b.example.test", "https://b.example.test:8443", false, true},
+		{"https://b.example.test", "http://b.example.test:8080", false, true},
+		{"https://b.example.test", "http://b.example.test:443", true, true},
+		{"http://b.example.test:8080", "https://b.example.test:8080", true, true},
+		{"https://[::1]", "https://[::1]:443", true, true},
+		{"https://b.example.test", "https://other.example.test", false, false},
+		{"https://b.example.test", "https://b.example.test.other.example.test", false, false},
+	} {
+		t.Run(row.a+" and "+row.b, func(t *testing.T) {
+			a, err := url.Parse(row.a)
+			require.NoError(t, err)
+			b, err := url.Parse(row.b)
+			require.NoError(t, err)
+			require.Equal(t, row.sameHost, weborigin.SameHost(a, b), "SameHost")
+			require.Equal(t, row.sameHost, weborigin.SameHost(b, a), "SameHost, the other way round")
+			require.Equal(t, row.sameName, weborigin.SameHostName(a, b), "SameHostName")
+			require.Equal(t, row.sameName, weborigin.SameHostName(b, a), "SameHostName, the other way round")
+		})
+	}
+	// A request's Host names an origin's host when SameHost holds under the origin's own scheme.
+	origin := &url.URL{Scheme: "https", Host: "b.example.test"}
+	for host, names := range map[string]bool{"b.example.test": true, "B.EXAMPLE.TEST.": true, "b.example.test:443": true, "b.example.test:8443": false} {
+		require.Equal(t, names, weborigin.SameHost(origin, &url.URL{Scheme: origin.Scheme, Host: host}), "Host %s", host)
 	}
 }

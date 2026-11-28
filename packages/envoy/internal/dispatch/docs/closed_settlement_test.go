@@ -109,7 +109,7 @@ func newClosedSettlementFixtureTo(t *testing.T, logger *slog.Logger) closedSettl
 		Persistence: held,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      time.Hour,
 		TestHooks:   true,
 		Logger:      logger,

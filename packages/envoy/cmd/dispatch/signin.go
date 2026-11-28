@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // plainRefreshTokenRetireTimeout bounds the boot's retirement of the refresh tokens people holds
@@ -148,6 +151,120 @@ func checkIAPSignInSettings(boot bootConfig) error {
 func checkDomainShape(domain string) error {
 	if !oidc.IsDomainName(domain) {
 		return oidc.DomainNameRefusal("DISPATCH_SIGNIN_DOMAIN", domain)
+	}
+	return nil
+}
+
+// parseOriginList reads value, the setting name holds (DISPATCH_SERVED_ORIGINS or
+// DISPATCH_FORMER_ORIGINS): each comma-separated entry, trimmed, as the origin weborigin.Parse
+// returns for it, an absolute http or https URL with no path, user, query or fragment, written as
+// a browser writes an origin in its Origin header. A value of nothing but whitespace is unset. It
+// refuses an empty entry and any other, naming the entry by its position and echoing no user or
+// query, which weborigin.Parse never does; nil for none. Their hosts beside the server's other
+// origins are checkServedOrigins'.
+func parseOriginList(name, value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	origins := make([]string, len(entries))
+	for index, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("%s entry %d of %d is empty", name, index+1, len(entries))
+		}
+		origin, err := weborigin.Parse(entry)
+		if err != nil {
+			return nil, fmt.Errorf("%s entry %d of %d: %w", name, index+1, len(entries), err)
+		}
+		origins[index] = origin.String()
+	}
+	return origins, nil
+}
+
+// parseAddressLists reads DISPATCH_SERVED_ORIGINS and DISPATCH_FORMER_ORIGINS from env, each list
+// as parseOriginList reads it, for main's boot (resolveBootConfig) and rebuild-refs
+// (rebuildRefsOrigins) alike.
+func parseAddressLists(env settingValues) (served, former []string, err error) {
+	if served, err = parseOriginList("DISPATCH_SERVED_ORIGINS", env.get("DISPATCH_SERVED_ORIGINS")); err != nil {
+		return nil, nil, err
+	}
+	if former, err = parseOriginList("DISPATCH_FORMER_ORIGINS", env.get("DISPATCH_FORMER_ORIGINS")); err != nil {
+		return nil, nil, err
+	}
+	return served, former, nil
+}
+
+// checkServedOrigins refuses boot's served and former addresses (DISPATCH_SERVED_ORIGINS and
+// DISPATCH_FORMER_ORIGINS, as parseOriginList reads them) beside serverURL, the canonical origin
+// (DISPATCH_SERVER_URL, or dispatch.serverUrl in envoy.json), and the origins a broker token's
+// proof may name (proofOrigins: serverURL's and DISPATCH_PROOF_ORIGINS'). Every pair is compared
+// by host name alone, at any port (weborigin.SameHostName: the name without regard to case, an
+// IPv6 literal's brackets or a trailing dot): a browser keeps one host name's cookies for every
+// port of it, and a former address is fenced at its host name at every port. It refuses:
+//   - either list under dev sign-in (DISPATCH_DEV_SIGNIN=1), whose fence answers 421 to every Host
+//     but the canonical origin's (routes' requireHost), so no address of either could be reached;
+//   - either list with no canonical origin to be beside;
+//   - a served or a former address on the host name of the canonical origin or of an address
+//     listed before it, served or former, since each address of Dispatch's must be on a host name
+//     of its own;
+//   - a former address on the host name of a proof origin, since a former address passes no proof
+//     check.
+//
+// Main checks it once the canonical origin resolves, and rebuild-refs before it opens the database
+// (rebuildRefsOrigins). Two empty lists pass.
+func checkServedOrigins(boot bootConfig, serverURL string) error {
+	lists := []struct {
+		name    string
+		entries []string
+	}{{"DISPATCH_SERVED_ORIGINS", boot.ServedOrigins}, {"DISPATCH_FORMER_ORIGINS", boot.FormerOrigins}}
+	var set []string
+	for _, list := range lists {
+		if len(list.entries) > 0 {
+			set = append(set, list.name)
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	if boot.DevSignIn {
+		return fmt.Errorf("%s must be unset with DISPATCH_DEV_SIGNIN=1, which answers every Host but DISPATCH_SERVER_URL's 421 HOST_MISMATCH, so Dispatch could serve no other address", strings.Join(set, " and "))
+	}
+	canonical, err := url.Parse(serverURL)
+	if err != nil || canonical.Hostname() == "" {
+		return fmt.Errorf("%s: needs DISPATCH_SERVER_URL (or dispatch.serverUrl in envoy.json), the canonical origin each address is beside", set[0])
+	}
+	// taken is an origin whose host no later address may have: whose names it in a refusal, and
+	// why says why.
+	type taken struct {
+		origin     *url.URL
+		whose, why string
+	}
+	const ownHost = "each address of Dispatch's must be on a host name of its own"
+	held := []taken{{canonical, "DISPATCH_SERVER_URL's", ownHost}}
+	// The proof origins after the first, which is serverURL's and held already; each is one
+	// proofOriginEntries parsed.
+	var proofs []taken
+	for _, origin := range proofOrigins(serverURL, boot.ProofOrigins)[1:] {
+		parsed, _ := url.Parse(origin)
+		proofs = append(proofs, taken{parsed, "that of the proof origin " + origin, "a former address passes no proof check"})
+	}
+	for _, list := range lists {
+		former := list.name == "DISPATCH_FORMER_ORIGINS"
+		for index, entry := range list.entries {
+			// Each entry is one weborigin.Parse returned (parseOriginList), so it parses.
+			origin, _ := url.Parse(entry)
+			others := held
+			if former {
+				others = slices.Concat(held, proofs)
+			}
+			for _, other := range others {
+				if weborigin.SameHostName(origin, other.origin) {
+					return fmt.Errorf("%s entry %d of %d: its host name %s is %s; %s", list.name, index+1, len(list.entries), origin.Hostname(), other.whose, other.why)
+				}
+			}
+			held = append(held, taken{origin, fmt.Sprintf("%s entry %d's", list.name, index+1), ownHost})
+		}
 	}
 	return nil
 }

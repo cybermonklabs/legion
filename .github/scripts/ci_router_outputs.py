@@ -54,7 +54,8 @@ Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <r
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
 the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
 and no file of the repository holds; the filter names are its keys. --verdicts sets every filter's
-verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref, the
+verdict (default true); --verdict overrides one. --ref defaults to a pull request's merge ref (on
+pull_request and pull_request_review, whose payload carries the pull request as well), the
 queue's branch, or refs/heads/main for any other event; --sha to forty 1s. --base is the commit
 the run is measured against, forty 3s by default: a merge group's base, or the commit the `base`
 step finds - the first parent of a pull request's merge commit, the merge base with main on a
@@ -512,9 +513,11 @@ def main():
                 print(f"ci_router_outputs: --step-outputs {pair}: {line!r} is no <name>=<value> line", file=sys.stderr)
                 return 2
             given[step_id][name] = value
-    ref = args.ref or {"pull_request": "refs/pull/1/merge",
-                       "merge_group": f"refs/heads/gh-readonly-queue/main/pr-1-{args.sha}"}.get(args.event, "refs/heads/main")
-    pull_request = args.event == "pull_request"
+    # A review's event carries the pull request it reviews, and its run checks out that pull
+    # request's merge ref, as a pull request's own run does.
+    pull_request = args.event in ("pull_request", "pull_request_review")
+    ref = args.ref or ("refs/pull/1/merge" if pull_request else
+                       {"merge_group": f"refs/heads/gh-readonly-queue/main/pr-1-{args.sha}"}.get(args.event, "refs/heads/main"))
     try:
         context = {
             "runner": {"temp": "/home/runner/work/_temp"},

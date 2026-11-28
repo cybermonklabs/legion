@@ -1,0 +1,150 @@
+name: Large PR lanes
+
+# A large pull request runs, once, at the head a reviewer approves, every slow suite its paths
+# select, beside every fast job, before it can enter the merge queue
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+#
+# The approval is the trigger: a review is made with the reviewer's own token (an App's or a
+# person's), so its event starts this workflow, where an event made with GITHUB_TOKEN would start
+# nothing. Every review of every pull request starts a run. Its jobs run only on an approval, of a
+# pull request that is no draft and is labelled large-pr, by a reviewer this repository trusts;
+# every other review's run is decided by the `if:`s, from the event alone, so it starts no runner
+# and leaves three skipped check runs: `approval`, and `lead` and the hold, both posted under their
+# name expressions' text, so none named `lead` or ci-ok. They are new names at a head's first
+# review, and newer runs of the same names at each later review and each reply to a review
+# thread. The Legion daemon tells no role and wakes no pod of a settlement whose only change is
+# such skipped runs (`packages/daemon/internal/workflow/review.go#tellChecks`,
+# `packages/daemon/internal/workflow/wake.go#wakeOnSettlement`). A skipped `lead` or ci-ok over
+# an approval-time run's at the same head would replace a run of another word, and the daemon
+# tells its roles of that.
+# large-pr-label.yaml puts the label on at every push of a large pull request and at its retarget
+# to another base (.github/scripts/large-pr-lanes.sh label).
+#
+# Who is trusted: an approval whose author_association is OWNER, MEMBER or COLLABORATOR, which is
+# this repository's owner, a member of its organization or an invited collaborator (a member's
+# role here, and a collaborator's, may be Read or Triage: such an account spends runner time and
+# reaches no secret with code of its own, since a branch of this repository needs write access),
+# or whose author is a GitHub App (`user.type == 'Bot'`), which can
+# review here only where it is installed on this repository. The repository is public, and GitHub
+# lets any signed-in account approve one of its pull requests; without this term any account could
+# start these runs, a three-hour hold and every slow suite, as often as it liked. An App's
+# approvals carry author_association CONTRIBUTOR, as does any account with one merged commit, so
+# the association alone cannot admit the reviewer Legion uses
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+# That condition is written in ci-ok's `name:`, in its `if:` and in `lead`'s `if:`.
+# The three must be one text, and rule 9 of .github/scripts/check-workflow-files.sh holds them
+# equal: a `lead` that admitted an approval ci-ok did not would run every suite with no ci-ok
+# holding the queue; a ci-ok that admitted one `lead` did not would follow nothing and fail; and
+# a name narrower than its own `if:` would put the hold under "large-pr-lanes (not run)", which
+# no ruleset reads. `lead`'s `name:` writes it a fourth time, which that rule does not read, since
+# it names no required check; that job's comment says why it is there.
+#
+# `lead` decides whether this approval runs the suites or follows the approval-time run already at
+# this head (large-pr-lanes.sh lead), so two approvals never test one head at once, unless GitHub
+# refuses `lead`'s read of the runs at the head (that script's header says what follows). `approval`
+# calls ci.yaml when it runs them. A called workflow runs under its caller's event, and on
+# pull_request_review each `changes` output a pull request holds back takes its paths filter's
+# verdict, as on a merge group; ci.yaml's own ci-ok judges the run as `approval / ci-ok`, which no
+# ruleset reads, and GitHub creates it only once every job it needs has ended. The job named ci-ok
+# here is the one the ruleset reads: it has no needs, so GitHub creates its check run, queued,
+# with the run, and it concludes as `approval / ci-ok`, or as the ci-ok of the run it follows
+# (large-pr-lanes.sh hold).
+#
+# No concurrency group, on a job or the run: no approval-time run is ever cancelled. A cancelled
+# or failed ci-ok an older approval's run left on a head stays beside the newer run's, and GitHub's
+# rollup reads FAILURE
+# (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
+# A run whose verdict was a flake is re-run once it has ended (`gh run rerun <run> --failed`;
+# GitHub refuses a run still running), which replaces its check runs. A run that followed it does
+# not take that new verdict: it concluded on the first verdict it saw. So re-run the run that ran
+# the suites first, then each run that followed it, oldest first; each failure's message prints
+# those commands in that order.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  ci-ok:
+    # GitHub leaves a skipped job's name unevaluated, so a review that tests nothing leaves the
+    # text of this expression on the head, not a skipped ci-ok, which GitHub and every reader by
+    # name would count as a pass
+    # (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own). The
+    # name repeats the job's whole condition, so it is ci-ok only where the job runs even if
+    # GitHub did evaluate it.
+    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'ci-ok' || 'large-pr-lanes (not run)' }}
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      JOB_TIMEOUT_MINUTES: 180 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Wait for the approval-time run's verdict and conclude as it did
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CALLER: approval
+          REVIEWER: ${{ github.event.review.user.login }}
+          ASSOCIATION: ${{ github.event.review.author_association }}
+          REVIEWER_TYPE: ${{ github.event.review.user.type }}
+        run: |
+          echo "approved by $REVIEWER ($REVIEWER_TYPE, author_association $ASSOCIATION)"
+          .github/scripts/large-pr-lanes.sh hold
+
+  lead:
+    # GitHub leaves a skipped job's name unevaluated, so a review that tests nothing leaves the
+    # text of this expression on the head, never a skipped `lead`. Without it, a review that is no
+    # trusted approval, after an approval-time run at the same head, would leave a skipped `lead`
+    # newer than that run's successful one: a skipped run replacing a run of another word, which
+    # the Legion daemon tells its roles of and wakes a pod for
+    # (`packages/daemon/internal/workflow/review.go#tellChecks`). The name repeats the job's whole
+    # `if:`, so it is `lead` only where the job runs even if GitHub did evaluate it, and where it
+    # runs, large-pr-lanes.sh hold finds it by that name.
+    name: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'lead' || 'large-pr-lanes lead (not run)' }}
+    if: ${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run: ${{ steps.lead.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Run the suites, or follow the approval-time run already at this head
+        id: lead
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/large-pr-lanes.sh lead
+
+  approval:
+    needs: lead
+    if: needs.lead.outputs.run == 'true'
+    # GitHub refuses a run whose calling job grants less than any job of the called workflow
+    # declares, whatever that job's `if:`: these are the scopes ci.yaml's jobs declare, together,
+    # which rule 8 of .github/scripts/check-workflow-files.sh holds.
+    permissions:
+      contents: read
+      actions: write
+      checks: write
+      packages: write
+      id-token: write
+      attestations: write
+      issues: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yaml
+    secrets: inherit

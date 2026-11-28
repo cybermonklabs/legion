@@ -22,7 +22,7 @@ import (
 // them, go to logger (Deps.Logger), or where the default logger points when logger is nil.
 func newEditNoticeSweeper(t *testing.T, database *store.Store, logger *slog.Logger) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Logger: logger})
+	service := New(Deps{Store: database, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
