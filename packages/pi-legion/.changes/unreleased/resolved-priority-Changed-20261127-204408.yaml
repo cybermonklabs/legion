@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  Step 3 of "Reconcile the weekly plan" in the `legion-controller` skill's backlog stewardship
+  says that a move under a P0 issue, a clear that makes an issue P0 by the priority it takes from
+  an issue above it, and a new issue with no priority under a P0 issue need the same words of the
+  project owner and the same `p0` credential as a priority of 0. It tells the controller to give a
+  new issue under a P0 issue a priority from 1 to 3 unless those words make it P0.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

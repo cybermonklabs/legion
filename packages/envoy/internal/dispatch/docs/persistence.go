@@ -811,8 +811,8 @@ func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persist
 
 // takePruneCheckpointStatement takes the checkpoint row a prune its crash left half done holds for
 // the room $1 names (PruneAfter commits it before it deletes), and answers its ceiling, or no row
-// when there is no prune to finish. A room's batch runs it under the document's advisory lock in
-// a pipeline of its own, and only where the gate's read found a checkpoint standing
+// when there is no prune to finish. A room's batch queues it in its writes pipeline, under the
+// document's advisory lock, where the gate's read found a checkpoint standing
 // (appendGateRead.pruneCeiling, appendRoomTx). It names doc_checkpoints alone. A statement that
 // names a delete from doc_updates takes that table's ROW EXCLUSIVE lock whether or not it deletes
 // a row, so folding finishPruneStatement into it would take that lock ahead of the insert on
