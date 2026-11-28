@@ -92,12 +92,12 @@ jobs:
       # The Go commands of packages/envoy the suites below build that the go-envoy entry does not
       # hold: the Dispatch server (the seven Dispatch suites), the NATS auth service (the broker
       # credential tests), the secrets broker, the cluster token issuer, the airlock's authority
-      # and fronts and agent-secrets (the three CI-result suites), and ci-report (the fixture CI
-      # job's suite). It compiles each once, before any suite starts, so that no suite compiles one
+      # and fronts and agent-secrets (the three CI-result suites), and ci-report and spec-check (the
+      # fixture CI job's suite). It compiles each once, before any suite starts, so that no suite compiles one
       # beside rows that read real clocks; each suite then links what it builds from this run's
       # build cache. A go build of more than one main package links each and writes no binary.
       - name: Build once the Go commands the suites below build
-        run: go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher ./cmd/ci-report
+        run: go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher ./cmd/ci-report ./cmd/spec-check
         working-directory: packages/envoy
       # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
       # The suites below, each a Bun suite or the shell smoke against a stack of its own, mostly
@@ -151,10 +151,13 @@ jobs:
       # The fixture CI job (v-recorder): packages/envoy's ci-report, the last step of a job, run
       # over real go test reports in a checkout of the job's commit, writes one result for each
       # check whose test ran through the real CLI, broker and Dispatch of the stack above, per test,
-      # per leg and per attempt, and nothing for a check whose test did not run.
+      # per leg and per attempt, and nothing for a check whose test did not run. One row hands the
+      # rows that Dispatch stored to spec-check's `state`, the graph logic's own command, and reads
+      # that a check with no result that counts is not true there.
       # ci-report-long-output.live.test.ts checks that the stored text of an output over 64 KiB
-      # keeps the start of that output. Each file builds ./cmd/ci-report from this tree. The two
-      # files are one suite of the pool, run one after the other by one bun test.
+      # keeps the start of that output. Each file builds ./cmd/ci-report from this tree, and
+      # ci-report.live.test.ts builds ./cmd/spec-check too. The two files are one suite of the
+      # pool, run one after the other by one bun test.
       - name: The fixture CI job's results through ci-report, the real broker and a real Dispatch
         run: ../../.github/scripts/harness-pool.sh start packages/envoy-client/src/__tests__/ci-report.live.test.ts bun test src/__tests__/ci-report.live.test.ts src/__tests__/ci-report-long-output.live.test.ts
         working-directory: packages/envoy-client

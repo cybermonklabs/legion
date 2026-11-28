@@ -23,10 +23,11 @@ GATE = gate("envoy_session_stall", STALL, runs=[
                f"{at(STALL, CI_RESULTS_STEP)}, {at(STALL, CI_RESULTS_REFUSAL_STEP)} and {at(STALL, CI_REPORT_STEP)}",
                ENVOY, ["./cmd/cipher"], mode="build"),
     script_run("packages/envoy-client/src/__tests__/ci-report.live.test.ts",
-               'packages: ["./cmd/ci-report"],',
-               f"the last step of the fixture CI job, which that test hands buildGoBinaries, run by "
+               'packages: ["./cmd/ci-report", "./cmd/spec-check"],',
+               f"the last step of the fixture CI job, and the graph logic's command that derives a check's "
+               f"state from what it stored, which that test hands buildGoBinaries, run by "
                f"{at(STALL, CI_REPORT_STEP)}",
-               ENVOY, ["./cmd/ci-report"], mode="build"),
+               ENVOY, ["./cmd/ci-report", "./cmd/spec-check"], mode="build"),
     script_run("packages/envoy-client/src/__tests__/ci-report-long-output.live.test.ts",
                'packages: ["./cmd/ci-report"],',
                f"ci-report, which that test hands buildGoBinaries to store a long output's text, run by "
@@ -38,9 +39,9 @@ GATE = gate("envoy_session_stall", STALL, runs=[
                f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
                ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
     step_run(STALL, "Build once the Go commands the suites below build",
-             "go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher ./cmd/ci-report",
+             "go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher ./cmd/ci-report ./cmd/spec-check",
              ENVOY, ["./cmd/dispatch", "./internal/testnats/cmd/calloutd", "./cmd/cipherd", "./cmd/dev-oidc-issuer",
-                     "./cmd/dev-proxy-stands", "./cmd/cipher", "./cmd/ci-report"], mode="build"),
+                     "./cmd/dev-proxy-stands", "./cmd/cipher", "./cmd/ci-report", "./cmd/spec-check"], mode="build"),
     ceiling_run(STALL),
 ], reads=reads(
     ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),

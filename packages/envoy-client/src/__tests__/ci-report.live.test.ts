@@ -111,9 +111,11 @@ interface Row {
     readonly subject: { readonly digest: { readonly gitCommit: string } }[];
     readonly predicate: {
       readonly check: string;
+      readonly procedure_digest: string;
       readonly verdict: string;
       readonly job: string;
       readonly leg: string;
+      readonly recorded_at: string;
       readonly run: {
         readonly run_id: string;
         readonly attempt: number;
@@ -134,6 +136,9 @@ describe.skipIf(!dispatchStackEnabled)(
   () => {
     let stack: CIResultsStack | undefined;
     const ciReport = join(work, "bin", "ci-report");
+    /** The graph logic's own command, whose `state` derives the state of each check of a scenario
+     *  of The Spec (specgraph.Derive): Dispatch stores results and derives no state. */
+    const specCheck = join(work, "bin", "spec-check");
     const cliState = join(work, "cli-state");
 
     /** The running stack, or the error that says why no row can run. */
@@ -284,9 +289,9 @@ describe.skipIf(!dispatchStackEnabled)(
       mkdirSync(cliState, { recursive: true });
       await buildGoBinaries({
         bin: join(work, "bin"),
-        packages: ["./cmd/ci-report"],
+        packages: ["./cmd/ci-report", "./cmd/spec-check"],
         stack: "fixture CI job",
-        binaries: "./cmd/ci-report",
+        binaries: "./cmd/ci-report and ./cmd/spec-check",
       });
       stack = await startCIResultsStack({ work: stackDirectory });
     }, 600_000);
@@ -527,6 +532,215 @@ describe.skipIf(!dispatchStackEnabled)(
         `${SECOND} check run 613: leg "b"`,
       ]);
     }, 180_000);
+
+    /** One commit of the scenario of `probeStates`: its checkout, and the legs of each run of JOB
+     *  that ended there, [""] for a job of no matrix and [] for a commit where no run of JOB ran. */
+    interface Subject {
+      readonly checkout: Checkout;
+      readonly ended: readonly string[];
+    }
+
+    /** The state of PROBE at each commit of `subjects`, by commit, as the graph logic derives it:
+     *  `spec-check state --json` (specgraph.Derive) over a scenario of The Spec whose runs are the
+     *  rows that Dispatch stored at those commits, each as Dispatch stored it. Dispatch holds
+     *  nothing else that the derivation reads yet, so the rest is written here, each part so that
+     *  it allows true: the approved text of the check, the text that the files at each commit
+     *  hold, approved before any row; a failing example of the check that caught its fault,
+     *  planted on each commit by an agent that did not write the test; a history where each commit
+     *  after the first is a child of the first that changes a file of the check's tie, so that no
+     *  rule of carry counts a pass of one commit at another; and the runs of JOB that ended. A row
+     *  whose words the approved text does not hold throws, since no approved version holds them. */
+    async function probeStates(
+      name: string,
+      subjects: readonly [Subject, ...Subject[]]
+    ): Promise<Record<string, unknown>> {
+      const dir = join(work, "scenarios", name);
+      const approvedAt = "2026-01-01T00:00:00Z";
+      const code = "probe/probe.go";
+      const spec = readFileSync(join(SPEC_WITHOUT_SECOND, "probe.yaml"), "utf8");
+      const listed = Bun.spawnSync([
+        specCheck,
+        "checks",
+        "--dir",
+        SPEC_WITHOUT_SECOND,
+        "--job",
+        JOB,
+      ]);
+      if (listed.exitCode !== 0) throw new Error(`spec-check checks: ${listed.stderr.toString()}`);
+      const digest = (
+        JSON.parse(listed.stdout.toString()) as { id: string; procedure_sha256: string }[]
+      ).find((check) => check.id === PROBE)?.procedure_sha256;
+
+      const rows = (await Promise.all(subjects.map(({ checkout }) => rowsAt(checkout.sha)))).flat();
+      const runs = rows.map(({ seq, attestation: { subject, predicate } }) => {
+        if (predicate.procedure_digest !== digest) {
+          throw new Error(`row ${seq} holds words the approved text does not hold`);
+        }
+        return {
+          check: predicate.check,
+          check_version: 1,
+          kind: "run",
+          outcome: predicate.verdict,
+          commit: subject[0]?.digest.gitCommit,
+          job: predicate.job,
+          leg: predicate.leg,
+          attempt: predicate.run.attempt,
+          at: predicate.recorded_at,
+          seq,
+        };
+      });
+      const faults = subjects.map(({ checkout }, index) => ({
+        check: PROBE,
+        check_version: 1,
+        kind: "failing_example",
+        outcome: "fail",
+        commit: `fault-on-${checkout.sha}`,
+        planted_on: checkout.sha,
+        fault_paths: [code],
+        job: JOB,
+        leg: "",
+        attempt: 1,
+        at: "2026-01-02T00:00:00Z",
+        seq: index + 1,
+        fault_author: "an-agent-of-faults",
+        test_authors: ["the-agent-of-the-test"],
+      }));
+      const first = subjects[0].checkout.sha;
+      const json = (file: string, value: unknown) =>
+        writeFileSync(join(dir, file), `${JSON.stringify(value, null, 2)}\n`);
+      mkdirSync(dir, { recursive: true });
+      json("approved.json", {
+        nodes: spec.split(/^(?=---\n)/m).map((document) => ({
+          id: /^id: (.*)$/m.exec(document)?.[1],
+          removed: false,
+          partly_checked: false,
+          versions: [{ version: 1, at: approvedAt, document }],
+        })),
+      });
+      json("history.json", {
+        commits: subjects.map(({ checkout }, index) => ({
+          id: checkout.sha,
+          ...(index === 0 ? {} : { parent: first }),
+          files: { [code]: `${index + 1}`, "probe/probe_test.go": "1" },
+        })),
+      });
+      json(
+        "ties.json",
+        Object.fromEntries(subjects.map(({ checkout }) => [checkout.sha, { [PROBE]: ["probe/*"] }]))
+      );
+      json("results.json", [...runs, ...faults]);
+      json(
+        "jobs.json",
+        subjects.flatMap(({ checkout, ended }) =>
+          ended.map((leg) => ({ job: JOB, leg, commit: checkout.sha, ended: true }))
+        )
+      );
+      json("uncited.json", {});
+      const now = new Date().toISOString();
+      json(
+        "subjects.json",
+        subjects.map(({ checkout }) => ({ commit: checkout.sha, branch: "topic/fixture-job", now }))
+      );
+      for (const { checkout } of subjects) {
+        mkdirSync(join(dir, "files", checkout.sha), { recursive: true });
+        cpSync(
+          join(SPEC_WITHOUT_SECOND, "probe.yaml"),
+          join(dir, "files", checkout.sha, "probe.yaml")
+        );
+      }
+
+      const derived = Bun.spawnSync([specCheck, "state", "--scenario", dir, "--json"]);
+      if (derived.exitCode !== 0) {
+        throw new Error(
+          `spec-check state exited ${derived.exitCode}: ${derived.stderr.toString()}`
+        );
+      }
+      const states = JSON.parse(derived.stdout.toString()) as {
+        subject: { commit: string };
+        checks: { id: string }[];
+      }[];
+      return Object.fromEntries(
+        states.map(({ subject, checks }) => [subject.commit, checks.find(({ id }) => id === PROBE)])
+      );
+    }
+
+    // v-recorder: "A check with no result that counts does not read true" (The Spec's R7 and R9).
+    // Dispatch stores the rows and derives no state of a check of the spec files; the graph logic
+    // does. So this row reads the state from that logic over the rows that Dispatch stored
+    // (probeStates), and never from this file. At A and D the step wrote a pass that counts, and
+    // the check reads true: that is the control that each other input of the scenario allows true.
+    // At B the job ended before its last step, and Dispatch holds no row there; at C leg b ended
+    // before its last step; at E no run of the job ran. A pass of the check stands at A, at C's
+    // leg a and at D, so a build that lets a pass of another commit or another leg stand in for the
+    // missing one, or that reads a run of the job that ended as a pass, reads B, C or E true, and
+    // fails here.
+    test("a check with no result that counts reads unknown and never true: the job ended before its last step, one leg did, or no job ran; where the step wrote a pass that counts, it reads true", async () => {
+      const reported = checkoutOf("silence-a-reported", SPEC_WITHOUT_SECOND);
+      expect(
+        outcomes(await lastStep(reported, jobOf(reported, 701), "go-test-all-pass.jsonl"))
+      ).toEqual([`${PROBE} pass exit 0`]);
+      const cancelled = checkoutOf("silence-b-cancelled", SPEC_WITHOUT_SECOND);
+      const silentLeg = checkoutOf("silence-c-silent-leg", SPEC_WITHOUT_SECOND, MATRIX_WORKFLOW);
+      expect(
+        outcomes(await lastStep(silentLeg, legOf(silentLeg, 703, "a"), "go-test-all-pass.jsonl"))
+      ).toEqual([`${PROBE} pass exit 0`]);
+      const bothLegs = checkoutOf("silence-d-both-legs", SPEC_WITHOUT_SECOND, MATRIX_WORKFLOW);
+      for (const [id, leg] of [
+        [704, "a"],
+        [705, "b"],
+      ] as const) {
+        expect(
+          outcomes(await lastStep(bothLegs, legOf(bothLegs, id, leg), "go-test-all-pass.jsonl"))
+        ).toEqual([`${PROBE} pass exit 0`]);
+      }
+      const notRun = checkoutOf("silence-e-no-run", SPEC_WITHOUT_SECOND);
+
+      const subjects = [
+        { checkout: reported, ended: [""] },
+        { checkout: cancelled, ended: [""] },
+        { checkout: silentLeg, ended: ["a", "b"] },
+        { checkout: bothLegs, ended: ["a", "b"] },
+        { checkout: notRun, ended: [] },
+      ] as const;
+      expect(
+        await Promise.all(
+          subjects.map(async ({ checkout }) => described(await rowsAt(checkout.sha)))
+        )
+      ).toEqual([
+        [`${PROBE} pass job ${JOB} leg - attempt 1 at ${reported.sha}`],
+        [],
+        [`${PROBE} pass job ${JOB} leg a attempt 1 at ${silentLeg.sha}`],
+        [
+          `${PROBE} pass job ${JOB} leg a attempt 1 at ${bothLegs.sha}`,
+          `${PROBE} pass job ${JOB} leg b attempt 1 at ${bothLegs.sha}`,
+        ],
+        [],
+      ]);
+
+      const unknown = (reason: string, detail = "") => ({
+        id: PROBE,
+        state: "unknown",
+        reason,
+        detail,
+        from: "",
+        disagree: false,
+      });
+      const passed = (from: string) => ({
+        id: PROBE,
+        state: "true",
+        reason: "passed",
+        detail: "",
+        from,
+        disagree: false,
+      });
+      expect(await probeStates("silence", subjects)).toEqual({
+        [reported.sha]: passed(reported.sha),
+        [cancelled.sha]: unknown("ci_fault"),
+        [silentLeg.sha]: unknown("ci_fault", "b"),
+        [bothLegs.sha]: passed(bothLegs.sha),
+        [notRun.sha]: unknown("subject_moved"),
+      });
+    }, 240_000);
 
     // v-recorder: a build that records a result for another commit than the one that the job
     // tested fails. The job's token and GITHUB_SHA name the commit that the job tested; the

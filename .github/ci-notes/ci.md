@@ -3375,8 +3375,8 @@ run compiles it. One step after another, only the first suite that built each pa
 Queued in the pool, the four Dispatch suites of 2026-11-27 started within 16 s of each other and
 each compiled ./cmd/dispatch again (66.8, 31.2, 16.3 and 16.6 s of CPU, job 140590752284), and a
 compile beside the suites shares the processors with rows that read real clocks. So the job
-compiles each command once, before the pool starts any suite, ./cmd/ci-report among them, which
-the fixture CI job's suite builds beside the CI-result stack's four.
+compiles each command once, before the pool starts any suite, ./cmd/ci-report and ./cmd/spec-check
+among them, which the fixture CI job's suite builds beside the CI-result stack's four.
 
 The suites are queued longest first by each suite's wall in the pool after that build, so that
 the shorter ones fill the other cores around the longest. For ten of them that wall is the
