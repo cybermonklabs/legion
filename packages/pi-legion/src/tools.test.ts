@@ -3408,7 +3408,7 @@ test("read_state with no field prints legion state's line for each repository wh
 // A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
 // root registered, which no person approved (entry 20261125161152 (gate-basis)): the summary names it as its entry in
 // `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
-// the ancestor's request; a step on no basis keeps its approved line.
+// the ancestor's request; a step on no basis names its status word and its approved version.
 test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {
   const root = (key: string, designGate: unknown, gatedSteps: unknown[]) => ({
     key,
@@ -3487,9 +3487,54 @@ test("read_state's summary names a step on an ancestor's basis by its gatedSteps
   expect(summary).toContain(
     "\nLEGION-214 planning in_progress\n  gate 2 pending_on_basis LEGION-200 6\n"
   );
-  expect(summary).toContain("\nLEGION-218 planning in_progress\n  gate 3 approved 3");
+  expect(summary).toContain(
+    "\nLEGION-218 planning in_progress\n  gate 3 approved, approved version 3"
+  );
   expect(summary).not.toContain("approved 4");
   expect(summary).not.toContain("approved 1");
+});
+
+// With a Dispatch that sends a digest verdict, a spec step stands `approved` with its approved
+// version below its current version, where Dispatch reports that approval current for the current
+// version (entry 20261128003114 (hash-gate-verdict)). The summary's gate line names the step's
+// status word before the approved version, so such a gate does not read as stale, and a step whose
+// approval of an older version does not stand reads as its own word says.
+test("read_state's summary names the spec step's status word beside an approved version below the current one", async () => {
+  const root = (key: string, status: string) => ({
+    key,
+    generation: 1,
+    phase: "admitted",
+    status: "in_progress",
+    workers: {},
+    designGate: { artifactId: `spec-${key}`, currentVersion: 8, approvedVersion: 7 },
+    gatedSteps: [
+      { step: "spec", artifactId: `spec-${key}`, currentVersion: 8, approvedVersion: 7, status },
+    ],
+  });
+  const state = legionState({
+    issues: {
+      "LEGION-230": root("LEGION-230", "approved"),
+      "LEGION-231": root("LEGION-231", "waiting"),
+    },
+  });
+  const { daemon } = recordingDaemon({ state });
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  const summary = block !== undefined && block.type === "text" ? block.text : "";
+
+  expect(summary).toContain(
+    "\nLEGION-230 admitted in_progress\n  gate 8 approved, approved version 7\n"
+  );
+  expect(summary).toContain(
+    "\nLEGION-231 admitted in_progress\n  gate 8 waiting, approved version 7"
+  );
+  expect(summary).not.toContain("gate 8 approved 7");
 });
 
 // The controller reads the live trees and the held issues off the summary: one `trees` line

@@ -437,8 +437,8 @@ that cites the mark, once the hold's cause is gone or the event it waits on has 
 other park, a root you parked yourself, one another agent's session parked, or one an operator
 parked with `legion issue status`, stays parked until a person sets the root to `todo`, approves its
 spec as above, or asks the controller to start it. The controller says so in a comment, and the
-architect then starts with the decision. When the approved version is no longer the spec's current
-one, the architect asks for approval of the current one. A question alone leaves the root parked:
+architect then starts with the decision. When the approval no longer stands for the spec's current
+version, the architect asks for approval of the current one. A question alone leaves the root parked:
 the controller answers it on its ask from the issue's record, or says that setting the root to
 `todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
 decision: it stays on the ask for the person who asked, and nothing wakes.
@@ -461,40 +461,33 @@ usually carries no pictures, unless the architect is unsure what you want. You a
 document's header or from the approval question in your Dispatch Inbox; **Request changes** sends
 it back with your reason.
 
-Approval is pinned to a version: a later edit to the spec closes the gate again until someone
-approves the new version. Your own answer to a decision block in the approved spec is the one
-exception: when that answer is the whole change since the version you approved, Dispatch records
-your approval at the new version and the gate reopens, so the architect asks you for nothing; when
-the answer means the spec's text changes too, the architect rewrites it and asks you to approve
-again, naming what changed since your approval. Work already in flight carries on while the gate
-is closed, and of that work only the merge waits until you approve the new version. When you
-approve it, each worker that holds an affected issue gets a task that names the sections and
-checks that changed, and decides whether its work still matches. A worker whose work is stale
-moves its issue back, and a planner revises its plan instead and runs the plan review again. The
-daemon moves no issue and stops no turn itself, and an issue whose pull request has merged never
-moves back. The daemon only reads approvals; nothing in Legion approves a spec on a person's
-behalf, and the approval Dispatch records at your answer is yours, in your name.
+With a Dispatch that sends a digest verdict, the gate follows Dispatch's own verdict on whether your approval still stands for the spec's latest version.
+An edit that keeps the approved requirements and checks, such as a prose edit, keeps the gate open, and a change to them closes it until you approve again.
+So the gate can stand open while your approval is of an earlier version: `legion state` then shows the step `approved`, with an `approvedVersion` below its `currentVersion`.
+A new version can reach Legion before Dispatch's digest of it.
+While that version owes its digest, the gate holds each member's first phase and the merger until the digest comes, as a closed gate holds them, and Legion tells nobody of a change; when the digest comes, the gate opens or closes on it, and the tree is told only where that differs from what it was last told.
+Just before each of those starts, the daemon reads the approval of each gated document from Dispatch again, and a start whose approval Dispatch does not show standing waits for its next try.
 
-`gates.design` is a list, so a deployment can ask for more than one document of the root issue:
-`decisions` is the issue's decisions document, `criteria` its Verification document, and `spec`
-its primary document. The daemon keeps one gate record for each step listed, and the tree starts
-only once each of them is open on a person's approval, of its own document or of an ancestor's;
-each closes on its own document's next version. Under a list that names `spec` and not
-`criteria`, the default among them, the architect can also register the root's Verification
-document as `criteria`: that tree then waits for both documents, and one approval of a request
-made with `--include-verification` opens both. A deployment that does not want the gate sets
-`gates.design: []`, and the tree starts as soon as the architect has written its spec.
+With a Dispatch that sends no digest verdict, the latest version must hold the approval: approval is pinned to a version, and a later edit to the spec closes the gate again until someone approves the new version.
+Your own answer to a decision block in the approved spec is the one exception: when that answer is the whole change since the version you approved, Dispatch records your approval at the new version and the gate reopens, so the architect asks you for nothing; when the answer means the spec's text changes too, the architect rewrites it and asks you to approve again, naming what changed since your approval.
 
-A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it
-delivers parts of the ancestor's requirements and states none of its own. Its architect then
-registers the step on your approval of the ancestor's version, and the step opens with no approval
-of the root's own spec. Where that version still waits for your approval, the step opens when you
-approve it. `legion state` shows such a step as `open_on_basis` or `pending_on_basis`
-([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)). The ancestor's own
-acceptance, and its root's close, wait until each root that rests on its approval is done or out of
-the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of it is open
-(`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on
-it (`resting-root`).
+Work already in flight carries on while the gate is closed, and of that work only the merge waits until the gate opens again.
+When you approve a new version, each worker that holds an affected issue gets a task that names the sections and checks that changed, and decides whether its work still matches.
+A worker whose work is stale moves its issue back, and a planner revises its plan instead and runs the plan review again.
+The daemon moves no issue and stops no turn itself, and an issue whose pull request has merged never moves back.
+The daemon only reads approvals and Dispatch's verdict on them; nothing in Legion approves a spec on a person's behalf, and the approval Dispatch records at your answer is yours, in your name.
+
+`gates.design` is a list, so a deployment can ask for more than one document of the root issue: `decisions` is the issue's decisions document, `criteria` its Verification document, and `spec` its primary document.
+The daemon keeps one gate record for each step listed, and the tree starts only once each of them is open on a person's approval, of its own document or of an ancestor's; each closes on its own document alone, on its next version or, where Dispatch sends a digest verdict, on Dispatch's verdict for that document.
+Under a list that names `spec` and not `criteria`, the default among them, the architect can also register the root's Verification document as `criteria`: that tree then waits for both documents, and one approval of a request made with `--include-verification` opens both.
+A deployment that does not want the gate sets `gates.design: []`, and the tree starts as soon as the architect has written its spec.
+
+A root under an approved ancestor can have a spec that is a view on the ancestor's spec: it delivers parts of the ancestor's requirements and states none of its own.
+Its architect then registers the step on your approval of the ancestor's version, and the step opens with no approval of the root's own spec.
+Where that version still waits for your approval, the step opens when you approve it.
+With a Dispatch that sends a digest verdict, such a step follows Dispatch's verdict on the ancestor's spec, not on the root's own: it closes when Dispatch reports your approval of the ancestor's spec no longer standing for that spec's latest version.
+`legion state` shows such a step as `open_on_basis` or `pending_on_basis` ([Troubleshooting](/legion/legion/troubleshooting/#a-tree-waits-on-a-person)).
+The ancestor's own acceptance, and its root's close, wait until each root that rests on its approval is done or out of the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and until no Dispatch child of it is open (`SIGNOFF_CHILD_OPEN`), and the ancestor's architect is told when a root starts or stops resting on it (`resting-root`).
 
 ## Handoffs on the Dispatch issue
 

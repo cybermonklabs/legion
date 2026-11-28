@@ -339,8 +339,11 @@ const SUMMARY_LEGEND =
   "repository the live records name that GitHub's last read did not name or a role App is not " +
   "installed on; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
-  "runs its slot, hold, gate <current> approved <version|none> (for a spec step on an " +
-  "ancestor's basis, gate <current> open_on_basis|pending_on_basis <ancestor> <version>: open on " +
+  "runs its slot, hold, gate <current> <spec step status>, approved version <version|none> (the " +
+  "step's status word as the daemon last told it: approved with an approved version below the " +
+  "current one is an approval Dispatch reports current for the current version; " +
+  "gate <current> approved <version|none> where the state names no spec step; for a spec step on " +
+  "an ancestor's basis, gate <current> open_on_basis|pending_on_basis <ancestor> <version>: open on " +
   "a person's approval of that ancestor version, or waiting on the request for one) and <role> " +
   "<claim state> <last turn start> <last turn end> lines, - for a value the daemon has none for. " +
   "read_state with issue, issues, phase or settings returns the full records it names.";
@@ -443,17 +446,23 @@ function stateSummary(state: LegionState): string {
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
-      // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (entry 20261125161152 (gate-basis)), so a step on a basis reads its entry
-      // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
+      // The spec step's line names its status word, its entry's in `gatedSteps`: with a Dispatch
+      // that sends a digest verdict, a gate stands open with `approvedVersion` below
+      // `currentVersion` (entry 20261128003114 (hash-gate-verdict)), so the two numbers alone would
+      // read an open gate as stale. A spec step open on an ancestor's approval holds in
+      // `approvedVersion` the version its root registered, which no person approved (entry
+      // 20261125161152 (gate-basis)), so a step on a basis names the ancestor and version it opened
+      // on or waits on instead. A state that names no spec step gives the two numbers alone.
       // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
       // one, under the list's name (`LEGION_ANSWER_READS`).
-      let line = `  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`;
+      const approved = gate.approvedVersion ?? "none";
+      let line = `  gate ${gate.currentVersion} approved ${approved}`;
       for (const gatedStep of issue.gatedSteps ?? []) {
         if (gatedStep.step !== "spec") continue;
-        if (gatedStep.basis !== undefined) {
-          line = `  gate ${gate.currentVersion} ${gatedStep.status} ${gatedStep.basis.issue} ${gatedStep.basis.version}`;
-        }
+        line =
+          gatedStep.basis === undefined
+            ? `  gate ${gate.currentVersion} ${gatedStep.status}, approved version ${approved}`
+            : `  gate ${gate.currentVersion} ${gatedStep.status} ${gatedStep.basis.issue} ${gatedStep.basis.version}`;
         break;
       }
       lines.push(line);

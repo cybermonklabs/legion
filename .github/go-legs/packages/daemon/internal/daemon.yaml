@@ -275,6 +275,7 @@
   - TestEverySuspensionSourceHasARowOfItsOwn
   - TestGateChangeQueuesItsDispatchPublication  # 0.4 s
   - TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed  # 0.1 s
+  - TestHashGateStartsConfirmWithDispatch
   - TestHeardRepositoriesKeepGitHubsSpellingOverThePairs  # 0.3 s
   - TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNotMissed  # 0.8 s
   - TestIdleReleaseAndWake  # 72.6 s
@@ -814,6 +815,7 @@
   - TestEveryTestCallsParallelOrSaysWhyNot
   - TestGatedStepsPublishAtBoot  # 0.3 s
   - TestGatedStepsPublishWithoutADispatchClientIsRefused  # 0.0 s
+  - TestHashGateSeedTakesDispatchVerdict
   - TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait  # 0.0 s
   - TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingReady  # 0.2 s
   - TestHookEventWorkBackIsOneWordInConfigAndWorkflow  # 0.0 s
