@@ -9,8 +9,9 @@ import { withMarksEditor } from "./marks-editor";
 // the redraw an edit armed with `EDIT_REDRAW_DELAY_MS`, reads that an earlier one was cleared, and
 // fires it when it chooses, rather than waiting real time to see a request come or not come.
 
-// A row its guard ends may not have reached `withHeldRedraws`' own `finally` when the next row
-// starts, so the window's `setTimeout` and `clearTimeout` are put back after every row as well.
+// `withHeldRedraws` spies on the `setTimeout` and `clearTimeout` of the row's own happy-dom window
+// (`withMarksEditor` makes a new one for each row, tests/dom-window.ts), so no spy reaches another
+// row. `mock.restore()` restores those spies after every row, as `withHeldRedraws`' `finally` does.
 afterEach(() => {
   mock.restore();
 });

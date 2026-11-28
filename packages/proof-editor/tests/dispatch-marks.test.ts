@@ -257,3 +257,33 @@ for (const [after, block, held] of afterEachInnerAsk) {
     }
   });
 }
+
+// Asks nested `askDepth` deep on one line, each inside the one before it, around one word: #4437's
+// "an ask nested 400 asks deep" (its tests/heavy-bodies.test.ts), with the opens counted by
+// `milkdownMarkOpens` here. No node closes inside any ask, so each ask's end closes its own mark
+// alone (`around === 0 && !asks.owed` in `dispatchAskSchema`'s runner, src/dispatch-marks.ts),
+// which the block rows above never reach at depth: a paragraph closes inside each of their asks.
+// The word holds a mark of every ask, so the runner opens one for each ask, D for D asks. Main's
+// runner closed every ask mark at each ask's end and opened each ask around it again, D + D(D-1)/2
+// opens: 80,200 at 400 deep. The opens must reach one for each ask too, so a count that stopped
+// counting fails the row as well.
+const askDepth = 400;
+test(`an ask nested ${askDepth} asks deep opens no more marks than the asks and the document hold`, async () => {
+  const opening = Array.from({ length: askDepth }, (_, at) => ask(`a${at + 1}`)).join("");
+  const markdown = `${opening}w${"</span>".repeat(askDepth)}\n`;
+  for (const readOnly of [false, true]) {
+    const { parseMarkdown } = await createHeadlessProof({ readOnly });
+    const before = milkdownMarkOpens();
+    const doc = parseMarkdown(markdown);
+    const opened = milkdownMarkOpens() - before;
+    const marks = askMarksOf(doc);
+    expect({ readOnly, text: doc.textContent, marks }).toEqual({
+      readOnly,
+      text: "w",
+      marks: askDepth,
+    });
+    const said = `${opened} marks opened for ${askDepth} asks and the ${marks} ask marks the document holds (readOnly ${readOnly})`;
+    expect(opened, said).toBeGreaterThanOrEqual(askDepth);
+    expect(opened, said).toBeLessThanOrEqual(askDepth + marks);
+  }
+});
