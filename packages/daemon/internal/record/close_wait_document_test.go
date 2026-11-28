@@ -28,7 +28,7 @@ func TestCloseWaitDocumentKeepsEachCheckIdInOneCodeSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render close-wait.md: %v", err)
 	}
-	for _, want := range []string{"- `c-after` (after_merge)", "- ``a`b c`` (after_merge)", "- ```x``y```\n", "- `` `edge ``\n"} {
+	for _, want := range []string{"- `c-after` (`after_merge`)", "- ``a`b c`` (`after_merge`)", "- ```x``y```\n", "- `` `edge ``\n"} {
 		if !strings.Contains(document, want) {
 			t.Errorf("close-wait.md holds no %q:\n%s", want, document)
 		}

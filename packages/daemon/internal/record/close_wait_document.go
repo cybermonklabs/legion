@@ -186,7 +186,10 @@ func CloseWaitDocument(issue Issue) (string, error) {
 	}
 	if wait.Unread != nil {
 		section("Unread")
-		fmt.Fprintf(&doc, "The newest read of the checks does not count: %s. Since %s.\n", wait.Unread.Cause, waitTime(wait.Unread.Since))
+		// The cause keeps Dispatch's own words (a failed read's message, what it said of each check),
+		// so it is written as code, never read as markdown (writeAgentText).
+		fmt.Fprintf(&doc, "The newest read of the checks does not count, since %s:\n", waitTime(wait.Unread.Since))
+		writeAgentText(&doc, "", dispatchbody.LineFeeds(wait.Unread.Cause))
 	}
 	if wait.Unapproved != nil {
 		section("Unapproved")
@@ -198,11 +201,12 @@ func CloseWaitDocument(issue Issue) (string, error) {
 	if len(wait.Checks) > 0 {
 		section("Checks")
 		for _, check := range wait.Checks {
-			state := check.Answer
+			// The when, the answer and the reason are Dispatch's words, each a code span.
+			state := codeSpan(check.Answer)
 			if check.Reason != "" {
-				state += ", " + check.Reason
+				state += ", " + codeSpan(check.Reason)
 			}
-			fmt.Fprintf(&doc, "- %s (%s): %s, since %s\n", codeSpan(check.ID), check.When, state, waitTime(check.Since))
+			fmt.Fprintf(&doc, "- %s (%s): %s, since %s\n", codeSpan(check.ID), codeSpan(check.When), state, waitTime(check.Since))
 		}
 	}
 	if production := wait.Production; production != nil {
