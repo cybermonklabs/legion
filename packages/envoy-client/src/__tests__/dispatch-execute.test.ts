@@ -56,6 +56,7 @@ import {
   type DispatchWriteRetry,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
+import { messageFor } from "../errors";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -2016,6 +2017,35 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       })
     ).rejects.toThrow("it predates search paging and ignored offset 20");
+  });
+
+  // A search whose statement ran past Dispatch's bound answers 503 SEARCH_TIMEOUT, naming the
+  // bound. Asking again at once costs the database the bound again and finds nothing more, so
+  // the command asks once, and the line it prints is Dispatch's own with the bound in it: the
+  // command prints `messageFor` of what the call threw (dispatch-cli.ts).
+  test("dispatch_search answered 503 SEARCH_TIMEOUT asks once and prints the bound", async () => {
+    const refusal =
+      "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query";
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      return response({ code: "SEARCH_TIMEOUT", error: refusal }, 503);
+    };
+
+    const failure: unknown = await executeDispatchTool({
+      tool: "dispatch_search",
+      args: { query: "astrolabe" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).catch((error: unknown) => error);
+
+    expect(messageFor(failure)).toBe(`SEARCH_TIMEOUT: ${refusal}`);
+    expect(requests).toEqual(["/api/v1/search?q=astrolabe"]);
   });
 
   test("dispatch_search reports no results for an accepted stop-word query", async () => {
@@ -11783,7 +11813,8 @@ describe("executeDispatchTool", () => {
   // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
   // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
-  // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
+  // result's first line, and up to 2,000 characters of markdown above them would not keep that
+  // promise.
   test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;

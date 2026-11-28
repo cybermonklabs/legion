@@ -94,8 +94,9 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
 # Each job whose steps are in another job's called file, mapped to that other job: the halves of
-# a job that was split so a pull request runs one and the merge queue the other, and envoy-refill,
-# a job of its own that shares envoy-e2e-local's file. Two jobs share a file because ci.yaml
+# a job that was split so a pull request runs one and the merge queue the other, envoy-refill,
+# a job of its own that shares envoy-e2e-local's file, and step-models-chain, a job of its own
+# that shares plugin-pack's file. Two jobs share a file because ci.yaml
 # already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
@@ -104,6 +105,7 @@ SHARED_FILE = {
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
     "envoy-refill": "envoy-e2e-local",
+    "step-models-chain": "plugin-pack",
 }
 
 
@@ -629,6 +631,25 @@ def go_notices_runs():
     return out
 
 
+RELEASE_PATHS_STEP = "Check the legion release's version paths cover every package the binary links"
+RELEASE_PATHS_CHECK = ".github/scripts/check-legion-release-paths.sh"
+RELEASE_BUILD_LEGION = ".github/scripts/release-build-legion.sh"
+
+
+def legion_release_paths_runs():
+    """The go list lint's release-path check runs for each legion target: the line is
+    release-build-legion.sh's list mode, which the check runs with -deps over ./cmd/legion, with
+    the environment that script's build gives the target."""
+    started_by = at("lint", RELEASE_PATHS_STEP)
+    out = []
+    for target in targets(GO_TARGETS, "legion"):
+        goos, goarch = target.split("/")
+        out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
+                              started_by, DAEMON, ["./cmd/legion"], mode="build",
+                              env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -788,7 +809,8 @@ CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./interna
 
 def ceiling_run(job, workflow=""):
     """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
-    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml;
+    dispatch-two-builds-same's, in ci-job-dispatch-two-builds.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
@@ -1095,9 +1117,9 @@ hold_infra_race_unit_script()
 # put back on the shared handle, and a run without the detector passes it.
 # internal/shimwire: the shim's two pumps, the goroutines internal/shim reads the daemon's stream
 # and the wrapped process's stdout on, share the dedupe's delivery record under Dedupe.mu, and a
-# Writer writes each frame whole under a lock of its own (Writer.mu). Under the detector,
-# TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a run
-# without the detector passes it.
+# Writer writes each frame whole while the frame holds the writer's slot (Writer.slot). Under the
+# detector, TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a
+# run without the detector passes it.
 # One list: every daemon-go step text below is built from it, and check-ci-filters.sh fails when a
 # step in ci-job-daemon-go.yaml differs from the text built here, so the steps cannot name different
 # sets. internal/record is not among them: its product code starts no goroutine and uses no sync,
@@ -1325,6 +1347,23 @@ def hold_plugin_pack_tests():
 
 
 hold_plugin_pack_tests()
+
+
+# ---------------------------------------------------------------- the step-models chain
+# Two tests of internal/daemon carry the e2e build tag. They drive both real harnesses behind the
+# real shim and the real daemon. TestStepModelsLive runs the pinned Oh My Pi and the pinned Claude
+# Code over two issues. It judges each step record's set model and counts against the agents' own
+# transcripts. TestTheStandInGivesEachResponseItsOwnID holds the stand-ins those counts rest on to
+# one id per response. They are a job of their own because nothing else of ci.yaml runs the
+# daemon's e2e tag. The step joins -tags with -run, so it runs those two alone. The package's
+# untagged tests stay the daemon-go race step's (TAG_RUNS below).
+STEP_MODELS_CHAIN_TESTS = ["TestStepModelsLive", "TestTheStandInGivesEachResponseItsOwnID"]
+STEP_MODELS_CHAIN_PACKAGE = "internal/daemon"
+STEP_MODELS_CHAIN_JOB = "step-models-chain"
+STEP_MODELS_CHAIN_STEP = "Run the step-models chain on the real harnesses"
+STEP_MODELS_CHAIN_PATTERN = names_pattern(STEP_MODELS_CHAIN_TESTS)
+STEP_MODELS_CHAIN_SCRIPT = (f"go test -tags e2e -count=1 -timeout 40m -v -run {STEP_MODELS_CHAIN_PATTERN} "
+                            f"./{STEP_MODELS_CHAIN_PACKAGE}/")
 
 
 # ---------------------------------------------------------------- the session client under left settings
@@ -2142,10 +2181,10 @@ def go_top_level_spans(code: str, path) -> list:
 # The eleven static checks of internal/dispatch/api, keyed by their path in this repository: the
 # ten source guards and one_expression_guard_test.go, which reads the module's text for the same
 # reason. Each reads the module's own source and carries `//go:build !race` for it, so the walk
-# below would put all twenty-three of their tests in the plain step; they are left out of it instead,
+# below would put all twenty-four of their tests in the plain step; they are left out of it instead,
 # because the text-check job runs them by name and a test run twice is a test whose second run
 # tells nobody anything. The exemption is held to the files it is about in three ways, so a
-# twenty-fourth such test cannot quietly rejoin the plain step: a file named here that does not
+# twenty-fifth such test cannot quietly rejoin the plain step: a file named here that does not
 # carry the tag is refused, a file whose tests are not exactly the names here is refused
 # (race_impossible_tests_of), and a name here the lane's walk never reads is refused
 # (race_impossible_tests). internal/bus's and internal/dispatch/docs' race-skipped tests are in
@@ -2161,6 +2200,7 @@ TEXT_CHECK_TESTS = {
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": {
         "TestOnlyTheBrokerInsertsEvents"},
     f"{ENVOY}/internal/dispatch/api/issue_route_writer_guard_test.go": {
+        "TestNoServerPackageImportsTheFixtureWriters",
         "TestOnlyTheIssuePatchWritesTheRoute",
         "TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent",
         "TestTheJudgedWriterGuardSeesAPlantedWriter",
@@ -2475,12 +2515,12 @@ DAEMON_STAMPED_GATE_SCRIPT = (
     "-run '^(TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes|TestTheRecordSetIsOneRecordPerAnswerPerContract)$'")
 
 
-# The text-check job: the three modules' text checks, and the twenty-three tests of the Dispatch API's
+# The text-check job: the three modules' text checks, and the twenty-four tests of the Dispatch API's
 # eleven static checks - its ten source guards and one_expression_guard_test.go. They read the
 # module's source and no database, so they belong here rather than in the Postgres-backed
 # suites, and they are the one thing here the job cannot name by package: their package holds
 # the API's own Postgres-backed tests too, so the step selects them by name. The -run list is
-# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-three out of
+# built from TEXT_CHECK_TESTS, the same declaration that leaves exactly those twenty-four out of
 # envoy-go's plain step, so neither step can lose one of them or run one twice. Each call passes
 # -count=1: these packages read files outside their own modules, which Go's test cache keys on
 # neither, so a cached pass would say nothing about the text as it now stands.
@@ -2499,7 +2539,7 @@ GUARD_SCRIPT = ("go test -count=1 -run "
 
 # The claim model's job: the mention sender's claim model and the test of the rules it restates,
 # by name (CLAIM_MODEL_TESTS), the same declaration that leaves exactly those two out of envoy-go's
-# plain step. -run and -v are outside the simple form, so the step is pinned whole. A -run moves
+# plain step. A -run is outside the simple form, so the step is pinned whole. A -run moves
 # no closure: the step compiles every test file of internal/dispatch/api, the source guards that
 # walk the module's source among them, so this gate reads what the API's plain tests read.
 CLAIM_MODEL_JOB = "envoy-go-claim-model"
@@ -2541,7 +2581,18 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
-BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+# ci-caches.yaml's fill of the go-browser-binaries family, which rule 25 of check-ci-filters.sh
+# holds: each entry is (the fill's job, the workflow and the job whose restore it fills, the
+# directory both run in, and the step pairs, each (the reader's step, the fill's step, the text
+# both run)). The texts are the ones the binaries job's own Exact entries (the dispatch_browser
+# gate's pinned_step calls below) pin, so the fill and the job run one text, which the cache keys
+# of the objects both make are computed from.
+BINARIES_FILL_JOB = "browser-binaries"
+BINARIES_FILLS = [(BINARIES_FILL_JOB, BROWSER_SITE, BROWSER_BINARIES, ENVOY, [
+    (BROWSER_BINARIES_STEP, f"{BROWSER_BINARIES_STEP}, as the binaries job does", BROWSER_BINARIES_SCRIPT),
+    (BROWSER_CONNECTIONS_STEP, f"{BROWSER_CONNECTIONS_STEP}, as the binaries job does", BROWSER_CONNECTIONS_SCRIPT),
+])]
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
@@ -2559,6 +2610,7 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
@@ -2589,7 +2641,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
@@ -2820,10 +2872,10 @@ def browser_gate(filter, job):
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
          f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         "before it started, which it grows one collection of before any write, makes a bucket in, "
+         "writes, reads back and deletes one object in, and checks no write grew"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
-         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's share of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
          f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
          "and the stacks' own logs"),
@@ -2859,6 +2911,9 @@ def browser_gate(filter, job):
         (".github/scripts/gh-read.sh",
          "`.github/scripts/dispatch-browser-run-reads.sh#$script_dir/gh-read.sh` sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"`.github/scripts/dispatch-browser-wait-for-store.sh#packages/envoy/internal/tests3/one-collection.sh`, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.
@@ -2930,6 +2985,14 @@ TAG_RUNS = [
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_build", "envoy-infra-build",
            f"envoy-infra-build's \"{INFRA_PLAIN_STEP}\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
            job_file("envoy-infra-go")),
+    # The chain's step joins -tags e2e with -run, so it runs the two tagged tests of
+    # internal/daemon alone. That package's untagged tests are the race step's. The step is in
+    # daemon-go-race-legs, and daemon-go-race passes only when every leg passed. It is the one run
+    # of them (docs/testing.md), and daemon_go_tests is its filter.
+    TagRun("step_models_chain", STEP_MODELS_CHAIN_JOB, STEP_MODELS_CHAIN_STEP, "daemon_go_tests", DAEMON_RACE_JOB,
+           f"the \"{DAEMON_RACE_STEP}\" step of {DAEMON_RACE_LEGS_JOB}, the legs {DAEMON_RACE_JOB} passes only "
+           f"when each passed, runs ./{STEP_MODELS_CHAIN_PACKAGE}'s untagged tests",
+           job_file(STEP_MODELS_CHAIN_JOB)),
 ]
 
 

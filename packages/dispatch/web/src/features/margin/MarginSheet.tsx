@@ -70,6 +70,10 @@ export interface MarginSheetModel {
   items: {
     actionFailure: CommentActionFailure | undefined;
     answeredAsksPending: boolean;
+    /** The margin has not yet arrived on the open document (`useMarginSheet`): its threads are
+     *  not in, or it has not yet shown again what it holds there, a compose that comes back with
+     *  the arrival included. The margin's card list (`CommentsTab`) is `aria-busy` until then. */
+    arriving: boolean;
     asksPending: boolean;
     commentsError: boolean;
     commentsPending: boolean;
@@ -188,6 +192,7 @@ export function MarginSheet({
     items: {
       actionFailure,
       answeredAsksPending,
+      arriving,
       asksPending,
       commentsError,
       commentsPending,
@@ -462,6 +467,7 @@ export function MarginSheet({
             <CommentsTab
               actionFailure={actionFailure}
               answeredAsksPending={answeredAsksPending}
+              arriving={arriving}
               artifactSlug={visibleArtifact.slug}
               asksPending={asksPending}
               commentsError={commentsError}

@@ -5,6 +5,7 @@
     "action": "completed",
     "branch": "main",
     "conclusion": "success",
+    "event": "push",
     "head_branch": "main",
     "head_sha": "d7026876b8c8cd3e34937e5dbc76d719b09a4549",
     "kind": "workflow",

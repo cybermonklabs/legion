@@ -132,6 +132,11 @@ type bridge struct {
 	// queue is the Envoy deliveries waiting for the next step or turn; taking is those sent to
 	// Claude Code that it has yet to re-emit, each answered when it does.
 	queue, taking []delivery
+	// lastResponse is the message id of the newest assistant line of the main conversation. A line
+	// with the same id is a later block of that response, which ends no response (assistant).
+	lastResponse string
+	// setModelNamed is the launch's set model having been named to the shim (systemInit).
+	setModelNamed bool
 	// heldBack is the shim having once fallen framesHighWater frames behind, which is logged once.
 	heldBack bool
 }
@@ -527,6 +532,8 @@ func (b *bridge) fromClaude(line []byte) {
 		// cost the status alone: a result line the decode refused whole would be a turn whose
 		// end the daemon never learns.
 		APIErrorStatus json.RawMessage `json:"api_error_status"`
+		// Model is what an init line names: the model the launch runs on (systemInit).
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(line, &head); err != nil {
 		b.log.Printf("ignoring a line from Claude Code that is not JSON (%d bytes)", len(line))
@@ -543,7 +550,7 @@ func (b *bridge) fromClaude(line []byte) {
 		}
 	case "system":
 		if head.Subtype == "init" {
-			b.systemInit()
+			b.systemInit(head.Model)
 		}
 	case "command_lifecycle":
 		b.commandLifecycle(head.CommandUUID, head.State)
@@ -643,7 +650,15 @@ func (b *bridge) commandLifecycle(command, state string) {
 // and a turn reported for it would be one the daemon never sees end. Once that one init is spent,
 // the next is a turn's again, so a `started` whose `completed` was lost leaves every turn after
 // it reported.
-func (b *bridge) systemInit() {
+//
+// model is the model the line names, which is the model the launch runs on. The first init that
+// names one, other than `<synthetic>`, tells the shim the launch's set model, once. A command's
+// init counts too, since it names the launch's model.
+func (b *bridge) systemInit(model string) {
+	if !b.setModelNamed && model != "" && model != shimwire.SyntheticModel {
+		b.setModelNamed = true
+		b.emit(shimwire.LegionSetModel{Provider: "anthropic", ID: model})
+	}
 	if b.commandInit {
 		b.commandInit = false
 		b.log.Printf("ignoring the init of the command Claude Code is running")
@@ -680,12 +695,18 @@ func blocksOf(message json.RawMessage) []contentBlock {
 // beside the worker's conversation, possibly on another model, and the step's model is the
 // worker's. Nothing else of the message is read: the phase machine runs in the pane's `legion` MCP
 // server, driven by Claude Code's own hooks, and the bridge is transport.
+//
+// Claude Code writes one assistant line for each content block of a response, and each line has
+// the response's id. testdata/background-turn.jsonl holds three responses in seven lines. So the
+// shim is told of each response once, at its first line. A line with no id is a response of its
+// own.
 func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 	// One decode for both: an error leaves what did decode, as blocksOf's does, so the model a
 	// message names is read even where its content is not a list of blocks.
 	var m struct {
 		Content []contentBlock `json:"content"`
 		Model   string         `json:"model"`
+		ID      string         `json:"id"`
 	}
 	_ = json.Unmarshal(message, &m)
 	for _, block := range m.Content {
@@ -698,7 +719,12 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
 	}
-	if m.Model != "" && m.Model != shimwire.SyntheticModel && !subagent {
+	if subagent {
+		return
+	}
+	again := m.ID != "" && m.ID == b.lastResponse
+	b.lastResponse = m.ID
+	if !again && m.Model != "" && m.Model != shimwire.SyntheticModel {
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
 			"role": "assistant", "provider": "anthropic", "model": m.Model}})
 	}

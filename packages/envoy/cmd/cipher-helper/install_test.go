@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // installRig is a temp XDG config dir, a fake systemctl on PATH that appends its argv to a log
@@ -75,10 +76,10 @@ func newInstallRig(t *testing.T) *installRig {
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
 		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
-	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(r.exe, []byte("binary"), 0o755); err != nil {
+	if err := testexec.WriteFile(r.exe, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -538,7 +539,7 @@ func TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails(t *te
 func TestUnitPropertyNamesTheBoundOfAReadThatDoesNotAnswer(t *testing.T) {
 	bin := t.TempDir()
 	// exec, so the kill at the bound reaches the process that holds the read's stdout.
-	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec /bin/sleep 3600\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec /bin/sleep 3600\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -661,7 +662,7 @@ func TestInstallRefusesAnEscapedURLWithoutNamingItsCredential(t *testing.T) {
 func TestInstallRefusesAnExecutablePathSystemdWouldSplit(t *testing.T) {
 	r := newInstallRig(t)
 	spaced := filepath.Join(filepath.Dir(r.exe), "my helper")
-	if err := os.WriteFile(spaced, []byte("binary"), 0o755); err != nil {
+	if err := testexec.WriteFile(spaced, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.runAs(spaced, "--url", "https://s"); err == nil || !strings.Contains(err.Error(), spaced) {

@@ -17,6 +17,7 @@ import { patchAnswer } from "../issue-page/issue-fixtures";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { IssueHeader } from "./IssueHeader";
+import { issuePriority } from "./issue-priority";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -53,6 +54,8 @@ const issue: IssueDetails = {
   plan_artifact_id: "",
   primary_artifact_id: "",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   progress: { tasks: null, children: null },
   project: "CORE",
   rank: "U",
@@ -75,7 +78,7 @@ const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
-  shown: null,
+  shown: issuePriority({ priority: null }),
   stopped: undefined,
   submit: () => undefined,
 };

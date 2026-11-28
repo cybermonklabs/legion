@@ -23,6 +23,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { setDispatchOrigins } from "./origins";
 import {
   type Answer,
   type Body,
@@ -487,6 +488,15 @@ export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
 }
 
+// A search whose keyword or meaning statement ran past the server's 15 s bound (`503
+// SEARCH_TIMEOUT`): a search that reaches the bound costs the database the whole of it, so sending
+// it again on its own only multiplies that cost and finds nothing more. It gets no automatic retry
+// (`isRetryableQueryError`), and no focus, reconnect or refresh of the live feed sends it again
+// (`heldAfterSearchTimeout` in `api/query-client.ts`). The bar offers its own Retry instead.
+export function isSearchTimeout(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 503 && error.code === "SEARCH_TIMEOUT";
+}
+
 // A stored document holding an element this Dispatch process's build cannot read: a newer build
 // wrote it while two builds serve one database during a release. It is not a repairable state, and
 // a replacement would delete the element. A later read can reach a build that reads it, so the read
@@ -541,10 +551,10 @@ export function isAgentListRefilling(error: unknown): boolean {
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, a stored history that cannot load, or a reference closure cut at its bound is
-// definitive or too costly to send again at once; any other failure (dropped connection, a read
-// past its deadline, 5xx, a document holding content this build cannot read yet) is worth a
-// couple of automatic attempts before surfacing a Retry affordance to the user.
+// Proof's schema, a stored history that cannot load, or a reference closure or a search cut at its
+// bound is definitive or too costly to send again at once; any other failure (dropped connection,
+// a read past its deadline, 5xx, a document holding content this build cannot read yet) is worth
+// a couple of automatic attempts before surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -553,7 +563,8 @@ export function isRetryableQueryError(error: unknown): boolean {
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error) &&
-    !isReferencesTimeout(error)
+    !isReferencesTimeout(error) &&
+    !isSearchTimeout(error)
   );
 }
 
@@ -2083,9 +2094,13 @@ export class DispatchApiClient {
   }
 
   /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
-   *  rendered from, so this one read names its path and its answer itself. */
-  whoAmI(): Promise<AuthenticatedUser> {
-    return this.json<AuthenticatedUser>("/auth/whoami");
+   *  rendered from, so this one read names its path and its answer itself. The origins the
+   *  answer names are the ones every dashboard URL is read against from then on
+   *  (`setDispatchOrigins`); an answer naming none leaves the page's own alone. */
+  async whoAmI(): Promise<AuthenticatedUser> {
+    const user = await this.json<AuthenticatedUser>("/auth/whoami");
+    setDispatchOrigins(user.origins ?? []);
+    return user;
   }
 
   /** The scopes the caller's own credential holds, as `GET /api/v1/whoami` names them: for a

@@ -6,17 +6,20 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const where = "spec.md version 12"
 
-// planted is the context of the planted texts: project ACME exists, and the server's address is
-// dispatch.example.com.
+// planted is the context of the planted texts: project ACME exists, the server's address is
+// dispatch.example.com, it serves dispatch.example.net too, and it served dispatch-old.example.com
+// before.
 func planted(people ...string) Context {
 	return Context{
 		IsProjectKey: func(key string) bool { return key == "ACME" },
 		PersonNames:  people,
-		ServerURL:    "https://dispatch.example.com",
+		Origins:      text.NewOrigins("https://dispatch.example.com", "https://dispatch.example.net", "https://dispatch-old.example.com"),
 	}
 }
 
@@ -248,7 +251,7 @@ func TestTheReferenceRulesCutAReferenceAsTextCutsIt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := planted()
 			if test.server != "" {
-				c.ServerURL = test.server
+				c.Origins = text.NewOrigins(test.server)
 			}
 			var got []form
 			for _, each := range referenceForms(c, nil, test.line, false) {

@@ -974,6 +974,11 @@ export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
  *  `contracts.StepAgentTextRule`. */
 export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
 
+/** The most models a step record's `answers` names, each with its count of calls. Generated into
+ *  Go as `contracts.StepAnswersMax`: Dispatch refuses a step write that names more, and the
+ *  Legion daemon writes no more. Its shim counts up to four times as many for one launch. */
+export const STEP_ANSWERS_MAX = 16;
+
 /** The most bytes the id of a task a step record names holds. A task id is ASCII, so its bytes and
  *  its characters are one count. Generated into Go as `contracts.StepTaskMax`. */
 export const STEP_TASK_MAX = 64;
@@ -1429,7 +1434,12 @@ export const dispatchToolSpecs = [
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
-      parent: z.string().describe("Optional parent issue, in any project.").optional(),
+      parent: z
+        .string()
+        .describe(
+          "Optional parent issue, in any project. A new issue with no priority of its own takes the priority its parent reads (the parent's own, else that of the nearest issue above it that has one), so a create with no priority under a parent that reads P0 needs the p0 scope unless your session is that parent's own architect."
+        )
+        .optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
@@ -1467,7 +1477,7 @@ export const dispatchToolSpecs = [
       priority: z
         .number({ int: true, min: 0, max: 3 })
         .describe(
-          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope."
+          "Optional coarse priority from 0 (P0, highest) to 3 (P3, lowest). Setting 0 needs the p0 scope. Left out, the new issue takes the priority its parent reads, so under a parent that reads P0 the create needs the p0 scope unless your session is that parent's own architect; a priority from 1 to 3 needs no scope."
         )
         .optional(),
       assignee: z
@@ -1599,7 +1609,7 @@ export const dispatchToolSpecs = [
         .nullable()
         .optional()
         .describe(
-          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already."
+          "Coarse priority from 0 (P0, highest) to 3 (P3, lowest), or null to clear it. Setting 0 needs the p0 scope, unless the issue's own priority is 0 already. An issue with no priority of its own takes the priority of the nearest issue above it that has one, and passes it on to each issue under it that has none, so a clear needs the p0 scope too where it would turn the issue's own 1 to 3 into a P0 taken from an issue above it; clearing an own 0 needs none."
         ),
       assignee: z
         .string()
@@ -1621,7 +1631,7 @@ export const dispatchToolSpecs = [
       parent: z
         .string()
         .describe(
-          "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label."
+          "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label. A parent of any project passes on its priority: an issue with no priority of its own takes the priority of the nearest issue above it that has one, so a move under a parent needs the p0 scope where it makes the issue, or an issue under it that takes its priority from it, P0 when it was not. A move that leaves every priority as it was needs no scope, and neither does an empty string, which sets no parent."
         )
         .optional(),
       blocked_by: z
@@ -2924,6 +2934,9 @@ export const dispatchToolSpecs = [
       "An issue read carries a `Progress:` line, `tasks 3/7, children 2/5`: its spec's task-list items " +
       "(`- [ ]` / `- [x]`, nested lists included) and its direct children, each done of total and each only " +
       "when it has any (`Progress: none` otherwise). " +
+      "An issue read carries a `Priority:` line with the priority the issue works at: `Priority: P2` where it is the " +
+      "issue's own, and `Priority: P0 (from KEY)` where the issue has none of its own and takes it from KEY, the " +
+      "nearest issue above it that has one; an issue that resolves no priority has no such line. " +
       "An issue whose spec marks requirements carries one `Coverage:` line per gap, `Coverage: R3 has no check` or " +
       "`Coverage: R3 has no plan task` (the second only once the issue has a plan document), counting the `check` and " +
       "`plan_task` blocks of every document of the issue and of its descendants; a spec that marks none reads " +
@@ -3111,7 +3124,11 @@ export const dispatchToolSpecs = [
       "every route), " +
       "so you can see backlog shape without opening every issue. Optionally filter by status, parent, " +
       "label, priority, route status, or how recently it changed; priority takes one or more of 0-3 " +
-      "(P0-P3) and null for an issue with no priority, so an owner's P0/P1 audit is priority [0, 1]. " +
+      "(P0-P3) and null for an issue that resolves no priority, so an owner's P0/P1 audit is " +
+      "priority [0, 1]. The priority a row prints and the filter matches is the one the issue " +
+      "resolves to: its own, else that of the nearest issue above it that has one, so a child with " +
+      "no priority of its own under a P0 issue is listed under 0 and its row reads P0 (from <KEY>), " +
+      "naming the issue it comes from. " +
       'route_status "no_holder" lists every open issue whose route names a role nobody holds or a ' +
       "session that is not running, as of the server's copy of the listener's session list, at " +
       "most 5 s old, whatever its priority. A restarting " +
@@ -3136,7 +3153,9 @@ export const dispatchToolSpecs = [
         .array(z.number({ int: true, min: 0, max: 3 }).nullable(), { min: 1, max: 5 })
         .describe(
           "Optional priority filter: one or more of 0 (P0, highest) through 3 (P3, lowest), and null " +
-            "for an issue with no priority; an issue matching any listed value is returned."
+            "for an issue that resolves no priority; an issue matching any listed value is returned. " +
+            "A value matches the priority an issue resolves to: its own, else that of the nearest " +
+            "issue above it that has one."
         )
         .optional(),
       updated_since: z
@@ -3172,8 +3191,9 @@ export const dispatchToolSpecs = [
         .boolean()
         .describe(
           "Print the listing as one JSON object and nothing else: {issues, total, offset, limit}, " +
-            "each issue with its status, parent and labels. The dispatch command prints it whole, " +
-            "also on a host that cuts long output."
+            "each issue with its status, its own priority, the priority it resolves to and the " +
+            "issue that comes from (priority, resolved_priority, priority_from), parent and labels. " +
+            "The dispatch command prints it whole, also on a host that cuts long output."
         )
         .optional(),
     }),
@@ -3475,11 +3495,15 @@ export const dispatchToolSpecs = [
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
-      "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
-      "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on and that has no plan prints " +
-      "0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch read fails for it, " +
-      `NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
+      "answered last, as provider/model. result is passed, failed or stopped. After the result " +
+      "each line prints set and the model the role was set to, or - for none. Then it prints " +
+      "answered and each model with its calls and its share of the step's calls in whole " +
+      "percent, as anthropic/claude-opus-5-5=41(93%). It prints running for a run not yet " +
+      "ended, unknown where Legion does not know the counts, and none for a step with no call. " +
+      "A field with no value prints -, and a run that has not ended prints running for its end " +
+      "and its result. A closed issue's steps read too. An issue that no step ran on and that " +
+      "has no plan prints 0 steps in 0 tasks, and a key Dispatch does not hold fails as dispatch " +
+      `read fails for it, NOT_FOUND: not found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
@@ -3495,18 +3519,22 @@ export const dispatchToolSpecs = [
       "name one. An issue is finished when its status is done and Dispatch closed it. The " +
       "first line is `<PROJECT>: <n> finished issues`. Then each issue prints one line: `<KEY> " +
       "closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings " +
-      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n>[ variant <experiment>/<variant>]\`. ` +
+      `<rating>/${LEGION_PLAN_RATING_MOST} "<reason>"[, <rating>/${LEGION_PLAN_RATING_MOST} "<reason>" ...] time <h>h<m>m failed steps <n> on set model <n> off <n> unknown <n>[ variant <experiment>/<variant>]\`. ` +
       "The line ends with variant <experiment>/<variant> where the records of the issue's " +
-      "newest run name an experiment, and at failed steps <n> where they name none. " +
+      "newest run name an experiment, and at unknown <n> where they name none. " +
       "source is default (Legion's default steps) or owner (the plan the issue's owner wrote), " +
       `and the plan is the one of the issue's newest run. A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the ` +
       `work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), one for each retro in the order the retros ran, and ` +
       "its reason prints as a JSON string. time runs from the first start of the issue's steps " +
       "to the last end, in whole hours and minutes rounded down. failed steps counts the runs " +
-      "of a step that failed, retros and merges left out. An issue with no plan prints plan " +
-      "none, one with no rating prints ratings none, and one whose time is not known prints " +
-      "time -: an issue Legion never ran prints all three. since and until, each an RFC 3339 " +
-      "time, keep the issues closed at or after since and before until.",
+      "of a step that failed, retros and merges left out. on set model counts the issue's step " +
+      "records that name an agent and a set model, know their counts and name no other model. " +
+      "off counts the records with an agent that name a set model, know their counts and name " +
+      "another model. unknown counts every other step record that names an agent. Each of the " +
+      "three prints - where the Dispatch server is older than these counts. An issue with no " +
+      "plan prints plan none, one with no rating prints ratings none, and one whose time is not " +
+      "known prints time -: an issue Legion never ran prints all three. since and until, each an " +
+      "RFC 3339 time, keep the issues closed at or after since and before until.",
     arguments: (z) => ({
       project: z.string().describe("Project key whose finished issues to list, such as INFRA."),
       since: z
@@ -3532,7 +3560,8 @@ export const dispatchToolSpecs = [
       "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
       "somebody else has written in since, and the messages they sent an agent session that it " +
       "answered) and Credential requests. An ask's line names its " +
-      "issue key or document slug, its priority, its kind, the first 80 characters of the " +
+      "issue key or document slug, its priority (the one its issue resolves to, as P0 (from KEY) " +
+      "where the issue takes it from KEY above it), its kind, the first 80 characters of the " +
       "question and its dispatch:// reference; a thread's line names its issue key, document " +
       "slug or session, its kind, the first 80 characters of its subject, who wrote the newest " +
       "reply, how long ago and where to read it; a credential request's line names its kind, its " +

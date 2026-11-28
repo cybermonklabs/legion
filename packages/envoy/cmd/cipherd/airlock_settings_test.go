@@ -57,9 +57,9 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	writeWhole(t, fakeSecretsFile, `{"secrets": [
-		{"name": "`+testSecretsPrefix+`example-app", "kms_key_id": "`+testSecretsKMSKeyARN+`",
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	writeWhole(t, memorySecretsFile, `{"secrets": [
+		{"name": "`+testSecretsPrefix+`example-app",
 		 "tags": {"owner": "`+service+`", "tier": "agent", "`+policy.TagType+`": "`+policy.TypeGitHubApp+`", "`+policy.TagGitHubOwners+`": "acme-org"},
 		 "value": `+string(value)+`}
 	]}`)
@@ -71,7 +71,8 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,

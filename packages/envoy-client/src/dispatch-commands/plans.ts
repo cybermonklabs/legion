@@ -1,4 +1,4 @@
-import type { FinishedIssue, PlanRating, PlanRecord } from "@legion/contracts";
+import type { FinishedIssue, PlanRating, PlanRecord, SetModelSteps } from "@legion/contracts";
 import { LEGION_PLAN_RATING_MOST } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 import { optionalString, stringArg } from "./context";
@@ -43,9 +43,18 @@ function timeText(seconds: number | null): string {
   return `time ${Math.floor(minutes / 60)}h${minutes % 60}m`;
 }
 
-/** One finished issue: its close, plan, ratings, time and failed steps, and last the experiment a
- *  draw put it in with the variant drawn, where its newest run's records name one. A Dispatch
- *  older than the two fields answers an issue without them, which names none either. */
+/** The issue's step records that name an agent, counted against the model each one's role was
+ *  set to: on it alone, off it, and unknown, which is every other. A Dispatch older than these
+ *  counts sends none, so the type's required field can be absent, and each count prints `-`. */
+function setModelStepsText(counts: SetModelSteps | undefined): string {
+  if (counts === undefined) return "on set model - off - unknown -";
+  return `on set model ${counts.on} off ${counts.off} unknown ${counts.unknown}`;
+}
+
+/** One finished issue: its close, plan, ratings, time, failed steps and its step records counted
+ *  against their set model, and last the experiment a draw put it in with the variant drawn, where
+ *  its newest run's records name one. A Dispatch older than the two fields answers an issue without
+ *  them, which names none either. */
 function issueLine(issue: FinishedIssue): string {
   return [
     issue.issue,
@@ -56,6 +65,7 @@ function issueLine(issue: FinishedIssue): string {
     timeText(issue.duration_seconds),
     "failed steps",
     issue.failed_steps,
+    setModelStepsText(issue.set_model_steps),
     ...(issue.experiment == null || issue.variant == null
       ? []
       : [`variant ${issue.experiment}/${issue.variant}`]),
@@ -63,7 +73,8 @@ function issueLine(issue: FinishedIssue): string {
 }
 
 /** `dispatch plans`: each finished issue of a project with its plan, its ratings, its time, its
- *  count of failed steps and its variant, as Dispatch lists them. */
+ *  count of failed steps, its step records counted against their set model and its variant, as
+ *  Dispatch lists them. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const read = await client.listProjectPlans(stringArg(args, "project"), {
