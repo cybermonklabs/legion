@@ -545,6 +545,11 @@ const StepAgentTextPattern = "^[!-~]{1,128}$"
 // Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
 const StepAgentTextRule = "printable ASCII with no space, from 1 to 128 characters"
 
+// StepAnswersMax is the most models a step record's answers names, each with its count of calls.
+// Generated from STEP_ANSWERS_MAX in packages/contracts: Dispatch's step write refuses more, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, writes no more.
+const StepAnswersMax = 16
+
 // StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
 // plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
 // a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
