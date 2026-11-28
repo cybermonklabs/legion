@@ -24,7 +24,9 @@ import (
 // recompute) run, and every event above it arrives on the feed. The listener's connection
 // (onConnected) catches the change log up after its LISTEN for the same reason, and marks every
 // Legion view, which a notification lost before that LISTEN would otherwise leave stale until
-// the next one came, with no bound (dirtyLegionViews).
+// the next one came, with no bound (dirtyLegionViews). The settings row's freshness, which a lost
+// notification leaves wrong for as long, the listener reads itself before it signals the intake,
+// on the goroutine it applies that connection's notifications on (readFreshness).
 func (h *deliveryHub) intake(g *hubGeneration) {
 	var feed relaySubscription
 	var held, open bool
