@@ -618,3 +618,67 @@ test("a role taken while a heartbeat's refused claim of the old role is still ou
     await session.shutdown()
   }
 })
+
+// A heartbeat body is past its stop check, its read of the held role on the wire, when the
+// session's shutdown begins, and the listener then answers that another session holds the role.
+// The body sends no claim after the shutdown began, and the regain hook does not run (R24 of
+// dispatch://INFRA-3589): the DELETE follows, and no heartbeat renews what a claim would take.
+test("a heartbeat body past its stop check when the shutdown begins makes no role write after it", async () => {
+  const stateDirectory = scratchState()
+  let shutdownBegan = false
+  const claimsAfterShutdown: unknown[] = []
+  const readOut = Promise.withResolvers<void>()
+  const readAnswered = Promise.withResolvers<void>()
+  const client: FakeClient = {
+    subscribe: async () => registered(),
+    getInterest: async () => interest(),
+    unsubscribe: async () => undefined,
+    unregisterSession: async () => undefined,
+    setRole: async (input) => {
+      if (shutdownBegan) claimsAfterShutdown.push(input)
+      return { claimed: true, interest: interest(), warnings: [] }
+    },
+    // The listener lost the claim and names another session, so the body would claim it back.
+    // The read is answered only once the test lets it go, after the shutdown began.
+    getRole: async (role) => {
+      readOut.resolve()
+      await readAnswered.promise
+      return { role, holder: "ses_lost", last_seen: 1, state: "live" as const }
+    },
+  }
+  const session = await startChannelSession({
+    identity: new SessionIdentity("ses_current", "/tmp"),
+    connection: new IdleNats(),
+    notifier,
+    capabilities: testCapabilities,
+    client,
+    heartbeatMs: 25,
+    configFile: { path: join(stateDirectory, "envoy.json"), error: null },
+    stateDirectory,
+    clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
+    pluginVersion: "source",
+  })
+  const regains: string[] = []
+  session.onRoleRegained(async (role, reason) => {
+    regains.push(`${role} ${reason}`)
+  })
+
+  try {
+    await session.rememberRole("legion-claim")
+    await readOut.promise
+
+    shutdownBegan = true
+    const stopping = session.shutdown()
+    readAnswered.resolve()
+    // The shutdown waits out the heartbeat body, and a regain hook the body fired has been
+    // called by then: it runs one microtask after it fired, before the body's chain settles.
+    await stopping
+
+    expect(claimsAfterShutdown).toEqual([])
+    expect(regains).toEqual([])
+  } finally {
+    readAnswered.resolve()
+    await session.shutdown()
+  }
+})

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -572,7 +573,7 @@ func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
 	legion := "#!/bin/sh\n[ \"$1 $2\" = 'git-credential get' ] || exit 0\n" +
 		"while read -r line; do case $line in path=*) p=${line#path=} ;; esac; done\n" +
 		"[ -n \"$p\" ] || exit 1\necho username=x-access-token\necho \"password=role-token-for-${p%%/*}\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "legion"), []byte(legion), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	global := filepath.Join(dir, "gitconfig")
@@ -813,7 +814,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	sink := filepath.Join(dir, "ran")
 	recorder := func(name string) string {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
+		if err := execfile.Write(path, []byte("#!/bin/sh\necho "+name+" >> '"+sink+"'\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -1992,6 +1993,7 @@ func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 // repository cache's — keeps pod.service_account whatever the controller's key says: the key moves
 // the controller alone.
 func TestTheControllersPodAloneRunsAsTheControllersServiceAccount(t *testing.T) {
+	t.Parallel()
 	resume := controllerSpec(t)
 	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", controllerSession
 	for name, tc := range map[string]struct{ pods, controller, wantController string }{
@@ -2159,10 +2161,10 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 	}
 }
 
-// legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names — what CheckPod
-// knows of as Legion's in the operator's pod, the exchange identity's names among them where the
-// deployment names an exchange audience — are exactly what Legion's own pods carry: every
-// volume of every pod a launch or
+// legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names and the image
+// probe's own (probeOwned) — what CheckPod knows of as Legion's in the operator's pod, the exchange
+// identity's names among them where the deployment names an exchange audience — are exactly what
+// Legion's own pods carry: every volume of every pod a launch or
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
 // of a spec's or the operator's, under an enrollment that names an exchange audience and under one
@@ -2170,7 +2172,10 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 // names a writer audience and one that names none. Among the goldens' cases is a
 // Claude Code worker, which alone is
 // told three of the variables; none of them works a repository the project names, so the worker
-// below, which does, is built here for the one variable such a pod alone carries. A piece added
+// below, which does, is built here for the one variable such a pod alone carries. The image
+// probe's own names join the names a spec may not set (specOwned) in the variables' list, but
+// specOwned holds none of them: the probe's container carries each and CheckPod refuses each, and
+// no worker carries one, so no spec is refused for it. A piece added
 // to a pod and not to its list is one an operator could collide with unrefused; one left in a
 // list that no pod carries is refused for nothing.
 func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
@@ -2244,6 +2249,8 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 			// every role's namespace, over the file the worker image makes.
 			mounts[TestPGLogFile] = true
 			exchange := agentSecrets.ExchangeAudience != ""
+			owned := maps.Clone(r.specOwned())
+			maps.Copy(owned, probeOwned)
 			for _, list := range []struct {
 				name    string
 				got     []string
@@ -2251,7 +2258,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 			}{
 				{"legionVolumeNames", legionVolumeNames(append(slices.Clone(claim.Roles), claim.RoleController), exchange), volumes},
 				{"legionMountPaths", legionMountPaths(exchange), mounts},
-				{"the names a spec may not set", slices.Collect(maps.Keys(r.specOwned())), env},
+				{"the names a spec may not set, with the image probe's own", slices.Collect(maps.Keys(owned)), env},
 			} {
 				listed := map[string]bool{}
 				for _, entry := range list.got {

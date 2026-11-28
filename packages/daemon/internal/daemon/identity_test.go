@@ -51,8 +51,8 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
 	s := specs{stateDir: stateDir, project: "s1", appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-			return ghrepo.MustParse("zeta/tools"), "main", nil
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}, nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
 			asked = append(asked, string(appOf(role))+" on "+repository.String())
@@ -132,7 +132,9 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	repository := ghrepo.MustParse("zeta/tools")
 	var asked []appauth.AppRole
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repository, DefaultBranch: "main"}, nil
+		},
 		identity: func(_ context.Context, role claim.Role, at ghrepo.Repository) (runtime.GitIdentity, error) {
 			if at != repository {
 				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, at, repository)
@@ -179,6 +181,7 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 // the role acts as (its `github_app`), so the push step sets a commit whose trailer names such a
 // role to that App's identity: the checker on the implement App, the critic on the review App.
 func TestALaunchCarriesTheIdentityOfEachRoleOfTheDeployment(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -189,7 +192,9 @@ func TestALaunchCarriesTheIdentityOfEachRoleOfTheDeployment(t *testing.T) {
 			{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
 			{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
 		},
-		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
+		repository: func(context.Context, string) (launchRepository, error) {
+			return launchRepository{Repo: repository, DefaultBranch: "main"}, nil
+		},
 		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
 			return appIdentities[appOf(role)], nil
 		}}
@@ -403,8 +408,8 @@ func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
 				t.Helper()
 				w := &workflowRuntime{tokens: tokens}
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-					repository: func(context.Context, string) (ghrepo.Repository, string, error) {
-						return ghrepo.MustParse("zeta/tools"), "main", nil
+					repository: func(context.Context, string) (launchRepository, error) {
+						return launchRepository{Repo: ghrepo.MustParse("zeta/tools"), DefaultBranch: "main"}, nil
 					},
 					identity: w.identity, knownIdentity: w.knownIdentity}
 				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})

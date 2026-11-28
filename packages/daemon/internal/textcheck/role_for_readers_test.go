@@ -63,7 +63,9 @@ type roleForReader struct {
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
 // first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported
 // holds every task to an implementer step with each tester, reviewer and acceptance step after
-// it), or reads the retro's own phase (retroHeldNotice and Engine.StartHeldRetro, which run only
+// it, and record.StoredPlan.Running, which reads the step, the retro or the merge a running task
+// stands at, and answers an error for a task that stands at no act), or reads the retro's own
+// phase (retroHeldNotice and Engine.StartHeldRetro, which run only
 // for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
 // every phase but step to the readers this list holds (record.Issue.RoleAt), or never reads
 // admitted at all because a check before it refuses that phase, which is what each named test
@@ -97,6 +99,11 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
 	{file: "internal/api/claimstart.go", fn: "server.restartWorkedPhase"}: {calls: 1, tests: []string{
 		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
+	// What a phase worker's claim owes: the role that works its issue's phase, read from the issue,
+	// so at step the role of the running step. The architect never reaches it (isPhaseWorker).
+	{file: "internal/api/owed.go", fn: "owedBy"}: {calls: 1, tests: []string{
+		"TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue", "TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks",
+		"TestClaimOwedAtAStepIsTheRunningStepsRoles"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
 		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},
@@ -114,7 +121,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 		"TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole",
 		"TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
 	{file: "internal/record/outbox.go", fn: "MergeForwardMessage.Tells"}: {calls: 1, tests: []string{"TestAMergeForwardTellsTheWorkerOfThePhaseInEveryOrder"}},
-	{file: "internal/record/record.go", fn: "Issue.RoleAt"}:              {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	{file: "internal/record/plan.go", fn: "StoredPlan.Running"}: {calls: 1, tests: []string{
+		"TestALaterVersionChangesTheTextOfARunningTaskAlone", "TestRunningNamesTheRoleOfEachRunningActAndRefusesAPlaceNoRoleWorks"}},
+	{file: "internal/record/record.go", fn: "Issue.RoleAt"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// A parent's wait on its open children: the stop of a started parent, the start it finds

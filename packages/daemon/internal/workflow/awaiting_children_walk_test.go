@@ -55,6 +55,7 @@ func returnsFromChildren(t *testing.T, pool *pgxpool.Pool, engine *Engine, key s
 // the start it holds. A return as testing whatever the walk holds would have no place to move the
 // task to.
 func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "reviewer")
@@ -96,6 +97,7 @@ func TestAReturnOnAWalkWithNoTesterStartsTheReviewer(t *testing.T) {
 // from awaiting_children (issues_held_from_check), so the stop's hold could not stand there. The
 // task keeps running at the place of the start the parent holds, and the outbox is as it was.
 func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "tester")
@@ -127,6 +129,7 @@ func TestAStopOfAWaitingParentsTaskIsRefused(t *testing.T) {
 // architect is told once. When the child is done the return starts the implementer on the task
 // the restart held, which names why.
 func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stoppedAtTesting(t, pool, engine)
@@ -173,6 +176,7 @@ func TestARestartUnderAnOpenChildWaitsOnTheChild(t *testing.T) {
 // start is held: the root waits in awaiting_children holding step at the checker's place, and no
 // checker is started. The return once the child is done starts the checker there.
 func TestAnOpenChildHoldsTheStartOfADeploymentStep(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	waiting := waitsOnItsChild(t, pool, engine, "implementer", "checker")
@@ -197,6 +201,7 @@ func TestAnOpenChildHoldsTheStartOfADeploymentStep(t *testing.T) {
 // open child holds that start, so the root waits in awaiting_children holding reviewing. The cause
 // the held start keeps names the checker, the role whose step the move ended (Walk.endingRole).
 func TestAParentAtADeploymentStepWaitsForAnOpenChild(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Admitted)

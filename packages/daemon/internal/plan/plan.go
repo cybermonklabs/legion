@@ -1,9 +1,10 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
 // what Legion cannot carry out in any release, and Supported, what this release does not carry
-// out yet. It reads the blocks of one version of the plan document, each need as the task it
-// names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
-// nothing.
+// out yet. It reads the blocks of one version of the plan document, each task block in its place
+// and each need as the task it names (FromBlocks, Places), compares two versions (ChangedTasks),
+// and judges a later version's change of a running task (RunningChange); it holds no store and
+// calls nothing.
 //
 // Of this repository's packages it imports internal/phase and internal/redact alone, so both the
 // configuration loader, which reads a project's default steps with this grammar and these checks,
@@ -50,19 +51,37 @@ func (s Step) String() string {
 // experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"
 
-// Task is one `plan_task` block of a plan, as FromBlocks reads it.
+// Task is one `plan_task` block of a plan that Legion carries out, a task at the top or a part of a
+// task (Places), as FromBlocks reads it.
 type Task struct {
 	// ID is the block's id, which every record of the task's steps names.
 	ID string
 	// Needs are the tasks this task needs, each by its id, in the order the block writes them:
 	// FromBlocks reads each `needs` word, a reference to a block or a word, as the id of the task
-	// it names, and keeps a word that names no task in Unresolved.
+	// it names, moves a word that names an element to ElementNeeds, and keeps a word that names
+	// no task in Unresolved.
 	Needs []string
-	// Unresolved are the `needs` words that name no task of the plan, in the block's order, as
-	// FromBlocks leaves them; Validate refuses each one.
+	// ElementNeeds are the `needs` words that name an element of the plan (Plan.Elements), in the
+	// block's order, as FromBlocks leaves them. Legion does not carry out an element, so no task
+	// waits for one, and Validate refuses each one.
+	ElementNeeds []string
+	// Unresolved are the `needs` words that name no task of the plan and no element of it, in the
+	// block's order, as FromBlocks leaves them; Validate refuses each one.
 	Unresolved []string
-	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
+	// PartOf is the task this task is a part of, "" for a task at the top (Places): what Legion
+	// carries out. Owner is `owner` as the block writes it, "" when unset.
 	PartOf, Owner string
+	// ParentRef is who the block's parent is, as the read gave it at the version: before
+	// Dispatch serves the tree, the reference its `parent` writes, whole, "" for none. It names a
+	// parent of any document, so it tells two parents apart where PartOf is "" for both, such as
+	// two requirements. The record stores it with the task (record.PlanTask.ParentRef), and a later
+	// version is compared with it (sameParent), so a running task's parent does not change.
+	ParentRef string
+	// MissingParent is the id the block's `parent` names (ParentOf) where no block of the version
+	// holds that id, as FromBlocks leaves it: a block of the plan's document that the version lacks,
+	// or a heading's, which the version Dispatch gives holds no id of. The block is then a task at
+	// the top, and Validate refuses it.
+	MissingParent string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool
 	// Steps are the steps the block names, in order; none where its `steps` has no word or it has
@@ -106,8 +125,13 @@ type RoleDef struct {
 type Plan struct {
 	ArtifactID string
 	Version    int
-	// Tasks are the document's `plan_task` blocks, in its order.
+	// Tasks are the document's `plan_task` blocks that Legion carries out, the tasks at the top
+	// and the parts, in its order.
 	Tasks []Task
+	// Elements are the document's `plan_task` blocks that are elements of a task, in its order.
+	// They are no tasks: FromBlocks reads them to move a task's `needs` word that names one
+	// (elementNeeds), and Validate refuses what one names; nothing else reads them.
+	Elements []Element
 	// RoleBlocks are the names of the roles the plan defines, one for each `plan_role` block, in
 	// the document's order.
 	RoleBlocks []string
@@ -128,6 +152,18 @@ func (d Deployment) Defines(role string) bool {
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
+
+// Element is a `plan_task` block that stands under a task with no sub-owner, or under an element
+// (Places). A planner writes it as the guide of the steps after it, and Legion does not carry it
+// out, so it names no `steps`, `owner` or `merges` (Validate).
+type Element struct {
+	// ID is the block's id, Of the task it is an element of, and Under the block it stands
+	// directly under: Of, or an element of Of.
+	ID, Of, Under string
+	// Names are the attributes the block names that only a task carries out, in the order
+	// steps, owner, merges.
+	Names []string
+}
 
 // BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
 // the tester, the reviewer and acceptance, the owner's reading of the finished work. The

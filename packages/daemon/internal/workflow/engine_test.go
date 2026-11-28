@@ -121,9 +121,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
 	// The first supervise row is the child's own architect's start, before its planner's
-	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
-	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
+	// (Engine.gateOpened). The one notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice): the child's move out of admitted tells
+	// nobody (noticeFor).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -355,7 +356,9 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 // A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
 // bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
 // from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// with `dispatch handoff-read`, at the version the daemon accepted and at the newest, with no
+// commit, since this completion of the tester's names none, and so no head standing over a later
+// version.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -368,9 +371,16 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if !strings.HasPrefix(task, "Working copy: branch legion/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: reviewing.") {
+		t.Fatalf("reviewer task %q does not open with the working copy it works in and then the phase it starts", task)
+	}
+	assertNamesTheHandoff(t, task, "LEGION-208", "test", 3)
+	if want := " Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
+	}
+	if strings.Contains(task, "Where a later version") {
+		t.Fatalf("reviewer task %q names a head standing over a later version, but the tester's completion named no commit", task)
 	}
 	if strings.Contains(task, "Handoff verdict") {
 		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)

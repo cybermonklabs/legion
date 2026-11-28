@@ -14,6 +14,7 @@ import (
 // generation is held for both: a checker serving an earlier run is not the worker of this one. At
 // a phase of Legion's the phase names the worker, as before.
 func TestAPhaseReminderIsArmedForTheDeploymentRoleThatRuns(t *testing.T) {
+	t.Parallel()
 	const checker claim.Role = "checker"
 	atStep := pods.IdleView{Phase: phase.Step, StepRole: checker, Generation: 3}
 	atTesting := pods.IdleView{Phase: phase.Testing, StepRole: claim.RoleTester, Generation: 3}

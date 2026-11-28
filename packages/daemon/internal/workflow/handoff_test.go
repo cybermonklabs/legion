@@ -22,7 +22,8 @@ import (
 // on the implementer's row, so the first push of every later round moved the issue to testing and
 // started the tester on the old commit. Its handoff record is cleared with its commit when the
 // round starts, so neither reads as the new round's completion; the tester's task then names the
-// round's record, and the commit the implementer reported with it.
+// round's record with the command that reads that version and the one that reads the newest, and
+// the commit the implementer reported with it, which stands whatever a later version names.
 func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -59,10 +60,9 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	if err := pool.QueryRow(ctx, "select payload->>'task' from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> ''").Scan(&task); err != nil {
 		t.Fatalf("read the tester's start task: %v", err)
 	}
-	for _, want := range []string{"Handoff: implement version 2 (dispatch handoff-read --issue LEGION-208 --phase implement --version 2).", "Handoff commit: round-1."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("tester task %q, want it to carry %q", task, want)
-		}
+	assertNamesTheHandoff(t, task, "LEGION-208", "implement", 2)
+	if want := "Handoff commit: round-1. Where a later version names another head, the head this task names is still round-1."; !strings.Contains(task, want) {
+		t.Fatalf("tester task %q, want it to carry %q", task, want)
 	}
 }
 

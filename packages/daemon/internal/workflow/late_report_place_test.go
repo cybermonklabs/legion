@@ -29,6 +29,7 @@ import (
 // (stoppedStepReported), refuses the checker's and answers nil for the linter's: the linter's own
 // place, step 2, is not where the task stopped (Walk.placeOfRole against Walk.Place).
 func TestALateReportOfAStoppedTaskIsTheStoppedStepsAlone(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Step)

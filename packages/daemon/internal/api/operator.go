@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -184,16 +185,22 @@ func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.T
 }
 
 // claimRequest is one operator request on an existing claim: event builds the request the claim's
-// machine is posted, or answers the caller itself and reports false. A suspension the machine holds
-// for the agent's turn (supervise.ErrSuspendHeld) is not a refusal: it answers 202 with the claim as
-// it is, still working.
+// machine is posted, or answers the caller itself and reports false, and post posts it, answers
+// every refusal itself and reports the status the success answer takes. A suspend and a stop
+// are posted through claimEvent (answeredStatus): a suspension the machine holds for the agent's
+// turn (supervise.ErrSuspendHeld) is not a refusal, and answers 202 with the claim as it is,
+// still working. A resume starts the claim, and so does a deliver to a suspended claim, which
+// revives it for the task (supervise's deliverResuming): both are answered once that start is
+// under way (startedStatus, dispatch://INFRA-5649 R4), and a deliver to a claim that runs is
+// answered there as before, since it writes no launch.
 //
 // Both reads of the claim are the machine's published view (supervise.Machine.View), never
 // Machine.Claim: a claim whose launch is running holds its machine's lock for as long as the
 // runtime waits on its pod, and a route that read through that lock would not even reach the
 // machine with the suspension that stops that start (dispatch://INFRA-714 R10). The view is what
 // the claim's latest decision left, which is what the answer reports.
-func (s *server) claimRequest(request string, event func(http.ResponseWriter, *http.Request, supervise.Claim) (supervise.Event, bool)) http.HandlerFunc {
+func (s *server) claimRequest(request string, event func(http.ResponseWriter, *http.Request, supervise.Claim) (supervise.Event, bool),
+	post func(http.ResponseWriter, *http.Request, *supervise.Machine, claim.Token, string, supervise.Event) (int, bool)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := claim.Token(r.PathValue("token"))
 		m, ok := s.supervisor.Machine(token)
@@ -205,23 +212,54 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		if !ok {
 			return
 		}
-		held, ok := s.claimEvent(w, r, m, token, supervise.SuspendedByOperator, request, ev)
+		status, ok := post(w, r, m, token, request, ev)
 		if !ok {
 			return
-		}
-		status := http.StatusOK
-		if held {
-			status = http.StatusAccepted
 		}
 		s.operatorDone(r, token)
 		s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(r.Context(), m.View().Claim))
 	}
 }
 
+// answeredStatus posts ev through claimEvent and reports the status of its success answer: 202
+// for a request the machine held for the agent's turn, 200 for every other it took. Every request
+// claimRequest posts is the operator's (supervise.SuspendedByOperator).
+func (s *server) answeredStatus(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	request string, ev supervise.Event) (int, bool) {
+	held, ok := s.claimEvent(w, r, m, token, supervise.SuspendedByOperator, request, ev)
+	switch {
+	case !ok:
+		return 0, false
+	case held:
+		return http.StatusAccepted, true
+	}
+	return http.StatusOK, true
+}
+
+// startedStatus posts ev, a request of the operator's that starts the claim, through
+// startUnderWay, answers every refusal itself, and reports the status of its success answer: 202
+// for a start this request wrote launching and for a request the machine held, 200 for one that
+// wrote no launch, such as a launch the wake pacing parked.
+func (s *server) startedStatus(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
+	request string, ev supervise.Event) (int, bool) {
+	underWay, stopping, err := s.startUnderWay(r, m, token, request, ev)
+	switch {
+	case stopping != "":
+		s.refuse(w, r, http.StatusServiceUnavailable, stopping)
+		return 0, false
+	case underWay, errors.Is(err, supervise.ErrSuspendHeld):
+		return http.StatusAccepted, true
+	case err != nil:
+		s.operationFailure(w, r, supervise.SuspendedByOperator, request, token, err)
+		return 0, false
+	}
+	return http.StatusOK, true
+}
+
 // claimEvent posts one request of by's to a claim's machine (postClaimEvent), as every operator
-// request on an agent does (claimRequest) and every retry (machineRetry): it answers the caller
-// itself when the daemon is stopping or the machine refuses, and reports whether the machine held
-// the request for the agent's turn (supervise.ErrSuspendHeld), which is no refusal.
+// request on an agent does (claimRequest): it answers the caller itself when the daemon is
+// stopping or the machine refuses, and reports whether the machine held the request for the
+// agent's turn (supervise.ErrSuspendHeld), which is no refusal.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource, request string, ev supervise.Event) (held, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)
@@ -251,6 +289,87 @@ func (s *server) postClaimEvent(w http.ResponseWriter, r *http.Request, m *super
 		return false, nil
 	}
 	return true, m.Handle(ctx, ev)
+}
+
+// startUnderWay posts ev, a request that can start a claim that runs nothing — the operator's
+// resume and deliver (startedStatus), the controller's resume_agent (agentEventAction), a fresh
+// session's resume (freshSession), and the machine's own retry of a failed or retired claim
+// (machineRetry) — and reports once that start is under way rather than once it has ended
+// (dispatch://INFRA-5649 R4). A request that starts nothing, such as a deliver to a running
+// claim, writes no launch and reports what the machine answered. A start under Kubernetes waits minutes
+// on a pod, and a route that waited for all of it held its caller past the caller's own timeout:
+// the controller's fresh_session timed out 45 times of 138 calls on 2026-11-12, after 142 to 356 s
+// (dispatch://INFRA-3439, folded into dispatch://INFRA-5649).
+//
+// underWay is whether this decision wrote the claim launching and the store took that write
+// (supervise.Machine.HandleStart), with no error answered before the route answers: the
+// published view then shows the launch, which is what the caller is answered with, and the start
+// goes on or has just ended. The route answers at that write, never later, so a start that hangs
+// holds nobody. A decision that ended without writing a launch reports false, with err what the
+// machine answered, as Handle answers it: a refusal, or nil for a launch the wake pacing parked.
+// One whose answer, an error, had arrived by the moment the route answers reports that error, as
+// Handle would, since that is the fuller answer. That the launch was written, not whether its
+// start has ended, decides underWay, so one request answers alike however fast its runtime
+// starts a process. stopping is the refusal of a request the daemon's stop came before, which
+// asked nothing of the machine.
+//
+// The decision runs on a context of its own (decision), so the route's answer does not cancel it:
+// it outlives the caller's connection, it ends at the daemon's drain, and a suspension cancels the
+// start it runs, as it cancels every start (supervise's stopStart). It takes a store mark of its
+// own (store.ForConcurrentWorker), because it runs on a goroutine beside the request. The claim
+// stays recorded as a route's decision (RouteDecisions) until that decision ends, as it stayed
+// while the route waited for it, so the daemon's stop treats the claim as it did before. Where
+// the route answered before the end, the end is logged (logStartEnded), and the claim's state —
+// `read_state`, `legion claims list` — carries what the start came to: running, or failed with
+// the start's failure.
+func (s *server) startUnderWay(r *http.Request, m *supervise.Machine, token claim.Token, request string,
+	ev supervise.Event) (underWay bool, stopping string, err error) {
+	ctx, decided := s.decision(r, token)
+	if stopping := s.stopRefusal(request); stopping != "" {
+		decided()
+		return false, stopping, nil
+	}
+	launched, done := m.HandleStart(store.ForConcurrentWorker(ctx), ev)
+	select {
+	case err := <-done:
+		decided()
+		return err == nil && wasClosed(launched), "", err
+	case <-launched:
+	}
+	select {
+	case err := <-done:
+		decided()
+		return err == nil, "", err
+	default:
+	}
+	go func() {
+		err := <-done
+		decided()
+		s.logStartEnded(token, request, err)
+	}()
+	return true, "", nil
+}
+
+// wasClosed is whether ch has been closed, without waiting.
+func wasClosed(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// logStartEnded writes the end of a start whose route answered while it ran (startUnderWay): the
+// answer said the start was under way, so this line and the claim's state are where its end is
+// read. A start that ended in an error is logged as a failure (logFailure), at Info once the
+// daemon's stop has begun, since the stop is what ends a start at the drain.
+func (s *server) logStartEnded(token claim.Token, request string, err error) {
+	if err != nil {
+		s.logFailure("api: a start answered while it ran ended in an error", "request", request, "claim", token, "error", err)
+		return
+	}
+	s.log.Info("api: a start answered while it ran ended", "request", request, "claim", token)
 }
 
 // deliverEvent is the operator's task for a claim, which starts a turn the pause holds for every
@@ -355,9 +474,13 @@ func forgettable(state supervise.ClaimState) bool {
 // leave behind, and nothing else answers either: a plain retry acts on a failed or retired
 // claim, resuming the session it recorded, or a new one once supervise's Machine.forgetSession
 // has dropped it, while a fresh session reaches every claim of the project that is not in a turn
-// and whose launch is not in flight, and drops that session first. Only the fresh session answers
-// the claim with a phase restart that was refused named on it
-// (OperatorClaim.PhaseNotRestarted).
+// and whose launch is not in flight, and drops that session first. Either answers what the claim
+// does not record on it (OperatorClaim.PhaseNotRestarted): a start that waits for its issue's
+// admission slot, for both, and, for the fresh session alone, a phase restart that was refused,
+// or a start refused once the request had changed the claim.
+//
+// The claim answered is the machine's published view (supervise.Machine.View), never
+// Machine.Claim, which waits out a start still running (dispatch://INFRA-5649 R4).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)
@@ -381,13 +504,13 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	} else if s.refusedWhilePaused(w, r, "retry", m.View().Claim) {
 		return
 	} else {
-		status, ok = s.retryStart(w, r, m, token, false, supervise.SuspendedByOperator)
+		status, notRestarted, _, ok = s.retryStart(w, r, m, token, false, "", supervise.SuspendedByOperator)
 	}
 	if !ok {
 		return
 	}
 	s.operatorDone(r, token)
-	view := s.operatorAnswer(r.Context(), m.Claim())
+	view := s.operatorAnswer(r.Context(), m.View().Claim)
 	view.PhaseNotRestarted = notRestarted
 	s.writeUnparsedAnswer(w, r, status, view)
 }

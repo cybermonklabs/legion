@@ -306,10 +306,10 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			seedIssueAt(t, h, "LEGION-208", phase.Retro)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
-			// the daemon's own contract, so a band below it, PlanRatingContract once a later contract
-			// came, declares its own.
+			// The harness registers each claim at this daemon's own contract, DaemonAPIVersion, so a
+			// band at any other is put there as a stale claim, which is served in its turn
+			// (staleClaim), and its grants are minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
 			if band.contract != DaemonAPIVersion() {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
@@ -589,10 +589,10 @@ type planRatingCase struct {
 // again in TypeScript, where blank is Go's set written out by hand: goBlankPattern, whose comment
 // in `packages/contracts/src/go-blank.ts` names the characters JavaScript's trim and Go's
 // strings.TrimSpace part on. So the cases a rule of the scale, of the pair, of blank or of length
-// can part on are a golden. Each is posted as its raw body, from a plugin at PlanRatingContract, to
-// the completion that ends the retro of an issue of its own: the workflow moves an issue on to
-// merging at the first completion of its retro it takes, so each case is that first completion.
-// The route's answer is the verdict Go writes (`-update`), never one typed here;
+// can part on are a golden. Each is posted as its raw body, from a plugin at PlanRatingContract or
+// later, to the completion that ends the retro of an issue of its own: the workflow moves an issue
+// on to merging at the first completion of its retro it takes, so each case is that first
+// completion. The route's answer is the verdict Go writes (`-update`), never one typed here;
 // `packages/contracts` and the plugin hold their own verdicts to the file. An answer that is
 // neither a 200 nor a 400 of the rating fails the test, so no trouble of the harness is written
 // down as a verdict, and an accepted case's fact is its issue's and carries the rating and the
@@ -779,10 +779,10 @@ func TestTheRatingIsJudgedOnTheIssueTheWorkflowEndsTheRetroOn(t *testing.T) {
 			key := fmt.Sprintf("LEGION-%d", 400+i)
 			seedIssueAt(t, h, key, row.at)
 			implementer := newLiveClaim(t, h, key, claim.RoleImplementer)
-			// A stale claim is served in its turn (staleClaim), and its grant is minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
-			// the daemon's own contract, so a row below it, PlanRatingContract once a later contract
-			// came, declares its own.
+			// The harness registers each claim at this daemon's own contract, DaemonAPIVersion, so a
+			// row at any other is put there as a stale claim, which is served in its turn
+			// (staleClaim), and its grant is minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
 			req := row.request(implementer)
 			req.GrantID = implementer.grant(t)
 			if row.contract != DaemonAPIVersion() {

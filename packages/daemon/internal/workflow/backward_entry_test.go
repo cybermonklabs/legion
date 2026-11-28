@@ -19,6 +19,7 @@ import (
 // controls: the same move of entry `second`, and a move that names no entry (the architect's, or
 // a claim that serves none), each send the task back to implementing.
 func TestAMoveBackOfAnEntryRaisedSinceMovesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		entry func(first, second int64) int64

@@ -32,8 +32,8 @@ func ownersPlan(issue string, generation uint64, version int, givenBy claim.Toke
 	v := PlanVersion{Issue: issue, Generation: generation, Version: version, ArtifactID: planAuthor, Source: PlanSourceOwner, GivenBy: givenBy, GivenAt: at}
 	tasks := []PlanTask{{
 		Issue: issue, Generation: generation, Task: "a", PlanVersion: version, BlockText: "Build the widget.",
-		Needs: []string{"b"}, PartOf: "widgets", OwnerRole: "architect", Merges: true, StepsByDefault: true,
-		State: TaskWaiting,
+		Needs: []string{"b"}, PartOf: "widgets", ParentRef: "dispatch://ACME-1/spec#b-r1", OwnerRole: "architect", Merges: true,
+		StepsByDefault: true, State: TaskWaiting,
 	}}
 	steps := []PlanStep{
 		{Issue: issue, Generation: generation, Task: "a", Position: 1, Role: planStepOne, Type: "implementation", AgentKey: "fast"},
@@ -180,7 +180,10 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		if got := PhaseRowOf(rows, claim.RoleReviewer); got.StepTask != "a" || got.StepPlace != 2 {
 			t.Fatalf("the reviewer's row before the new generation runs step %d of task %q, want step 2 of task a as it was written", got.StepPlace, got.StepTask)
 		}
-		must(t, NewStore().ClearGeneration(ctx, tx, planIssue, planGivenAt))
+		// The clear is required to be handed a forget (KeptForget), which runs here over no
+		// decision and no queued request: the issue keeps and queues none.
+		_, err = NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
+		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
 		rows, err := NewStore().Phases(ctx, tx, planIssue)
@@ -264,6 +267,47 @@ func TestACarriedPlanKeepsWhereEachTaskStands(t *testing.T) {
 		}
 		if got := readPlan(t, tx, "LEGION-OLD", 2); got != nil {
 			t.Fatalf("the carry of an issue with no plan rows wrote %#v, want nothing", got)
+		}
+	})
+}
+
+// A task keeps the parent its block names (PlanTask.ParentRef) across each write of the record: a
+// version's write reads back with it, a later version of the same task takes the later version's
+// parent, as it takes the rest of its block, and a carry to a new generation copies it, with or
+// without where the task stands. A later version is compared with the parent stored here
+// (workflow's heldPlan), so a write or a carry that dropped it would read as a parent removed.
+func TestAPlanTaskKeepsItsParentAcrossAWriteAndACarry(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const moved = "dispatch://ACME-1/spec#b-r2"
+	v1, tasks1, steps1 := ownersPlan(planIssue, 1, 1, planOwner, planGivenAt)
+	v2, tasks2, steps2 := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt.Add(time.Hour))
+	tasks2[0].ParentRef = moved
+	parentsOf := func(tx pgx.Tx, generation uint64) []string {
+		t.Helper()
+		var parents []string
+		for _, task := range readPlan(t, tx, planIssue, generation).Tasks {
+			parents = append(parents, task.Task+"="+task.ParentRef)
+		}
+		return parents
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		putPlan(t, tx, v1, tasks1, steps1)
+		if got, want := parentsOf(tx, 1), []string{"a=" + tasks1[0].ParentRef}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the parents after version 1 = %v, want %v, as the version gave them", got, want)
+		}
+		putPlan(t, tx, v2, tasks2, steps2)
+		if got, want := parentsOf(tx, 1), []string{"a=" + moved}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the parents after version 2 = %v, want %v: a task the generation holds takes the later block's parent", got, want)
+		}
+		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 2, true))
+		must(t, NewStore().CarryPlan(ctx, tx, planIssue, 1, 3, false))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		for generation, carry := range map[uint64]string{2: "a carry of its run", 3: "a copy from its start"} {
+			if got, want := parentsOf(tx, generation), []string{"a=" + moved}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("the parents after %s to generation %d = %v, want %v", carry, generation, got, want)
+			}
 		}
 	})
 }

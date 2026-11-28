@@ -12,8 +12,8 @@ import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
 
-// Reserved here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` below has stopped the stack writing into it.
+// Reserved here, at the file's module scope. Once the `describe` below has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () => {

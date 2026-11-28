@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -56,13 +56,6 @@ var collaboratorEventReasons = map[string]collaboratorReason{
 // collaboratorEventTypes is collaboratorEventReasons' keys, the type list the one events read
 // binds.
 var collaboratorEventTypes = slices.Sorted(maps.Keys(collaboratorEventReasons))
-
-// legionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
-// lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
-// conversation, so it is nobody to ask and never a collaborator. It is the broker's spelling
-// (ciphertoken.LegionDaemonSessionPrefix), so the session a daemon's broker token proves and the
-// session Dispatch takes for the daemon's are one string (putIssueRoleHolders).
-const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // Registry states the collaborators answer names.
 const (
@@ -221,7 +214,9 @@ func (s *server) tallyCollaboratorEvents(
 				tallyOf(people, login).add(reason, &at)
 			}
 		case "session":
-			if id != "" && !strings.HasPrefix(id, legionDaemonSessionPrefix) {
+			// The Legion daemon's session holds no conversation and no title, so it is never a
+			// collaborator.
+			if id != "" && !legion.DaemonSession(id) {
 				tallyOf(sessions, id).add(reason, &at)
 			}
 		}

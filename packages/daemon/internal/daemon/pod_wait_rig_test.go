@@ -184,7 +184,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		}
 	}()
 	var quieted time.Time
-	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it but "+string(role)+"'s left as it was", func() bool {
+	idleRigEventually(r.t, "the pod of "+issue.key+" released with every claim of it but "+string(role)+"'s left as it was", func() bool {
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
 			r.quietExcept(claim.Token(token))
@@ -200,7 +200,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 		seen = fmt.Sprintf("pod %t, sandbox %t, disk %t, uid %q", pod, sandbox, disk, uid)
 		return !pod && !sandbox && !disk || uid != "" && uid != before
 	})
-	idleRigEventually(r.t, idleRigPodWait, "the "+string(role)+" of "+issue.key+" registered in a new pod", func() bool {
+	idleRigEventually(r.t, "the "+string(role)+" of "+issue.key+" registered in a new pod", func() bool {
 		uid := r.podUID(issue)
 		return r.agents.role(issue.key, string(role)).Registered >= 1 && uid != "" && uid != before &&
 			r.claimOf(issue, role) && idleRigWorking(r.api.claim(claim.Token(token)).State)
@@ -234,7 +234,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 	t.Parallel()
 	waiting := func(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {
 		t.Helper()
-		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {
+		idleRigEventually(t, "the served issue "+issue.key+" naming the checker's start as waiting for its pod", func() bool {
 			return slices.Contains(rig.startWaitsForPod(issue), string(podWaitRigRole))
 		})
 	}
@@ -266,7 +266,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		rig.startChecker(issue)
 		// The start's first try, whichever way it went, so the ticks below read what it did:
 		// a try that waits leaves the row with its wait, one that starts the role takes it.
-		idleRigEventually(t, idleRigRecordWait, "the first try of the checker's start on "+issue.key, func() bool {
+		idleRigEventually(t, "the first try of the checker's start on "+issue.key, func() bool {
 			return rig.checkerStartTried(issue)
 		})
 		kept(t, rig, issue, uid)
@@ -281,12 +281,12 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		rig.defineChecker(issue)
 		rig.startChecker(issue)
 		waiting(t, rig, issue)
-		idleRigEventually(t, idleRigRecordWait, "the launcher of "+issue.key+"'s pod connected to the restarted daemon", func() bool {
+		idleRigEventually(t, "the launcher of "+issue.key+"'s pod connected to the restarted daemon", func() bool {
 			return rig.launcherConnections(issue, uid) > connected
 		})
 		rig.quiet()
 		rig.awaitUnownedReleasedThenStarted(issue, podWaitRigRole, uid)
-		idleRigEventually(t, idleRigRecordWait, "the served issue "+issue.key+" naming no start waiting for its pod", func() bool {
+		idleRigEventually(t, "the served issue "+issue.key+" naming no start waiting for its pod", func() bool {
 			return len(rig.startWaitsForPod(issue)) == 0
 		})
 	})
@@ -298,7 +298,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil, true); status != http.StatusOK && status != http.StatusAccepted {
 			t.Fatalf("the operator's suspension of %s = %d %s", token, status, body)
 		}
-		idleRigEventually(t, idleRigRecordWait, "the suspended implementer of "+issue.key+" recording no process", func() bool {
+		idleRigEventually(t, "the suspended implementer of "+issue.key+" recording no process", func() bool {
 			suspended := rig.api.claim(token)
 			return suspended.State == "suspended" && suspended.Locator == nil
 		})
@@ -308,7 +308,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 		rig.startChecker(issue)
 		waiting(t, rig, issue)
 		rig.quiet()
-		idleRigEventually(t, idleRigRecordWait, "the controller told of "+issue.key+"'s pod, which an operator's suspension holds", func() bool {
+		idleRigEventually(t, "the controller told of "+issue.key+"'s pod, which an operator's suspension holds", func() bool {
 			rig.quiet()
 			return told() >= 1
 		})

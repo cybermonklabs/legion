@@ -2,6 +2,7 @@
 
 Part of `skill://legion-architect`, section 1.
 Read it before you stop a task or give a later version of a plan Legion runs, and on a `task-stopped`, `retro-held` or `plan-not-taken` notice.
+Read it also before you decide something for an agent of a task.
 A plan's text, its steps and when to give it first: `skill://legion-architect/references/plan.md`.
 
 ## Stopping and changing a task
@@ -9,6 +10,14 @@ A plan's text, its steps and when to give it first: `skill://legion-architect/re
 Your role prompt says what `stop_task` does, what holds a stopped task and what starts it again, and what each refusal of `stop_task` or of a plan's version means.
 
 - After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
+
+- A later version that changes only the text of a running task is taken, and the task goes on at its step.
+  Any other change of a running task needs `stop_task` first.
+
+## A decision for an agent
+
+Your role prompt holds the rules for a decision for an agent: where the decision goes, when you also send it by message, which block holds the text of the task `default`, and when a comment and a message take the place of the text.
+Follow them there. This reference does not repeat them.
 
 ## The notices
 

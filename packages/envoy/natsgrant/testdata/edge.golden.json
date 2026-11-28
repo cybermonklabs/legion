@@ -71,5 +71,6 @@
     "_INBOX_envoy_edge_m.>",
     "notifications.envoy.deliver.*",
     "notifications.envoy.relayreply.m.>"
-  ]
+  ],
+  "publish_deny": ["notifications.dispatch.>", "notifications.github.>"]
 }

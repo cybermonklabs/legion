@@ -68,7 +68,12 @@
 #      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names, or
-#      the one it reads out of the list,
+#      the one it reads out of the list. A term that tests an output for not being 'true'
+#      (`needs.changes.outputs.<x> != 'true'`) gates on no filter: it holds the job back where
+#      <x> selected its own job, as dispatch-references' holds the preview off a run whose full
+#      lane runs (.github/ci-notes/ci.md#the-reference-rows-preview-job), and reads none of <x>'s
+#      paths; the same rule refuses one whose <x> is no output of the changes job, since
+#      needs.changes.outputs.<x> is then empty on every run and the term always holds,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
@@ -262,10 +267,22 @@
 #      passes both `-tags` and `-run` must be named by an entry, matched by the file it is in and
 #      by its job and step name, and one no entry names fails naming that file, the job and the
 #      step, so a tag step added without an entry, or an entry deleted while its step stays, is
-#      held too. Nor can the table go stale: an entry naming a filter the changes job does not
-#      have, a job the file the entry names does not have (the job that runs the untagged tests
-#      may be in any of those files, since it keeps its caller in ci.yaml), a step that job does
-#      not have, or a step whose run: holds no -run is a failure of its own.
+#      held too. What a step runs is its go test lines: its run:'s own, or, where the run: is an
+#      audited_scripts.AUDITED_SCRIPTS script, the go test commands of that entry's reading, which
+#      a person made and the script's SHA-256 pins. audited_scripts.reading_of says which: a run:
+#      that is the script's path, alone or followed by an argument list the entry lists, from the
+#      repository root or from any directory on the script's own path, spelled from there, or a legs
+#      step's `set -o pipefail` and lister piped to `xargs <path> <an argument list the entry's xargs
+#      lists>`, from the entry's module; go-test-step-expansion.py reads the same step through the
+#      same function, and no script is read line by line. A step that names an audited script in any
+#      other form - a run from a directory off the script's path among them, which bash would run -
+#      fails by name, since the rule cannot tell what it runs: failing closed is the design, a
+#      reading being of a form a person read. A run: that spells the script's name some other way,
+#      quotes inside it or the path in a variable, holds no file name, and is read as running none.
+#      Nor can the table go stale: an entry naming a filter the changes job does not have, a job
+#      the file the entry names does not have (the job that runs the untagged tests may be in any
+#      of those files, since it keeps its caller in ci.yaml), a step that job does not have, or a
+#      step that runs no `go test` carrying a -run is a failure of its own.
 #  16. a `go test -race` build of a .github/workflows/ci-caches.yaml job ci_job_reads.py's
 #      RACE_FILLS names whose packages are not that entry's lane, in its order: the daemon's
 #      DAEMON_RACE_FILL_JOB against DAEMON_RACE_PACKAGES, and the envoy race lane's

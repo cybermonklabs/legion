@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -611,7 +612,9 @@ func TestColdInitFailureReachesSupervisionWithoutWaitingForLauncher(t *testing.T
 // provisioning, which a launch's wait reads a pod coming up by, alike — and the fourth restart is
 // the pod's death. An always-failing refusal pays up to four attempts under the kubelet's back-off;
 // the retry cost is worth avoiding a new clone after a transient transfer failure. A restart in a
-// pod that has already failed is not provisioning.
+// pod that has already failed is not provisioning, and nor is one in a pod that is being deleted:
+// such a pod stays Pending while it terminates, and a launch that read it as coming up would wait
+// out its whole provisioning bound on a pod that is going away.
 func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -619,6 +622,7 @@ func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *t
 		restarts   int32
 		terminated bool
 		phase      corev1.PodPhase
+		deleting   bool
 		dead       bool
 	}{
 		{name: "workspace-init just ended, before the kubelet restarts it", terminated: true},
@@ -626,6 +630,7 @@ func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *t
 		{name: "workspace-init's third restart", restarts: 3},
 		{name: "workspace-init's fourth restart", restarts: 4, dead: true},
 		{name: "workspace-init restarting in a pod that has failed", restarts: 1, phase: corev1.PodFailed, dead: true},
+		{name: "workspace-init restarting in a pod that is being deleted", restarts: 1, deleting: true, dead: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			phase := corev1.PodPending
@@ -641,6 +646,10 @@ func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *t
 				status.LastTerminationState.Terminated = ended
 			}
 			pod := &corev1.Pod{Status: corev1.PodStatus{Phase: phase, InitContainerStatuses: []corev1.ContainerStatus{status}}}
+			if tc.deleting {
+				deleting := metav1.NewTime(time.Now())
+				pod.DeletionTimestamp = &deleting
+			}
 
 			named, failed := failedInit(pod)
 			if (failed != nil) != tc.dead {
@@ -653,5 +662,28 @@ func TestAWorkspaceInitsFirstThreeRestartsAreStartingAndItsFourthIsAFailure(t *t
 				t.Errorf("provisioning = %t while failedInit reads the pod dead %t: the two readings of %s disagree", got, tc.dead, initContainer)
 			}
 		})
+	}
+}
+
+// A pod being deleted whose workspace-init is still Running is coming up no longer. The kubelet
+// leaves exactly that status on a pod of a lost node while it waits in Terminating, and a launch
+// that read it as coming up would wait out its boot timeout and its whole ProvisionBound on a pod
+// that is going away. It has a test of its own because the restart table above holds every row to
+// dead or provisioning, and this pod is neither: nothing of it has ended, so failedInit reads no
+// failure.
+func TestAPodBeingDeletedIsNotProvisioningWhileItsInitContainerRuns(t *testing.T) {
+	t.Parallel()
+	running := corev1.ContainerStatus{Name: initContainer, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}
+	pod := &corev1.Pod{Status: corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{running}}}
+	if !provisioning(pod) {
+		t.Fatal("provisioning = false for a Pending pod whose workspace-init runs, want true: the control for the row below")
+	}
+	deleting := metav1.NewTime(time.Now())
+	pod.DeletionTimestamp = &deleting
+	if provisioning(pod) {
+		t.Error("provisioning = true for a pod being deleted whose workspace-init runs, want false: a launch would wait out its whole bound on it")
+	}
+	if named, failed := failedInit(pod); failed != nil {
+		t.Errorf("failedInit = %q, %+v for a pod whose workspace-init has not ended, want none", named, failed)
 	}
 }

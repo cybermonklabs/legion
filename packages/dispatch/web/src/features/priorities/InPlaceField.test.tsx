@@ -55,6 +55,8 @@ test("the text a reader left stands through the write, rather than the old text 
   // still the old text; the reader must not see their own words undone while it travels.
   await user.tab();
   expect((field as HTMLInputElement).value).toBe("New name");
+  // A one-line field shortens a long text to an ellipsis, so its whole text is its title.
+  expect(field).toHaveAttribute("title", "New name");
   await user.click(page.getByRole("button", { name: "Land the write" }));
   expect((field as HTMLInputElement).value).toBe("New name");
   view.unmount();
@@ -367,22 +369,25 @@ test("the write the page going makes is let finish as the page goes, and one mad
 test.each([
   ["isComposing", { isComposing: true, key: "Enter" }],
   ["keyCode 229", { isComposing: false, key: "Enter", keyCode: 229 }],
-] as const)("the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both", async (_mark, composing) => {
-  const user = userEvent.setup({ delay: null });
-  const { field, view, writes } = heldField();
-  await onFakeClock(async () => {
-    await user.type(field, ", mine");
-    // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, composing);
-    expect(writes).toEqual([]);
-    expect(document.activeElement).toBe(field);
-    await user.keyboard("{Enter}");
+] as const)(
+  "the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both",
+  async (_mark, composing) => {
+    const user = userEvent.setup({ delay: null });
+    const { field, view, writes } = heldField();
+    await onFakeClock(async () => {
+      await user.type(field, ", mine");
+      // user-event has no form for this: it cannot mark a key as an IME composition.
+      fireEvent.keyDown(field, composing);
+      expect(writes).toEqual([]);
+      expect(document.activeElement).toBe(field);
+      await user.keyboard("{Enter}");
+      expect(writes).toEqual(["Old name, mine"]);
+      expect(document.activeElement).not.toBe(field);
+    });
+    view.unmount();
     expect(writes).toEqual(["Old name, mine"]);
-    expect(document.activeElement).not.toBe(field);
-  });
-  view.unmount();
-  expect(writes).toEqual(["Old name, mine"]);
-});
+  }
+);
 
 test("the answer to an earlier write the reader typed back to leaves the later write out, and writes the reader's text again", async () => {
   const user = userEvent.setup({ delay: null });

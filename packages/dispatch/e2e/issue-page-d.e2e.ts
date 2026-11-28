@@ -59,8 +59,9 @@ The view row is one line at every width.
 `;
 
 /** What the seed below gives each control of the view row to count: no question and no thread
- *  of the reader's, two statements, one check, no plan and no decision. */
-const SEEDED_COUNTS: Readonly<Record<Preset, number>> = {
+ *  of the reader's, two statements, one check, no plan and no decision. Dashboard draws no count,
+ *  and neither does Threads, since no thread waits on the reader. */
+const SEEDED_COUNTS: Readonly<Record<Exclude<Preset, "dashboard" | "threads">, number>> = {
   conversation: 0,
   decisions: 0,
   plan: 0,
@@ -145,7 +146,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
 
     // The rail: 56 px at the left edge, the window's height, R2's links in order, no tooltip, and
     // no sidebar beside it.
@@ -343,7 +344,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     // Below 1280 px the frame lifts the page's scroll padding for the compact bar it does not
     // draw.
     await page.setViewportSize(viewportAt(1279));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     expect(
       await page.evaluate(() => getComputedStyle(document.documentElement).scrollPaddingBottom),
       "the frame keeps today's scroll padding at 1279 px"
@@ -352,7 +353,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     // At 390 px: no rail; Details a dialog the window's width that holds the focus, over the
     // shade; the Outline control opens the Contents sheet 56 px from the top.
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
     // The header's own "Open navigation" is the frame's; one outside the header is
     // today's compact bar's.
@@ -417,7 +418,7 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     // rail and the view row are whole, and no scrolling box of the frame scrolls sideways.
     for (const width of WIDTHS) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       for (const open of [false, true]) {
         if (open) await openDetails(page);
         await assertPageFits(page);
@@ -493,23 +494,25 @@ async function rowControls(page: Page): Promise<{
 // query's answer @phone", its "the filter row is one line at every width @phone" less the words
 // box, and five chords of `e2e/keyboard-issue.e2e.ts`'s "every chord the page bound before the
 // redesign brings a target on screen with the focus in it".
-test("the five controls are toggles with an address each, one line at every width, and the t chords reach them @phone", async ({
+test("the controls are toggles with an address each, one line at every width, and the t chords reach them @phone", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedFrame, async (page, { key }) => {
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
 
-    // The toolbar Filters: five toggles in R7's order, each named by its view's word alone and
-    // described by its signal, whose count is the seed's.
-    await expect(presetToolbar(page), "no toolbar named Filters holds the five").toHaveCount(1);
-    await expect(presetToggles(page)).toHaveCount(5);
+    // The toolbar Filters: the controls in `PRESET_ORDER`, Dashboard first, each named by its
+    // view's word alone and, where its view carries a signal, described by its signal, whose
+    // count is the seed's.
+    await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
+    await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
+    const expectedNames = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]);
     expect(
       await presetToggles(page).evaluateAll((buttons) =>
         buttons.map((button) => button.querySelector("[data-preset-name]")?.textContent ?? "")
       ),
-      "the row's controls are not Conversation, Spec, Verification, Plan and Decisions"
-    ).toEqual(PRESET_ORDER.map((preset) => PRESET_NAMES[preset]));
+      `the row's controls are not ${expectedNames.join(", ")}`
+    ).toEqual(expectedNames);
     for (const preset of PRESET_ORDER) {
       const toggle = presetToggle(page, preset);
       await expect(toggle, `no toggle named ${PRESET_NAMES[preset]}`).toHaveCount(1);
@@ -517,6 +520,13 @@ test("the five controls are toggles with an address each, one line at every widt
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
+      if (preset === "dashboard") continue;
+      // Threads counts the rows of Waiting on me, and no thread of this seed waits on the reader,
+      // so it draws no count (dispatch://INFRA-5704/spec#b-r-control).
+      if (preset === "threads") {
+        await expect(presetCount(page, preset), "Threads draws a count").toHaveCount(0);
+        continue;
+      }
       await expect(presetCount(page, preset)).toHaveText(String(SEEDED_COUNTS[preset]));
       await expect(
         toggle,
@@ -559,13 +569,14 @@ test("the five controls are toggles with an address each, one line at every widt
     await page.keyboard.press("ArrowRight");
     await expect(presetToggle(page, "spec")).toBeFocused();
     await page.keyboard.press("End");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
     await page.keyboard.press("Home");
-    await expect(presetToggle(page, "conversation")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[0])).toBeFocused();
     await page.keyboard.press("ArrowLeft");
-    await expect(presetToggle(page, "decisions")).toBeFocused();
+    await expect(presetToggle(page, PRESET_ORDER[PRESET_ORDER.length - 1])).toBeFocused();
 
-    // Keys opens the list of keys, which names the five chords.
+    // Keys opens the list of keys, which names each view's chord; the five of Conversation and
+    // the filters are read here.
     await filterRow(page).getByRole("button", { exact: true, name: "Keys" }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
     await expect(keys).toBeVisible();
@@ -604,7 +615,7 @@ test("the five controls are toggles with an address each, one line at every widt
     await expect(presetToggle(page, "conversation")).toHaveAttribute("aria-pressed", "true");
 
     // Below 1280 px the one control, named by the view that is on and its signal, opens a menu
-    // of five, the one on checked; below 1024 px the Outline control stands beside it.
+    // of the controls, the one on checked; below 1024 px the Outline control stands beside it.
     for (const width of [1279, 390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, presetPath(key, "spec"));
@@ -614,9 +625,10 @@ test("the five controls are toggles with an address each, one line at every widt
       ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.spec} ${SEEDED_COUNTS.spec}\\b`));
       await presetChooser(page).click();
       await expect(openMenu(page)).toHaveCount(1);
-      await expect(openMenu(page).getByRole("menuitemradio"), "the menu is not five").toHaveCount(
-        5
-      );
+      await expect(
+        openMenu(page).getByRole("menuitemradio"),
+        "the menu does not hold every view"
+      ).toHaveCount(PRESET_ORDER.length);
       for (const preset of PRESET_ORDER) {
         await expect(presetMenuItem(page, preset)).toHaveAttribute(
           "aria-checked",
@@ -639,7 +651,7 @@ test("the five controls are toggles with an address each, one line at every widt
       await expect(page).toHaveURL(addressOf(key, "conversation"));
     }
     // With the menu open under the Outline sheet, Escape closes the sheet and leaves the menu.
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await presetChooser(page).click();
     await expect(openMenu(page)).toHaveCount(1);
     await outlineControl(page).click();
@@ -651,7 +663,7 @@ test("the five controls are toggles with an address each, one line at every widt
     await expect(openMenu(page)).toHaveCount(0);
     for (const width of [1023, 390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await expect(outlineControl(page), `no Outline control at ${width} px`).toHaveCount(1);
     }
 
@@ -660,7 +672,7 @@ test("the five controls are toggles with an address each, one line at every widt
     // its name.
     for (const width of PHONE_FIRST) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await assertPageFits(page);
       const limit = width >= 1280 ? 35 : 51;
       await expect
@@ -717,7 +729,7 @@ test("the five controls are toggles with an address each, one line at every widt
       [1440, false],
     ] as const) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
       const row = await boxOf(filterRow(page), "the view row");
       if (stays) expect(Math.round(row.y), "the row left the top at 390 px").toBe(0);
@@ -738,7 +750,7 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await page.setViewportSize(viewportAt(760));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     expect(
       await page.evaluate((query) => window.matchMedia(query).matches, HEADER_SCROLLS_QUERY),
       `${HEADER_SCROLLS_QUERY} does not match at 760 px`
@@ -812,7 +824,7 @@ test("the page's scroll padding at the top is the height of what stays above the
   await phase(browser, seedFrame, async (page, { key }) => {
     for (const width of [390, 1440]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       if (width === 390) {
         expect(
           (await topPadding(page)).stays,
@@ -852,7 +864,7 @@ test("at 390 px a focus that enters the view row leaves a scrolled page where it
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
       .poll(() => page.evaluate(() => window.scrollY), {
@@ -938,7 +950,7 @@ test("adding one row to a page of many rows recalculates the style of that row a
   await phase(browser, seedFrame, async (page, { key }) => {
     for (const width of [390, 1440]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       const elements = await issuePage(page).evaluate((root, many) => {
         const list = document.createElement("ol");
         list.id = "e2e-many-rows";
@@ -1036,7 +1048,7 @@ test("at 390 px a press on Details' text keeps the focus in the sheet, and Shift
 }) => {
   await phase(browser, seedFrame, async (page, { key }) => {
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${key}`);
+    await gotoIssue(page, `/issues/${key}/conversation`);
     await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("Shift+M");

@@ -69,6 +69,7 @@ func stepRoleOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) cl
 // record says failed, returned to 1; a failed step of the type review counts a review round. The
 // role's pass moves the task to its retro and starts the implementer's retro.
 func TestADeploymentRoleOfAnyTypeStartsAndReports(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		role   claim.Role
 		typ    string
@@ -150,6 +151,7 @@ func lastEndOfStep(t *testing.T, pool *pgxpool.Pool, key string, step int) recor
 // checker again. In `implementer checker linter critic`, the critic's fail naming step 3 starts the
 // linter again, and the critic's step ends failed, returned to 3.
 func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
+	t.Parallel()
 	types := map[string]string{"checker": "testing", "linter": "testing", "critic": "review"}
 
 	t.Run("implementer checker linter", func(t *testing.T) {
@@ -202,6 +204,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 // A role the deployment defines reports pass or fail and opens no pull request, so in `critic
 // implementer` the critic's pass, with no pull request recorded, starts the implementer.
 func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
@@ -222,6 +225,7 @@ func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
 // checker; the held notice of an issue held from step (HeldNotice) names its running role; and the
 // checker's pass writes one phase-finished notice, which names the checker.
 func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
+	t.Parallel()
 	t.Run("the checker's failed claim", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := deploymentEngine()
@@ -265,6 +269,7 @@ func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 // step 3 before the reviewer completes, and the reviewer's completion is taken onto its row and
 // moves nothing: the task stays at step 3, the checker running.
 func TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -307,6 +312,7 @@ func checkerAtStep2(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // restarts it, and a restart of a role that works no step of it is refused; and a person's todo on
 // a root whose stopped task's first step is the critic's starts the critic again at step 1.
 func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
+	t.Parallel()
 	t.Run("the retry of a hold from step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := deploymentEngine()
@@ -358,6 +364,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 
 // The start of a step of a role the deployment defines names that role's claim as its agent.
 func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)
@@ -383,6 +390,7 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 // is returnTo 4, the step that moves back, with the judge's own sentence; a refused move moves
 // nothing.
 func TestABackwardMoveNamesItsPlaceWithReturnTo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		to       phase.Phase
@@ -430,6 +438,7 @@ func TestABackwardMoveNamesItsPlaceWithReturnTo(t *testing.T) {
 // A role the deployment defines moves its own task back: the checker at step 2 of `implementer
 // checker` asks to go back to implementing, and the task goes to step 1 and starts the implementer.
 func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)
@@ -449,6 +458,7 @@ func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
 // refused naming the two nearest and the returnTo that names one, and nothing moves; with one
 // earlier step that runs as step, the move goes there and starts its role.
 func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
+	t.Parallel()
 	const refusal = "task a of LEGION-208 has two earlier steps that run as step, %s and %s, so a move back to step does not say which one the " +
 		"task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, the verdict fail and returnTo; " +
 		"the owner names it with request_backward_move and returnTo."
@@ -534,6 +544,7 @@ func wantEachRole(t *testing.T, rows map[string]int, key string, skip claim.Role
 // checker's claim with the six (and leaves out the tester that works a production check); a child
 // moved to backlog suspends it; and a root's close suspends it as its tree lingers.
 func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
+	t.Parallel()
 	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}
 	t.Run("a merged child", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -570,6 +581,7 @@ func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
 // The claim of a role of a task a later version of the plan removed is reached too: its phases row
 // stays when the plan in force names the role no more.
 func TestAClosedIssueReachesTheClaimOfARoleOfARemovedTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := closingTree(t, pool, "")
 	seedStepsPlan(t, pool, "LEGION-209", 7, "implementer")
@@ -586,6 +598,7 @@ func TestAClosedIssueReachesTheClaimOfARoleOfARemovedTask(t *testing.T) {
 
 // A linger's end closes the claim of a role the deployment defines of each member, beside the six.
 func TestALingersEndClosesADeploymentRolesClaim(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Merging)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
@@ -613,6 +626,7 @@ func lostChecker() *Engine {
 // step 2 and the checker, the issue is held from implementing for the stopped task, and the owner is
 // told once, in a task-stopped notice that names the checker.
 func TestAStepWhoseRoleTheDeploymentLostStopsTheTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := lostChecker()
 	root := stepRoot(t, pool, phase.Implementing)
@@ -642,6 +656,7 @@ func TestAStepWhoseRoleTheDeploymentLostStopsTheTask(t *testing.T) {
 // task stops naming it, and the owner is told once. A task whose steps the deployment all defines
 // is left alone.
 func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := lostChecker()
 	root := checkerAtStep2(t, pool)
@@ -676,6 +691,7 @@ func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
 // for a task the boot stopped for the lost role, for one its owner stopped before the role was lost
 // (which the boot leaves as it stands), and for one stopped before its first step went out.
 func TestATodoStartsNoRoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	const why = "step 1 names the role checker, which the deployment no longer defines"
 	for _, tc := range []struct {
 		name string
@@ -751,6 +767,7 @@ func TestATodoStartsNoRoleTheDeploymentLost(t *testing.T) {
 // lost: `implementer tester` starts the implementer at the gate's opening and the tester at the
 // implementer's completion, and no task stops.
 func TestAConfigWithoutADeploymentStartsLegionsRoles(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateOff.Steps(), ReviewRoundCap: 3, Linger: time.Hour,
 		ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories, Clock: func() time.Time { return stepClock }}, nil)
@@ -774,6 +791,7 @@ func TestAConfigWithoutADeploymentStartsLegionsRoles(t *testing.T) {
 // The owner's stop_task while a role the deployment defines runs stops that role's process and
 // names it in the notice.
 func TestAStopReachesTheDeploymentRoleThatRuns(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)

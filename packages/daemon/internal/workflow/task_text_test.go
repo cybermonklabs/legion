@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -18,7 +21,7 @@ import (
 // (Config.WorkspaceDir).
 func textEngine() *Engine {
 	engine := stepEngine(nil)
-	engine.cfg.WorkspaceDir = func(issue record.Issue) string { return "/work/" + issue.Key }
+	engine.cfg.WorkspaceDir = func(key string, _ ghrepo.Repository) string { return "/work/" + key }
 	return engine
 }
 
@@ -94,33 +97,34 @@ func withoutRoundsSentences(t *testing.T, pool *pgxpool.Pool, task string) strin
 	return cut
 }
 
-// The task each agent of an owner's plan is told names its working copy, its task and its step in
-// it, each step of the task in order and the report of each earlier step, and, last of what the
-// task composes, the task's text inside a fence, which only the reviewer's two sentences of the
-// review round follow, or a review step's one sentence of its commit: the reviewer of the task `implementer reviewer` reads the implementer's
-// report, and the retro and the merger, which run no step, are told the task and its steps alone,
-// and read the runs of the steps from Dispatch.
+// The task each agent of an owner's plan is told opens with its working copy line, then, after a
+// line break, its continue line, then names its task and its step in it, each step of the task in
+// order and the report of each earlier step, and, last of what the task composes, the task's text
+// inside a fence, which only the reviewer's two sentences of the review round follow, or a review
+// step's one sentence of its commit: the reviewer of the task `implementer reviewer` reads the
+// implementer's report. The retro and the merger, which run no step, are told the task and its
+// steps, and read the runs of the steps from Dispatch. The retro is told the task's text last too,
+// as a step is, and the merger is told none.
 func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	engine := textEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-	const continued = "Continue root. Issue: LEGION-208. Phase: "
-	const working = " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."
+	const continued = "Working copy: branch legion/LEGION-208, directory /work/LEGION-208.\nContinue root. Issue: LEGION-208. Phase: "
 	const steps = " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
 	const text = "Build the widget."
 
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	implementer := daemonsLines(t, "implementer", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
-	hasPrefix(t, "implementer", implementer, continued+"implementing."+working+" Task: a. Step 1 of 2: implementer."+steps)
+	hasPrefix(t, "implementer", implementer, continued+"implementing. Task: a. Step 1 of 2: implementer."+steps)
 	lacks(t, "implementer", implementer, "reported:")
 
 	completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
 	reviewer := daemonsLines(t, "reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	hasPrefix(t, "reviewer", reviewer, continued+"reviewing."+working+" Task: a. Step 2 of 2: reviewer."+steps+
+	hasPrefix(t, "reviewer", reviewer, continued+"reviewing. Task: a. Step 2 of 2: reviewer."+steps+
 		" Step 1 (implementer) reported: implement version 1."+
-		" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1).")
+		handoffPartOf(t, "LEGION-208", "implement", 1))
 
 	// A worker resumed in its step is told the same standing as the start that began it.
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -133,19 +137,19 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
-	if want := continued + "reviewing." + working + " Task: a. Step 2 of 2: reviewer." + steps +
+	if want := continued + "reviewing. Task: a. Step 2 of 2: reviewer." + steps +
 		" Step 1 (implementer) reported: implement version 1. Resume the existing phase work."; resumed != want {
 		t.Fatalf("the resumed reviewer's task before the owner's text = %q,\nwant %q", resumed, want)
 	}
 
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
-	retro := lastStart(t, pool, root.Key, claim.RoleImplementer)
-	hasPrefix(t, "retro", retro, continued+"retro."+working+" Task: a."+steps)
-	lacks(t, "retro", retro, "reported:", "Task text:", "Step 1 of", "Step 2 of")
+	retro := daemonsLines(t, "retro", lastStart(t, pool, root.Key, claim.RoleImplementer), text)
+	hasPrefix(t, "retro", retro, continued+"retro. Task: a."+steps)
+	lacks(t, "retro", retro, "reported:", "Step 1 of", "Step 2 of")
 
 	move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
 	merger := lastStart(t, pool, root.Key, claim.RoleMerger)
-	hasPrefix(t, "merger", merger, continued+"merging."+working+" Task: a."+steps)
+	hasPrefix(t, "merger", merger, continued+"merging. Task: a."+steps)
 	lacks(t, "merger", merger, "reported:", "Task text:", "Step 1 of", "Step 2 of")
 }
 
@@ -239,10 +243,10 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 	})
 }
 
-// An issue with no plan rows, which started before plans existed, is told today's task with the
-// working copy line after its continue line and no other new line: the prompts read a task
-// with no `Task:` line as such an issue. With no runtime to place the working copy (a nil
-// Config.WorkspaceDir), the line names the branch alone.
+// An issue with no plan rows, which started before plans existed, is told today's task opening
+// with the working copy line on a line of its own before its continue line, and with none of the
+// lines a plan adds: the prompts read a task with no `Task:` line as such an issue. With no runtime
+// to place the working copy (a nil Config.WorkspaceDir), the line names the branch alone.
 func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -250,16 +254,17 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 		engine  *Engine
 		working string
 	}{
-		{"a runtime places the working copy", textEngine(), " Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
-		{"no runtime places it", stepEngine(nil), " Working copy: branch legion/LEGION-208."},
+		{"a runtime places the working copy", textEngine(), "Working copy: branch legion/LEGION-208, directory /work/LEGION-208."},
+		{"no runtime places it", stepEngine(nil), "Working copy: branch legion/LEGION-208."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			root := stepRoot(t, pool, phase.Implementing)
 			completes(t, pool, tc.engine, claim.RoleImplementer, "implement", 1)
 			tester := lastStart(t, pool, root.Key, claim.RoleTester)
-			if want := "Continue root. Issue: LEGION-208. Phase: testing." + tc.working +
-				" Handoff: implement version 1 (dispatch handoff-read --issue LEGION-208 --phase implement --version 1). Handoff commit: head. Pull request: #42."; tester != want {
+			if want := tc.working + "\nContinue root. Issue: LEGION-208. Phase: testing." +
+				handoffPartOf(t, "LEGION-208", "implement", 1) +
+				" Handoff commit: head. Where a later version names another head, the head this task names is still head. Pull request: #42."; tester != want {
 				t.Fatalf("the tester's task = %q,\nwant %q", tester, want)
 			}
 			applyInTx(t, pool, tc.engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -271,7 +276,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				return err
 			})
 
-			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+
+			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), tc.working+"\nContinue root. Issue: LEGION-208. Phase: testing."+
 				" Resume the existing phase work."; resumed != want {
 				t.Fatalf("the resumed tester's task = %q,\nwant %q", resumed, want)
 			}
@@ -280,31 +285,36 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 }
 
 // The task writes a line of each label by the label's exact text, which the prompts and the skills
-// name to a worker, so a change of one label's constant alone fails here. The forms of its lines,
-// filled with a step's values, are the task's words exactly, and the task of the retro and of the
-// merger, which runs no step, ends with the task alone and its steps.
+// name to a worker, so a change of one label's constant alone fails here: the working copy line
+// opens the task, on a line of its own before its continue line, and every other line stands after
+// a space. The forms of its lines, filled with a step's values, are the task's words exactly, and
+// the task of the retro and of the merger, which runs no step, ends with the task alone and its
+// steps.
 func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	t.Parallel()
-	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
+	issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
-	for _, label := range []string{"Phase", "Working copy", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {
+	for _, label := range []string{"Phase", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {
 		if !strings.Contains(written, " "+label+": ") {
 			t.Errorf("the task %q writes no %q line", written, label)
 		}
 	}
 
+	const workingCopyForm = "`Working copy: branch legion/<KEY>, directory <dir>.`"
+	if want := strings.NewReplacer("<KEY>", "LEGION-208", "<dir>", "/work").Replace(strings.Trim(workingCopyForm, "`")) + "\nContinue root."; !strings.HasPrefix(written, want) {
+		t.Errorf("the task %q does not open with %q, the words of %s, a line break and then its continue line", written, want, workingCopyForm)
+	}
 	for template, values := range map[string][]string{
-		"`Working copy: branch legion/<KEY>, directory <dir>.`":         {"<KEY>", "LEGION-208", "<dir>", "/work"},
 		"`Task: <id>. Step <i> of <n>: <role>.`":                        {"<id>", "a", "<i>", "2", "<n>", "2", "<role>", "reviewer"},
 		"`Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`": {"1 <role>, 2 <role>, …", "1 implementer, 2 reviewer"},
 		"`Step <j> (<role>) reported: <word> version <v>.`":             {"<j>", "1", "<role>", "implementer", "<word>", "implement", "<v>", "1"},
@@ -315,18 +325,22 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	}
 
 	// The retro and the merge run no step of the task: their task names the task alone and its
-	// steps, with no step, no step's text and no step's report after them.
+	// steps, with no step and no step's report after them. The retro's then ends with the task's
+	// text, as a step's does, and the merger's with its steps.
 	const noStep = "`Task: <id>.`"
-	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
-		after, there := issue, w
-		after.Phase, there.Place = p, place
-		at, err := standingText(after, func(record.Issue) string { return "/work" }, there, rows)
+	for p, act := range map[phase.Phase]struct {
+		place  record.TaskPlace
+		owners string
+	}{phase.Retro: {record.TaskPlace{Kind: record.PlaceRetro}, ownersText(w.Text)}, phase.Merging: {record.TaskPlace{Kind: record.PlaceMerge}, ""}} {
+		after, there, owners := issue, w, act.owners
+		after.Phase, there.Place = p, act.place
+		at, err := standingText(after, func(string, ghrepo.Repository) string { return "/work" }, there, rows)
 		if err != nil {
 			t.Fatal(err)
 		}
 		want := " " + strings.NewReplacer("<id>", "a").Replace(strings.Trim(noStep, "`")) + " Steps: 1 implementer, 2 reviewer then Legion's retro and merge."
-		if !strings.HasSuffix(at.String(), want) {
-			t.Errorf("the task of %s ends %q, want it to end %q, the words of %s and the task's steps", p, at, want, noStep)
+		if !strings.HasSuffix(at.lines, want) || at.owners != owners {
+			t.Errorf("the task of %s is %q then %q, want its lines to end %q, the words of %s and the task's steps, then %q", p, at.lines, at.owners, want, noStep, owners)
 		}
 	}
 }
@@ -352,7 +366,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	w := Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
-	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
+	at, err := standingText(issue, func(string, ghrepo.Repository) string { return "/work" }, w, rows)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,4 +412,150 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A start's task a store keeps takes a later version's text of its task in place of the owner's
+// part it ends with, and nothing else of it moves (WithTaskText): the daemon's lines before it, a
+// reason that quotes the sentence that opens the owner's part and a fence as long as the owner's,
+// and a reviewer's round after it stay as they were, so the task is the one the start would compose
+// with the later text. A start, a resume and the retro's task each take it. A task that holds the
+// later text already is answered as it is, and so is a task with no owner's part: the merger's,
+// and one of an issue with no plan rows.
+func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
+	t.Parallel()
+	const was = "Build the widget.\n````\nThe owner's own fence.\n````"
+	const now = "Build the widget, and its manual."
+	dir := func(string, ghrepo.Repository) string { return "/work" }
+	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
+	walk := func(text string) Walk {
+		return Walk{Stored: true, Task: "a", Text: text, Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	}
+	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
+	handoff := record.PhaseRow{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1, HandoffCommit: "head"}
+	reviewer := record.PhaseRow{Role: claim.RoleReviewer, ReviewedHead: "1111111111111111111111111111111111111111", Entry: 3, EntryTask: "the entry's task"}
+	// The fence of was's text is five backticks long, and the reason quotes the opening sentence
+	// before a fence of the same length, which only the owner's own part may be read as.
+	reason := "the owner quoted" + ownersSentence + "`````\nnot the owner's part\n`````\nin its reason"
+	composed := func(p phase.Phase, text string, compose func(record.Issue, Standing) string) string {
+		t.Helper()
+		issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: p}
+		at, err := standingText(issue, dir, walk(text), rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return namingTheReviewRound(compose(issue, at), RoleFor(p), p, reviewer)
+	}
+	start := func(issue record.Issue, at Standing) string {
+		return task(issue, at, handoff, &record.PullRequest{Number: 42}, reason)
+	}
+	for _, tc := range []struct {
+		name    string
+		at      phase.Phase
+		compose func(record.Issue, Standing) string
+		retold  bool
+	}{
+		{"a reviewer's start", phase.Reviewing, start, true},
+		{"an implementer's resume", phase.Implementing, resumeText, true},
+		{"the retro's start", phase.Retro, start, true},
+		{"the merger's start", phase.Merging, start, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before, after := composed(tc.at, was, tc.compose), composed(tc.at, now, tc.compose)
+			if tc.retold == (before == after) {
+				t.Fatalf("the task composed with each text = %q and %q, want them to differ %v", before, after, tc.retold)
+			}
+			if got := WithTaskText(before, now); got != after || HoldsTaskText(before) != tc.retold {
+				t.Fatalf("WithTaskText(%q) = %q, holding an owner's part %v,\nwant the task composed with the later text %q, %v", before, got, HoldsTaskText(before), after, tc.retold)
+			}
+			if got := WithTaskText(after, now); got != after {
+				t.Fatalf("WithTaskText of the task that holds the later text = %q, want it as it is", got)
+			}
+		})
+	}
+	// A task a release before stored opens its owner's part with other words: ownersPart reads the
+	// part by its label and its fence, so the task takes the later text as well, and the rewrite
+	// writes today's opening. The fault is a read by the words of today's opening, which parses no
+	// such task, so a later version's text never reaches it.
+	reviewing := composed(phase.Reviewing, was, start)
+	at := strings.LastIndex(reviewing, ownersSentence)
+	const earlier = " " + taskTextLabel + ": the text of the task's block, in words a release before wrote, between the two fence lines below.\n"
+	stored := reviewing[:at] + earlier + reviewing[at+len(ownersSentence):]
+	if got, want := WithTaskText(stored, now), composed(phase.Reviewing, now, start); !HoldsTaskText(stored) || got != want {
+		t.Fatalf("WithTaskText of a task stored with an earlier opening = %q, holding an owner's part %v,\nwant %q, true", got, HoldsTaskText(stored), want)
+	}
+	// An operator's task that ends with a fenced text of its own, with no label on the line before
+	// it, holds no owner's part: the label, not the fence alone, says where the part starts.
+	unlabelled := reviewing[:at] + " Here is the log.\n" + reviewing[at+len(ownersSentence):]
+	if got := WithTaskText(unlabelled, now); got != unlabelled || HoldsTaskText(unlabelled) {
+		t.Fatalf("WithTaskText of a task whose fenced text has no label = %q, holding an owner's part %v, want it whole, false", got, HoldsTaskText(unlabelled))
+	}
+	unplanned := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Implementing}
+	today := task(unplanned, WorkingCopy(unplanned, dir), handoff, nil, reason)
+	if got := WithTaskText(today, now); got != today || HoldsTaskText(today) {
+		t.Fatalf("WithTaskText of the task of an issue with no plan rows = %q, holding an owner's part %v, want it whole, false", got, HoldsTaskText(today))
+	}
+}
+
+// A later version that changes only the text of a running task is taken (plan.RunningChange): the
+// task goes on at its step on its steps with its counts, the issue does not move, the one row
+// queued is the run's plan node, which sends the running agent nothing, and nothing else is
+// written for the running task: the stored start task of the implementer's entry is as it was, and
+// its send rewrites it with the new text (WithTaskText). The plan in force names step 1, the
+// implementer, as the act that runs (record.StoredPlan.Running), and the log of the version names
+// a as a task whose text alone it changed.
+func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	engine, logged := loggedEngine()
+	apply := applyFacts(t, pool, engine)
+	root := stepRoot(t, pool, phase.Admitted)
+	key, gen := root.Key, root.Generation
+	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "tester", "reviewer"))))
+	move(t, pool, engine, key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+
+	before := planStandingOf(t, pool, engine, key, gen)
+	started := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
+	if !strings.Contains(started.EntryTask, "\nBuild the widget.\n") {
+		t.Fatalf("the implementer's stored start task %q holds no text of version 1", started.EntryTask)
+	}
+	manual := givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer")
+	mustTake(t, "version 2 with a's text alone changed", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, manual)))
+	if line := loggedLine(logged.String(), "workflow: an owner's plan is taken", "version=2"); !strings.Contains(line, "changed=[] text_only=[a]") {
+		t.Fatalf("the log of version 2 = %q, want it to name no changed task and a as a task whose text alone changed", line)
+	}
+	kept := planStandingOf(t, pool, engine, key, gen)
+	implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
+	if running, err := kept.plan.Running(); err != nil || !reflect.DeepEqual(running, implementing) {
+		t.Fatalf("the plan after version 2 names the running acts %+v, %v; want %+v: step 1, the implementer", running, err, implementing)
+	}
+	if !reflect.DeepEqual(kept.versions, []string{"1 owner", "2 owner"}) {
+		t.Fatalf("the versions after version 2 = %v, want 1 and 2", kept.versions)
+	}
+	if task, was := kept.task(t), before.task(t); task.State != record.TaskRunning || task.Place != was.Place || task.BlockText != manual.Text ||
+		!reflect.DeepEqual(kept.plan.Steps, before.plan.Steps) || !sameReturnCounts(task.Counts, was.Counts) {
+		t.Fatalf("task a after version 2 = %+v, want it running at %+v on its steps with version 2's text, its counts as they were", task, was.Place)
+	}
+	if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
+		t.Fatalf("version 2 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
+	}
+	// Nothing is written for the running task: its stored start task is the one version 1's start
+	// wrote. WithTaskText, the rewrite the send-time read of a held task makes (supervise's
+	// Deps.TaskText), gives that task version 2's text and not version 1's; the send itself is
+	// tested through the whole daemon (running_task_text_test.go, the sent stored implementer).
+	if kept := roleRowOf(t, pool, engine, key, claim.RoleImplementer); kept.Entry != started.Entry || kept.EntryTask != started.EntryTask {
+		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d as version 1's start wrote it", kept.Entry, kept.EntryTask, started.Entry)
+	}
+	if sent := WithTaskText(started.EntryTask, manual.Text); !strings.Contains(sent, "\nBuild the widget, and its manual.\n") || strings.Contains(sent, "\nBuild the widget.\n") {
+		t.Fatalf("the send's rewrite of the implementer's stored start task = %q, want version 2's text and not version 1's", sent)
+	}
+}
+
+// loggedLine is the line of logged that holds each of parts, "" where none does.
+func loggedLine(logged string, parts ...string) string {
+	for _, line := range strings.Split(logged, "\n") {
+		if !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) }) {
+			return line
+		}
+	}
+	return ""
 }

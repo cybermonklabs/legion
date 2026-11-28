@@ -18,9 +18,9 @@ import (
 //     choice of token_command is the runbook's, not the daemon's;
 //   - a session's measurements: a process measures at most CAPABILITY_ATTEMPTS times
 //     (pi-legion's capability-schedule.ts);
-//   - a new overlay mount: an issue pod that lacks it has drifted (driftedInPod, PodDrift) and its
-//     update round replaces it, its roles alive meanwhile, and only a pod no round covers, the
-//     controller's, reads StaleAddress (movedInPod);
+//   - a new overlay mount: an issue pod that lacks it has drifted (driftedInPod, PodDrift), its
+//     roles run on and its update round opens, and only a pod no round covers, the controller's,
+//     reads StaleAddress (movedInPod);
 //   - a rename under a role's home: the home overlay is mounted with userxattr, so the rename no
 //     longer panics gVisor (launcher's homeOverlayOptions);
 //   - a root's label taken off: a running tree goes on, and a root awaiting a person leaves the
@@ -100,8 +100,8 @@ func TestTheOperatorGuidesAgreeOnEachPairAsTheCodeDoes(t *testing.T) {
 				{
 					path: kubernetes,
 					want: []string{
-						"The sweep opens the pod's update round, as for any drift of a pod, and each role keeps running until the round replaces the pod.",
-						"Where the key names the controller, its pod, which no round covers, is reported `StaleAddress` at the boot's re-adoption instead.",
+						"For an issue pod this is drift, not a moved address (`driftedInPod`, `internal/runtime/sandbox/addresses.go`): the boot's re-adoption reports no role of the pod stale, and every role in it runs on, whether or not `role_config_files` names it.",
+						"The controller's pod, which no round covers (`roundCovers`), holds a moved mount of one of its own `role_config_files` as a moved address instead (`movedInPod`): the boot's re-adoption reports the controller `StaleAddress`, and its relaunch replaces the pod",
 					},
 					gone: []string{
 						"every role of an affected pod that is running is reported `StaleAddress` at the boot's re-adoption",

@@ -134,7 +134,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "state_dir", Default: "none: the daemon refuses a file that names no state directory", RequiredBy: "yes",
-			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own.",
+			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own. A path that holds a line break, as the daemon resolves it, is refused: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.StateDir = v }),
 		},
 		{
@@ -385,7 +385,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
-			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
+			Description: "How many counted review rounds an issue's task takes (`recordRound` in `internal/workflow/review.go` counts them, less the conflict rounds) before the daemon posts a message on the issue and sends the architect a `pr-blocked` notice, once for each value the cap holds. The cap moves nothing: the work goes on, and the architect decides what to do.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
 		},
 		{
@@ -629,7 +629,7 @@ var nestedKeys = []memberGroup{
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
 			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
 		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
-			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
+			Description: "How the issues of this arm are done: `owner` writes its plan, and `default` runs the project's default steps. Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`. An experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",

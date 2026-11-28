@@ -38,6 +38,7 @@ func podBuiltBeforeChecker(t *testing.T, g *rig) runtime.Locator {
 // disk with everything a role did not push, and only the pod's update round or its release
 // replaces it. The runtime answers which issue's pod lacks which role.
 func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 	g.clearActions()
@@ -68,6 +69,7 @@ func TestALaunchOfARoleItsPodWasBuiltWithoutWritesNothingAndWaits(t *testing.T) 
 // pod is judged by the roles it was built with, so the missing Secret of the deployment's role is
 // no reason to replace it.
 func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 
@@ -81,6 +83,7 @@ func TestABuiltinRoleLaunchesIntoAPodBuiltBeforeADeploymentRole(t *testing.T) {
 // records the configuration it was built from, so the update round opens over it; a pod built
 // with that role names no such reason.
 func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
+	t.Parallel()
 	want := []string{"roles architect, planner, implementer, tester, reviewer, merger, now architect, planner, implementer, tester, reviewer, merger, checker"}
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
@@ -107,6 +110,7 @@ func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
 // Resume, and its text names the pod and the role, so the operator who reads the claim's last
 // start failure can tell which pod holds the role back.
 func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingThePodAndTheRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := podBuiltBeforeChecker(t, g)
 	g.clearActions()
@@ -132,6 +136,7 @@ func TestALaunchTheSupervisorMakesIntoAPodBuiltWithoutItsRoleIsRefusedNamingTheP
 // pod was built with, its own --role values, and never the Secret the pod has no role of: that
 // read would fail at every tick and log a failed refresh for a role no process of the pod runs.
 func TestTheRefreshOfAPodBuiltBeforeARoleReadsNoSecretOfThatRole(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	restarted := secondRuntime(t, g, withChecker)()
@@ -158,6 +163,7 @@ func TestTheRefreshOfAPodBuiltBeforeARoleReadsNoSecretOfThatRole(t *testing.T) {
 // the pod. The control is the binding that asked for every role of the runtime now, the checker's
 // among them, which failed on that Secret at every hello.
 func TestAPodRecreatedFromATemplateBuiltBeforeARoleIsBoundAtItsLaunchersHello(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	first := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	secondRuntime(t, g, withChecker)()

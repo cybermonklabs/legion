@@ -1376,6 +1376,23 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
+			case AnswerPlanRegister:
+				// A task that runs carries `running` from the running-step entry on, and a caller
+				// below it is served the task without it, on a copy: the body the route built
+				// keeps it.
+				taken := PlanRegisterResponse{Plan: RegisteredPlan{Version: 2, Tasks: []RegisteredTask{
+					{ID: "a", Steps: []string{"implementer"}, Running: []RunningStep{{Kind: "step", Place: 1, Role: "implementer"}}}}}}
+				below, _ := shapeAnswer(AnswerPlanRegister, taken, entryNumber(runningStepContract)-1, entryNumber(runningStepContract)-1)
+				if shaped, isTaken := below.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running != nil {
+					t.Errorf("register_plan's answer served below the running-step entry = %+v, want its task without `running`", below)
+				}
+				if taken.Plan.Tasks[0].Running == nil {
+					t.Error("the shaping wrote the task of the body the route built: the tasks are copied before one is written")
+				}
+				at, _ := shapeAnswer(AnswerPlanRegister, taken, entryNumber(runningStepContract), entryNumber(runningStepContract))
+				if shaped, isTaken := at.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running == nil {
+					t.Errorf("register_plan's answer served at the running-step entry = %+v, want its task with `running`", at)
+				}
 			case AnswerRegister:
 				registration := claim.RegisterResponse{ClaimToken: "legion-legion-legion-208-architect", PromptAgents: []string{"oracle"}, Replaces: "ses_before"}
 				older := claim.RegisterResponse{ClaimToken: registration.ClaimToken, PromptAgents: registration.PromptAgents}
@@ -1393,6 +1410,15 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRegisterController, registration, entryNumber(replacesContract), entryNumber(replacesContract)); shaped != any(registration) {
 					t.Errorf("a controller's registration was shaped to %+v at the replaces entry's number, want the body it was given", shaped)
 				}
+			case AnswerAgentAction:
+				action := AgentActionResponse{State: "failed", PhaseNotRestarted: "LEGION-209's start waits for its slot"}
+				below := entryNumber(claimStartContract) - 1
+				if shaped, _ := shapeAnswer(AnswerAgentAction, action, below, below); shaped != any(AgentActionResponse{State: action.State}) {
+					t.Errorf("an agent action's answer was shaped to %+v below the claim start entry, want it without `phaseNotRestarted`, which claimStartContract added", shaped)
+				}
+				if shaped, _ := shapeAnswer(AnswerAgentAction, action, entryNumber(claimStartContract), entryNumber(claimStartContract)); shaped != any(action) {
+					t.Errorf("an agent action's answer was shaped to %+v at the claim start entry's number, want the body it was given", shaped)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
@@ -1403,11 +1429,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The six rows that shape a body of their own panic on a body of another type, as a row that
+// The seven rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

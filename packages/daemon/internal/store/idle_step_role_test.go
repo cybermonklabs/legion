@@ -18,6 +18,7 @@ import (
 // whose task stands at step 2 of `implementer checker` reads checker in both, one at step 1 reads
 // implementer in both, and an issue with no plan rows reads none in both.
 func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	records := record.NewStore()

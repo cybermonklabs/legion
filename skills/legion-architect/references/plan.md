@@ -23,7 +23,6 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A change of `serves` alone changes no task.
 
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
-  The role your `Production check` line names keeps it past the close, for that check.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
 ## The roles and their order
@@ -44,8 +43,6 @@ The table lists Legion's steps in the order of the default steps:
 | `reviewer` | review | `reviewing` | No reviewer step, so no approval of the reviewer's: on a base whose rules require an approving review, the merger waits and tells you. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, or holds a parent before it while issues beneath it are in the workflow, and nothing waits for you to read the evidence. |
 
-A step of a role of this deployment runs the checks only where its prompt file asks it to.
-
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
 Retro's first step sends back a check with no pass at the head, with two exceptions.
@@ -53,7 +50,7 @@ Do not send back a `ci_check` whose run has not concluded or cannot be read, who
 Send a whole-suite `run` to the architect as a finding, not a move back, because the implementer runs no whole suite.
 Send an `absent` name as a finding too, unless GitHub is holding the job back until its label is on.
 On a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-A step of a role of this deployment holds the checks only as its prompt file asks.
+A step of a role of this deployment runs and holds the checks only as its prompt file asks.
 
 ## What Legion refuses
 
@@ -67,6 +64,7 @@ A step that names a role neither Legion nor this deployment defines is refused `
 
 An issue whose experiment's group runs the project's default steps takes no plan: give it none, and it runs the default steps.
 Once the daemon records such an issue, `register_plan` on it answers `409 PLAN_NOT_TAKEN`, which is no fault of the plan.
+The one exception is a version that changes only the text of its running task `default`, which Legion takes as for any issue.
 `read_record` shows such an issue: one of its `assignments` has `plan` `default`.
 
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
@@ -77,13 +75,13 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
-  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`, and `running` for a task that runs.
   A project's experiment draws the child when the daemon records it.
   If the child's group runs the project's default steps, its first step passes your plan over (`plan-not-taken`).
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
+After a stop of the task `default`, a `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
 
 ## A root with no code of its own

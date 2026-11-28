@@ -65,10 +65,12 @@ which fails the route rather than reporting a release it did not make — is sen
 next heartbeat, so the role is not left standing while this process's registrations renew its
 claim. The transcript's `envoy-role-claim` entry names the session claimed for and this process
 too: a release another process wrote on the same transcript ends no role here, and a claim
-another process wrote is pressed only while this process holds none. The queues, deadlines and
-shared role state behind all of this are `src/registration-state.ts`, beside the extension's
-other `src/` modules: a queued task acts through a handle that refuses every step past the
-task's deadline, or once its session is no longer the open session.
+another process wrote is pressed only while this process holds none. The shared role state
+behind all of this, its two serial queues and the handle each queued task acts through are
+`src/registration-state.ts`, beside the extension's other `src/` modules. It builds the queues
+from the generic serial queue of `src/task-queue.ts`, which holds each task's deadline timer. A
+queued task acts through a handle that refuses every step past the task's deadline, or once its
+session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, and that
 session in `ENVOY_SESSION_ROLE_SESSION`: the id the pod starts the agent with (`omp
@@ -110,6 +112,57 @@ session, so nobody holds it until the named session runs again. The listener kee
 to a role nobody holds for an hour, unless its sender set `keep: false`, and hands it to the next
 session that claims the role, so `/resume <id>` of the named session within that hour still gets
 them: that session's own record of the claim is acted on, and it claims the role again.
+
+A deployment can name, for each role, topics its holder follows while it holds the role:
+`ENVOY_ROLE_TOPICS`, a JSON object from role name to a list of topics, which a pod's launch sets
+as it sets `ENVOY_SESSION_ROLE`. For example, every message posted in a private Slack channel,
+mention or not, for the session holding an alert owner's role:
+
+```sh
+ENVOY_ROLE_TOPICS='{"ops-owner": ["notifications.slack.*.C0ALERTS.message"]}'
+```
+
+Each time a hold of a named role lands in this process, however it was taken (the launch's role,
+`envoy_role_set`, the Legion plugin's claim, a hold restored after a hand-back), the session
+follows that role's topics and registers them at once, so its consumer is filtered on them from
+the claim on rather than from the next heartbeat. A subject can be wanted twice, by the role and
+by the session itself (a topic it followed with `envoy_subscribe`, or one its transcript
+remembers), and it stays followed while either wants it. When the role ends, the subjects only
+the role wanted are closed, each exactly, and taken out of the listener's registry, as a plugin's
+role notices are; the session's own stay followed, the base of a `>` topic included. So a
+relaunched session follows them again as soon as it takes the role, a new session that claims it
+follows them too, and a session holding any other role follows none of them, though every pod
+carries the same variable. `envoy_unsubscribe` of a subject the held role wants keeps it, saying
+it lasts while the session holds the role, and drops only the session's own want of it;
+`envoy_subscribe` of one makes it the session's own too, so the role's end leaves it.
+`envoy_role_set` says which it now follows. They are not one plugin's: a move to another role
+with `envoy_role_set` closes them and follows the new role's. A topic an edge listener refuses
+leaves the role's and is not followed again for it until the role ends.
+
+A process that ends closes nothing, so the listener's row still holds the role's topics when that
+session id resumes. The resumed session follows as its own only what its transcript remembers as
+its own. The topics of the role it wants (its launch's role, its transcript's, else the role lane
+its own row holds) it opens before its first registration, so the follow stamps the transcript
+restored carry over and a post the stream kept while it was down is shown, but only where the
+listener names this session or nobody as the role's holder: where another session holds the role,
+the backlog on its topics is that session's, and nothing opens. A read that fails, and a 404 that
+names a lapsed holder which is another session, open nothing for the same reason; the claim opens
+them where it lands, so what the stream kept meanwhile is lost to this session rather than read by
+two. A claim refused naming this same
+session id (another process's claim, standing until its live window ends) keeps them open, so a
+post sent meanwhile is shown once the claim lands; a claim refused naming another holder closes
+them. Once after a resume, the pass reads the session's row and takes out every role topic nothing
+follows, reading again on a later pass if the read fails. A resumed daemon-launched controller,
+which unregisters every Slack topic an earlier session registered, keeps the role's by the same
+rule.
+
+A role name is read as the listener reads a claim's. Each topic must be one the notification
+stream stores and no subject private to one session, no longer than the listener's 4,032 bytes,
+with a wildcard only as a whole token and `>` only as the last one, a rule stricter than the
+listener's own; a value that is not such an object, two keys the listener reads as one role (the
+same key twice included) or a topic refused this way refuses the whole variable: no role follows
+any topic of it, the plugin logs `envoy: ENVOY_ROLE_TOPICS is refused, so no role follows a topic
+it names: <why>`, and each session start says the same. Unset, no role follows anything.
 
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
@@ -173,7 +226,31 @@ is dropped, so a restart at the consumer's ack floor shows nothing again (up to 
 shown in 72 hours); a crash between
 showing a message and recording it can show it twice, never lose it. A registration the listener
 can give no consumer is refused by name, and the session says once that Envoy inbound is
-unavailable and asks again at every heartbeat.
+unavailable and asks again at every heartbeat. When a registration is accepted after that, the
+session says once that Envoy inbound is restored and that what the stream stored meanwhile
+arrives now. A registration the listener answers with the bus-outage 503 (its message bus did not
+answer) is held for two minutes from the first such answer, also where its retry got no answer or
+a 5xx that names no reason; after that the session is told once that its registration is not
+recorded for certain, since the retry may have landed, and, when one is accepted, that the
+listener recorded one. A retry the listener refuses with a reason, such as `consumer_limit`, is
+told at once as Envoy inbound unavailable. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable, and the accepted registration after it
+says that Envoy inbound is restored. An edge listener's 503 `repositories_unknown` (it could not
+read the repositories of the session's projects) is told at once as Envoy GitHub topics withheld:
+the listener withholds the messages of the session's GitHub topics. If the listener already held
+the session's registration, it kept that registration and the session's consumer, so the session
+receives its other messages; if it held none, the session receives nothing until a registration
+is accepted. The notice, the pane note and the log line say both. The accepted registration after
+it says that the listener follows those topics again. A refusal or a lost relay subject after that
+notice is told once more, as Envoy inbound unavailable. At the session's start the first NATS
+dial can fail: the start warns in the pane that the session is not registered and keeps trying in
+the background, but the session is told that Envoy inbound is unavailable only when no
+registration is accepted within two minutes. The log does not wait: the first registration that
+finds no relay subject
+writes a warning at once, `envoy: a registration found that this session holds no relay subject`,
+with why the relay subject could not be opened, and a later one of the same outage writes no
+second one. A session whose stop has begun registers nothing, and is told neither that
+Envoy inbound is unavailable nor that it is restored.
 
 ## A person's message from Dispatch
 

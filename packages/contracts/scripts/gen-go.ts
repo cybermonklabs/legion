@@ -58,6 +58,10 @@ import {
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
   STORE_UNCONFIRMED_CAUSE,
   TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
@@ -89,6 +93,7 @@ import {
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
+  BUS_UNANSWERED_PREFIX,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -128,9 +133,11 @@ import {
   agentSubject,
   DISPATCH_ISSUE_TOPIC_PREFIX,
   dispatchIssueSubject,
+  LEGION_STATE_SUFFIX,
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
   legionWakeSubject,
   MESSAGE_NOT_SENT_PREFIX,
   NO_PROJECT,
@@ -278,6 +285,10 @@ const roleSubjectText = goConcat(
 );
 const legionWakeSubjectText = goConcat(
   splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+const legionStateSubjectText = goConcat(
+  splitAtSentinels(legionStateSubject(projectSentinel), projectSentinel),
   ["token"]
 );
 
@@ -559,6 +570,18 @@ const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// \`dispatch result --project\` sends are cut by one rule.
+const SpecCheckObservedMax = ${SPEC_CHECK_OBSERVED_MAX}
+const SpecCheckObservedStart = ${SPEC_CHECK_OBSERVED_START}
+const SpecCheckObservedCutNote = ${JSON.stringify(SPEC_CHECK_OBSERVED_CUT_NOTE)}
+const SpecCheckObservedEnd = ${SPEC_CHECK_OBSERVED_END}
+
 // MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
 // DefaultThreadPageLimit the page size when a caller names no limit: GET
 // /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
@@ -806,6 +829,12 @@ const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
 const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
 const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
 
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = ${JSON.stringify(BUS_UNANSWERED_PREFIX)}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
@@ -883,6 +912,19 @@ func RoleSubject(project, role string) string {
 
 func LegionWakeSubject(token string) string {
 	return ${legionWakeSubjectText}
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ${JSON.stringify(LEGION_STATE_SUFFIX)}
+
+func LegionStateSubject(token string) string {
+	return ${legionStateSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

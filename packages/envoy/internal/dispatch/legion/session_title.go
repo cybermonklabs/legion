@@ -3,6 +3,7 @@ package legion
 import (
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/legionrole"
 )
 
@@ -91,6 +92,14 @@ func WorkerTitle(title string) (SessionTitle, bool) {
 func RoleSessionWorks(title, issue string) bool {
 	parsed, ok := WorkerTitle(title)
 	return ok && parsed.Works(issue)
+}
+
+// DaemonSession is whether session is the one the Legion daemon of a project writes as,
+// `legion-daemon:<PROJECT>` (ciphertoken.LegionDaemonSessionPrefix). It has no title, so
+// WorkerTitle rejects it. A title read of it reads every event it wrote and answers nothing
+// (delivery.ResolveSessionTitles), so callers leave it out.
+func DaemonSession(session string) bool {
+	return strings.HasPrefix(session, ciphertoken.LegionDaemonSessionPrefix)
 }
 
 // OfProject is whether the session belongs to the project: a controller by the project it names

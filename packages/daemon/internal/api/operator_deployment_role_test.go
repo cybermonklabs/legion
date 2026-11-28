@@ -85,6 +85,9 @@ func TestAFreshSessionOfADeploymentRolesClaimRestartsItsStep(t *testing.T) {
 	h.ready(token, "ses_checker", 1)
 	workingIssue(t, h, phase.Step)
 	seedCheckerStep(t, h, "LEGION-209")
+	// The issue holds its admission slot, so the step's start is claimable at once and the answer
+	// names no wait for one (claimstart's restartWorkedPhase).
+	slotOf(t, h, "LEGION-209")
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil); recorder.Code != http.StatusOK {
 		t.Fatalf("stop = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}

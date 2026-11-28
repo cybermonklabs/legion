@@ -27,6 +27,7 @@ import (
 )
 
 func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name   string
@@ -94,6 +95,7 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 // its phase finds a step after the implementer on that line at either place, and fails place 1; a
 // worker read that names only Legion's own workers tells the linter nothing, and fails place 3.
 func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name  string
@@ -163,6 +165,7 @@ func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing
 // message held for its released claim would bring the claim back (mergeForwardWorker). The
 // control is the same issue under a deployment that defines the checker, which is told both.
 func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
+	t.Parallel()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
 		name          string

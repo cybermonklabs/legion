@@ -32,13 +32,15 @@ import (
 // profile, whose models and settings the image carries and whose sessions a pod never writes,
 // every session being a row in the session database; LEGION_OMP_PATH is the Oh My Pi the image
 // probe proves the workers run; DO_NOT_TRACK=1 is CodeGraph's telemetry and update-check opt-out;
+// CODEGRAPH_NO_WAL_DEFER=1 keeps SQLite's own checkpoint interval during a role's CodeGraph sync,
+// whose write-ahead log otherwise grew past 1 GiB (INFRA-5717 R3);
 // LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check the daemon reads and pushes to
 // the pod's launcher, which installs it once for the pod before any role starts
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
 // PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
 // skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
 // the Dockerfile.
-var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
+var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "CODEGRAPH_NO_WAL_DEFER", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
@@ -89,7 +91,9 @@ func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
 // podVariables maps every variable a worker's Oh My Pi finds set before the shim exports a
 // provider key (shim.ReadProviderEnv) to who sets it: the runtime (runtimeOwned, the session
 // store's two variables named apart, since they are Legion's under either store, the controller's
-// Slack channel list, which the runtime sets in the controller's pod alone, Claude Code's three
+// Slack channel list, which the runtime sets in the controller's pod alone, the image probe's own
+// (probeOwned: LEGION_IMAGE_PROBE_RUN, which it sets in the image probe's pod alone, to tell
+// `legion probe-image` it is the daemon's boot run), Claude Code's three
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
 // which it tells a Claude role alone, in its start command, what holds a resumed Oh My Pi to the
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
@@ -144,6 +148,9 @@ func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[str
 	}
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
+	}
+	for _, name := range slices.Sorted(maps.Keys(probeOwned)) {
+		add(name, "Legion's runtime sets in the image probe's pod, to tell legion probe-image it is the daemon's boot run", false)
 	}
 	if exchange != NoExchange {
 		for _, name := range slices.Sorted(maps.Keys(exchangeOwned)) {
