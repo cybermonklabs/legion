@@ -427,6 +427,12 @@ func (st *settlement) abandon(err error) settleOutcome {
 // the update from the room's queue, so no flush of this settlement stores or refuses it, and the
 // settlement ends here on the mark (roomRefusedUpdate). Whichever meets the refusal first takes
 // that mark and starts the room's close; the call here starts nothing when the mark is taken.
+//
+// The same mark is taken when the gate refuses the room's pending bytes (storePendingBytes, on
+// the peer's apply path, not the persistence worker's). Those bytes carry no observed time, so
+// the refusal can come at any time after the close, and they are in no tree. The settlement ends
+// here on that mark too (roomRefusedUpdate): the room closes for its issue all the same, and the
+// document settles from the store as above.
 func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	s := st.service
 	s.discardSuppressedPersistence(st.room, st.slots...)
@@ -436,10 +442,10 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	return settleOutcome{}
 }
 
-// roomRefusedUpdate is whether the room instance this settlement holds took an update the append
-// gate refused because the document's issue closed (roomInstance.issueCloseStarted): the second
+// roomRefusedUpdate is whether the room instance this settlement holds took a refusal of the
+// append gate because the document's issue closed (roomInstance.issueCloseStarted): the second
 // order of a refused update (endOnRefusedUpdate), in which the room's persistence worker met the
-// refusal first.
+// refusal first, or a refusal of the room's pending bytes (storePendingBytes).
 //
 // The settlement reads it twice: once it holds the document's advisory lock (readLocked, after
 // lockSettlementCursor), and after its last store write, before its commit (commitVersion,
@@ -450,7 +456,9 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 // mark before it drops the update from the room's queue (StoreUpdateContext, finishUpdateClass).
 // So when the settlement stores the room's updates, either that update is still queued, and the
 // gate refuses the settlement's own write (the first order), or it has gone, and its mark was
-// taken before, which the second read finds.
+// taken before, which the second read finds. A refusal of the room's pending bytes can take the
+// mark at any time; those bytes are in no tree, so a version the settlement commits holds none of
+// them, whether or not it found the mark.
 func (st *settlement) roomRefusedUpdate() bool {
 	instance := st.service.instanceOf(st.doc)
 	return instance != nil && instance.issueCloseStarted.Load()

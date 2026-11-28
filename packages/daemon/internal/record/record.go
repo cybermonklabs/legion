@@ -1191,7 +1191,15 @@ type PhaseEntry struct {
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// handed to the next implementer, the head it was written on, whose code an approval approves,
+// and whether a person wrote it.
+//
+// Person is whether the review came from an account with write access to the repository rather
+// than from the reviewer's own session of the review App (workflow's DecidesRound), which are the
+// only two kinds of review that decide a round. A person's approval ends the round only once the
+// reviewer has completed it (workflow's reviewRound), since an agent can submit an approval on a
+// person's account and nothing in the review says so. A decision an older daemon wrote holds no
+// Person, and its approval ends the round as every approval did before.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
@@ -1226,6 +1234,7 @@ type ReviewDecision struct {
 	ToldStuckHead  string      `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState  `json:"toldStuckState,omitempty"`
 	ToldStuck      []StuckTold `json:"toldStuck,omitempty"`
+	Person         bool        `json:"person,omitempty"`
 }
 
 // StuckTold is one finding a review-stuck notice told for a head (ReviewDecision.ToldStuck): what

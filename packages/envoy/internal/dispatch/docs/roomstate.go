@@ -86,7 +86,7 @@ type roomState struct {
 	idle wakeSignal
 	// pendingBytes are the pending bytes of commits that left something pending and changed nothing,
 	// which no OnUpdate hands to the room's persistence (classifyDrained). They wait here, with the
-	// cursor of the room instance that took them, until a drainer that holds no replica lock and no
+	// room instance that took them and so its cursor, until a drainer that holds no replica lock and no
 	// document lock stores them (storePendingBytes): a drain can run under a settlement's document lock,
 	// and the store takes that lock.
 	pendingBytes []pendingCommit
@@ -416,10 +416,11 @@ func (s *Service) unusedLocked(state *roomState) bool {
 		len(state.pendingBytes) == 0 && state.retiring == nil
 }
 
-// pendingCommit is one commit's pending bytes and the cursor of the room instance that took them.
+// pendingCommit is one commit's pending bytes and the room instance that took them
+// (storePendingBytes).
 type pendingCommit struct {
-	update []byte
-	cursor *roomCursor
+	update   []byte
+	instance *roomInstance
 }
 
 // queueUpdateClass records what the room's update observer read off one update, for the
