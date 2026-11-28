@@ -1090,16 +1090,26 @@ func TestStrandedMergedChildrenUseTheContinuation(t *testing.T) {
 // stranded child's at its first phase. A member that stands on its own next change when its tree
 // comes back carries it too, in the promotion's member loop.
 func TestEveryMergedContinuationSetsItsBranchOrigin(t *testing.T) {
+	// branched holds every issue_branch row of key's current generation to the merge's origin: a
+	// row of the change's generation with no origin asks for the branch from the default branch,
+	// whatever row follows it, so the last row alone proves nothing.
 	branched := func(t *testing.T, pool *pgxpool.Pool, key string) {
 		t.Helper()
 		rows := mnwBranches(t, pool, key)
-		if len(rows) == 0 {
-			t.Fatalf("%s holds no branch row, want its next change's", key)
-		}
 		got := issue(t, pool, key)
-		last := rows[len(rows)-1]
-		if last.Generation != got.Generation || last.From == nil || *last.From != mnwFrom {
-			t.Fatalf("%s's branch rows = %+v, want the last of generation %d from %+v", key, rows, got.Generation, mnwFrom)
+		var current []record.IssueBranch
+		for _, row := range rows {
+			if row.Generation == got.Generation {
+				current = append(current, row)
+			}
+		}
+		if len(current) == 0 {
+			t.Fatalf("%s holds the branch rows %+v and none of generation %d, want its next change's", key, rows, got.Generation)
+		}
+		for _, row := range current {
+			if row.From == nil || *row.From != mnwFrom {
+				t.Fatalf("%s's branch rows = %+v, want each of generation %d from %+v", key, rows, got.Generation, mnwFrom)
+			}
 		}
 	}
 	t.Run("the ordinary root", func(t *testing.T) {
