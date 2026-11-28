@@ -244,7 +244,7 @@ empty="$(awk '
 # `--- PASS:` or `--- FAIL:` for top-level tests and each package's final `ok` or `FAIL` line.
 # A package whose every forced-order test skipped would end in `ok`: its line is printed as a
 # FAIL line instead, and the run fails. Keep the summary headings but omit its copies of test
-# output. ci_job_reads.py pins the go command on its own line.
+# output.
 events_dir="$work"
 if [ -n "${RUNNER_TEMP:-}" ]; then
   events_dir="$RUNNER_TEMP/go-test-events"

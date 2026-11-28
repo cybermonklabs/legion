@@ -161,11 +161,13 @@ jobs:
 
       # The forced-order tests (packages/envoy/scripts/forced-order.sh): every TestForcedOrder
       # test of the packages named, built with -tags odatrace and -race against a nats-server whose
-      # own code carries the hold points internal/testnats/hooks.go drives. The script's own test
-      # runs first: scripts/forced-order.test.sh holds it to refusing a package whose every
-      # forced-order test skips, a -drop name that is no hook point, an empty -server, an empty -C
-      # and a module whose go.mod replaces nats-server. The first forced-order step names no
-      # version, so it hooks the nats-server the workspace links, which the hub runs; when go.mod
+      # own code carries the hold points internal/testnats/hooks.go drives. The harness runs first.
+      # It checks five refusals: a package whose every forced-order test skips, an unknown -drop
+      # point, an empty -server, an empty -C, and a module whose go.mod replaces nats-server.
+      # The summary case uses real gotestsum and go test -race in a temporary module against
+      # hooked nats-server v2.15.1. The interleaved case uses a stand-in go test -json after a real
+      # go test -list build. The first forced-order step names no version, so it hooks the
+      # nats-server the workspace links, which the hub runs. When go.mod
       # moves to a version internal/testnats/testdata/hooked has no hooks for, the script refuses
       # it and the step fails until the hooks are ported. The second step hooks v2.10.29. The
       # script also fails a package that declares no such test. cmd/listener's row is the first

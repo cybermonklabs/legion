@@ -133,7 +133,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="54274d105ee59e8fc16f18aa6b280346a667fb5010047ede7da6b477f1643669",
+        sha256="8e442c96fba32500a71d682487e22b34020d43e4b5c9c564302c0750fc0b85f9",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
     # `go test -json -count=1 -race` through gotestsum, which writes a separate test2json file.
@@ -148,7 +148,7 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="98a9f354bc5215286b57bedde29ae99fbe16cc3dd19dcd0dd2148ebdcdae8677",
+        sha256="9875c753adea22490470ac4d1ad9b0f9688872a39a19b4bf83288b006f623968",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`), takes the packages to run as
     # its arguments and refuses none, reads each one's -run from go-tagged-tests.sh's natslive list

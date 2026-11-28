@@ -2269,7 +2269,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                  f"which is not one run: step of it; update or remove the entry"))
     for (job_id, ref), rs in claims.items():
         steps = [s for s in owner_steps(units, job_id) if step_matches(s, ref)]
-        text = squash("\n".join(as_go_test(str(s.get("run", ""))) for s in steps))
+        text = squash(" ".join(as_go_test(str(s.get("run", ""))) for s in steps))
         for r in rs:
             if not steps or squash(as_go_test(r.text)) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "

@@ -651,7 +651,7 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
                 raise Refused(f"{step.label}: `{lister}` printed no package")
             # An AUDITED_SCRIPTS script piped into here was resolved to its go test by audited_step
             # before this step was made. go_command reads the tail past `env`, assignments and
-            # the supported wrappers, including gotestsum's CI form.
+            # the supported wrappers.
             # The jsonfile path is not a test argument. Remove it before expanding shell variables.
             tail = expand(as_go_test(piped.group("test")), variables)
             words, command = go_command(tail)

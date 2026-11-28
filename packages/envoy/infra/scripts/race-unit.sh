@@ -37,8 +37,11 @@ run)
 		echo 'race-unit.sh: gotestsum is not on PATH; use .github/actions/install-gotestsum or run GOWORK=off go -C .github/actions/install-gotestsum build -o <dir>/gotestsum gotest.tools/gotestsum' >&2
 		exit 127
 	fi
+	flags=(-json -count=1)
 	;;
-compile) ;;
+compile)
+	flags=(-c -o /dev/null)
+	;;
 *)
 	echo "usage: $0 run|compile" >&2
 	exit 2
@@ -52,8 +55,9 @@ if [ "${#packages[@]}" -eq 0 ]; then
 	echo "race-unit.sh: go list ./... kept no package once EXCLUDE ($EXCLUDE) was taken out" >&2
 	exit 1
 fi
+go_test=(go test "${flags[@]}" -race "${packages[@]}")
 if [ "$1" = compile ]; then
-	exec go test -c -o /dev/null -race "${packages[@]}"
+	exec "${go_test[@]}"
 fi
 
 if [ -n "${RUNNER_TEMP:-}" ]; then
@@ -63,5 +67,4 @@ else
 	events=$(mktemp --suffix=.jsonl -t race-unit-XXXXXX)
 	trap 'rm -f "$events"' EXIT
 fi
-gotestsum --jsonfile "$events" --format standard-quiet --raw-command -- \
-	go test -json -count=1 -race "${packages[@]}"
+gotestsum --jsonfile "$events" --format standard-quiet --raw-command -- "${go_test[@]}"

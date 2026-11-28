@@ -85,9 +85,8 @@ printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nat
 GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-# Use a small module to exercise the real gotestsum summary. Its failing test prints a line
-# that looks like a package's `ok` line. Repeating it in the summary would count a skipped
-# package because the last real package line already reset the count.
+# The failing fixture test prints a line shaped like a package's `ok` line.
+# --hide-summary output must keep gotestsum's summary from printing it a second time.
 fixture="$out/summary-module"
 mkdir -p "$fixture/mixed" "$fixture/pass" "$out/summary-runner" "$out/local"
 printf 'module example.com/summary\n\ngo 1.21\n\nrequire github.com/nats-io/nats-server/v2 v2.15.1\n' >"$fixture/go.mod"

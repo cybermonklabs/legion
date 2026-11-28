@@ -258,9 +258,24 @@ class Log:
         self._mid_line = not text.endswith("\n")
 
 
-def pump(
-    stream: Iterable[str], tests: RunningTests, log: Log, events: TextIO, errors: list[OSError],
-) -> None:
+class Events:
+    """Keep the test events and remember the first write error."""
+
+    def __init__(self, file: TextIO) -> None:
+        self._file = file
+        self.error: OSError | None = None
+
+    def write(self, line: str) -> None:
+        if self.error is not None:
+            return
+        try:
+            self._file.write(line if line.endswith("\n") else line + "\n")
+        except OSError as error:
+            # Keep draining stdout so a failed artifact write cannot stall the command.
+            self.error = error
+
+
+def pump(stream: Iterable[str], tests: RunningTests, log: Log, events: Events) -> None:
     """Pass the command's stdout through, unwrapping a `go test -json` stream as it goes.
 
     A line that parses as a JSON object with an `Action` key is a -json event: its `Output`, when
@@ -279,12 +294,7 @@ def pump(
         if event is None:
             log.write(line)
             continue
-        if not errors:
-            try:
-                events.write(line if line.endswith("\n") else line + "\n")
-            except OSError as error:
-                # Keep draining stdout so a failed artifact write cannot stall the command.
-                errors.append(error)
+        events.write(line)
         tests.record(event)
         output = event.get("Output")
         if output:
@@ -347,17 +357,19 @@ def main(argv: list[str]) -> int:
     try:
         if directory is not None:
             directory.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
+        event_file = tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", buffering=1, dir=directory,
             prefix="race-memory-", suffix=".jsonl", delete=directory is None,
-        ) as events:
-            return run(argv, limit_kb, source, events)
+        )
     except OSError as error:
         print(f"race memory: cannot keep the test events: {error}", file=sys.stderr)
         return 1
 
+    with event_file:
+        return run(argv, limit_kb, source, Events(event_file))
 
-def run(argv: list[str], limit_kb: int, source: str, events: TextIO) -> int:
+
+def run(argv: list[str], limit_kb: int, source: str, events: Events) -> int:
     log = Log()
     log.line(f"race memory: the limit is {limit_kb} kB ({source})")
 
@@ -368,8 +380,7 @@ def run(argv: list[str], limit_kb: int, source: str, events: TextIO) -> int:
         return 127
 
     tests = RunningTests()
-    errors: list[OSError] = []
-    reader = threading.Thread(target=pump, args=(process.stdout, tests, log, events, errors), daemon=True)
+    reader = threading.Thread(target=pump, args=(process.stdout, tests, log, events), daemon=True)
     reader.start()
 
     # The peak and the highest sample are folded in walk by walk rather than kept as every text
@@ -410,8 +421,8 @@ def run(argv: list[str], limit_kb: int, source: str, events: TextIO) -> int:
 
     if peak_kb > limit_kb:
         log.line(decision_line(peak_kb, field, limit_kb, highest))
-    if errors:
-        print(f"race memory: cannot keep the test events: {errors[0]}", file=sys.stderr)
+    if events.error is not None:
+        print(f"race memory: cannot keep the test events: {events.error}", file=sys.stderr)
 
     # The exit rule, decided here and not before, because the command has ended by now: a
     # command that failed on its own keeps its status, since the tests' own failure is what the
@@ -420,7 +431,7 @@ def run(argv: list[str], limit_kb: int, source: str, events: TextIO) -> int:
     if status != 0:
         # A signalled command has a negative returncode; report it as a shell does.
         return status if status > 0 else 128 - status
-    if peak_kb > limit_kb or errors:
+    if peak_kb > limit_kb or events.error is not None:
         return 1
     return 0
 

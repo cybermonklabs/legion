@@ -59,8 +59,7 @@ events="$work/events.json"
 artifacts=()
 if [ -n "${RUNNER_TEMP:-}" ]; then
   mkdir -p "$RUNNER_TEMP/go-test-events"
-  artifact=$(mktemp --suffix=.jsonl "$RUNNER_TEMP/go-test-events/backend-count-XXXXXX")
-  artifacts+=("$artifact")
+  artifacts+=("$(mktemp --suffix=.jsonl "$RUNNER_TEMP/go-test-events/backend-count-XXXXXX")")
 fi
 pipeline_status=(0 0)
 go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" 2>"$work/stderr" |

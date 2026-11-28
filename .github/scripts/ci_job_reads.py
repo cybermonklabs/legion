@@ -381,12 +381,12 @@ def setup_go(job, gomod, workflow=""):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
-def go_test_events(job, workflow="", install=True):
-    """The actions that provide gotestsum and upload the job's test2json files."""
-    upload = Read(".github/actions/go-test-events-upload/**", at(job, "Upload the go test events", workflow))
-    if not install:
-        return [upload]
-    return [Read(".github/actions/install-gotestsum/**", at(job, "Install gotestsum", workflow)), upload]
+def install_gotestsum(job, workflow=""):
+    return reads((".github/actions/install-gotestsum/**", at(job, "Install gotestsum", workflow)))
+
+
+def go_test_events(job, workflow=""):
+    return reads((".github/actions/go-test-events-upload/**", at(job, "Upload the go test events", workflow)))
 
 
 # Every job reads ci.yaml, where its `if:` is: a change to it reaches every job. The docs and
@@ -846,10 +846,10 @@ ENVOY_FORCED_ORDER_PKGS = {
 }
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
-# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
-# forced-order.test.sh runs forced-order.sh in five cases, and the one run that gets as far as a
-# go test is over its fixture package, hooktest/skiponly, on the linked version; the other four
-# are refused before anything is built.
+# The script's own harness, which envoy-go-race runs before the two steps above, covers seven
+# cases: five refusals, a summary case and an interleaved-packages case. The summary case uses
+# real gotestsum and go test -race in a temporary module against hooked nats-server v2.15.1.
+# The interleaved case uses a stand-in go test -json after a real go test -list build.
 FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
 ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
 ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
@@ -898,7 +898,11 @@ def two_builds_go_reads():
     twobuild files: the script its -run comes from, the script that wrote the previous build it
     runs against, the checks of the Postgres it runs on, and the Go and the Bun install its CLI
     test runs this tree's dispatch command with."""
-    event_reads = go_test_events(TWO_BUILDS_JOB) + go_test_events(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB))
+    event_reads = (
+        install_gotestsum(TWO_BUILDS_JOB) + go_test_events(TWO_BUILDS_JOB)
+        + install_gotestsum(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB))
+        + go_test_events(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB))
+    )
     return reads(
         (TAGGED_TESTS, f"{at(TWO_BUILDS_JOB, TWO_BUILDS_STEP)} takes its -run from it"),
         (f"{ENVOY}/scripts/build-dispatch-build.sh",
@@ -1617,7 +1621,7 @@ NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runn
                           "cmd/architecture-check", "cmd/spec-check"]
 NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
-NOTE_AND_SPEC_TEXT = f"{gotestsum_prefix('architecture-notes-and-specs')} -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
+NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
 # listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-build runs
 # in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
@@ -1628,7 +1632,7 @@ NOTE_AND_SPEC_TEXT = f"{gotestsum_prefix('architecture-notes-and-specs')} -count
 LISTENERWIRE_PACKAGES = ["listenerwire", "internal/wirecheck"]
 LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck"
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
-LISTENERWIRE_TEXT = f"{gotestsum_prefix('listener-wire')} -count=1 " + " ".join(LISTENERWIRE_PKGS)
+LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
 # The route adopter, cmd/dispatch-route-adopt, runs its rows under git and under jj, so
 # envoy-go-skips installs jj (./.github/actions/install-jj) and tests the package in a step of its
@@ -1641,7 +1645,7 @@ LISTENERWIRE_TEXT = f"{gotestsum_prefix('listener-wire')} -count=1 " + " ".join(
 ADOPTER_PACKAGES = ["cmd/dispatch-route-adopt"]
 ADOPTER_STEP = "Test the route adopter under git and jj"
 ADOPTER_PKGS = [f"./{p}/" for p in ADOPTER_PACKAGES]
-ADOPTER_TEXT = f"{gotestsum_prefix('route-adopter', verbose=True)} -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
+ADOPTER_TEXT = "go test -count=1 -v -timeout 4m " + " ".join(ADOPTER_PKGS)
 
 # The packages whose skips envoy-go's unit step counts: each leg runs its packages through
 # packages/envoy/scripts/database-skips.sh --count-table, one `go test -json`, and the script
@@ -2503,8 +2507,7 @@ DAEMON_STAMPED_GATE_SCRIPT = (
 # neither, so a cached pass would say nothing about the text as it now stands.
 TEXT_CHECK_JOB = "text-checks"
 TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
-TEXT_CHECK_TEXT = {module: f"{gotestsum_prefix('text-' + name)} -count=1 {TEXT_CHECK_PKG}"
-                   for module, name in ((ENVOY, "envoy"), (INFRA, "infra"), (DAEMON, "daemon"))}
+TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
 # The three modules whose text checks the job runs, in the order its steps run them: each step's
 # name carries the module path, so the path is written once and the name is built from it.
 TEXT_CHECK_MODULES = (ENVOY, INFRA, DAEMON)

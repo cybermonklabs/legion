@@ -35,7 +35,7 @@ GATE = gate("envoy_go_race", "envoy-go-race",
      + [read for server in ENVOY_FORCED_ORDER_PKGS
         for read in forced_order_reads(ENVOY_RACE_LEGS_JOB, envoy_forced_order_step(server), ENVOY_RACE_FILE)]
      + setup_go(ENVOY_RACE_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_RACE_FILE)
-     + go_test_events(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE))
+     + install_gotestsum(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE) + go_test_events(ENVOY_RACE_LEGS_JOB, ENVOY_RACE_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go_race held packages/envoy/** by hand before the filters were computed: it selected 1609 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])

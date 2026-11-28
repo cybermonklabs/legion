@@ -790,17 +790,10 @@ on a compile error. It fails, naming the package, when a package declares no `Te
 test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
 line).
 
-This script requires `gotestsum` on `PATH`. CI uses `.github/actions/install-gotestsum`.
-To build the same version locally, run `GOWORK=off go -C .github/actions/install-gotestsum
-build -o <dir>/gotestsum gotest.tools/gotestsum` and add `<dir>` to `PATH`.
-The log keeps Go's verbose output and appends the gotestsum summary without repeating test output.
-CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
-the temporary events file on exit.
-
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
-those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, a module that replaces nats-server), with the fixture package
-`internal/testnats/hooktest/skiponly`.
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks seven cases:
+five refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
+an empty `-C`, and a module that replaces nats-server), a gotestsum summary that does not repeat
+test output, and two packages whose interleaved output keeps both verdicts.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
@@ -809,6 +802,13 @@ skipped. Its
 `daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
+
+This script requires `gotestsum` on `PATH`. CI uses `.github/actions/install-gotestsum`.
+To build the same version locally, run `GOWORK=off go -C .github/actions/install-gotestsum
+build -o <dir>/gotestsum gotest.tools/gotestsum` and add `<dir>` to `PATH`.
+The log keeps Go's verbose output and appends the gotestsum summary without repeating test output.
+CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
+the temporary events file on exit.
 
 ## aws-moto-check.sh
 

@@ -5,7 +5,7 @@
 # restates their result. So each citation names one of those jobs.
 GATE = gate("envoy_go", "envoy-go", runs=[
     step_run(ENVOY_NATSLIVE_JOB, "Integration test envoy (a real NATS server, in the test process)",
-             f"{gotestsum_prefix('envoy-integration')} ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"],
+             "go test ./internal/integration/ -timeout 300s -count=1", ENVOY, ["./internal/integration/"],
              workflow=ENVOY_GO_FILE),
     step_run(ENVOY_SKIPS_JOB, "Vet agentloop's live proof (no model call)", "go vet -tags modellive ./agentloop/", ENVOY,
              ["./agentloop/"], workflow=ENVOY_GO_FILE, tags="modellive", mode="vet"),
@@ -108,9 +108,9 @@ GATE = gate("envoy_go", "envoy-go", runs=[
 ) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
-  + go_test_events(ENVOY_LEGS_JOB, ENVOY_GO_FILE, install=False)
+  + go_test_events(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + [read for job in (ENVOY_ALONE_JOB, ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_SKIPS_JOB, ENVOY_NATSLIVE_JOB)
-     for read in go_test_events(job, ENVOY_GO_FILE)])
+     for read in install_gotestsum(job, ENVOY_GO_FILE) + go_test_events(job, ENVOY_GO_FILE)])
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])
