@@ -8,15 +8,19 @@
  *  one leg (`legRowFaults`, e2e/leg-rows.ts, which names each row that is on none or on two), and
  *  each leg holds exactly the rows the placement of the whole listing gives it. The first catches
  *  a reporter that drops or doubles a row whichever leg it is placed on; the second is what tells
- *  this split from Playwright's own, whose count split is a partition too. Every row of the real
- *  config is a unit of its own (`groupOf`, e2e/shard-reporter.ts), so its placement is computed
- *  here row by row; the fixture config holds the rows the reporter must keep together, which the
- *  real config has none of. That computation keys each row by its title in the listing, and the
- *  reporter by its own (`rowOf`, e2e/shard-reporter.ts, which `preprocess` places every row as),
- *  so a second fixture config holds the two keys against each other in shapes the real config has
+ *  this split from Playwright's own, whose count split is a partition too. That placement is of
+ *  the units `preprocess` places the whole listing in (`unitsOf`, e2e/shard-reporter.ts), as
+ *  `fixtures/shard-units.reporter.ts` writes them from the whole listing: a row of the real config
+ *  is a unit of its own unless `groupOf` keeps it with others - a file that runs in `serial`
+ *  mode, such as e2e/reset-unnamed-table.e2e.ts, is one unit - so a placement computed here row
+ *  by row would hold every leg to one that no leg makes. What `groupOf` keeps together is held on
+ *  the fixture config, whose rows in shapes the real config has none of must each stay on one
+ *  leg. The units' rows are keyed as the reporter keys them (`rowOf`, e2e/shard-reporter.ts,
+ *  which `preprocess` places every row as) and each leg's rows by their titles in the listing, so
+ *  a second fixture config holds the two keys against each other in shapes the real config has
  *  none of either: a `describe` with no title, one inside it, and a title that holds a newline.
- *  Its reporter writes each row as `rowOf` builds it, so the keys held there are the ones
- *  `preprocess` places by.
+ *  It is listed through the same reporter, so the keys held there are the ones `preprocess`
+ *  places by.
  *
  *  The listings of a selection run one after the other, and the two selections side by side, so
  *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
@@ -280,10 +284,29 @@ test("a project another names as a dependency or teardown is a setup project, an
 const rowKey = (row: Pick<Row, "project" | "file" | "title">) =>
   `${row.project} › ${row.file} › ${row.title}`;
 
-/** One selection of `config` listed whole and then each of its legs through the reporter, one
- *  listing after another. */
+/** `config`'s selection listed whole through `fixtures/shard-units.reporter.ts`, and the units
+ *  that reporter writes: the ones `preprocess` places the selection in (`unitsOf`,
+ *  e2e/shard-reporter.ts), in the order it builds them. */
+async function listedUnits(
+  config: string,
+  selection: readonly string[]
+): Promise<{ units: Unit[]; whole: Listing }> {
+  const output = mkdtempSync(join(tmpdir(), "shard-units-"));
+  try {
+    const file = join(output, "units.json");
+    const whole = await listing(import.meta.url, config, { SHARD_UNITS_OUTPUT: file }, selection, [
+      "./e2e/__tests__/fixtures/shard-units.reporter.ts",
+    ]);
+    return { units: JSON.parse(readFileSync(file, "utf8")) as Unit[], whole };
+  } finally {
+    rmSync(output, { force: true, recursive: true });
+  }
+}
+
+/** One selection of `config` listed whole, with its units (`listedUnits`), and then each of its
+ *  legs through the reporter, one listing after another. */
 async function listedLegs(config: string, selection: readonly string[]) {
-  const whole = await listing(import.meta.url, config, {}, selection);
+  const { units, whole } = await listedUnits(config, selection);
   const sharded: Listing[] = [];
   for (let leg = 1; leg <= legs; leg += 1) {
     sharded.push(
@@ -296,7 +319,7 @@ async function listedLegs(config: string, selection: readonly string[]) {
       )
     );
   }
-  return { sharded, whole };
+  return { sharded, units, whole };
 }
 
 /** Each leg's rows as listed, and by `rowKey`, sorted; and the faults of the legs against the
@@ -329,22 +352,13 @@ for (const [name, listed] of Object.entries(selections)) {
   test(
     `the ${legs} legs of ${name} hold each of its rows once, each leg the rows the placement gives it`,
     async () => {
-      const { faults, perLeg, whole } = legsOf(await listed);
+      const run = await listed;
+      const { faults, perLeg, whole } = legsOf(run);
       expect(whole.length).toBeGreaterThan(0);
       // Every row on exactly one leg, the faults naming each row that is not.
       expect(faults, `the ${legs} legs of ${name} against its whole listing`).toEqual([]);
-      const { placed } = placeUnits(
-        whole.map((row) =>
-          rowUnit({
-            file: row.file,
-            project: row.project,
-            runs: row.expectedStatus !== "skipped",
-            title: row.title,
-          })
-        ),
-        weights,
-        legs
-      );
+      // The units every leg places, `serial` files whole, as the file's header says.
+      const { placed } = placeUnits(run.units, weights, legs);
       for (let leg = 1; leg <= legs; leg += 1) {
         const expected = placed
           .filter((unit) => unit.shard === leg)
@@ -410,34 +424,19 @@ test(
   async () => {
     // The full config's listings end first, whichever way (the file's header says why).
     await Promise.allSettled(Object.values(selections));
-    const output = mkdtempSync(join(tmpdir(), "row-keys-"));
-    try {
-      const keys = join(output, "keys.json");
-      const listed = await listing(
-        import.meta.url,
-        "e2e/__tests__/fixtures/row-keys.config.ts",
-        { ROW_KEYS_OUTPUT: keys },
-        [],
-        ["./e2e/__tests__/fixtures/row-keys.reporter.ts"]
-      );
-      const listedRows = rowsOfListing(listed);
-      // The listing keeps a `describe` with no title as a suite titled "", as a merged report does
-      // (`rowTimes`, e2e/tools/shard-weights.ts), so a row inside one starts with the separator.
-      expect(listedRows.map((row) => row.title)).toEqual([
-        "a top-level row",
-        "a row of\ntwo lines",
-        `a titled describe${titleSeparator}a row in a titled describe`,
-        `${titleSeparator}a row in an untitled describe`,
-        `${titleSeparator}a titled describe in an untitled one${titleSeparator}a row two describes down`,
-      ]);
-      const reported = JSON.parse(readFileSync(keys, "utf8")) as Pick<
-        Row,
-        "project" | "file" | "title"
-      >[];
-      expect(reported.map(rowKey).sort()).toEqual(listedRows.map(rowKey).sort());
-    } finally {
-      rmSync(output, { force: true, recursive: true });
-    }
+    const { units, whole } = await listedUnits("e2e/__tests__/fixtures/row-keys.config.ts", []);
+    const listedRows = rowsOfListing(whole);
+    // The listing keeps a `describe` with no title as a suite titled "", as a merged report does
+    // (`rowTimes`, e2e/tools/shard-weights.ts), so a row inside one starts with the separator.
+    expect(listedRows.map((row) => row.title)).toEqual([
+      "a top-level row",
+      "a row of\ntwo lines",
+      `a titled describe${titleSeparator}a row in a titled describe`,
+      `${titleSeparator}a row in an untitled describe`,
+      `${titleSeparator}a titled describe in an untitled one${titleSeparator}a row two describes down`,
+    ]);
+    const reported = units.flatMap((unit) => unit.rows);
+    expect(reported.map(rowKey).sort()).toEqual(listedRows.map(rowKey).sort());
   },
   rowLimit(
     // Both selections, side by side: the longer of two runs of `legs + 1` listings each.

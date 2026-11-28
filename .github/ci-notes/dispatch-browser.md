@@ -206,12 +206,13 @@ packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the
 reporter, takes the split over: every leg places every row of every project the lane selects
 by the row times that main's full-lane runs, and each run that `--run <id>` named, measured
 (packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
-own rows. A row is placed on its own unless Playwright must run it in order with others - a
-`serial` or `default`-mode `describe`, or a file of a project that is not fully parallel - and
-then with them; every project of this lane is fully parallel and no spec sets a mode, so every
-row is its own unit today. Until 2026-11-27 the unit was the file, and on 2026-11-26 that left
-the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28 merge-group runs of 17:03Z to
-23:04Z): two files that had landed after the table was read, placed whole by their project's
+own rows. A row is placed on its own unless Playwright must run it in order with others - in a
+file or a `describe` that runs in `serial` or `default` mode, or in a file of a project that is
+not fully parallel - and then with them; every project of this lane is fully parallel, so every
+row is its own unit today but the two of packages/dispatch/e2e/reset-unnamed-table.e2e.ts, a
+file that runs in `serial` mode. Until 2026-11-27 the unit was the file, and on 2026-11-26 that
+left the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28 merge-group runs of 17:03Z
+to 23:04Z): two files that had landed after the table was read, placed whole by their project's
 median row, held a median 853 s of the lane's 9,086 and sat on leg 4 and leg 2, the slowest two
 legs of every one of those runs. Placed row by row over those runs' own rows, the same table
 puts the heaviest leg at 1.03 times the mean at those runs' four legs, and at 1.10 at six.
