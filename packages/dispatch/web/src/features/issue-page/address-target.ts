@@ -372,7 +372,9 @@ export function useAddressFallback({
         : agentsOnlyAncestor(root, agentsOnly, comments, messages),
     [agentsOnly, comments, messages, root]
   );
-  const found = before?.found === true || reveal !== undefined || agentsOnly !== undefined;
+  // An address that goes to Threads (`threadsRecord`) finds nothing in the outline, so it reads
+  // nothing either: the redirect above takes it away in this same render.
+  const found = before?.found === true || (reveal ?? agentsOnly ?? threadsRecord) !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
   const read = found ? undefined : unheld;
   const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
