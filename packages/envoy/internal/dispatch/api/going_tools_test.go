@@ -54,9 +54,11 @@ func goingCalledRoutes(t *testing.T) map[string][]string {
 // goingRouteInventory holds the route table, its test hooks in, to the tool tables: every route
 // whose auth class a person's credential passes is a row of a tool or a route
 // goingExcludedRoutes names, and never both; every excluded route and every row a tool names is
-// a route of the table; and every excluded route's reason is one of the eight kinds
-// going_tools.go names, which holds of the route (goingExclusionProblem). It fails naming each
-// route that breaks one.
+// a route of the table; every excluded route's reason is one of the eight kinds going_tools.go
+// names, which holds of the route (goingExclusionProblem); a route whose declaration states the
+// daemon's gate (routeDecl.DaemonWrites) is left out for a daemon gate's reason, and each route
+// goingDaemonUngatedRoutes names for goingExcludedDaemonUngated. It fails naming each route that
+// breaks one.
 func goingRouteInventory(t *testing.T) {
 	t.Helper()
 	routes := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
@@ -86,10 +88,18 @@ func goingRouteInventory(t *testing.T) {
 				t.Errorf("%s: %s", name, problem)
 			}
 		}
+		if _, gated := goingDaemonGateReason(reason); route.DaemonWrites != nil && !gated {
+			t.Errorf("%s: its declaration states DaemonWrites, whose gate refuses every session but the Legion daemon's, and goingExcludedRoutes does not leave it out as a route only the daemon writes (%q): give it goingExcludedDaemon or goingExcludedDaemonRefusing", name, reason)
+		}
 	}
 	for name := range goingExcludedRoutes {
 		if !served[name] {
 			t.Errorf("goingExcludedRoutes names %s, which is no route of the table", name)
+		}
+	}
+	for _, name := range goingDaemonUngatedRoutes {
+		if reason := goingExcludedRoutes[name]; reason != goingExcludedDaemonUngated {
+			t.Errorf("%s: goingDaemonUngatedRoutes names it, and goingExcludedRoutes gives it %q rather than goingExcludedDaemonUngated", name, reason)
 		}
 	}
 	for name, tools := range called {
@@ -102,16 +112,49 @@ func goingRouteInventory(t *testing.T) {
 // goingErrorCode is the shape of the code of a refusal, such as STEP_WRITER.
 var goingErrorCode = regexp.MustCompile(`^[A-Z]+(_[A-Z]+)*$`)
 
+// goingDaemonUngatedRoutes is each route goingExcludedRoutes may leave out as only the Legion
+// daemon's with no gate of the server's behind it (goingExcludedDaemonUngated): the design-gate
+// and gated-step publications, which R12 names as routes only the daemon writes and whose
+// declarations name the deployment's daemon as their one writer, and which state no daemon's
+// gate, so the server refuses no other caller of them (the architect's ruling,
+// dispatch://INFRA-1588/comment/37ca4bfe-e740-41d5-b7fd-8a6327917f49). Every other route left out
+// as the daemon's states the gate.
+var goingDaemonUngatedRoutes = []string{
+	"PUT /api/v1/issues/{key}/design-gates",
+	"PUT /api/v1/projects/{key}/gated-steps",
+}
+
+// goingDaemonGateReason is whether reason leaves a route out as one whose declaration states the
+// daemon's gate - goingExcludedDaemon, or goingExcludedDaemonRefusing of a code - and that code,
+// "" for goingExcludedDaemon, which names none.
+func goingDaemonGateReason(reason string) (code string, gated bool) {
+	if reason == goingExcludedDaemon {
+		return "", true
+	}
+	code, refusing := strings.CutPrefix(reason, goingExcludedDaemon+" ")
+	return code, refusing && goingErrorCode.MatchString(code)
+}
+
 // goingExclusionProblem is what is wrong with reason, the value goingExcludedRoutes gives route,
 // "" for a value of one of the eight kinds going_tools.go names that holds of route: one of R12's
-// six constants, or goingExcludedDaemon followed by nothing but the code of a refusal
-// (goingExcludedDaemonRefusing); a route reached through another tool, naming a tool the bar
+// five constants that hold of no declaration; a daemon gate's reason (goingExcludedDaemon, or
+// goingExcludedDaemonRefusing of a code) for a route whose declaration states DaemonWrites, whose
+// gate refuses with that code; goingExcludedDaemonUngated for a route goingDaemonUngatedRoutes
+// names, which states no gate; a route reached through another tool, naming a tool the bar
 // offers - one goingWriteTools or goingReadTools names and going.UnofferedTools does not leave
 // out - and why (goingExcludedThrough); and goingExcludedNoPerson for a route whose declaration
 // states ResultsScope, the route a CI run's results token writes.
 func goingExclusionProblem(route apiRoute, reason string) string {
 	switch reason {
-	case goingExcludedCredential, goingExcludedAgentToken, goingExcludedSignIn, goingExcludedTestHook, goingExcludedBar, goingExcludedDaemon:
+	case goingExcludedCredential, goingExcludedAgentToken, goingExcludedSignIn, goingExcludedTestHook, goingExcludedBar:
+		return ""
+	case goingExcludedDaemonUngated:
+		switch {
+		case route.DaemonWrites != nil:
+			return "goingExcludedRoutes says the server refuses no other caller of it, and its declaration states DaemonWrites, whose gate refuses every session but the Legion daemon's: give it goingExcludedDaemon or goingExcludedDaemonRefusing"
+		case !slices.Contains(goingDaemonUngatedRoutes, route.Method+" "+route.Pattern):
+			return "goingExcludedRoutes says only the Legion daemon writes it with no gate of the server's, and it is none of the publications goingDaemonUngatedRoutes names: state DaemonWrites in its declaration and give it goingExcludedDaemon, or leave it out for another kind"
+		}
 		return ""
 	case goingExcludedNoPerson:
 		if !route.ResultsScope {
@@ -119,7 +162,15 @@ func goingExclusionProblem(route apiRoute, reason string) string {
 		}
 		return ""
 	}
-	if code, refusing := strings.CutPrefix(reason, goingExcludedDaemon+" "); refusing && goingErrorCode.MatchString(code) {
+	if code, gated := goingDaemonGateReason(reason); gated {
+		switch {
+		case route.DaemonWrites == nil && slices.Contains(goingDaemonUngatedRoutes, route.Method+" "+route.Pattern):
+			return "goingExcludedRoutes says every other caller of it is refused, and its declaration states no DaemonWrites, so the server refuses no other caller: give it goingExcludedDaemonUngated"
+		case route.DaemonWrites == nil:
+			return "goingExcludedRoutes says only the Legion daemon writes it and every other caller is refused, and its declaration does not state DaemonWrites, so a person's credential reaches its handler"
+		case code != "" && code != route.DaemonWrites.code():
+			return fmt.Sprintf("goingExcludedRoutes says the daemon's gate refuses every other caller %s, and the gate its declaration states (DaemonWrites) refuses them %s", code, route.DaemonWrites.code())
+		}
 		return ""
 	}
 	if named, through := strings.CutPrefix(reason, goingExcludedThroughWords); through {

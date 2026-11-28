@@ -1062,29 +1062,54 @@ var goingReadTools = map[string]goingReadTool{
 //   - R12's six, the routes the command bar's spec leaves out: a credential
 //     (goingExcludedCredential), an agent token (goingExcludedAgentToken), a sign-in
 //     (goingExcludedSignIn), a test hook (goingExcludedTestHook), the bar's own route
-//     (goingExcludedBar), and a route only the Legion daemon writes (goingExcludedDaemon, or
-//     goingExcludedDaemonRefusing where the reason names the code that refuses every other
-//     writer);
+//     (goingExcludedBar), and a route only the Legion daemon writes, in one of two forms: a
+//     route whose declaration states the daemon's gate (routeDecl.DaemonWrites, refuseNonDaemon),
+//     which refuses every session but the daemon's (goingExcludedDaemon, or
+//     goingExcludedDaemonRefusing where the reason names the code the gate refuses with); or one
+//     of the two publications whose declarations name the deployment's daemon as their one
+//     writer and whose server refuses no other caller (goingExcludedDaemonUngated), which the
+//     inventory names in a list of its own;
 //   - reached through another tool (goingExcludedThrough): a route whose need another tool of
 //     the bar meets, the reason naming that tool, which must be one goingWriteTools or
 //     goingReadTools names and going.UnofferedTools does not leave out;
 //   - no person may call it (goingExcludedNoPerson): a route whose auth passes a person's
 //     credential and whose declaration states ResultsScope, the route a CI run's results token
 //     writes, whose handler refuses every other credential.
+//
+// The kinds that hold of a route's declaration are held to it: a daemon gate's reason to a
+// declaration that states DaemonWrites (and, for goingExcludedDaemonRefusing, its gate's code),
+// and the results token's to one that states ResultsScope.
 const (
 	goingExcludedCredential = "a credential: the bar never reads, grants or revokes one"
 	goingExcludedAgentToken = "an agent token: the bar never mints, lists, changes or revokes one"
 	goingExcludedSignIn     = "a sign-in: the bar never lists or ends one"
 	goingExcludedTestHook   = "a test hook, which a deployment serves only with its test hooks on"
 	goingExcludedBar        = "the command bar's own route"
-	goingExcludedDaemon     = "only the Legion daemon writes it: every other caller is refused (403)"
-	goingExcludedNoPerson   = "no person may call it: only a CI run's results token writes it"
+	// goingExcludedDaemon is the reason of a route whose declaration states the daemon's gate
+	// (routeDecl.DaemonWrites, refuseNonDaemon): the gate refuses every session but the
+	// daemon's, before the route's handler does anything with the write. A person's sign-in is
+	// refused, and so is a person's token that proves its own session or names any other; a
+	// bearer that proves no session and names the daemon's in its body is taken for the daemon
+	// (daemonWrite).
+	goingExcludedDaemon = "only the Legion daemon writes it: every other caller is refused (403)"
+	// goingExcludedDaemonUngated is the reason of PUT /api/v1/issues/{key}/design-gates and PUT
+	// /api/v1/projects/{key}/gated-steps, the two publications R12 names beside the role-holder
+	// publication as the routes only the Legion daemon writes. Both declarations name the
+	// deployment's daemon as the one writer (their descriptions, and issue_design_gates.go's and
+	// project_gated_steps.go's comments): the daemon publishes the record of its own gate and
+	// configuration, which no person chooses here. Neither states the daemon's gate
+	// (routeDecl.DaemonWrites), so the server refuses no other caller of them, and the reason says
+	// so: a machine credential naming another session writes them as the daemon does, which
+	// tests of this package, of the browser, of the CLI and of the daemon publish them with.
+	goingExcludedDaemonUngated = "only the Legion daemon writes it, as its declaration says; the server does not refuse other callers"
+	goingExcludedNoPerson      = "no person may call it: only a CI run's results token writes it"
 	// goingExcludedThroughWords starts every reason goingExcludedThrough builds.
 	goingExcludedThroughWords = "reached through "
 )
 
-// goingExcludedDaemonRefusing is goingExcludedDaemon for a route whose refusal of every other
-// writer is code, such as STEP_WRITER (codeStepWriter).
+// goingExcludedDaemonRefusing is goingExcludedDaemon for a route whose daemon's gate refuses
+// every other writer with code, such as STEP_WRITER (codeStepWriter): the code its declaration's
+// DaemonWrites names (daemonWrite.code).
 func goingExcludedDaemonRefusing(code string) string {
 	return goingExcludedDaemon + " " + code
 }
@@ -1142,8 +1167,8 @@ var goingExcludedRoutes = map[string]string{
 	"GET /api/v1/agents/known":                                      goingExcludedThrough(going.ReadRoster, "the reference renderer checks whether specific unlisted agent addresses exist; the bar reads the agent roster instead"),
 	"GET /api/v1/agents/{session_id}/artifacts":                     goingExcludedThrough("dispatch_doc_read", "the reference picker lists a conversation's newest files and images; the bar reads a named agent artifact"),
 	"POST /api/v1/markdown/file-round-trip":                         goingExcludedThrough("dispatch_check_markdown", "the check of a local file's bytes before their upload: the bar opens no file, so it checks a text"),
-	"PUT /api/v1/issues/{key}/design-gates":                         goingExcludedDaemon,
-	"PUT /api/v1/projects/{key}/gated-steps":                        goingExcludedDaemon,
+	"PUT /api/v1/issues/{key}/design-gates":                         goingExcludedDaemonUngated,
+	"PUT /api/v1/projects/{key}/gated-steps":                        goingExcludedDaemonUngated,
 	"PUT /api/v1/issues/{key}/role-holders":                         goingExcludedDaemon,
 	"PUT /api/v1/issues/{key}/steps/{id}":                           goingExcludedDaemonRefusing(codeStepWriter),
 	"PUT /api/v1/issues/{key}/steps/{id}/rating":                    goingExcludedDaemonRefusing(codeStepWriter),

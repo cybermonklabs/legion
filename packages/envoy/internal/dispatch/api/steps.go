@@ -32,7 +32,9 @@ import (
 //
 // Each write names as its actor legion-daemon:<PROJECT>, the session of the issue's project's
 // daemon, or the session of another project's daemon that the request's broker token proves
-// (isIssueDaemon). Dispatch refuses any other writer 403 STEP_WRITER. That holds the session
+// (isIssueDaemon). Dispatch refuses any other writer 403 STEP_WRITER, at the gate each of the
+// routes' declarations states (routeDecl.DaemonWrites, refuseNonDaemon) and before its handler
+// does anything with the write, so no handler here checks its writer. That holds the session
 // the body names, which a bearer bound to a session cannot make another's (403
 // ACTOR_SESSION_MISMATCH); a credential that proves no session, such as the shared agent token, a
 // personal agent token or a service account's, can name the session of the issue's project's
@@ -48,7 +50,8 @@ const (
 	// codeStepInput is a value outside its form, or a first write of a run that does not name
 	// its identity; the message names the field (workflowstore.ErrStepInput).
 	codeStepInput = contracts.StepInputCode
-	// codeStepWriter is a writer that is not a daemon that writes the issue's records (isIssueDaemon).
+	// codeStepWriter is a writer that is not a daemon that writes the issue's records
+	// (isIssueDaemon), which the routes' gate refuses (requireIssueDaemon).
 	codeStepWriter = contracts.StepWriterCode
 	// codeStepOtherIssue is an id whose record is a run of another issue.
 	codeStepOtherIssue = contracts.StepOtherIssueCode
@@ -119,28 +122,28 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), actor, key)
+	s.writeIssueStep(w, r, input.write(), actor, r.PathValue("key"))
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
 // states, as putIssueStep writes them: the rating and its reason are set once, and the record is
 // made where the retro's start and end have not landed yet. The record must be a retro's. A body
-// that names no rating is refused once its writer is checked, before the transaction and the
-// issue's lock, as the package refuses a required field it lacks: the store takes a step write
-// with no rating, so this route alone holds one required. A reason the body leaves out is "",
-// which the store refuses as a rating_reason left out, after it has checked the write's other
-// fields and the rating.
+// that names no rating is refused once the route's gate has passed its writer (requireIssueDaemon),
+// before the transaction and the issue's lock, as the package refuses a required field it lacks:
+// the store takes a step write with no rating, so this route alone holds one required. A reason
+// the body leaves out is "", which the store refuses as a rating_reason left out, after it has
+// checked the write's other fields and the rating.
 func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	var input stepRatingInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -154,23 +157,24 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	if input.RatingReason != nil {
 		write.Rating.Reason = *input.RatingReason
 	}
-	s.writeIssueStep(w, r, write, actor, key)
+	s.writeIssueStep(w, r, write, actor, r.PathValue("key"))
 }
 
 // putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
 // of the run the body states, as putIssueStep writes them: the two are set once, and the record is
 // made where the run's start and end have not landed yet. A body that names neither is refused
-// once its writer is checked, before the transaction and the issue's lock, as the package refuses
-// a required field it lacks: the store takes a step write with no experiment, so this route alone
-// holds the pair required. The one of the two the body leaves out is "", which the store refuses
-// as one stated without the other, after it has checked the write's other fields.
+// once the route's gate has passed its writer (requireIssueDaemon), before the transaction and the
+// issue's lock, as the package refuses a required field it lacks: the store takes a step write
+// with no experiment, so this route alone holds the pair required. The one of the two the body
+// leaves out is "", which the store refuses as one stated without the other, after it has checked
+// the write's other fields.
 func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) {
 	var input stepExperimentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a step record")
+	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -187,13 +191,13 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 	if input.Variant != nil {
 		write.Experiment.Variant = *input.Variant
 	}
-	s.writeIssueStep(w, r, write, actor, key)
+	s.writeIssueStep(w, r, write, actor, r.PathValue("key"))
 }
 
 // writeIssueStep is the one write of a step record behind the three routes, by actor to the issue
-// key, each of which the route has checked (requireIssueDaemon): the issue is read, write (its ID,
-// Issue and Project filled here from the path and the issue row) is written, and the record is
-// answered as the read lists it.
+// key, a writer each route's gate has passed (refuseNonDaemon, requireIssueDaemon): the issue is
+// read, write (its ID, Issue and Project filled here from the path and the issue row) is written,
+// and the record is answered as the read lists it.
 func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, actor model.Actor, key string) {
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -237,26 +241,6 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 		return
 	}
 	WriteJSON(w, http.StatusOK, record)
-}
-
-// requireIssueDaemon is the prelude of every record write: the caller's actor (requireActor) and
-// the issue key of the path, where the actor is a writer of the records of that issue
-// (isIssueDaemon). That writer is the session of its project's Legion daemon, or the session of
-// another project's daemon that the request's broker token proves. It refuses any other writer
-// 403 STEP_WRITER, naming what record and whose.
-func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supplied *model.Actor, record string) (model.Actor, string, bool) {
-	actor, ok := s.requireActor(w, r, supplied)
-	if !ok {
-		return model.Actor{}, "", false
-	}
-	key := r.PathValue("key")
-	if !s.isIssueDaemon(r, actor, key) {
-		writeError(w, codeStepWriter, http.StatusForbidden, fmt.Sprintf(
-			"only a Legion daemon writes %s of %s: the session %s, or the session legion-daemon:<P> of another project's daemon whose broker token names P and proves that session",
-			record, key, legionDaemonSessionOf(key)))
-		return model.Actor{}, "", false
-	}
-	return actor, key, true
 }
 
 // lockRecordedIssue takes the owner lock of the issue key a record is written to, shared, then

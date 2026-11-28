@@ -1127,6 +1127,14 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // zero value for a row that has none.
 func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
+	if route.DaemonWrites != nil {
+		// Around the row's handler alone, so its gate answers a caller that is not the Legion
+		// daemon at the step its handler's own check answered it before the gate: past every
+		// layer below, the keyed one among them, and once the body and the writer are read as the
+		// handler reads them, so every caller reads the status and the code it read before
+		// (refuseNonDaemon). Nothing the handler does with the write runs for such a caller.
+		handler = s.refuseNonDaemon(*route.DaemonWrites, handler)
+	}
 	if keyedMethod(route.Method) {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}

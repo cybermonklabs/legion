@@ -29,11 +29,11 @@ import (
 // With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
 // must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's
 // project, or prove session legion-daemon:<P> of another project's daemon and name that project
-// P (isIssueDaemon). The route refuses any other credential with 403 ROLE_HOLDER_FORBIDDEN before
-// it opens a transaction. With the setting off, the actor must still name the daemon's session, or
-// the session of another project's daemon that the request's broker token proves (isIssueDaemon),
-// but a bearer that proves no session of its own can name the daemon's session in the body
-// (bearerSessionActor).
+// P (roleHolderDaemonProven). The route's gate (routeDecl.DaemonWrites, refuseNonDaemon) refuses
+// any other credential with 403 ROLE_HOLDER_FORBIDDEN before the handler runs. With the setting
+// off, the actor must still name the daemon's session, or the session of another project's daemon
+// that the request's broker token proves (isIssueDaemon), but a bearer that proves no session of
+// its own can name the daemon's session in the body (bearerSessionActor).
 // The project's proven_sessions setting refuses that unproven actor with
 // 403 ROLE_HOLDER_NOT_PROVEN.
 //
@@ -177,6 +177,19 @@ func (s *server) isIssueDaemon(r *http.Request, actor model.Actor, key string) b
 	return proved && session == actor.ID && ok && named == project
 }
 
+// roleHolderDaemonProven reports whether writer, the writer of a role-holder publication of the
+// issue key, is a Legion daemon's own token: it holds model.ScopeLegionStatus, which the broker
+// grants to a daemon's token alone, and proves the session of the issue's project's daemon, or that
+// of another project's daemon whose project it names (isIssueDaemon). Such a token's actor is the
+// session it proves. With Deps.LegionStatusScope on, the route's gate passes no other writer
+// (requireRoleHolderPublisher); with the setting on or off, putIssueRoleHolders marks each pair it
+// stores or keeps with the answer (issue_role_holders.daemon_proven).
+func (s *server) roleHolderDaemonProven(r *http.Request, writer issueWriter, key string) bool {
+	credential := writer.credential
+	return credential.Holds(model.ScopeLegionStatus) &&
+		(credential.Session == legionDaemonSessionOf(key) || s.isIssueDaemon(r, writer.actor, key))
+}
+
 // heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
 // holds no role.
 func heldRole(ctx context.Context, q queryer, issueKey, session string) (string, error) {
@@ -247,11 +260,10 @@ const maxRoleHolderSessionBytes = 256
 
 // putIssueRoleHolders publishes the session of each Legion role of an issue. It reads the
 // request's credential as optionalActor resolved it (requestWriter), and refuses what requireActor
-// refuses. The credential is a daemon's own when it holds model.ScopeLegionStatus and proves the
-// session legion-daemon:<project> of the issue's project, or proves the session
-// legion-daemon:<P> of another project's daemon and names that project P (isIssueDaemon). With
-// Deps.LegionStatusScope on, every other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it
-// off, the actor must be that session (this file's comment).
+// refuses. Its writer is one the route's gate passed (routeDecl.DaemonWrites,
+// requireRoleHolderPublisher): with Deps.LegionStatusScope on, a daemon's own broker token
+// (roleHolderDaemonProven); with it off, a daemon's session (isIssueDaemon). Every other caller is
+// refused 403 ROLE_HOLDER_FORBIDDEN there, before this runs (this file's comment).
 //
 // The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
 // body does not name, then inserts the pairs that are not stored yet. A pair that changed is
@@ -281,28 +293,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	key := r.PathValue("key")
 	daemon := legionDaemonSessionOf(key)
-	credential := writer.credential
-	// Whether the actor is a daemon that writes the issue's records: the issue's project's daemon,
-	// or another project's daemon whose broker token proves its session and names its project.
-	issueDaemon := s.isIssueDaemon(r, writer.actor, key)
-	// A daemon's own token: it holds legion-status, which the broker grants to a daemon's token
-	// alone, and proves the session of the issue's project's daemon, or that of another project's
-	// daemon whose project it names. Such a token's actor is the session it proves.
-	daemonProven := credential != nil && credential.Holds(model.ScopeLegionStatus) &&
-		(credential.Session == daemon || issueDaemon)
-	if s.deps.LegionStatusScope {
-		if !daemonProven {
-			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-				"only a Legion daemon's own broker token publishes the roles of %s. It holds the %s scope, and it proves session %s, or it proves session legion-daemon:<P> and names project P.",
-				key, model.ScopeLegionStatus, daemon))
-			return
-		}
-	} else if !issueDaemon {
-		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
-			key, legionProjectOf(key), legionDaemonSessionOf(key)))
-		return
-	}
+	daemonProven := s.roleHolderDaemonProven(r, writer, key)
 	if input.Holders == nil {
 		writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
 			"holders is required: the session of each role of %s, or [] when no session holds a role.", key))

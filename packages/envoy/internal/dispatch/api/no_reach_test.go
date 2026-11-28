@@ -1047,8 +1047,8 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 //
 //   - the step write, its rating, its experiment and the plan write each record only for the
 //     session of the Legion daemon of the key's project and refuse any other writer 403
-//     STEP_WRITER before they read the id (putIssueStep, the rating's, the experiment's and
-//     putIssuePlan's requireIssueDaemon), so each is sent over the deployment's shared agent
+//     STEP_WRITER at their gate, before the handler reads the id (routeDecl.DaemonWrites,
+//     refuseNonDaemon), so each is sent over the deployment's shared agent
 //     credential, which proves no session, naming the session of the other project's daemon, with
 //     a body each accepts: the rating carries one, the experiment write an experiment and its
 //     variant, and the plan write the default plan of a run (defaultPlanBody);

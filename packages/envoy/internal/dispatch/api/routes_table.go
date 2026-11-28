@@ -310,6 +310,24 @@ type routeDecl struct {
 	// limited-token gate reads it.
 	ApproveOnly bool
 
+	// DaemonWrites is a route only the Legion daemon writes: the check that tells the daemon
+	// apart from every other caller of the route and what the route writes (daemonWrite), nil
+	// for every other route. register mounts each route that states it behind refuseNonDaemon,
+	// which answers every caller that is not the daemon 403 with the route's code - STEP_WRITER
+	// for a record route, ROLE_HOLDER_FORBIDDEN for the role-holder publication - before its
+	// handler does anything with the write, so the declaration is what refuses, as ResultsScope
+	// is for a results token. The daemon is told apart by the session its write names, the one
+	// fact every credential it may present carries, so a bearer that proves no session of its own
+	// and names the daemon's session in its body is taken for it (daemonWrite).
+	//
+	// The routes that state it are the step record writes, the plan write and the role-holder
+	// publication. The design-gate and gated-step publications state none: their declarations
+	// name the deployment's daemon as their one writer, and the server refuses no other caller of
+	// them. The command bar's inventory holds both to that (goingExcludedDaemonUngated). Like
+	// ResultsScope, it is no scope: the route index and the OpenAPI document do not carry it, and
+	// only refuseNonDaemon reads it.
+	DaemonWrites *daemonWrite
+
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
 	// reflected out of (routeShape, routes_shapes.go). Every route states one, which
 	// shapelessRoutes holds the table to; the OpenAPI emitter is what reads it.
