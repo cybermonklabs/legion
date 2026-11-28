@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { encodeBlockId } from "@legion/contracts";
 import { parsePath } from "react-router-dom";
 
 import type { DisplayTree } from "../../../api/types";
@@ -77,15 +78,41 @@ test("storeLinkPath takes only the path a name's link holds", () => {
 // the part between `lens/` and that `#`, and the block id all the rest, which the tree route
 // sends as the node's `block_id`. A block id may hold a `#`, since a block's id attribute holds
 // any id a browser's update gives it (`pmdoc`'s `TypedBlockIDAttribute`). So a finding whose
-// block id is `a#b` has the read id `lens/<uuid>#a#b` and the address `dispatch://lens/<uuid>#b-a#b`,
+// block id is `a#b` has the read id `lens/<uuid>#a#b` and the address
+// `dispatch://lens/<uuid>#b-a%23b`, its block id written as the server's `refs.StoreRef` writes it,
 // and a link to that address opens that row (T's tester, round 26, beside review 6097403865 of
 // part W).
 test("a finding whose block id holds a # is read at its id's first #, as the server reads it", () => {
   const readId = `lens/${LENS}#a#b`;
-  const address = `dispatch://lens/${LENS}#b-a#b`;
-  expect(storeAddressOf("finding", readId, `lens/${LENS}`), "the finding's address").toBe(address);
+  const address = `dispatch://lens/${LENS}#b-a%23b`;
+  expect(storeAddressOf("finding", readId), "the finding's address").toBe(address);
   const path = outlineRowPath("CORE-1", readId);
   expect(storeLinkPath(address, path, PAGE), "the link to the finding opens no row").toBe(path);
+});
+
+/** That the finding of the lens LENS whose block id is `block` has the address the server writes
+ *  it, its block id as `encodeBlockId` writes it, and that a link to that address opens the row
+ *  of its read id, `lens/<uuid>#<block id>`. */
+function expectFindingAddress(block: string): void {
+  const readId = `lens/${LENS}#${block}`;
+  const address = `dispatch://lens/${LENS}#b-${encodeBlockId(block)}`;
+  expect(storeAddressOf("finding", readId), "the finding's address").toBe(address);
+  const path = outlineRowPath("CORE-1", readId);
+  expect(storeLinkPath(address, path, PAGE), "the link to the finding opens no row").toBe(path);
+}
+
+// The server writes a finding's address with its block id as `text.EncodeBlockID` writes it
+// (`refs.StoreRef`, `refs.BlockRef`), the encoding `encodeBlockId` shares: every character but a
+// letter, a digit and `-` percent-encoded. Written raw, a block id holding a `%` reads as a broken
+// percent-encoding, and one holding an `@` as the id before its `@` under a pin, or as nothing, so
+// neither address names the finding. So a finding whose block id holds a `%` or an `@` has the
+// address that encodes it, and a link to that address opens that row.
+test("a finding whose block id holds a % is linked at the address the server writes", () => {
+  expectFindingAddress("100%");
+});
+
+test("a finding whose block id holds an @ is linked at the address the server writes", () => {
+  expectFindingAddress("it@v2");
 });
 
 // The row's path is the issue's own path as the router builds it (`buildIssuePath`), which the
