@@ -20,9 +20,11 @@ package supervise
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -196,11 +198,22 @@ type wake struct {
 	pluginMark *pluginIntent
 	// pause is the project pause whose gate holds this launch (pauseGate), 0 for a wake the
 	// pacing holds. A held launch has no moment to run: it waits on the machine with no timer, is
-	// published as no waiting wake (publish), and leaves only by the claim's stop for the pause
-	// (pauseStopDue) or by its let-out once that pause has ended (letOutHeldLaunch). Its let-out
-	// takes a place in the pacing for it unless it paid. A held launch of the stale-plugin lane
-	// keeps its refresh credit all the while, though no view shows its wake (laneLaunchOwed).
+	// published as no waiting wake (publish), and leaves by the claim's stop for the pause
+	// (pauseStopDue), by its let-out once that pause has ended (letOutHeldLaunch, or an
+	// operator's retry that lets it out unpaced, runDroppedLaunchForRetry), or, where it is the
+	// relaunch of a death a report has since found running, by that report's drop of it
+	// (dropOutlivedRelaunch). Its let-out takes a place in the pacing for it unless it paid. A held
+	// launch of the stale-plugin lane keeps its refresh credit all the while, though no view shows
+	// its wake (laneLaunchOwed).
 	pause int64
+	// deathRelaunch is whether this wake is the relaunch of the death the claim holds decided, as
+	// relaunchDeath raised it (died, relaunchRecordedDeath), and no other launch: a stale-plugin
+	// refresh (refreshPlugin), a stale registration's relaunch (staleRegistration) or any launch
+	// raised over the death before its own relaunch is false. It is the one wake a report that
+	// finds the process running drops with the death it ends (judge, dropOutlivedRelaunch); every
+	// other launch still owes the live process what it was raised for, and keeps its turn. It is
+	// memory only, as the wake is: the boot's replay raises the death's relaunch again, marked.
+	deathRelaunch bool
 	// paid is whether this launch's let-out, once a pause's gate holds it, runs it with no place
 	// of its own (letOutHeldLaunch): the launch has had its turn from the pacing already. The
 	// pacing let its place out, which a pause then met at its turn (reserveWake, wakeNow), an
@@ -732,6 +745,64 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 	m.detachWake()
 	m.wake = nil
 	return dropped
+}
+
+// dropOutlivedRelaunch drops the relaunch of a death died decided, waiting over the process a
+// report has just found running, in the pacing or behind the pause's gate (judge,
+// dispatch://INFRA-1117/comment/80daf46d-7ffd-4020-b51f-63fedd02182e). The report ended the
+// death (reportedProcess), and the relaunch was raised for that death alone, so the daemon
+// replaces no live process and no let-go records an end of the death's words (letGo, recordEnd).
+// judge drops only the wake that raise marked as the death's own (wake.deathRelaunch,
+// relaunchDeath); any other launch waiting over the process keeps its turn. The cause the death's
+// relaunch left pending goes with the relaunch (Claim.PendingCause): no relaunch of a failure is in
+// flight any more. Only a cause that relaunch recorded goes, read as died over an end the policy
+// charges (processOutcome, Charges): an end it charges nothing recorded none, and the cause pending
+// is the earlier failure's that this process is the relaunch of. The Death the death counted
+// stays counted, as every death is (chargeDeath).
+//
+// The drop stands in for the ready of the launch it dropped
+// (dispatch://INFRA-1117/comment/ef5d798e-5e76-4e5a-92ef-616545f4567c): had that relaunch run, its
+// agent's ready would have set the launch failures to 0 (ready), and the process the claim keeps is
+// that healthy launch. So where the kept agent is already up, having said it is ready (ready,
+// working or idle, no state of unready), the drop sets the launch failures to 0 as that ready
+// would, and touches no other count. It reads no raise: whichever raise charged the
+// death's launch failure — the one that parked this wake, or an earlier one whose wake a restart
+// lost or whose turn the lifecycle recheck refused, its charge kept in memory or in the store
+// (deathLaunchFailureCharged) — and whatever the claim counted before the death, the count reads
+// what that ready would have left, and never less than 0. A kept agent in any state of unready
+// (queued, launch_uncertain, launching, shim_connected or registered) keeps its count
+// (dispatch://INFRA-1117/comment/031e8074-69aa-43c2-bcbc-bb0430dc1190): the count stays until the
+// next ready resets it, the agent's own when it comes, a full ready (ready) and not the one a kept
+// agent already up gives again, which resets nothing (reready), or the ready of the launch that
+// replaces a process that cannot register.
+//
+// The wake goes off the machine and gives up what held it: its place in the pacing
+// (placeTimer), the turn it would have taken going to the wake behind it, or the gate's own stop
+// of the claim for the pause (TimerPause, pauseStopDue), which the gate posted because the launch
+// it held was to replace the process. The pause's end then lets nothing out (resumePause,
+// letOutHeldLaunch), and the live claim is the pause's to stop as every other live claim is
+// (the daemon's pause_stop row). The process the claim keeps is watched again as at a refused
+// turn (watchAgain), since the park took its boot interval, its registration deadline and its
+// turn bound (waitOnMachine). What a wake spent with no launch leaves goes as it goes at that
+// turn: the end of the decision tells the daemon that a paced wait ended and gives back a credit
+// of the refresh gate (tellWakeQueue, endRefreshLane). It writes nothing itself: the park wrote
+// nothing of a claim that still records its process, and the report's write carries the clear.
+func (m *Machine) dropOutlivedRelaunch() {
+	waiting := m.wake
+	// The estimate is read before the disarm gives the place up (placeTimer): a place that left
+	// estimates the zero time.
+	m.log.Info("supervise: a report found running the process a death's relaunch waits to replace; the death is over, so the relaunch is dropped and the process kept",
+		"kind", waiting.kind, "due", waiting.due(), "pause", waiting.pause, "state", m.claim.State)
+	m.disarm(TimerWake)
+	m.disarm(TimerPause)
+	m.wake = nil
+	if !slices.Contains(unready, m.claim.State) {
+		m.claim.Budgets.LaunchFailures = 0
+	}
+	if m.claim.PendingCause == CauseDied && Charges(m.processOutcome(runtime.OutcomeProcessDied)) {
+		m.claim.PendingCause = ""
+	}
+	m.watchAgain()
 }
 
 // runParkedLaunchNow is an operator's task meeting a launch the pacing parked over the process

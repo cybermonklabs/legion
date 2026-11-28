@@ -462,7 +462,11 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return ErrCompactSuspended
 	}
-	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && m.outstandingPrompt(p.ID) {
+	// The wait for the prompt's turn is not armed over a process the runtime last reported gone,
+	// which starts no turn (Machine.processGone, watchAgain): a compaction taken over such a
+	// process, one whose relaunch was refused while its connection was still registered, ends
+	// here.
+	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && m.outstandingPrompt(p.ID) && !m.processGone {
 		m.disarm(TimerTurn)
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}

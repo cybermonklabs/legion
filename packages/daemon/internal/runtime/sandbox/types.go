@@ -328,6 +328,18 @@ type Options struct {
 	// every process in it, so a server a role started would die with that generation and take
 	// every sibling role's test database with it.
 	TestPostgres bool
+	// TestPostgresDisk is runtime.kubernetes.test_postgres_disk: the size of the disk of its own
+	// that every issue pod serving TestPostgres keeps the cluster on, nil while the deployment
+	// sets none and the cluster stays in the testpg emptyDir. The disk is a generic ephemeral
+	// volume on the issue disk's StorageClass (claimSpec), which the kubelet's ephemeral-storage
+	// limit does not count, so a test database that fills it cannot get its pod evicted, and its
+	// launcher is told so (--test-postgres-disk, launcher.Config.TestPostgresDisk). It is read
+	// only where TestPostgres is set.
+	//
+	// It is no part of the pod shape a template records (podShapeRecord): a pod created after it
+	// is set gets the disk, and a running pod keeps its emptyDir until something else replaces it,
+	// so setting it opens no update round of every pod.
+	TestPostgresDisk *resource.Quantity
 	// MemoryGuard is what the memory guard in an issue pod's launcher runs by
 	// (runtime.kubernetes.memory_guard.issue_pods), handed to it on the daemon's answer to each
 	// of its roles' hellos (LauncherResolver). Nil is a deployment that turned the guard off, and

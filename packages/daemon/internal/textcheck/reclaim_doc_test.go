@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testdoc"
 )
 
 // The reclaim paragraph of docs/kubernetes.md is an operator's whole remedy for an issue volume
@@ -298,7 +300,7 @@ func reclaimListsIn(text string) (deleted, exempt map[string]bool, err error) {
 	// The markers are prose and the document is hard-wrapped, so they straddle line ends: find them
 	// in a flattened copy and carry the match back to the line it starts on. The lists themselves are
 	// read from the lines, because a bullet is a shape of a line and flattening would erase it.
-	flat, lineOf := flattenKeepingLines(lines)
+	flat, lineOf := testdoc.FlattenKeepingLines(lines)
 	startOffset := strings.Index(flat, reclaimParagraphStart)
 	if startOffset < 0 {
 		return nil, nil, fmt.Errorf("it has no %q: the reclaim paragraph was reworded, and this check "+
@@ -377,25 +379,4 @@ func bulletPath(bullet string, whole bool) (string, bool) {
 		return "", false
 	}
 	return named, true
-}
-
-// flattenKeepingLines collapses the document's whitespace so prose that was hard-wrapped reads as
-// one line, and records for every byte of the result the line it came from, which is what turns a
-// marker found in the flat text back into a bound on the lines the lists live in.
-func flattenKeepingLines(lines []string) (string, []int) {
-	var flat strings.Builder
-	lineOf := make([]int, 0, len(lines)*8)
-	for i, line := range lines {
-		for _, field := range strings.Fields(line) {
-			if flat.Len() > 0 {
-				flat.WriteByte(' ')
-				lineOf = append(lineOf, i)
-			}
-			flat.WriteString(field)
-			for range len(field) {
-				lineOf = append(lineOf, i)
-			}
-		}
-	}
-	return flat.String(), lineOf
 }

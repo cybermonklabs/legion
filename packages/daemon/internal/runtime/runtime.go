@@ -995,6 +995,96 @@ const (
 	StaleAddress ObservationKind = "stale_address"
 )
 
+// PodEndReading is what a runtime read about the cause of the end of the pod a process ran in:
+// that something outside the pod ended it, or that an act of the daemon's own did. A runtime that
+// read neither carries the empty value, and an end of neither reading is charged exactly as it
+// was before this reading existed.
+//
+// It is one value with three states rather than a pair of bools because one charging policy takes
+// it as a row (INFRA-3136): an end is read in one place, and what the policy charges for it
+// is chosen by this value. Its members are named for the reading itself and never for what the
+// daemon does about it — a name like "uncharged" or "waived" would have to be renamed the first
+// time such an end is charged differently.
+type PodEndReading string
+
+const (
+	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
+	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
+	// an end; the kubelet's `Evicted` counts only with the condition, and not when its message
+	// names a container of the pod over its request, the pod's own use: sandbox's
+	// evictedOverRequest, DeathMemoryRequest, DeathDiskRequest), or the pod, not yet terminal, was
+	// deleted under a deletion timestamp that no intent of the daemon's accounts for; a pod
+	// already terminal is read from its status alone. The process did nothing the daemon can see
+	// wrong, so the supervisor continues each role of that pod in its own session, charging
+	// neither a death nor a launch failure however often such ends come, and sends each the task it
+	// owed again (supervise's judge, endedFromOutside, displaced). It covers every claim the
+	// runtime observes, the project controller's included: the reading is of the cause of the end,
+	// not of the kind of pod.
+	PodEndNotOurs PodEndReading = "pod_end_not_ours"
+	// PodEndOurs: an act of the daemon's own ended the pod — an issue's close or an idle release's
+	// teardown, a tree's cleanup or the orphan sweep, an update round's replacement or a
+	// relaunch's. Such an end is charged exactly as it is without the reading: the daemon's own
+	// replacements already answer for themselves (Displaced), and a close or a cleanup has
+	// suspended or released the claim before its pod goes.
+	PodEndOurs PodEndReading = "pod_end_ours"
+)
+
+// DeathCauseKind is which of the causes the daemon tells a role in plain words a runtime read of
+// the end of a process (DeathCause). Each is a death the role's own work can cause and can stop
+// causing, so the supervisor charges it and says what it was, with its numbers, in the role's next
+// task and in the notices of a claim it fails (supervise's deathCause, dispatch://INFRA-1117 R9).
+type DeathCauseKind string
+
+const (
+	// DeathMemoryLimit: the issue pod's one container, `roles`, ended OOMKilled, so it used more
+	// than its memory limit. DeathCause.Limit is that limit, as the pod's spec holds it.
+	DeathMemoryLimit DeathCauseKind = "memory_limit"
+	// DeathMemoryRequest: the kubelet evicted the pod for node memory pressure, and its message
+	// named a container of the pod using more memory than the container requested: the pod's own
+	// memory use, though the pod was under its limit (sandbox's evictedOverRequest).
+	// DeathCause.Container, Use and Request are the container, its use and its request as that
+	// message gave them.
+	DeathMemoryRequest DeathCauseKind = "memory_request"
+	// DeathDiskLimit: the kubelet evicted the pod, with no DisruptionTarget condition, for passing
+	// a disk limit of its own: the pod's ephemeral-storage limit, a container's or an emptyDir's
+	// sizeLimit. DeathCause.Limit is that limit, from the kubelet's message or, where the message
+	// holds one of the kubelet's limit sentences and its limit does not parse, from the pod's spec.
+	// DeathCause.TestDatabaseCounted says whether the limit counted the pod's test database.
+	DeathDiskLimit DeathCauseKind = "disk_limit"
+	// DeathDiskRequest: the kubelet evicted the pod for node disk pressure, and its message named
+	// a container of the pod using more ephemeral storage than the container requested. What the
+	// kubelet counts as a container's use there is its own disk, its writable layer and its logs,
+	// which holds nothing of $TMPDIR, on the issue's volume, and nothing of an emptyDir volume,
+	// whose use its message names no container for. That is the pod's own disk use, though the pod
+	// was under its limit (sandbox's evictedOverRequest). DeathCause.Container, Use and Request are
+	// the container, its use and its request as that message gave them.
+	DeathDiskRequest DeathCauseKind = "disk_request"
+)
+
+// DeathCause is what a runtime read of the cause of a process's end where it is one of the
+// DeathCauseKind causes, with the quantities that kind names, in bytes, and for a disk limit
+// whether it counted the pod's test database; the zero value, Kind "", is every other end. The
+// quantities are the runtime's parse of what the cluster wrote, never its text, so the words the
+// daemon builds from them are the daemon's own.
+type DeathCause struct {
+	Kind DeathCauseKind
+	// Limit is the memory limit of DeathMemoryLimit and the disk limit of DeathDiskLimit.
+	Limit int64
+	// Container, Use and Request are DeathMemoryRequest's and DeathDiskRequest's: the container
+	// the kubelet's message named, which is a container of the pod's spec, and what the message
+	// gave as its use and its request of the resource the node was short of.
+	Container    string
+	Use, Request int64
+	// TestDatabaseCounted is DeathDiskLimit's: the pod kept its own test database on a volume the
+	// kubelet's ephemeral-storage limit counts, an emptyDir. It is false for a pod whose test
+	// database is on a disk of its own (runtime.kubernetes.test_postgres_disk), which the limit
+	// does not count, and for a pod that runs none. Where it is true, the role's next task names
+	// the test database among what the limit counts (supervise's endDied). It is read from the
+	// ended pod's own spec and not from the deployment's setting, since a pod made before the
+	// setting changed keeps the volume it was made with.
+	TestDatabaseCounted bool
+}
+
 // Observation is one runtime fact about one process, with the moment it was observed and, for a
 // verdict that needs one, the detail an operator reads.
 type Observation struct {
@@ -1021,6 +1111,21 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// EndReading is what the runtime read about the cause of the end of the pod this process ran
+	// in, on a Gone or a NotRecordedProcess of a process that ran in one; "" on every other
+	// observation, and on an end the runtime read neither way. Only the Sandbox runtime reports
+	// it, since a pod is the only thing either reading is of. The words the reading was made from
+	// and the reason the cluster gave for it, where it gave one, are in Detail and in the one line
+	// the runtime logs for the pod's end; this field is what the supervisor decides on, a field
+	// rather than a shape of Detail for the reason Displaced is.
+	EndReading PodEndReading
+	// Cause is what the runtime read of the cause of the end, on a Gone or a NotRecordedProcess,
+	// where that end is one the daemon tells a role in plain words (DeathCause), and the zero
+	// value on every other observation. Only the Sandbox runtime reports it. It is read where the
+	// end is (the container's terminated state, and the pod's end as the informer delivered it),
+	// so it is carried when the pod has left the store before the claim is checked, and it is a
+	// field rather than a shape of Detail for the reason Displaced is.
+	Cause DeathCause
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
 	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the

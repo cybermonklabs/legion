@@ -729,7 +729,7 @@ func (r *Runtime) replaceRoundPod(ctx context.Context, name, podUID string, due 
 	if err := due(ctx); err != nil {
 		return err
 	}
-	if _, err := r.suspendOver(ctx, s, v.pod, displacing(v.pod.UID, roundReplacement)); err != nil {
+	if _, err := r.suspendDisplacing(ctx, s, v.pod, roundReplacement); err != nil {
 		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", of, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {

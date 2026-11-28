@@ -306,14 +306,42 @@ type sentences struct{ abandoned, ended bool }
 //     names, still says its turn was interrupted, under the cause the claim's record names
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
 //     last death's words. With an abandoned session still to tell, that turn was the old
-//     session's, and the abandoned session's sentence stands in its place (the first item).
+//     session's, and the abandoned session's sentence stands in its place (the first item). A
+//     false death a read found running names no cause here: where its record replaced the told
+//     record of the end that took the task back, it kept that record (EndedWork.Earlier) and the
+//     read put it back (reportedProcess), so a later send of the task, a retry after a provider
+//     error or an uninvoked result among them, names that end's cause and reads that end's death
+//     kind for the out-of-memory note, as with no false death.
+//   - A task a death the daemon judged of its process took back, sent again to that same process
+//     after a read found it running (EndedWork.SentAgain), says in one sentence that it is sent
+//     again because the daemon read the process wrongly as ended, and nothing of that death, its
+//     cause or a turn it cut off (sentAgainTask): the process never ended, and the record of that
+//     death is told already, by no delivery, or gone (reportedProcess). Where the read put back
+//     an earlier launch's end (EndedWork.Earlier), every end the same steps tell with no false
+//     death leads, in its own words, and the sentence of the task sent again follows, since both
+//     are true: the earlier process ended, and this one did not. That end's sentence and its
+//     out-of-memory note lead where no turn has yet confirmed a prompt carrying it (Tells), and
+//     where the task carries that end's marks, which the read put back (Interrupted,
+//     EndedWork.TookBackEarlierTask): that end took the task back, so with no false death its
+//     next send tells it, in the sentence of its record rather than interruptedTask's. The result
+//     of the prompt the death's take-back replaced is stale (fence), so the task sent again
+//     carries no provider-error note and no retry for that prompt. The sentence of a task sent
+//     again is that task's alone, and only while the process it went to again lives: a task of
+//     another id never carries it, a prompt of the task that comes to nothing, or a send that
+//     rewrites it for its news, moves the mark to the id the task takes (takeBackPending,
+//     rewritePending), a turn that runs the task's prompt to its result and the task's retirement
+//     end the mark (promptResulted, retirePending), and so does the let-go of the process
+//     (letGo), so the next process's prompt carries none.
 //
 // Composing a prompt tells nothing (confirmCarrying).
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
-// — the agent reads that its turn was interrupted, then why, then the task. A task a provider
-// error took back carries its own sentence last of all (ProviderErrorNote), so the agent reads
-// what the provider did and then the task; each of these says something the others do not.
+// — the agent reads that its turn was interrupted, then why, then the task. Where the record the
+// interruption's sentence tells is of a death whose cause already says so with the container's
+// memory limit (EndedWork.Death), the note is its guidance alone (outOfMemoryNote), so the task
+// says once that the pod ran out of memory. A task a provider error took back carries its own
+// sentence last of all (ProviderErrorNote), so the agent reads what the provider did and then the
+// task; each of these says something the others do not.
 //
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's sentence alone (RelaunchSentence), composed from the record as it
@@ -349,26 +377,39 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if !relaunch && !d.RoundNamed && c.Role == claim.RoleReviewer {
 		text += reviewround.Sentences("", 0)
 	}
+	again := !relaunch && c.sentAgain(d)
 	var prefix string
 	if c.Abandoned.Tells() {
 		// The task's instruction ends the last sentence before the task, so the abandoned
 		// session's carries it only where no record's sentence follows it.
-		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells()), true
+		prefix, carried.abandoned = abandonedTask(c, !relaunch && !c.EndedWork.Tells() && !again), true
 	}
 	// oldTurn is whether a turn this task was taken back from is the abandoned session's, whose
 	// sentence stands in place of the notes of that turn: an abandoned session still tells, and
 	// no record of the fresh process says the task was in a turn of its own.
 	oldTurn := c.Abandoned.Tells() && !(c.EndedWork.Tells() && c.EndedWork.TaskTurn)
+	// earlier is whether d, a task sent again, carries the marks of an earlier launch's end that
+	// the read put back in place of the false death's record (reportedProcess): after a read, a
+	// task sent again carries no mark of the false death, so its marks are that end's.
+	earlier := again && d.Interrupted && c.EndedWork.Cause != "" && c.EndedWork.Generation != c.Generation
 	switch {
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
 		prefix, carried.ended = prefix+relaunchSentence(c.EndedWork.inFrontOf(d), true)+"\n\n", true
-	case d.Interrupted && !oldTurn:
+	case earlier && !oldTurn:
+		// That end is told already. The task it took back tells it again in its record's words,
+		// as a send of that task after a result that ran no turn does with no false death, and
+		// the telling stands as it is.
+		prefix += relaunchSentence(c.EndedWork.inFrontOf(d), true) + "\n\n"
+	case d.Interrupted && !oldTurn && !again:
 		prefix += interruptedTask(c.EndedWork.Cause)
 	}
-	if d.Interrupted && d.OutOfMemory && !oldTurn {
-		prefix += outOfMemoryTask
+	if d.Interrupted && d.OutOfMemory && !oldTurn && (!again || carried.ended || earlier) {
+		prefix += outOfMemoryNote(c.EndedWork)
+	}
+	if again {
+		prefix += sentAgainTask
 	}
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
@@ -843,8 +884,16 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		return nil
 	}
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
-	// paced launch is about to replace the process a send would reach (launchWaits).
-	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
+	// paced launch is about to replace the process a send would reach (launchWaits), nor one
+	// whose process the runtime last reported gone (Machine.processGone): a gone process takes
+	// no task, so the task waits for the relaunch, whose ready sends it once (finishReady). Every
+	// send of the claim comes through here, so this one hold covers each path that can reach a
+	// claim over its gone process before the relaunch lets that process go: a compaction's end
+	// (compactEnded, afterTurn), the late outcome of a send in flight at the report
+	// (fenceOutcome, refused), a turn's end or a prompt's result the stream delivers late, the
+	// provider-error ladder's wait (promptRetryDue), a pause's end, a hello, and a request that
+	// queues or releases a task (deliverNow, refuseBehindPending, releaseHeld).
+	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() || m.processGone {
 		return nil
 	}
 	// A claim that answered its open update round is handed nothing until the round ends.
@@ -1201,11 +1250,30 @@ func renderedID(was string, news, held []byte) string {
 // when to rewrite and when to retire. Its callers render the task's text and its news together, so
 // news is always what task names. The write comes first, so a restart reads the task the send that
 // follows carries, and a failed write leaves memory as the record holds it.
+//
+// A rewrite under a new id (renderedID) takes the mark of a task sent again to a process a read
+// found running with it (EndedWork.SentAgain), as a take-back does (takeBackPending): the task is
+// the same one, and the prompt the send makes of it says again that it is sent again because the
+// daemon read the process wrongly as ended. The claim then goes with the delivery in one write,
+// and a write that fails leaves the mark on the id the task keeps.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
+	was := next.ID
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	again := id != was && m.claim.EndedWork.SentAgain == was
+	var err error
+	if again {
+		stored := m.stored()
+		stored.EndedWork.SentAgain = id
+		err = m.putClaimAndDelivery(ctx, stored, next)
+	} else {
+		err = m.putDelivery(ctx, next)
+	}
+	if m.saved(err) != nil {
 		return err
+	}
+	if again {
+		m.claim.EndedWork.SentAgain = id
 	}
 	*m.claim.Pending = next
 	return nil
@@ -1615,6 +1683,8 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0
+	// So does the mark of a task sent again (EndedWork.SentAgain): the task it names is gone.
+	retired.EndedWork.SentAgain = ""
 	err := m.write(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
@@ -2087,6 +2157,25 @@ func interruptedTask(cause string) string {
 	return relaunchSentence(EndedWork{Cause: cause, Turn: true, TaskTurn: true}, true) + "\n\n"
 }
 
+// sentAgainTask is the sentence in front of a task a death the daemon judged of its process took
+// back, sent again to that same process after a read found it running (Claim.sentAgain): it says
+// why the task comes again and that the process did not end, and nothing of a cause or a turn. It
+// need not open the prompt: the sentence and the out-of-memory note of an earlier end the read
+// put back go in front of it (Delivery.message).
+const sentAgainTask = "This task is sent to you again because the daemon wrongly read your process as ended; " +
+	"your process did not end, so carry on from where your conversation stands.\n\n"
+
+// sentAgain is whether d is the task a death the daemon judged of the claim's process took back,
+// sent again to that process, which a read found running (EndedWork.SentAgain): the record names
+// d's id. A task of another id is not, and neither is the task once a turn has run its prompt to
+// its result or once the process is let go, each of which ends the mark (promptResulted, letGo);
+// a prompt of the task that came to nothing, or a send that rewrote it for its news, moves the
+// mark to the id the task takes (takeBackPending, rewritePending). The record can be an earlier
+// launch's end that the read put back (EndedWork.Earlier), so its launch says nothing here.
+func (c Claim) sentAgain(d Delivery) bool {
+	return c.EndedWork.SentAgain != "" && d.ID == c.EndedWork.SentAgain
+}
+
 // abandonedTask begins the first prompt given to the agent that replaced a session the claim
 // abandoned (forgetSession): one whose last turns the provider refused, one left behind by a
 // fresh session the operator or the controller asked for or by the operator's forget-session
@@ -2168,12 +2257,33 @@ func handoffWords() string {
 // its pod ran out of memory. The agent cannot see why the kubelet ended its container, and the
 // heavy work that filled the pod is the thing it must stop doing there, so it is told what
 // happened and where the rule about work a pod does not run is written.
-const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the container that runs " +
-	"every role of this issue, with the reason OOMKilled, and that end is what stopped your turn. " +
-	"The work that filled the pod can be another role's, not yours. An issue pod runs no heavy " +
-	"build and no whole test suite, so read skill://legion-worker/references/tools.md before you " +
-	"run such work again, and send it to CI on the pull request or where your deployment's " +
-	"instructions say.\n\n"
+const outOfMemoryTask = outOfMemoryStatement + outOfMemoryGuidance
+
+// outOfMemoryStatement is outOfMemoryTask's account of what happened, and outOfMemoryGuidance what
+// the agent does about it. In front of a task whose record already says the pod ran out of memory
+// in the daemon's plain sentence, which names the container's memory limit (EndedWork.Death), the
+// note is the guidance alone (outOfMemoryNote), so the task says once that the pod ran out of
+// memory, in the sentence that names the limit (dispatch://INFRA-1117 R9).
+const (
+	outOfMemoryStatement = "Your pod ran out of memory. Kubernetes ended the container that runs " +
+		"every role of this issue, with the reason OOMKilled, and that end is what stopped your turn. "
+	outOfMemoryGuidance = "The work that filled the pod can be another role's, not yours. An issue pod runs no heavy " +
+		"build and no whole test suite, so read skill://legion-worker/references/tools.md before you " +
+		"run such work again, and send it to CI on the pull request or where your deployment's " +
+		"instructions say.\n\n"
+)
+
+// outOfMemoryNote is the out-of-memory note in front of a task taken back from a turn its pod's
+// running out of memory cut off, where ended is the record the sentence in front of it tells:
+// outOfMemoryTask, or its guidance alone where that record is of the `roles` container killed for
+// passing its memory limit (runtime.DeathMemoryLimit), whose cause opens with the plain sentence
+// naming that limit (plainCause, endDied).
+func outOfMemoryNote(ended EndedWork) string {
+	if ended.Death == runtime.DeathMemoryLimit {
+		return outOfMemoryGuidance
+	}
+	return outOfMemoryTask
+}
 
 // interrupted takes back the pending task whose turn the claim's process can no longer finish — it
 // died, or a forced stop is about to end it — so the relaunched agent's ready sends it again: Oh My
@@ -2250,12 +2360,22 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	doubt := m.confirmationInDoubt()
 	untold := m.untellInFlight()
 	stored := m.stored()
+	// Store the new id and the earlier task's marks with the new delivery so a restart
+	// can undo the take-back: the death's record keeps an earlier launch's (EndedWork.Earlier),
+	// told or not, whose take-back may have marked this task.
+	e := &stored.EndedWork
+	keptEarlier := e.Died && e.Generation == m.claim.Generation && e.Earlier != nil
+	if keptEarlier {
+		e.TookBack = next.ID
+		e.TookBackEarlierTask = e.Earlier.TaskTurn && p.Interrupted
+		e.TookBackEarlierOutOfMemory = e.TookBackEarlierTask && p.OutOfMemory
+	}
 	var handshakeMoved bool
 	if doubt {
 		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
 	}
 	var err error
-	if untold || handshakeMoved {
+	if untold || handshakeMoved || keptEarlier {
 		err = m.putClaimAndDelivery(ctx, stored, next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -2264,7 +2384,9 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return err
 	}
 	*p = next
-	m.claim.Handshake = stored.Handshake
+	m.claim.Handshake, m.claim.EndedWork.TookBack = stored.Handshake, stored.EndedWork.TookBack
+	m.claim.EndedWork.TookBackEarlierTask = stored.EndedWork.TookBackEarlierTask
+	m.claim.EndedWork.TookBackEarlierOutOfMemory = stored.EndedWork.TookBackEarlierOutOfMemory
 	m.forgetOutstanding()
 	m.cutTurnOf = next.ID
 	return nil
@@ -2283,7 +2405,7 @@ const (
 // launch whose turn has come, or one a held suspension's deadline stops — where nothing ended the
 // pod's container, so the end was not the pod running out of memory. A death and a displacement
 // pass the observation's own OutOfMemory instead, and the suspension that lands over a process a
-// report found gone passes what that report recorded (suspendOverADeadProcess, goneOutOfMemory).
+// report found gone passes what that report recorded (suspendOverADeadProcess, goneDeath).
 const ordinaryEnd = false
 
 // markRead and clearReadMark are the only writers of the pending task's read mark: its
@@ -2371,7 +2493,10 @@ func (m *Machine) awaitResult(id string, news []byte) {
 // daemon request (stream's Conn.answer), so the prompt is outstanding with no acknowledgement and
 // its task is not marked read. The wait for its turn is armed from the moment the turn can start:
 // here once the compaction is over, and at its end while it runs (compactEnded). A task its turn
-// already confirmed waits for no turn.
+// already confirmed waits for no turn, and nor does a prompt held over a process the runtime last
+// reported gone (Machine.processGone, watchAgain): that report dropped the compaction with the
+// process (compactionLostProcess), so the send's wait can run out after it, and a gone process
+// starts no turn.
 func (m *Machine) keepHeldPrompt(r PromptRefused) {
 	p := m.claim.Pending
 	if !m.outstandingPrompt(p.ID) {
@@ -2379,7 +2504,7 @@ func (m *Machine) keepHeldPrompt(r PromptRefused) {
 	}
 	m.log.Info("supervise: the prompt's send ran out while the handoff held it; its turn is still the task's",
 		"delivery", p.ID, "error", r.Err)
-	if m.compacting == nil && p.ConfirmedAt.IsZero() {
+	if m.compacting == nil && p.ConfirmedAt.IsZero() && !m.processGone {
 		m.disarm(TimerTurn)
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
@@ -2470,6 +2595,13 @@ func (m *Machine) turnNews() []byte {
 // moved with it to the new id, so that a later take-back of the same confirmation under that id
 // still finds it.
 //
+// The mark of a task sent again to a process a read found running moves to the new id as well,
+// whichever way the confirmation goes (EndedWork.SentAgain): the prompt that came to nothing is
+// one the daemon reads as unread, as it reads its telling, so the next prompt of the task, a
+// provider error's retry among them, says again that the task is sent again because the daemon
+// read the process wrongly as ended. The claim goes with the delivery in one write where it
+// moved, and a write that fails leaves the mark on the id the task keeps.
+//
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
 // one-delivery record (shimwire's dedupe) is never asked to answer an old id again.
@@ -2500,6 +2632,10 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	p := m.claim.Pending
 	id, kept := rotateTaskID(p.ID), m.awaitsResult()
 	var moved, handshakeMoved bool
+	again := m.claim.EndedWork.SentAgain == p.ID
+	if again {
+		m.claim.EndedWork.SentAgain = id
+	}
 	if kept {
 		moved = m.moveTelling(p.ID, id)
 	} else {
@@ -2515,7 +2651,7 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	next := *p
 	next.ID = id
 	var err error
-	if moved || handshakeMoved {
+	if moved || handshakeMoved || again {
 		err = m.putClaimAndDelivery(ctx, m.stored(), next)
 	} else {
 		err = m.putDelivery(ctx, next)
@@ -2524,6 +2660,9 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 		if kept && moved {
 			// The confirmation stays under the id the write could not move it from.
 			m.moveTelling(id, p.ID)
+		}
+		if again {
+			m.claim.EndedWork.SentAgain = p.ID
 		}
 		return err
 	}
@@ -2560,7 +2699,10 @@ func (m *Machine) takeBackConfirmation(p *Delivery) bool {
 // that confirmation stands under from here on, and reports whether any record had a telling to
 // hand: each of the claim's two records whose ToldBy is from names to instead. to "" is the
 // confirmation taken back, which tells nothing any more, so such a record goes back to untold and
-// the next prompt carries its sentence again. Its callers:
+// the next prompt carries its sentence again. The told record of an earlier launch that a death's
+// record keeps (EndedWork.Earlier) follows the confirmation that told it too, so a read that
+// finds the process running puts it back told or untold as that telling now stands, as with no
+// false death; no prompt carries it while it is kept, so its untelling is not logged. Its callers:
 //
 //   - refused, a send that reached no turn with no other prompt of the task outstanding: the
 //     turn that confirmed the task was another input's. It writes the claim with the delivery
@@ -2590,6 +2732,9 @@ func (m *Machine) moveTelling(from, to string) bool {
 	if moved && to == "" {
 		m.log.Info("supervise: the confirmation of the prompt that told the agent what became of its earlier work was taken back; the next prompt tells it again",
 			"delivery", from)
+	}
+	if e := m.claim.EndedWork.Earlier; e != nil && e.Told && e.ToldBy == from {
+		e.Told, e.ToldBy, moved = to != "", to, true
 	}
 	return moved
 }

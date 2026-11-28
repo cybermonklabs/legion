@@ -131,13 +131,14 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 		task = "implement the plan"
 		next = "review it"
 	)
-	died := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
+	died := endDied(runtime.Observation{Kind: runtime.Gone})
 	for _, tc := range []struct {
 		name, cause string
 		// letGo lets the process go in the turn of its task and brings the next process up to
 		// ready; it answers the task that process is sent first.
 		letGo       func(h *harness) string
 		interrupted bool
+		died        bool
 		// because is the sentence's statement of why the process ended, says the statement it
 		// makes of the turn cut off, and saysNot the one it must not make.
 		because, says, saysNot string
@@ -170,6 +171,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 				return task
 			},
 			interrupted: true,
+			died:        true,
 			because:     "Your process ended because " + died + ".",
 			says:        saysTaskTurn, saysNot: saysTurnCut,
 		},
@@ -186,7 +188,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 
 			want := tc.letGo(h)
 
-			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Generation: cut, Turn: true, TaskTurn: true,
+			h.wantEnded(EndedWork{At: at, Cause: tc.cause, Died: tc.died, Generation: cut, Turn: true, TaskTurn: true,
 				Background: true, Kinds: []string{"subagent"}, Reported: true})
 			sent, p := h.wantPrompts(2)[1], h.pending()
 			if sent.DeliveryID != p.ID || p.Task != want || p.Interrupted != tc.interrupted ||
@@ -796,7 +798,7 @@ func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing
 		// end ends the task's turn and lets the process go.
 		end func(t *testing.T, h *harness)
 	}{
-		{name: "the process dies in that turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+		{name: "the process dies in that turn", cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 			end: func(t *testing.T, h *harness) {
 				h.observe(runtime.Gone)
 			}},
@@ -890,7 +892,7 @@ func TestARelaunchSentenceIsToldAgainWhenATurnTakenBeforeItsPromptsResultIsCutOf
 		// brings the claim back to send again.
 		cut, idle, resend func(t *testing.T, h *harness)
 	}{
-		{name: "the process dies in the turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+		{name: "the process dies in the turn", cause: endDied(runtime.Observation{Kind: runtime.Gone}),
 			cut: func(t *testing.T, h *harness) {
 				gone := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
 				if err := h.m.Handle(h.ctx, RuntimeObservation{Observation: gone}); err != nil {

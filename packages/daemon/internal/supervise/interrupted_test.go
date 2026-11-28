@@ -74,7 +74,7 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 		Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(), OutOfMemory: true,
 	}})
 	h.relaunched()
-	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
+	if want := interruptedTask(endDied(runtime.Observation{Kind: runtime.Gone})) + outOfMemoryTask + "implement the plan"; h.wantPrompts(2)[1].Message != want {
 		t.Fatalf("after the out-of-memory end the task was re-sent as %q, want %q", h.wantPrompts(2)[1].Message, want)
 	}
 	if p := h.store.load(testToken).Pending; p == nil || !p.OutOfMemory {
@@ -85,7 +85,7 @@ func TestAnInterruptedTasksNoteIsTheEndThatCutItsLastTurn(t *testing.T) {
 	h.wantState(StateWorking)
 	h.observe(runtime.Gone)
 	h.relaunched()
-	if want := interruptedTask(endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
+	if want := interruptedTask(endDied(runtime.Observation{Kind: runtime.Gone})) + "implement the plan"; h.wantPrompts(3)[2].Message != want {
 		t.Fatalf("after the ordinary end the task was re-sent as %q, want %q: the note describes no end of this turn",
 			h.wantPrompts(3)[2].Message, want)
 	}

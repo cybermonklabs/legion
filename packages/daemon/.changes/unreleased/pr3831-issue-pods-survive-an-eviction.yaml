@@ -1,0 +1,53 @@
+kind: Added
+custom:
+  Issue: pr3831
+body: |-
+  A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
+  did not make, continues every role of the issue in its own session with no death and no launch
+  failure charged, however often it happens and whether the role's agent was ready or still
+  starting. An end the daemon reads neither way is still charged as it is today: an `Evicted` end
+  with no `DisruptionTarget` condition, such as a pod over its own disk limit, and a reason such
+  as `UnexpectedAdmissionError`. So is an eviction for node memory or disk pressure whose kubelet
+  message names a container of the pod using more memory, or more ephemeral storage, than it
+  requested, since that is the pod's own use; one whose message names no container of the pod
+  over its request is a neighbour's and is continued, and so is one for disk use in the pod's
+  `emptyDir` volumes, which the message names no container for. An end the daemon started itself,
+  and recorded before it made it, stays its own whatever the kubelet writes. So that this holds
+  for a pod the daemon's informer has not yet seen, a suspension, a relabel or a delete of the
+  pod's Sandbox reads the pod from the API server, and a launch try's bound
+  (`sandbox.Runtime.LaunchBound`) grows by 2 minutes for those reads, to about 6 h 7 min at the
+  defaults (6 h 12 min with `keep_volume`). A read that fails records nothing: the daemon logs
+  `sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not
+  recorded as the daemon's own` at warning level, makes the act all the same, and reads the pod's
+  end as one from outside the pod, so its roles are relaunched uncharged, as after a daemon
+  restart that lost the record. The suspension of a launch that failed after its `Running` patch
+  reads no pod and records only one the informer has seen, so no read spends that suspension's
+  30 s bound; no role's process had started in the pod of that launch. An end from outside the pod
+  is told to the next process as an end from outside the pod, not as the daemon's replacement of
+  the pod. Its relaunch waits in the wake pacing's second queue, as a displaced relaunch does,
+  because it charges no death; the first queue stays the relaunch of a role whose own process
+  died.
+
+  A death charged for memory or for the pod's own disk is told in plain words, with its number and
+  before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the
+  `roles` container's memory limit when it ended `OOMKilled`, the container's use and request when
+  node pressure evicted the pod for its own memory or ephemeral-storage use, and the disk limit
+  when the kubelet evicted the pod for its own disk. After an eviction over the ephemeral-storage
+  request the task also says to keep large files under `$TMPDIR`. After one for the disk limit it
+  first says what that limit counts: each role's home, `/tmp` and `/var/tmp`, the container's logs
+  and what is written in the container's own layer. Where the pod kept its test database in an
+  `emptyDir`, which that limit counts, it names the test database too and says to drop each
+  database a test run makes; it then says to keep large files under `$TMPDIR`. The memory limit's
+  sentence is the task's one statement that the pod ran out of memory: the out-of-memory note
+  behind it keeps only its guidance on heavy work. When those deaths fail the claim, the hold
+  notice its architect gets and the `worker-died` beside it carry the same words in
+  `failure.death`, and the controller's copy of the `worker-died` of a tree's own architect now
+  carries `failure` too, so the controller reads them.
+
+  An issue pod whose CPU or memory request is below its limit no longer carries
+  `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst. The
+  cluster may then end such a pod to repack a node, which takes the work its roles did not push,
+  unless its disk is a kept volume. To roll back, the operator first puts each lowered issue
+  request back to its limit and waits for each pod's update round, then re-pins the earlier image
+  (`docs/kubernetes.md`, "Rolling back the release that continues the roles of a pod the cluster
+  ended").

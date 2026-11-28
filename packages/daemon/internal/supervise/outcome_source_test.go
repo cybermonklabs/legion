@@ -236,11 +236,12 @@ var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFail
 // takes each spent counter to one short of its limit and keeps every other. A reset is the end of
 // what a budget measures, which is no event the policy is asked about.
 var budgetResets = map[string]string{
-	"confirmCarrying": "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
-	"ready":           "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
-	"turnEnded":       "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
-	"retirePending":   "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
-	"retry":           "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
+	"confirmCarrying":      "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
+	"ready":                "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
+	"dropOutlivedRelaunch": "a report that finds an agent already up running drops the death's waiting relaunch and resets the launch failures, standing in for that relaunch's ready, which would have reset them (Budgets, LaunchFailures)",
+	"turnEnded":            "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
+	"retirePending":        "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
+	"retry":                "an operator's retry of a failed claim starts every budget again from nothing, or with one attempt left of each budget the failure spent (RequestRetry, Budgets.OneAttemptLeft)",
 }
 
 // The packages this test reads, by import path.

@@ -1,0 +1,139 @@
+# A copy of the regions of docs/kubernetes.md that this package's eviction_doc_test.go holds to
+# the runtime's annotations and pod-end reasons, each in the guide's own bytes and none of the
+# prose around it, in the guide's order: the stop-eviction annotations of a microVM issue pod in
+# "Pods in microVMs", the extended-run-time annotation's bullet of "Anatomy of a Sandbox pod", the
+# annotation's sentences of the burst paragraph and the AWS paragraph in "Issue sizing: one
+# reservation per pod", the paragraphs under **An end from outside the pod.** in "The disk dies
+# with its pod", and the controller pod's annotations in "Daemon-launched controller". A region is
+# every line of the guide from the one holding its start marker through the one its end marker
+# finishes on.
+#
+# The guide still answers for the runtime, in two halves. This package's eviction_doc_test.go
+# reads each region out of this copy through internal/testdoc and holds it to
+# safeToEvictAnnotation, doNotDisruptAnnotation, podShapeAnnotation, clusterEndedReasons,
+# evictedReason and endReadingLine and to the facts it must state; packages/daemon/internal/textcheck's
+# TestTheKubernetesDocExtractsAreTheGuidesOwnLines holds each region to the guide's own lines
+# between the same two markers. Splitting it that way is what lets an edit to the guide alone
+# start the text-check run rather than every Go lane: the product test does not read the guide.
+#
+# So this file is changed only when one of those regions changes, in the same commit as the
+# guide. A line changed here and not there, or there and not here, fails the text-check half; a
+# region that no longer states a constant or a fact fails the product half.
+#
+# The format: above the first region, a line that opens with # is this header and a blank line is
+# passed over. A region opens with two lines of its own, `from: ` and its start marker, then
+# `to: ` and its end marker: the words its test bounds it by, which the text-check half finds the
+# guide's lines by. Every line under those two, to the next `from: ` line, is the region in the
+# guide's own bytes, its blank lines included; the blank line that closes it is none of them,
+# since a region ends on the line holding its end marker.
+
+from: A microVM issue pod carries the annotations a gVisor issue pod carries
+to: as a `Burstable` gVisor issue pod carries none
+A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`); a microVM controller's pod carries the three a gVisor controller's pod carries, its safe-to-evict annotation whatever its reservation.
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor issue pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+
+from: the project controller's pod additionally carries
+to: with no death charged
+  - the project controller's pod additionally carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, the upstream Cluster Autoscaler's own annotation, whatever its reservation, and an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit, which is the `Guaranteed` reservation (`podKind.asksExtendedRunTime`, `podkind.go`);
+    GKE Autopilot honours it as a request for up to seven days of extended-duration protection from its own scale-down and node-upgrade eviction
+    — not indefinitely, and not from node pressure or an OOM, a higher-priority Pod, Compute Engine maintenance or node repair, or an operator-initiated drain.
+    An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
+    it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
+    What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node, and the work its roles did not push goes with that pod's disk unless the disk is a kept volume;
+    what it keeps is its roles, because the daemon continues every role of a pod the cluster ended in that role's own session, with no death charged and no launch failure, however often the cluster ends it, except for the pod's own ends, an `Evicted` end with no `DisruptionTarget` condition and a node-pressure eviction whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested, which are not read as ends from outside the pod and are counted as a stop of each role's process ([The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod", which also says what becomes of disk use in the pod's `emptyDir` volumes);
+
+from: An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while
+to: rather than into a node of its own.
+An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed`, and the controller's pod carries it whatever its reservation ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+A pod carrying it gets a node of its own on Autopilot whenever possible, so on the general-purpose platform its ceiling is about its own requests, whatever its limits say.
+A `Burstable` issue pod carries it not at all:
+`issue: {memory: 32Gi, memory_request: 8Gi}` requests 8Gi under a 32Gi limit, asks for no extended run time, and so shares a node and bursts into that node's burstable capacity rather than into a node of its own.
+
+from: `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation
+to: and no repacking of its pods.
+`karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
+Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
+So an AWS deployment gains the uncharged continue from this release, and no repacking of its pods.
+
+from: The daemon reads what ended each watched pod where
+to: would be relaunched for ever.
+The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`captureEndReading`, `internal/runtime/sandbox/end_reading.go`):
+`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
+A reading of neither kind decides nothing and writes no line, though the daemon keeps it and reads the end again at the pod's next event.
+An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellEndReadings`), and only once.
+The line is written before any claim is decided on its reading and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
+Two readings say something outside the pod ended it:
+
+- the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
+  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and before each such act of its own it records the pod the act ends, so an end no record of its own answers for was made by something else, but for the three ends of its own below that no record answers for.
+  It finds that pod in its informer's store, or, where the store has not yet seen it, as for a pod the controller made a moment before, it reads the pod from the API server (`meanToEndPodOf`).
+  A read that fails records nothing: the daemon logs `sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not recorded as the daemon's own` at warning level, naming the Sandbox and the error, makes the act all the same, and reads the pod's end as an end from outside the pod, so its roles are relaunched uncharged.
+  The suspension of the Sandbox of a launch that failed after its `Running` patch looks in the store alone (`suspendFailedLaunch`), because a read before its patch would spend the patch's one 30 s bound and could leave the Sandbox `Running`; a pod the store has not yet seen then gets no record, which costs no role anything, since no role's process had started in the pod of that launch.
+  The record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
+
+- the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
+  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `end_reading.go`).
+  A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+  An eviction for node memory or disk pressure whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested is not such an end, though it carries the condition (below).
+
+A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
+So a failed pod the cluster did not end is counted as a stop of each role's process whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
+The rule has one cost: an outside delete the daemon first sees when the pod is already terminal is counted as a stop of each role's process rather than continued uncharged.
+That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
+It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
+
+The daemon keeps each reading for as long as the pod stays in its informer's store, and for ten minutes after the informer delivers the pod's delete (`endReadingRecordLife`, `end_reading.go`), so a reading made when the end began still answers for the pod's roles when the end finishes.
+That is for a node that fails: its pods stay in the store under their deletion timestamps through the taint manager's evictions and the node's grace, which can run well past ten minutes, and no role of such a pod is judged for its end until the pod has left the store or its Sandbox holds a new pod.
+A later event of the same pod, such as a second eviction, leaves an end read from outside the pod, or as the daemon's own, as it was read; it reads again only an end of neither reading, so that end is read as it would have been had all its facts come in one event.
+An end the informer never saw is not read as an end from outside the pod, and is counted as a stop of each role's process as an end of neither reading is (below): a pod deleted while the daemon was restarting, since the readings are held in memory alone, or a pod the informer saw only while it was `Running`, because its watch missed the deletion and the relist that followed found the pod gone or replaced.
+An end from outside the pod that the daemon read is continued uncharged however each later report of that role's process is read, because the daemon keeps a record of that end from its first reading.
+A restarted daemon does the same where that record reached the daemon's store, whichever of the runtime's report of the ended pod and the boot's relaunch reaches each role first.
+The record goes into the store with any write of the role's claim.
+Where no write of the claim reached the store between the end and the restart, the new daemon continues the role uncharged only if it reads the end again as one from outside the pod, and otherwise counts the end as a stop of the role's process as an end of neither reading is (below): one death where the role held a task or a turn, and a task the role held is still sent to it again.
+An end the daemon first judged a death of the role's own process stays that death, whatever a later read of the pod says, and stays it after a restart where a write of the claim carried that judgement into the daemon's store.
+A read that finds the role's process running ends that judgement without telling the role it died.
+The death stays counted, as any death is.
+If the relaunch of that death still waits for its turn, in the wake pacing or behind a project pause, the daemon drops the relaunch and keeps the running process.
+The drop stands in for the ready of the launch it dropped: where the role's agent was already up, having said it was ready, the drop sets the launch failures to 0, as that ready would have.
+An agent that has not said it is ready, in any state before that ready, keeps its count until the next ready sets it to 0: its own, or that of the launch that replaces a process that cannot register.
+Otherwise, a launch failure the death's relaunch was charged stays counted until the role's next ready clears it.
+The next prompt still tells an earlier untold end in its own words, including the memory guidance if the task already carried an out-of-memory mark from that end.
+If the false death took the task back, the daemon sends it again with a sentence saying that it read the process wrongly as ended, after every end the same steps would tell with no false death, in its own words and with its memory guidance: an earlier end still untold, and an earlier end that took the task back itself.
+That take-back replaced the prompt the role was running, so a result of that prompt, a provider error among them, is stale: the task sent again carries no note of it and no retry for it.
+Each later send of that task to that process carries the sentence too, after a provider error or a second false death, until a turn runs the task to its result.
+The daemon judges a later end of that process afresh, and the role is told what the same end would tell with no false death before it, so an earlier untold end that the read put back is still told in its own words.
+An end that cut off the role's work tells its cause, and so does a death the daemon tells in plain words, for memory or for the pod's own disk, of a role that holds its task; any other end tells nothing of itself, so a role that holds a task is sent its task alone, and a role that holds none is not woken.
+An end the daemon first judged its own replacement of the pod stays that replacement: a later report of the pod read neither way, as after a restart that lost the daemon's record of its act, relaunches the role uncharged in its own session, telling it that its pod was replaced where the end cut off its work, on the daemon that judged it and after a restart where a write of the claim carried the record of the replacement into the daemon's store.
+
+An end of either reading costs its roles nothing, however often it comes.
+The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
+The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
+The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
+So a pod evicted because a neighbour's memory or disk use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
+That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
+Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
+Each claim writes its own line for what it got, at info:
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing`, with `starting`, which says whether the claim's agent was still starting when its pod ended, and the `detail` of the reading.
+
+An end of neither reading is counted as before this release, as a stop of each role's process the pod ran ([Liveness rules](#liveness-rules)):
+each stop is one failed launch, which the relaunched agent's ready sets back to 0, as does the drop of that relaunch where the daemon finds an agent already up running while the relaunch still waits (above), so failed launches fail the claim only when they reach the limit with no ready between them; and, after the role's ready, a stop while the role held a task or a turn is also a death, which clears only when that work ends, so at the limit the deaths fail the claim.
+After a ready, a stop of a role that held neither is restarted with no limit, while a role that stops before its ready every time fails at the failed-launch limit.
+`Evicted` with no `DisruptionTarget` condition is such an end:
+the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
+An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`overRequest`, `end_reading.go`).
+The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
+An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too, for the same reason:
+its message names each such container in the words `Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage.`, counting as the container's use its own disk, its writable layer and its logs, and never `$TMPDIR`, which is on the issue's volume.
+Disk use in the pod's `emptyDir` volumes on the node's disk — each role's home, `/tmp` and `/var/tmp`, all on the role homes volume, and, where the deployment runs it in its `emptyDir` rather than on a disk of its own, the test database — names no container in that message.
+So on a pod whose ephemeral-storage request is below its limit, as at the daemon's defaults of a 6Gi request under an 80Gi limit, a node disk-pressure eviction of such use is read as a neighbour's and continued with no limit, each time on a new pod whose `emptyDir` volumes start empty.
+A pod whose ephemeral-storage request equals its limit is evicted by that limit first, since the pod's limit counts its `emptyDir` volumes too, and that end, `Evicted` with no `DisruptionTarget` condition, is charged as above.
+An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.
+A reason outside the cluster's three is such an end too, `UnexpectedAdmissionError` among them:
+a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
+
+from: Legion sets no affinity on it, so under Karpenter
+to: where an issue pod carries the second only while its reservation is `Guaranteed`
+Legion sets no affinity on it, so under Karpenter it lands wherever a node has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
+"true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, both whatever its reservation
+— a `controller` request below its limit makes the pod `Burstable` and takes neither annotation away, where an issue pod carries the second only while its reservation is `Guaranteed` ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):

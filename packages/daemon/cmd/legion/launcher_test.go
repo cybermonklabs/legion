@@ -207,16 +207,24 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 	}
 }
 
+// A flag that means nothing without another is refused before anything is dialled or listened
+// on, with exit 1 and a message naming what it lacks, which proves each flag reaches the
+// launcher: one it did not know would exit 2 on its usage, and one it dropped would change the
+// refusal or dial the unreachable daemon until the context ends and exit 0.
+//
 // The metadata endpoint is a microVM pod's alone, in either of the launcher's forms, and named
-// whole: both of its flags, with --microvm. Each other mixture is refused before anything is
-// dialled or listened on, naming what it lacks, which proves each flag reaches the launcher: one
-// it did not know would exit 2 on its usage, and one it dropped would change the refusal or dial
-// the unreachable daemon until the context ends. The controller's form without --microvm is
-// refused as an issue pod's is, so the metadata flags reach that form too. Its acceptance with
-// --microvm is TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart's (internal/launcher), through
-// the configuration's own check: an accepted run here would start the launcher, which listens on
-// the endpoint's fixed address and names it in this process's environment.
-func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testing.T) {
+// whole: both of its flags, with --microvm, and each other mixture is refused. The controller's
+// form without --microvm is refused as an issue pod's is, so the metadata flags reach that form
+// too. Its acceptance with --microvm is TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart's
+// (internal/launcher), through the configuration's own check: an accepted run here would start
+// the launcher, which listens on the endpoint's fixed address and names it in this process's
+// environment.
+//
+// --test-postgres-disk tells the launcher that the test database's directory is a disk of its
+// own, which means nothing without the test database: in either form, an issue pod's or the
+// controller's, the flag without --test-postgres is refused. That refusal is launcher.Config's,
+// read from the field the flag sets.
+func TestTheLauncherCommandRefusesAFlagWithoutTheOneItNeeds(t *testing.T) {
 	// Not parallel: it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
@@ -225,6 +233,7 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testi
 	const (
 		pool     = "example-project.svc.id.goog"
 		provider = "https://container.googleapis.com/v1/projects/example-project/locations/example-location/clusters/example-cluster"
+		disk     = "launcher: --test-postgres-disk says the test database's directory is a disk of its own: it needs --test-postgres"
 	)
 	for _, tc := range []struct {
 		name string
@@ -239,6 +248,8 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testi
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
 		{"the controller's form in a gVisor pod", []string{"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(), "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
+		{"the disk in an issue pod's form", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--test-postgres-disk"}, disk},
+		{"the disk in the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--test-postgres-disk"}, disk},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := refusalContext(t)

@@ -17,15 +17,17 @@ import (
 // The boot's relaunch of the launches the previous daemon did not finish: the claims its restore
 // put back to launch_uncertain with no process (supervisor.restore), each released to queued once
 // the boot's orphan reconciliation proves no predecessor runs, and launched again in the order its
-// work was owed — and, ahead of them in the pacing's first queue, of the deaths that daemon
-// recorded, whose relaunches it held in the same pacing (supervise.RecordedDeath).
+// work was owed — and of the ends that daemon recorded decided, whose relaunches it held in the
+// same pacing (supervise.RecordedDeath): a charged death's ahead of them in the pacing's first
+// queue, and an end from outside the pod's among them in the second.
 
 // bootRelaunch is one claim launchUnfinished relaunches: its machine, the place taken for it in
 // the wake pacing (nil for none yet), and how its release ended.
 //
-// death is whether the relaunch is of the death the claim's record charges rather than of an
-// unfinished launch: such a claim records its process, so it has no uncertain launch to release
-// and reads released from the start, and generation is the claim's generation its replay names.
+// death is whether the relaunch is of the end the claim's record decided — a death charged, or an
+// end from outside the pod charged nothing — rather than of an unfinished launch: such a claim
+// records its process, so it has no uncertain launch to release and reads released from the
+// start, and generation is the claim's generation its replay names.
 type bootRelaunch struct {
 	token      claim.Token
 	m          *supervise.Machine
@@ -79,12 +81,13 @@ func waitingLaunches(tokens []claim.Token) map[claim.Token]*wakepace.Place {
 // chance, and a claim that had waited most of an hour went back to a random place behind hundreds
 // at each restart (dispatch://INFRA-5482).
 //
-// deaths is the claims whose record says their process died (recordedDeaths), whose relaunches
+// deaths is the claims whose record says their end is decided (recordedDeaths), whose relaunches
 // were the rest of that queue: each still standing over its dead process (recordedDeath) is placed
-// in the pacing's first queue, ahead of the restart's backlog (supervise.WakeQueue,
-// dispatch://INFRA-5682 R2), and its relaunch is posted with its place as the death's replay
-// (supervise.RecordedDeath.Place). The boot passes them to its first pass alone; none is ever
-// refused, so none is retried.
+// in the queue its claim's class names (supervise.WakeQueue, dispatch://INFRA-5682 R2), a charged
+// death in the first, ahead of the restart's backlog, and an end from outside the pod, which
+// charges no death, in the second, among that backlog in the order its work was owed. Its relaunch
+// is posted with its place as the death's replay (supervise.RecordedDeath.Place). The boot passes
+// them to its first pass alone; none is ever refused, so none is retried.
 func (s *supervision) launchUnfinished(ctx context.Context, waiting map[claim.Token]*wakepace.Place, deaths ...claim.Token) map[claim.Token]*wakepace.Place {
 	launches := make([]*bootRelaunch, 0, len(waiting)+len(deaths))
 	for token, place := range waiting {
@@ -164,14 +167,17 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 	return releaseQueued
 }
 
-// recordedDeaths is the claims of claims, as the boot restored them, whose record says the process
-// they record died: a live claim with its death charged (supervise.Claim.DeathCharged) and a
-// locator. The daemon before this one judged each process gone and charged its death, and the
-// relaunch it raised for it lived in its memory alone, a wake the pacing parked, which the restart
-// lost (dispatch://INFRA-5472). The boot relaunches each beside its unfinished launches
-// (relaunchUnfinished), rather than when the runtime next reports the death: in a pod that lives
-// on — its roles container restarted — that report waits for the pod's launcher to reconnect, a
-// probe interval after boot, which put every such relaunch behind the whole of the boot's wave.
+// recordedDeaths is the claims of claims, as the boot restored them, whose record says the end of
+// the process they record is decided: a live claim with its end decided
+// (supervise.Claim.DeathCharged) and a locator. The daemon before this one judged each process
+// gone and decided its end — charged its death, or found its pod ended from outside it and
+// charged nothing, which the replay tells apart by the claim's record of that end (supervise's
+// relaunchRecordedDeath) — and the relaunch it raised for it lived in its memory alone, a wake
+// the pacing parked, which the restart lost (dispatch://INFRA-5472). The boot relaunches each
+// beside its unfinished launches (relaunchUnfinished), rather than when the runtime next reports
+// the death: in a pod that lives on — its roles container restarted — that report waits for the
+// pod's launcher to reconnect, a probe interval after boot, which put every such relaunch behind
+// the whole of the boot's wave.
 func recordedDeaths(claims []supervise.Claim) []claim.Token {
 	live := supervise.LiveStates()
 	var deaths []claim.Token
@@ -183,18 +189,18 @@ func recordedDeaths(claims []supervise.Claim) []claim.Token {
 	return deaths
 }
 
-// recordedDeath is token's relaunch for the death its record charges, as the boot's pass takes it
+// recordedDeath is token's relaunch for the end its record decided, as the boot's pass takes it
 // (launchUnfinished), and false for a claim that no longer stands over that death as the machine
 // holds it now: a report of the death that came first and raised its relaunch already (a wake
 // waiting), a launch since, a report that found the process running, or a suspension held for the
 // claim, whose end the death's own report decides. The replay decides each of those nothing
 // (supervise's relaunchRecordedDeath), so the pass takes such a claim no place, which the replay
 // would only give up again. A report of the death decided before this read keeps the place it
-// joined itself, in the first queue the pass would have placed it in. One decided after this read
-// and before the pass takes its places joins a place ahead of the pass's, so the replay moves
-// nothing and gives up the place the pass took for it. One decided after the pass parks its
-// relaunch behind every place the pass took in the first queue, and the replay moves that wake to
-// the place the pass took for it (supervise's takeEarlierPlace), giving the report's own place up.
+// joined itself, in the queue the pass would have placed it in. One decided after this read and
+// before the pass takes its places joins a place ahead of the pass's, so the replay moves nothing
+// and gives up the place the pass took for it. One decided after the pass parks its relaunch
+// behind every place the pass took in its queue, and the replay moves that wake to the place the
+// pass took for it (supervise's takeEarlierPlace), giving the report's own place up.
 func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 	m, ok := s.supervisor.Machine(token)
 	if !ok {
@@ -210,15 +216,16 @@ func (s *supervision) recordedDeath(token claim.Token) (*bootRelaunch, bool) {
 
 // placeRelaunches places each of launches whose launch the gate would hold (supervise.PacedLaunch)
 // in the wake pacing's queue its claim's class names (supervise.WakeQueue): the first queue for a
-// recorded death (dispatch://INFRA-5682 R2) and for a claim whose message mark stands (R1), the
-// second for every other. Each queue is handed out in the order its claims' work was owed
-// (owedSince, compareOwed): the claim owed longest takes the earliest place. The first queue is
-// placed before the second, and every place is joined (wakepace.Pacer.Join) in the order it is
-// handed out, here, before any launch is posted, so no place depends on which goroutine reaches
-// its gate first. The pass hands out no moment: a place's turn is the pacer's to give. A launch
-// the gate would not hold — the pacing off, a project pause holding it (the pause's gate takes no
-// place), the project controller's — is handed none and launches as its gate decides, and a place
-// a sweep before took for it is given up.
+// recorded charged death (dispatch://INFRA-5682 R2) and for a claim whose message mark stands
+// (R1), the second for every other, a recorded end from outside the pod among them. Each queue is
+// handed out in the order its claims' work was owed (owedSince, compareOwed): the claim owed
+// longest takes the earliest place. The first queue is placed before the second, and every place
+// is joined (wakepace.Pacer.Join) in the order it is handed out, here, before any launch is
+// posted, so no place depends on which goroutine reaches its gate first. The pass hands out no
+// moment: a place's turn is the pacer's to give. A launch the gate would not hold — the pacing
+// off, a project pause holding it (the pause's gate takes no place), the project controller's —
+// is handed none and launches as its gate decides, and a place a sweep before took for it is
+// given up.
 //
 // A claim whose release the store refused keeps the place it was handed for the sweep that retries
 // it, so a refusal that clears costs the claim no place: its place goes back into its queue's pool,
@@ -341,12 +348,13 @@ func compareOwed(a, b time.Time) int {
 // sweep retries only the releases the store did not take, with the places they were handed
 // (launchUnfinished), since the reconciliation's proof that no predecessor runs still holds.
 //
-// deaths is the claims whose record says their process died (recordedDeaths). They join the first
-// pass, in the pacing's first queue, ahead of the unfinished launches (placeRelaunches). A recorded
-// death needs no reconciliation, since its claim records the process it replaces, so where the
-// boot's reconciliation failed their pass runs at once all the same, alone, in their own owed
-// order, and the unfinished launches join the second queue at the sweep that reconciles: either
-// way no relaunch that needs no reconciliation waits behind one that may never come.
+// deaths is the claims whose record says their end is decided (recordedDeaths). They join the first
+// pass, each in the queue its claim's class names: a charged death's in the first, ahead of the
+// unfinished launches, and an end from outside the pod's in the second (placeRelaunches). A
+// recorded death needs no reconciliation, since its claim records the process it replaces, so
+// where the boot's reconciliation failed their pass runs at once all the same, alone, in their own
+// owed order, and the unfinished launches join the second queue at the sweep that reconciles:
+// either way no relaunch that needs no reconciliation waits behind one that may never come.
 func (s *supervision) relaunchUnfinished(tokens, deaths []claim.Token, reconciled bool) {
 	s.wg.Add(1)
 	go func() {

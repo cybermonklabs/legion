@@ -71,20 +71,23 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // false acts on nothing. A Sandbox already gone, and a kept Sandbox an earlier release already
 // released (releasedKept), are done once authorize has answered, because the caller acts on that
 // answer as on any other. The Sandbox is set Suspended in the one write of its mode here
-// (suspendOver), and its pod is waited out. That write is setMode's JSON patch for a Sandbox that
-// is not Suspended yet, and nothing for one that is. A release reads the stored pod for that write
-// and a close reads none, so a release whose pod failed on the kept volume (volumeFault) sends one
-// merge patch of the mode and the reset mark in its place, or of the mark alone for a Sandbox
-// already Suspended that does not carry it. A release that keeps the Sandbox sends one merge patch
-// more once it has deleted the Secrets, which records that delete (annotate,
+// (suspendOver), and its pod is waited out. That write is the bare JSON patch of the mode
+// (sendSuspended), for a Sandbox that is not Suspended yet, and nothing for one that is. A release
+// reads the stored pod for that write and a close reads none, so a release whose pod failed on the
+// kept volume (volumeFault) sends one merge patch of the mode and the reset mark in its place, or
+// of the mark alone for a Sandbox already Suspended that does not carry it. The suspension names
+// nothing beside the mode (daemonEnd), so it records the daemon's end of the pod under
+// daemonSuspendedAct before either patch is sent. A release that keeps the Sandbox sends one merge
+// patch more once it has deleted the Secrets, which records that delete (annotate,
 // secretsReleasedAnnotation) and changes no mode.
 //
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
 // nothing (runtime.IssueReleaser): authorize's false, a Sandbox already gone, and the released
 // kept Sandbox read off the object the API answered (releasedKept), each with authorize's error,
 // if any. writing, where it is not nil, runs once that Sandbox is found and is this release's to
-// act on, after authorize and just before suspendOver, the first write. A delete and a release's
-// record on a kept Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
+// act on, after authorize and just before suspendOver, the first write; a writing that fails
+// leaves the daemon's end unrecorded and the Sandbox unwritten. A delete and a release's record
+// on a kept Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
 	writing func(context.Context) error, keep bool) (bool, error) {
 	act := "suspend"
@@ -143,7 +146,14 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 			return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
 	}
-	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
+	// The pod the suspension ends is ended by the daemon, and the suspension, naming nothing beside
+	// the mode, records that under daemonSuspendedAct before its patch is sent, the reset mark's
+	// merge patch as the JSON patch (daemonEnd, suspendOver), so the end reads as the daemon's
+	// own rather than as something outside the pod ending it. The idle release's teardown comes
+	// through here too: both are this one effect on the issue's pod. A Sandbox a try of its own
+	// already suspended takes no second suspension, since that try made the record its patch
+	// needed.
+	if _, err := r.suspendOver(ctx, s, pod, daemonEnd{}); err != nil {
 		return false, fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {

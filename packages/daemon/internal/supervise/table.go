@@ -249,23 +249,26 @@ type StalePlugin struct {
 	Credit *RefreshCredit
 }
 
-// RecordedDeath is a restored claim whose stored record says the process it records died: the
-// daemon before this one judged that process gone and charged its death (Claim.DeathCharged),
-// and the relaunch that death raised lived in that daemon's memory alone, a wake the pacing
-// parked, so a restart lost it. The boot raises it once for every such claim, beside the
-// unfinished launches it relaunches (internal/daemon's launchUnfinished), so that relaunch enters
-// the restart's own wave rather than waiting for the runtime to report the death again
-// (dispatch://INFRA-5472). That report needs the pod's launcher to reconnect when the pod lives
-// on — a roles container that restarted — which is a probe interval after boot, by which time the
-// boot's wave holds the pacing and a relaunch raised then goes in behind all of it. Generation is
-// the claim's generation as the boot read it, so a claim a launch has moved on since is decided
-// nothing (relaunchRecordedDeath).
+// RecordedDeath is a restored claim whose stored record says the end of the process it records is
+// decided: the daemon before this one judged that process gone and decided its end
+// (Claim.DeathCharged) — charged its death, or found its pod ended from outside it and charged
+// nothing (endedFromOutside) — and the relaunch that end raised lived in that daemon's memory
+// alone, a wake the pacing parked, so a restart lost it. The boot raises it once for every such
+// claim, charged as the end was (relaunchRecordedDeath), beside the unfinished launches it
+// relaunches (internal/daemon's launchUnfinished), so that relaunch enters the restart's own wave
+// rather than waiting for the runtime to report the death again (dispatch://INFRA-5472). That
+// report needs the pod's launcher to reconnect when the pod lives on — a roles container that
+// restarted — which is a probe interval after boot, by which time the boot's wave holds the
+// pacing and a relaunch raised then goes in behind all of it. Generation is the claim's
+// generation as the boot read it, so a claim a launch has moved on since is decided nothing
+// (relaunchRecordedDeath).
 //
 // Place is the place the boot took for that relaunch in the wake pacing, as RequestSpawn.Place is
-// for an unfinished launch: the boot places both in one pass, a recorded death in the pacing's
-// first queue (WakeQueue, dispatch://INFRA-5682 R2) and each queue's places in the order their
-// claims' work was owed. nil is a replay the gate joins a place for itself. A place the replay
-// does not take up is given up as its decision ends (Machine.handle).
+// for an unfinished launch: the boot places both in one pass, the relaunch of a charged death in
+// the pacing's first queue and that of an end from outside the pod in the second (WakeQueue,
+// dispatch://INFRA-5682 R2), and each queue's places in the order their claims' work was owed.
+// nil is a replay the gate joins a place for itself. A place the replay does not take up is given
+// up as its decision ends (Machine.handle).
 type RecordedDeath struct {
 	Claim      claim.Token
 	Generation uint64
@@ -1377,9 +1380,9 @@ func fillTable(t *builder) {
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
 
-	// A restored claim whose stored record says its process died, at boot (RecordedDeath): the
-	// relaunch that death raised is raised again now, through the pacing.
-	t.row(onRecordedDeath, "the record says the process died: raise again the relaunch the death raised", relaunchRecordedDeath,
+	// A restored claim whose stored record says its process's end is decided, at boot
+	// (RecordedDeath): the relaunch that end raised is raised again now, through the pacing.
+	t.row(onRecordedDeath, "the record says the process's end is decided: raise again the relaunch the end raised", relaunchRecordedDeath,
 		[]ClaimState{StateLaunching, StateFailed}, live...)
 	t.ignore(onRecordedDeath, "no process is recorded, so no death of one is", processless...)
 
@@ -1789,6 +1792,13 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // wait is armed for a turn that has already run. Armed, that wait would outlive the task, whose
 // result confirms nothing more and so disarms nothing (confirmCarrying), and hold the next task
 // behind it (sendPending), or charge the prompt for a turn it ran (noTurn).
+//
+// Nor is a wait armed over a process the runtime last reported gone (Machine.processGone): an
+// acknowledgement whose send was in flight when that report came reaches the claim after it, and
+// a gone process starts no turn, so the wait would charge a prompt failure for a process that no
+// longer exists, where the report itself disarmed the wait (judge) and a parked relaunch's
+// refused turn arms none (watchAgain). The prompt is still recorded outstanding, and the task
+// still marked read, as for every acknowledgement; the relaunch sends the task again.
 func acked(m *Machine, ctx context.Context, ev Event) error {
 	p := m.takeAck(ev)
 	if !p.ConfirmedAt.IsZero() {
@@ -1796,7 +1806,9 @@ func acked(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.markRead(p)
 	m.copyTurnNews(p)
-	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	if !m.processGone {
+		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	}
 	return m.putPending(ctx)
 }
 
@@ -2601,9 +2613,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
 // reaches refreshPlugin with none and asks the gate at that guard, which is where every
-// uncredited relaunch of this lane asks and which states why the ask lives there rather than
-// here. The claim here is never the controller's, which that guard spares: m.staleRelaunch is
-// written by holdStaleRelaunch alone, and that is reached under StateWorking and no controller.
+// uncredited relaunch of this lane asks: refreshPlugin's doc names the three roads that reach it
+// holding none, this one among them. The claim here is never the controller's, which that guard
+// spares: m.staleRelaunch is written by holdStaleRelaunch alone, and that is reached under
+// StateWorking and no controller.
 // Refused, the relaunch is left to the next sweep, which posts StalePlugin for a claim that is
 // idle by then and relaunches it on the first credit that comes free — a minute at the rate the
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
@@ -2722,6 +2735,11 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // that fails leaves the delivery unsaved, and settle's next write of it folds the copy then. A task
 // this result confirms is confirmed with the news its own prompt carried (promptNews), or, for a
 // prompt this daemon did not see acknowledged, the copy the task holds.
+//
+// Such a result also ends the mark of a task sent again to a process a read found running
+// (EndedWork.SentAgain): a turn ran the task's prompt to its end, so no later prompt of the task
+// says again that it is sent again. The clear is written here, with the claim, so a restart
+// before the turn's end retires the task reads no mark back from the store.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if send := m.send; send != nil && (send.id == r.DeliveryID || (r.AgentInvoked && send.id == m.claim.Pending.ID)) {
@@ -2764,8 +2782,12 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	// ended in an error keeps the task owed, under the id it holds now when the take-back's write
 	// did not land, and a send of it still in flight is still the only word on that send.
 	m.ranTask = m.claim.Pending.ID
+	again := m.claim.EndedWork.SentAgain == m.ranTask
+	if again {
+		m.claim.EndedWork.SentAgain = ""
+	}
 	if m.providerErrorRunOver("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
-		"delivery", r.DeliveryID) {
+		"delivery", r.DeliveryID) || again {
 		if err := m.persist(ctx); err != nil {
 			return err
 		}

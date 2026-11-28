@@ -126,6 +126,10 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
+	// testPostgresDisk is Options.TestPostgresDisk: the size of the disk of its own an issue pod
+	// that serves the test database keeps the cluster on, nil while the cluster stays in the
+	// testpg emptyDir.
+	testPostgresDisk *resource.Quantity
 	// controllerWatchedWorkflows is Options.ControllerWatchedWorkflows as the controller's address
 	// record holds it (watchedWorkflowsValue), computed once; no variable carries it.
 	controllerWatchedWorkflows string
@@ -259,6 +263,20 @@ type Runtime struct {
 	// its record would read the same before a strand and after its unstrand; a write for another
 	// issue's name costs a read of this one an Uncertain, answered again a tick later.
 	strandedGen uint64
+	// intendedEnds is, by pod uid, the act of the daemon's own that is about to end that pod
+	// (meanToEndPod), written before the Sandbox patch or delete that carries it out. endReadings
+	// is, by pod uid, what the daemon read about the cause of a pod's end (captureEndReading),
+	// captured where the informer delivers that end because neither fact it rests on can be read
+	// once the end is final. The first is consumed by the second (takeIntendedEnd) and expires
+	// endReadingRecordLife after the act it was written for, so it answers for no later end of a
+	// pod that kept running. The second stands while its pod is in the pods informer's store and
+	// for endReadingRecordLife after the pod leaves it, since a node's failure can hold a pod there
+	// under its deletion timestamp for longer than that before any claim of it is judged for its
+	// end. Both are pruned wherever either is written (pruneEndReadings), so neither grows without
+	// bound, and neither answers for an end it is not of. Every read and write of both runs under
+	// mu.
+	intendedEnds map[string]intendedEnd
+	endReadings  map[string]endReading
 	// taken is, by Sandbox name, what one of this runtime's own writes took from a Sandbox before
 	// the informer's store shows it (sandboxTaken): a delete (deleteSandbox, deleteFenced), or a
 	// release's record that it deleted the Secrets of a Sandbox it kept (secretsReleasedAnnotation,
@@ -497,12 +515,13 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
+		testPostgres: opts.TestPostgres, testPostgresDisk: opts.TestPostgresDisk, leakCheck: opts.LeakCheckSetting, roundPodEnds: opts.RoundPodEnds, launchTakes: opts.LaunchTakes, launchTook: opts.LaunchTook,
 		memoryGuard: opts.MemoryGuard, controllerMemoryGuard: opts.ControllerMemoryGuard, volumeTrim: opts.VolumeTrim,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		intendedEnds: map[string]intendedEnd{}, endReadings: map[string]endReading{},
 		taken: map[string]sandboxTaken{}, sessions: map[claim.Token]launchedSession{}, dispatchTokenClaims: map[claim.Token]string{},
 		cacheConfig: opts.RepositoryCache, cacheRepositories: opts.CacheRepositories,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
@@ -616,9 +635,9 @@ func (r *Runtime) startInformers(ctx context.Context, c runtimeClients) error {
 		})
 	for _, informer := range []cache.SharedIndexInformer{r.sandboxes, r.pods, r.services} {
 		if _, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj any) { r.notify(obj) },
-			UpdateFunc: func(_, obj any) { r.notify(obj) },
-			DeleteFunc: func(obj any) { r.notify(obj) },
+			AddFunc:    func(obj any) { r.notify(obj, false) },
+			UpdateFunc: func(_, obj any) { r.notify(obj, false) },
+			DeleteFunc: func(obj any) { r.notify(obj, true) },
 		}); err != nil {
 			return fmt.Errorf("sandbox runtime: %w", err)
 		}
@@ -716,8 +735,9 @@ func (f *feed) check() error {
 // call is ctx bounded for one call no client of the runtime bounds whole: a GitHub App token mint;
 // a pod log Stream, which client-go bounds by the client's timeout per attempt and not across its
 // Retry-After retries (rest/request.go, Request.Stream), so a log read fails fast rather than hold
-// its caller; and a failed launch's suspension of its Sandbox (suspendFailedLaunch), which waits an
-// overloaded server out for no longer than this.
+// its caller; and a failed launch's suspension of its Sandbox (suspendFailedLaunch), whose one
+// request is the suspension patch, which waits an overloaded server out for no longer than this:
+// its record of the daemon's end reads the pod store alone, so no read of the pod shares the bound.
 func call(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, apiTimeout)
 }
@@ -727,19 +747,25 @@ func (r *Runtime) synced() bool {
 }
 
 // notify wakes every wait and marks every watched claim whose Sandbox or pod changed for the
-// running Observe. A pod is named after its Sandbox, so one name finds both. An event of a Sandbox
-// drops what is kept of this runtime's write to that name once the store shows it (dropCaughtUp):
-// the informer writes its store before it hands the event on, so the store read there is never
-// older than the event.
-func (r *Runtime) notify(obj any) {
+// running Observe, and reads what ended a pod the informer delivers ending (captureEndReading). A
+// pod is named after its Sandbox, so one name finds both. An event of a Sandbox drops what is kept
+// of this runtime's write to that name once the store shows it (dropCaughtUp): the informer writes
+// its store before it hands the event on, so the store read there is never older than the event.
+//
+// gone says the event is the informer's delete: the object has left the store, which for a pod is
+// its end whatever the copy the event carries says. That is why the pod's end is read here at all
+// — the mapping reads a pod being deleted as a live pod, and the object is out of the store by the
+// time its claims are judged — and why the delete is told from an add or an update.
+func (r *Runtime) notify(obj any, gone bool) {
 	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		obj = tombstone.Obj
 	}
 	var name string
+	var pod *corev1.Pod
 	var event *unstructured.Unstructured
 	switch o := obj.(type) {
 	case *corev1.Pod:
-		name = o.Name
+		name, pod = o.Name, o
 	case *corev1.Service:
 		name = o.Name
 	case *unstructured.Unstructured:
@@ -754,6 +780,9 @@ func (r *Runtime) notify(obj any) {
 	}
 	close(r.changed)
 	r.changed = make(chan struct{})
+	if pod != nil {
+		r.captureEndReading(pod, gone)
+	}
 	if r.observer == nil {
 		return
 	}
@@ -1066,10 +1095,56 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 	}
 }
 
-// setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
-// operation tests the uid): a Sandbox replaced in between is never written.
-func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
-	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode})
+// daemonSuspendedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
+// that end is a suspension with no words of its own: a repository cache's own (reconcileCachePod),
+// which suspend sends, and each suspension that names nothing beside its mode (daemonEnd,
+// suspendOver) — an issue's close and release (endIssuePod), a launch's suspension of a pod whose
+// end carries no reason to record (suspendRecordingEnd), and a failed launch's
+// (suspendFailedLaunch), which records it from the pod store alone (meanToEndStoredPodOf).
+// suspendOver records it only where it suspends a Sandbox not yet Suspended: one already Suspended
+// takes no patch that ends its pod, so the launch that writes the reset mark on such a Sandbox
+// (relaunch) records nothing. It is given by what the suspension names, never read from the shape
+// of the patch, so it is recorded whichever patch suspends the Sandbox: the bare JSON patch of the
+// mode (sendSuspended), or the merge patch a reset mark makes of it (suspendOver).
+const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
+
+// daemonDeletedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
+// that end is a delete of the pod's Sandbox: deleteSandbox's and deleteFenced's.
+const daemonDeletedAct = "the daemon deleted the pod's sandbox"
+
+// suspend sets the Sandbox read as s Suspended, the daemon's own end of the pod s owns in no words
+// of its own: it records first that the daemon means to end that pod, under daemonSuspendedAct
+// (meanToEndPodOf), then sends the bare JSON patch of the mode (sendSuspended). An end with no
+// record reads as pod_end_not_ours, which continues every claim of that pod uncharged. For a pod
+// whose init container keeps failing that is the relaunch-for-ever the initFailed reading exists
+// to stop. It takes no act, so no patch it sends records the end in other words, or in none.
+//
+// A repository cache's own suspension (reconcileCachePod) comes through here. Each suspension
+// that names nothing beside the mode and whose pod calls for no reset mark sends the same bare
+// patch, but from suspendOver, which records the end itself (daemonEnd) and so does not call
+// this. Every other suspension records its end beside its own patch. A merge patch that suspends
+// a Sandbox records it under the act of what the suspension names, a live pod's replacement, or
+// under daemonSuspendedAct where the reset mark alone makes it; a pod's own end names no act,
+// since that pod ended of its own (suspendOver). The relabel of a Sandbox its issue's old tree
+// left Running records it under an act of its own, then sends the mode's operation
+// (suspendedMode) among the relabel's operations, in the relabel's one patch (ensureSandbox). The
+// two deletes write theirs (deleteSandbox, deleteFenced).
+func (r *Runtime) suspend(ctx context.Context, s *sandbox) error {
+	r.meanToEndPodOf(ctx, s, daemonSuspendedAct)
+	return r.sendSuspended(ctx, s)
+}
+
+// suspendedMode is the JSON patch operation that sets a Sandbox Suspended. The bare JSON patch of
+// the mode sends it alone (sendSuspended), and the relabel of a Sandbox its issue's old tree left
+// Running sends it among the relabel's operations (ensureSandbox).
+var suspendedMode = jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}
+
+// sendSuspended sends the bare JSON patch of the mode, suspendedMode alone, fenced to the Sandbox
+// read as s (patch): a Sandbox replaced in between is never written. It records nothing: its two
+// callers, suspend and suspendOver, record the daemon's end of the pod before they call it, so
+// each suspension it sends is recorded once.
+func (r *Runtime) sendSuspended(ctx context.Context, s *sandbox) error {
+	_, err := r.patch(ctx, s, suspendedMode)
 	return err
 }
 
@@ -1264,7 +1339,9 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 // otherwise (probe.go). A repository cache's Sandbox (labelled legion.dev/cache) is no claim's
 // either: the claim path passes over it, and sweepCaches keeps, repairs or retires it after the
 // claim path. known's located claims join the watch, unless it already holds a newer incarnation
-// of the claim, and are evaluated at once. Nothing here lists Secrets: each goes with its Sandbox.
+// of the claim, and are evaluated at once; the end of a pod read while no claim of it was watched,
+// as every end that came while no daemon ran is read at a boot, writes its line once its claims
+// are adopted (tellEndReadings). Nothing here lists Secrets: each goes with its Sandbox.
 // Each Sandbox whose pod runs an image other than the runtime's (imageDrift), or as a
 // ServiceAccount other than the configured one (accountDrift), is warned of, named with both
 // images or both accounts, at the boot reconciliation and at every sweep until the pod is
@@ -1298,6 +1375,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		}
 		r.adopt(*k.Locator)
 	}
+	r.tellEndReadings()
 	for _, obj := range r.sandboxes.GetStore().List() {
 		u := obj.(*unstructured.Unstructured)
 		if u.GetLabels()[labelProbe] != "" || u.GetLabels()[labelCache] != "" || u.GetDeletionTimestamp() != nil {
@@ -1469,6 +1547,9 @@ func (r *Runtime) deleteFenced(ctx context.Context, s *sandbox, msg string, attr
 	if err := r.guardSessionVolumeReap(ctx, s); err != nil {
 		return err
 	}
+	// The pod this Sandbox owns goes with it — the orphan sweep's, a released controller claim's,
+	// a repository cache's — so that end is the daemon's own (meanToEndPod).
+	r.meanToEndPodOf(ctx, s, daemonDeletedAct)
 	name, uid, version := s.Name, s.UID, s.ResourceVersion
 	policy := metav1.DeletePropagationForeground
 	fence := metav1.Preconditions{UID: &uid, ResourceVersion: &version}

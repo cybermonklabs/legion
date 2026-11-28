@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -37,12 +36,13 @@ import (
 // (#4065).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
-// outbox row of its own (workflow's noticeWithController), once the registered controller session
-// holds the controller's role live. Here the listener refuses the controller's role topic twice
-// first, as a stream outage answers: only the controller's row retries, so the architect's topic
-// is sent the worker-died once however long the controller's topic keeps failing, and every try
-// carries the one key the controller's subscriber dedupes on. The controller reads the notice the
-// architect is sent, without the row's routing.
+// outbox row of its own that workflow's claimFailed writes beside the architect's row, once the
+// registered controller session holds the controller's role live. Here the listener refuses the
+// controller's role topic twice first, as a stream outage answers: only the controller's row
+// retries, so the architect's topic is sent the worker-died once however long the controller's
+// topic keeps failing, and every try carries the one key the controller's subscriber dedupes on.
+// The controller's copy carries the failure record in place of the architect's reason, without
+// the row's routing.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
 	t.Parallel()
 	listener := newNoticeListener()
@@ -206,12 +206,14 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	if err := json.Unmarshal([]byte(taken.Payload), &payload); err != nil {
 		t.Fatalf("decode the controller's payload %q: %v", taken.Payload, err)
 	}
-	// The tree architect's own worker-died carries no failure record, so its reason
-	// carries the launch failure's sentence instead, quoted as workflow's
-	// deathReason quotes it (strconv.Quote).
-	if want := (record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning,
-		Reason: strconv.Quote("launch failures ran out: pane launch failed")}); !reflect.DeepEqual(payload, want) {
-		t.Fatalf("the controller's payload = %+v, want the architect's own notice %+v", payload, want)
+	// The controller's copy of the tree architect's own worker-died carries the failure record, as
+	// the planner's hold above carries it to its architect, so its reason leaves out the sentence
+	// the record's detail holds (workflow's deathReason); the launch recorded no pod end, so the
+	// reason is empty.
+	wantController := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: want.Failure}
+	if !reflect.DeepEqual(payload, wantController) {
+		t.Fatalf("the controller's payload = %+v with failure %+v, want %+v with failure %+v",
+			payload, payload.Failure, wantController, wantController.Failure)
 	}
 }
 

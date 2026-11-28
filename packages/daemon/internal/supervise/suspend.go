@@ -401,10 +401,10 @@ func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch
 
 // stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
 // pause's stop records for the resume (suspendedFor, PauseStop.LaunchOwed): a launch still waiting
-// on the machine (launchMet), or the relaunch of the death the claim's record charges
-// (Claim.DeathCharged). A restart forgets the wake that death parked, and the boot's stop of a
-// paused project can reach the claim before the boot replays the death (RecordedDeath), so the
-// record is what says the launch is owed.
+// on the machine (launchMet), or the relaunch of the end the claim's record says is decided
+// (Claim.DeathCharged), a death's or an end from outside the pod's. A restart forgets the wake
+// that end parked, and the boot's stop of a paused project can reach the claim before the boot
+// replays the end (RecordedDeath), so the record is what says the launch is owed.
 func (m *Machine) stopOwesLaunch() bool {
 	return m.launchMet() || m.claim.DeathCharged
 }
@@ -546,13 +546,13 @@ const (
 // The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly
 // as a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and
 // no process finished it. It carries the note of a pod that ran out of memory where the report
-// that found the process gone said so (goneOutOfMemory), and the claim keeps that report's
-// account of the death for the operator's listing and a failed claim's notices (goneCause,
-// Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// that found the process gone said so (goneDeath's OutOfMemory), and the claim keeps that report's
+// cause of the death for the operator's listing and a failed claim's notices (goneDeath,
+// deathCause, Claim.LastDeathCause), as died keeps the death it judges. A take-back the store
+// will not write stops everything — nothing is stopped, nothing is sent and the claim is left as
+// it stands, its last death's cause put back, as died leaves it — so the caller's next request
+// takes it back then, rather than this leaving a suspended claim holding a task settle would
+// retire as a finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone), so it goes whether or not the runtime's stop of a
@@ -566,7 +566,7 @@ const (
 // tells the listener nothing new.
 //
 // What the dead process ended is recorded as its death once the take-back has landed (recordEnd,
-// endDied, under the same goneCause): the take-back's own mark is what tells the record that the
+// endDied, of the same goneDeath): the take-back's own mark is what tells the record that the
 // task was taken from the dead turn (Machine.cutTurnOf), and the stop's let-go that follows finds
 // this launch's record standing and records no suspension in its place. So the task is sent again
 // saying the process died, which is what the sentence in front of it reads from that record
@@ -582,12 +582,12 @@ const (
 // no launch failure of its own either.
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
 	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
-	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
-	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+	m.claim.LastDeathCause, m.claim.LastDeathAt = deathCause(m.goneDeath), m.deps.Clock.Now()
+	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneDeath.OutOfMemory); err != nil {
 		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
 		return err
 	}
-	m.recordEnd(ctx, endDied(m.goneCause))
+	m.recordEnd(ctx, endDied(m.goneDeath), m.goneDeath.Cause.Kind, false, false, false)
 	m.sessionGone(ctx)
 	return m.letProcessGoFor(ctx, request, false, stopSent)
 }

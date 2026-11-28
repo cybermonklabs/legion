@@ -405,9 +405,10 @@ Then:
   The value it sends is `postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable`, the one database every image's server serves, and the pod's launcher replaces it with the DSN that launcher serves, or takes the variable out when it serves none.
   The deployment pins the daemon and the worker image apart, so the process that serves the database is the one that names it: a role is told the database its own pod's server holds, whichever of the two builds is older.
 
-- The **data directory** is `/var/run/legion/roles/testpg` (`LEGION_TESTPG_DIR`), a disk `emptyDir` the daemon mounts there and covers inside every role namespace, so no role can write or corrupt the cluster while its tests use it, and it dies with the pod
+- The **data directory** is `/var/run/legion/roles/testpg` (`LEGION_TESTPG_DIR`), on a volume the daemon mounts there and covers inside every role namespace, so no role can write or corrupt the cluster while its tests use it, and the volume dies with the pod
   — every issue starts on an empty cluster.
-  That `emptyDir` carries no `sizeLimit`, as the role homes volume beside it does not:
+  The volume is a disk `emptyDir`, or, where the deployment sets `runtime.kubernetes.test_postgres_disk`, a disk of its own ("A disk of its own" below).
+  The `emptyDir` carries no `sizeLimit`, as the role homes volume beside it does not:
   what bounds it is the pod's own ephemeral-storage limit, and a runaway test that fills the node's disk through it is evicted with all six roles.
   The WAL settings below bound the server's steady state, not a test writing rows.
 
@@ -427,7 +428,7 @@ Then:
   The server logs every connection with `log_connections=all`: the backend the postmaster forks for a connect writes a `connection received` line with the client's port, then the authentication, the authorization, and the setup time with the fork's share of it.
   With `log_disconnections` it logs each session's end.
   That costs about 350 bytes a connection (measured over 4,241 connections, about half of them refused at `max_connections`), for the pod's life, and the launcher's own `ensure` every 15 seconds is one more connection each time, whose five lines measured 653 bytes, about 3.7 MB a day:
-  the pod's ephemeral-storage limit bounds the log, as it bounds the data directory.
+  whatever bounds the data directory's volume bounds the log as well, which is on that volume.
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
@@ -460,7 +461,7 @@ Then:
   The `-o` closes the lock's descriptor in the child, without which the server inherits it and every later `ensure` waits on a lock the server holds for the pod's life.
   That connection is a connection: a suite that has taken every slot the server allows (the script's `max_connections`, which `packages/envoy/internal/dispatch/testlimits/testlimits_test.go` holds to `testlimits.ServerConnections` plus Postgres's default superuser reserve) makes each tick's `ensure` fail and log, and spend a slot trying, until the suite gives them back.
 
-- Each run of the script is bounded at 60 s.
+- Each `ensure` is bounded at 60 s, and a reset of a disk of its own at 5 minutes (below).
   The first `ensure` runs before the launcher serves any role, and the daemon gives a pod 120 s to boot by default, so an `ensure` that hangs costs that pod a log line and not its boot.
 
 - A postmaster the node kills comes back within a tick, but **not with what was in it**:
@@ -481,6 +482,78 @@ Then:
 - `template1` carries the `vector` extension, so every database made from it has pgvector, and the Dispatch browser suite runs on a database a role makes for it there (`createdb`, then `DATABASE_URL`).
 
 - The image's own build runs `legion-testpg check` and a real `initdb`, start, `create database` and extension read as the runtime user, so a build whose server package or script stops working fails there rather than at every pod's start.
+
+- **A disk of its own.**
+  `runtime.kubernetes.test_postgres_disk` takes a size, a Kubernetes quantity of at least `4Gi` such as `20Gi`, and is off when absent.
+  The loader refuses a value that is no positive quantity (`runtime.kubernetes.test_postgres_disk must be a positive Kubernetes quantity`), and refuses the key in a file that does not set `test_postgres: true` (`runtime.kubernetes.test_postgres_disk is the disk of the pod's own test database, so it requires runtime.kubernetes.test_postgres: true`), at `legion config check` as at boot.
+  It refuses a size under `4Gi` too, naming the size it read, as in `runtime.kubernetes.test_postgres_disk is 2Gi, under the 4Gi least size: the launcher resets the test database while its disk has under 2 GiB free, so a smaller disk would be reset at every check`.
+  A disk of about 2 GiB never shows 2 GiB free, since the filesystem's metadata and its root reserve are not free to the server, so the check below would reset it at every tick; the least size leaves room above that floor for a fresh cluster and its WAL.
+  Where it is set, every issue pod that runs the test database keeps the cluster on a generic ephemeral volume of that size in place of the `testpg` `emptyDir`, mounted at the same path:
+  a `ReadWriteOnce` claim on the class the issue's own disk is claimed on (`storage_class`, or the microVM block's in a microVM pod), made with the pod and deleted with it, as the issue's disk is (`issuePod.mainVolumes`, `podkind.go`).
+  The kubelet's ephemeral-storage limit counts a pod's `emptyDir` volumes, its containers' writable layers and its logs, and not a volume a claim provides ([Local ephemeral storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage), [Generic ephemeral volumes](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/#generic-ephemeral-volumes)), so a test database that fills its disk can no longer get its pod evicted.
+  The daemon then starts the launcher with `--test-postgres-disk` right after `--test-postgres`, which tells it that the free bytes it reads on that disk are the cluster's own, and a launcher given `--test-postgres-disk` without `--test-postgres` refuses to start.
+  The controller's pod, which runs no test database, gets neither the volume nor the flag.
+
+- **The check.**
+  Unlike the `emptyDir`, that disk reports its own size, so the launcher can read the bytes free on it.
+  With `--test-postgres-disk`, the launcher's first `ensure` stays a plain `ensure`, run before any role starts and bounded at 60 s, since the daemon's boot of the pod waits on it.
+  Right after it, and then at each 15-second tick in place of the plain `ensure`, the launcher runs a check of the disk (`checkTestPGDisk`, `packages/daemon/internal/launcher/testpg.go`), which no role's start waits on.
+  Each check first deletes `data.reset` in the cluster's directory where it finds one: the old cluster a reset moved aside and did not delete, which would otherwise hold its bytes for the pod's life.
+  A reset leaves it there when it is cut after its rename, when its new cluster fails to start and when its own delete of the old cluster fails, and the reset's own lines say which.
+  It deletes it without the script's lock, because only a reset makes `data.reset`, and the launcher runs its resets one at a time, from this check alone, each under a bound that kills its whole process group, so no run of the script still uses it.
+  It never touches `data.init`, where every start makes a new cluster before it renames it into place (next bullet):
+  the bound of an `ensure` kills the script's own process and not its `flock`, so a start may still be filling that directory under the lock, and every start deletes what a cut `initdb` left there before its own `initdb`.
+  It then reads the disk with `statfs`: the bytes free to a process that is not root (`f_bavail`), as the server finds them, and the disk's size.
+  Under 2 GiB free it resets the cluster, whether the server answers or not; at 2 GiB or more, and where the disk cannot be read, it runs the plain `ensure` and changes nothing else.
+  The floor is far above what the server needs to keep working, and it is set there on purpose:
+  a data-file write that finds no space fails its statement and the server stays up, but a WAL write that finds none makes the server panic, end every connection and start again, over and over while the disk stays full ([Disk Full Failure](https://www.postgresql.org/docs/current/diskusage.html#DISK-FULL)).
+
+- **The reset.**
+  The check runs `legion-testpg reset`, which takes the lock every start takes (`flock` on `.lock` in the cluster's directory, waiting up to 180 s), so it never runs beside a start:
+  a reset that waits for the lock resets the cluster that start made, and an `ensure` that waits for a reset finds the new cluster serving.
+  It runs under a bound of its own, 5 minutes (`testPGResetBound`), and not under the 60 s of an `ensure`.
+  Its steps run in this order.
+  It reads the 20 largest databases the cluster held, each with its owner and size, and the count and total size of any more, where the server answers, as the cluster's superuser over the socket, which a login out of connections leaves open to it.
+  It counts every database but `template0` and `template1`, a database a role marked as a template among them, and gives the list 60 s: a list that takes longer, as one of thousands of databases may, fails, and the reset goes on.
+  It stops the server, fast and then immediate, and only where the pid `postmaster.pid` names is a process in the data directory, since a stale file may name any process of the container, a role's among them.
+  It waits up to 60 s until no process has the data directory as its working directory;
+  a process still there at that bound is named and the cluster is left where it is, so the next check under the floor tries again and a reset never moves or deletes what a process still holds.
+  It then writes its line to the `roles` container's log (next bullet), so a reset whose new cluster fails to start, as its `initdb` does on a disk that went from 2 GiB free to nearly full within one check, still names what the old cluster held.
+  It deletes a `data.reset` an earlier reset left, and moves the data directory aside to `data.reset` in one rename.
+  It makes and starts a new empty cluster as a pod's first `ensure` does, with the DSN's login, `vector` in `template1` and the DSN's database.
+  Like every start, it runs `initdb` in `data.init`, beside the data directory, deleting first what a cut `initdb` left there, and renames the new cluster to the data directory only once `initdb` is done.
+  That rename is what makes a cluster whole or absent: `initdb` writes `PG_VERSION` early (measured on PostgreSQL 18: 145 ms into a 3.1 s run), and a data directory holding the `PG_VERSION` of a cut `initdb` is one no later start makes a cluster in again.
+  It deletes `data.reset`, and where that fails the next check deletes it.
+  It then appends its line to the server's log.
+  Because the rename comes before any of the old cluster is deleted, and a new cluster reaches the data directory only whole, a reset cut at any later step, by its own bound, a restart of the `roles` container or a kill, in its `initdb` as anywhere else, leaves a `data.reset` that the next check deletes before it reads the free bytes, at most a part of a cluster in `data.init`, which the next start deletes before its own `initdb`, and in the data directory either no cluster, which the next check's `ensure` makes as it makes a pod's first, or the new cluster whole, whose start that `ensure` finishes.
+  A reset cut before the rename leaves the old cluster whole where it was, which the next check serves, or resets again while the disk is still under the floor.
+
+- **The reset's line.**
+  A reset writes one line to the `roles` container's log, behind the launcher's own `legion-testpg: ` prefix, once it has read the databases and stopped the server and before its rename.
+  Once the new cluster has started, it appends the same line to the server's log, after the new cluster's first lines, since the new cluster's `initdb` starts that log over:
+  `legion-testpg: reset of the cluster in <data directory>: <free> free of <size> on its disk, under the floor of 2.0 GiB; it held <database> (owner <role>, <size>), …`, naming the 20 largest databases it held, largest first, each with its owner and size, and ending `, and <n> more, <total size>`, the count and total size of any more, where the cluster held more than 20, with the free space, the disk's size and the floor each in GiB to a tenth, or in MiB below one GiB, and each size in the list as PostgreSQL's `pg_size_pretty` writes it.
+  The launcher writes a line longer than 64 KiB to the container's log as several lines, so the list is bounded to keep the reset's line one line.
+  Each control character of a database's name or of its owner's is written `?`, since a role names its own databases, and a newline in a name would otherwise split the line and could forge a second `legion-testpg: reset` line.
+  Where the server did not answer, the line ends `the server did not answer, so it read no databases`, and where the list failed or took longer than its 60 s, `the server answered but the list of its databases failed, so it read none`.
+  `kubectl logs <pod> -c roles | grep 'legion-testpg: reset'` finds it, and a role reads it there or in `$LEGION_TEST_PG_LOG`.
+  A reset ends every session on the test database and loses every database in it, as an eviction does, but it ends no role's turn: the new empty cluster serves the same DSN.
+  So a harness that makes a database at each run and never drops it is reset each time it passes the floor, and no pod is evicted for it.
+
+- **What the disk costs.**
+  On the disk the test database runs about as fast as on the `emptyDir`, and each small database it copies takes about 40 ms more:
+  76 ms against 35 ms at the median, so a suite that makes 200 copies runs about 8 s longer (dispatch://INFRA-1117/artifact/crash-causes-2026-11-18-md, "The test database on a persistent disk").
+  Each pod that runs the test database where the key is set holds one more disk, of the key's size, for its life.
+  On a GKE class of balanced persistent disks (`pd-balanced`) that disk costs $0.10 a GB-month in us-west1 ([pd-balanced prices](https://gcloud-compute.com/pd-balanced.html)), so about $2.15 a pod-month at 20 GiB.
+
+- **Rolling the disk out and back.**
+  The key lands only with a `daemonImage` and a worker image that both carry this release:
+  a daemon of an earlier release refuses at boot a key it does not know (`unknown key runtime.kubernetes.test_postgres_disk`), and an older image's launcher refuses the `--test-postgres-disk` flag and has no reset.
+  A change that moves either pin back below this release takes the key out first.
+  This release adds daemon API contract entry `20261125163621` (`test-postgres-disk`, `packages/daemon/internal/api/contract_20261125163621_test-postgres-disk.go`; `legion version --contracts` prints its number in a build) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
+  A pod whose key is off gets no such flag, and runs as it did before this release.
+  Setting the key opens no update round, because the shape a pod records (`legion.dev/pod-shape`) does not hold it:
+  a running pod keeps its `emptyDir` until it is replaced, and the pod that replaces it gets the disk.
+  Where the key lands with the image move, that move's own update round replaces each running issue pod.
 
 - **Upgrading.**
   This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
@@ -516,7 +589,7 @@ The pull must fit the launch's wait for the role's launcher before any init cont
 `worker_boot_timeout_seconds` (`packages/daemon/internal/config/config.go`;
 120 s by default), which the wait extends only once an init container is running (`awaitRoleLauncher`, `packages/daemon/internal/runtime/sandbox/relaunch.go`;
 "Liveness rules" below); a launch whose launcher has not connected by then fails and is counted.
-On GKE Autopilot (measured 2026-10-16), an issue or controller pod usually waits for a node of its own ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) and pulls the image cold there:
+On GKE Autopilot (measured 2026-10-16), the controller's pod and each `Guaranteed` issue pod usually waits for a node of its own ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) and pulls the image cold there:
 2m23s and 3m33s from creation to the first init container in the two launches measured (1m19s and 2m25s of that waiting for the node, 56s and 58s pulling), and one cold pull of a new digest on an existing node took 2m14s by itself
 — so a GKE deployment needs a larger `worker_boot_timeout_seconds` (for example 300) to keep that provisioning-plus-pull time from being counted as a launch failure.
 The image probe's own wait is derived from the same key:
@@ -4984,6 +5057,7 @@ runtime:
       service_account: legion-repository-cache   # optional, with bucket: the ServiceAccount the cache pods alone run as, never pod.service_account
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
+    test_postgres_disk: 20Gi    # optional, default none: the test database's own disk, a generic ephemeral volume of this size, at least 4Gi, that the pod's ephemeral-storage limit does not count; needs test_postgres: true (A test database in the pod, above)
     memory_guard:               # optional: the memory guard in each gVisor issue pod's launcher and in the gVisor controller pod's; a microVM pod's launcher, an issue pod's or the controller's, runs the guest watch instead (The memory guard in an issue pod, The memory guard in the controller's pod, and Memory in a microVM pod, below)
       issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
       controller_pod: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 1, interval_milliseconds: 100 }   # the defaults; read by the gVisor controller's pod under controller: daemon
@@ -5956,8 +6030,9 @@ Each repository cache pod and the image probe's pod run under gVisor whatever th
 So the boot's image probe runs the image under gVisor, and never in a microVM.
 
 **The stop-eviction annotations.**
-A microVM pod carries the annotations its kind carries in gVisor, an issue pod's and the controller's alike: `karpenter.sh/do-not-disrupt: "true"`, `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` and `legion.dev/pod-shape`.
-On the nodes of a custom ComputeClass the two stop-eviction annotations hold no node upgrade off, as GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`); a microVM controller's pod carries the three a gVisor controller's pod carries, its safe-to-evict annotation whatever its reservation.
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor issue pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+On the nodes of a custom ComputeClass neither stop-eviction annotation holds a node upgrade off the way GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 The cluster's maintenance window decides when such a node is upgraded, and a pod the upgrade evicts ends as a pod whose node goes does ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A kept volume stays through that end, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 
@@ -6283,8 +6358,8 @@ When the wait ends, the kills that the watch named no process for have one `kill
 
 **What the sign does not show.**
 
-- The rule that every pass follows has one limit, and this item and the next one are the one statement of it.
-  The rest of this page and the comments of `packages/daemon/internal/memoryguard/guest.go` and `packages/daemon/internal/launcher/memoryguard.go` refer to these two items and do not repeat their cases.
+- The rule that every pass follows has one limit, and this item and the two after it are the one statement of it.
+  The rest of this page and the comments of `packages/daemon/internal/memoryguard/guest.go` and `packages/daemon/internal/launcher/memoryguard.go` refer to these three items and do not repeat their cases.
   A pass weighs against the kills left to name only the processes that it holds and that show SIGKILL pending: the ones it may name, and the ones it counts but never names.
   Where the kernel's victim is not among them at a pass, a held process that something other than the kernel, or than `role-init`'s drain, has sent SIGKILL can be named in the victim's place.
   That process can be of any role, or of no role.
@@ -6315,7 +6390,15 @@ When the wait ends, the kills that the watch named no process for have one `kill
 
   A process that the watch set aside in one wait, or first read with SIGKILL pending during it, counts in no later wait, a zombie whose parent has not reaped it among them.
   So in a later wait it never takes the place of that wait's victim in the count.
-  In a microVM pod the memory guard is off, and these can send such a SIGKILL:
+  The third item names what can send such a SIGKILL in a microVM pod, where the memory guard is off.
+
+- The same limit leaves a kill unnamed, and names no process wrongly, where a pass counts a process that no kill of the wait reached.
+  Its known case is a process of a role whose session has ended, as in the third case of the item above, that the watch counts already.
+  A scan that first reads a process with SIGKILL already pending while a kill is pending counts it, whatever its role (`size`, below), and a pass counts each counted process before it looks at any role's session.
+  So a process that started after the last scan, and that its role's `role-init` then sent its `kill(-1)`, counts and is not set aside.
+  With it in the count, the processes that a pass weighs can be more than the kills left to name: the pass reads the counter again, and where the counter did not rise, it names none of them, so another role's victim among them is left unnamed.
+
+- In a microVM pod the memory guard is off, and these can send the SIGKILL of the first item:
   a role's own `kill -9`;
   a timeout tool that sends SIGKILL;
   `procgroup`'s stop, which sends SIGKILL to a command's process group a second (`StopGrace`) after its SIGTERM (`Configure`, `packages/daemon/internal/procgroup/procgroup.go`);
@@ -6325,15 +6408,10 @@ When the wait ends, the kills that the watch named no process for have one `kill
   and any `exec.CommandContext` of Legion's, whose default `Cancel` sends SIGKILL when its context ends (`Process.Kill`), and whose `WaitDelay` sends SIGKILL to a process that a `Cancel` of its own asked to stop with SIGTERM and that has not exited by then.
   `procgroup` stops the group when the context of a `legion gh` help, configuration or remote read ends (`ReadHelp` and `gitLines` in `packages/daemon/internal/ghroute/`, and `ghRepoGitConfigRefusal` in `packages/daemon/cmd/legion/gh_gitconfig.go`).
   The default `Cancel` sends SIGKILL to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
-  and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
+  and to the launcher's test-database script at an `ensure`'s bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
+  A reset's bound has a `Cancel` of its own, which sends SIGKILL to the script's whole process group, its `flock`, `reset-locked`, `initdb` and `pg_ctl` among them, and not to the postmaster, which `pg_ctl` starts in a session of its own (`killGroupAtBound`, which `runTestPG` applies to the run `resetRun` makes).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
   The CodeGraph warm-up's memory cap sends it to the build's whole process group at its first read above the cap (`watchCodegraphMemory`, `packages/daemon/internal/workspace/codegraph.go`), which does not depend on the guard and so runs in a microVM pod too: the build's leader is a direct child of the shim, so its kill is named with the `kernel-protected` cause, as `WaitDelay`'s is.
-
-- The same limit leaves a kill unnamed, and names no process wrongly, where a pass counts a process that no kill of the wait reached.
-  Its known case is a process of a role whose session has ended, as in the third case of the item above, that the watch counts already.
-  A scan that first reads a process with SIGKILL already pending while a kill is pending counts it, whatever its role (`size`, below), and a pass counts each counted process before it looks at any role's session.
-  So a process that started after the last scan, and that its role's `role-init` then sent its `kill(-1)`, counts and is not set aside.
-  With it in the count, the processes that a pass weighs can be more than the kills left to name: the pass reads the counter again, and where the counter did not rise, it names none of them, so another role's victim among them is left unnamed.
 
 - A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line, unless a pass names another process in its place (the first item above).
   On a real kernel (runc, Linux 6.12.110, with a test counter raised in place just before a real SIGKILL), the watch named a 1 GiB process that its parent reaps at once 10 times of 10, and a `sleep` reaped at once 5 times of 5, in a run on 2026-11-16 at `9ac8e5a8`, the head the review approved (pull request #4106).
@@ -6865,6 +6943,27 @@ The `roles` container ending — its PID 1 exiting, `OOMKilled`, an eviction
 When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind a note that its pod ran out of memory and a pointer to `skill://legion-worker/references/tools.md` (`Observation.OutOfMemory`, then `outOfMemoryTask` in `internal/supervise/delivery.go`, kept on the delivery across a daemon restart);
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
+A death the daemon charges for memory, or for the pod's own disk, is told in plain words with its number, before the runtime's own detail (`Observation.Cause`, read where the end is, then `plainCause` in `internal/supervise/plain_cause.go`):
+
+- a `roles` container that ended `OOMKilled` is told as `the pod's roles container, which runs every role of this issue, was killed because it used more than its <limit> memory limit`, with the container's memory limit as the pod's spec holds it;
+
+- an eviction for node memory pressure whose message names a container of the pod over its request ([The disk dies with its pod](#the-disk-dies-with-its-pod)), whether or not it carries a `DisruptionTarget` condition, is told as `the kubelet evicted the pod for node memory pressure because its <container> container was using <use>, more than its <request> memory request`, with the use and the request the kubelet's message gives, since that pod passed its request and not its limit;
+
+- an eviction for node disk pressure whose message names a container of the pod over its ephemeral-storage request (the same section), whether or not it carries a `DisruptionTarget` condition, is told as `the kubelet evicted the pod for node disk pressure because its <container> container was using <use> of its own disk, outside $TMPDIR, more than its <request> ephemeral storage request`, with the use and the request the kubelet's message gives, for the same reason;
+
+- an eviction for the pod's own disk is told as `the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its <limit> limit`, with the limit the kubelet's message gives, or the limit the pod's spec holds it to where the message holds one of the kubelet's limit sentences and its limit does not parse; any other `Evicted` end, such as a node's refusal at admission or a node-pressure eviction whose message names no container of this pod over its request, is told with no plain sentence.
+
+Each size is in GiB or MiB, to two decimals with the zeros that end them dropped, so `9437188Ki` reads `9 GiB` and `16082620Ki` reads `15.34 GiB`.
+The role's next task carries the sentence where it says why its process ended, as `Your process ended because <sentence>. The runtime's detail: "<detail>".`, and for either disk eviction a note stands between the sentence and the detail.
+After an eviction over the pod's ephemeral-storage request the note is `Keep large files under $TMPDIR, on the issue's volume.` (`diskTask`), since what the kubelet's message counts there is the container's own layer and its logs alone.
+After an eviction for the pod's disk limit the note first says what that limit counts and then where large files go (`diskLimitTask`): `That limit counts each role's home, /tmp and /var/tmp, the container's logs and what is written in the container's own layer. Keep large files under $TMPDIR, on the issue's volume.`
+Where the pod that ended kept its test database in the `testpg` `emptyDir`, which that limit counts, the note also names the test database, between those two sentences: `It also counts the pod's test database, which fills up with the databases test runs make and never drop. Drop each database a test run makes when the run ends.`
+The daemon reads that from the ended pod's own spec (`testDatabaseCounted`, `end_reading.go`) and not from the setting, so a pod made before `runtime.kubernetes.test_postgres_disk` was set is told what its own limit counted, and a pod whose test database is on a disk of its own ([A test database in the pod](#a-test-database-in-the-pod), "A disk of its own"), or that runs none, is told of no database.
+For a `roles` container killed for memory that sentence is the task's one statement that the pod ran out of memory: the note behind it keeps its guidance, that the work can be another role's and the pointer to the worker guide, and drops its own `Your pod ran out of memory.` and the sentence after it (`outOfMemoryNote`), which it still carries whole where the daemon names no limit.
+The claim's `lastDeathCause` opens with the same sentence, as `<sentence>. The runtime's detail: <detail>`.
+So when those deaths fail the claim, the hold notice its architect gets and the `worker-died` beside it carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
+A death of any other cause carries the runtime's detail alone, as before.
+
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
 the `roles` container and the init container carry the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default).
 At the default every request equals its limit and the pod is `Guaranteed`; a `cpu_request` or `memory_request` below its limit makes the pod `Burstable`.
@@ -7161,8 +7260,13 @@ Every pod runs:
 
   - `karpenter.sh/do-not-disrupt: "true"`, Karpenter's own, which GKE's cluster-autoscaler ignores;
 
-  - the issue pod and the project controller's additionally carry `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, the upstream Cluster Autoscaler's own annotation, which GKE Autopilot honours as a request for up to seven days of extended-duration protection from its own scale-down and node-upgrade eviction
-    — not indefinitely, and not from node pressure or an OOM, a higher-priority Pod, Compute Engine maintenance or node repair, or an operator-initiated drain;
+  - the project controller's pod additionally carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, the upstream Cluster Autoscaler's own annotation, whatever its reservation, and an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit, which is the `Guaranteed` reservation (`podKind.asksExtendedRunTime`, `podkind.go`);
+    GKE Autopilot honours it as a request for up to seven days of extended-duration protection from its own scale-down and node-upgrade eviction
+    — not indefinitely, and not from node pressure or an OOM, a higher-priority Pod, Compute Engine maintenance or node repair, or an operator-initiated drain.
+    An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
+    it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
+    What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node, and the work its roles did not push goes with that pod's disk unless the disk is a kept volume;
+    what it keeps is its roles, because the daemon continues every role of a pod the cluster ended in that role's own session, with no death charged and no launch failure, however often the cluster ends it, except for the pod's own ends, an `Evicted` end with no `DisruptionTarget` condition and a node-pressure eviction whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested, which are not read as ends from outside the pod and are counted as a stop of each role's process ([The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod", which also says what becomes of disk use in the pod's `emptyDir` volumes);
 
   - on GKE Autopilot this second annotation also adds a required node affinity (`cloud.google.com/extended-duration-pods`) and gives the pod a node of its own whenever possible, which usually costs each pod it creates (an issue's first launch, or a relaunch that replaces the pod) a fresh node and a cold image pull ([Image size and pull time](#image-size-and-pull-time));
 
@@ -8210,8 +8314,12 @@ a `Performance`-class or accelerator pod bursts into the node's allocatable inst
 That node is itself sized from the requests:
 GKE adds up the cpu, memory and ephemeral-storage requests of the pods and DaemonSets that will run on the new node and rounds them up to the nearest machine type in the series that holds them, and Autopilot bills that VM ([Optimize Autopilot Pod performance by choosing a machine series](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/performance-pods#how-gke-selects-machine-type), "How GKE selects a machine type" and "Pricing"; all three pages read 2026-10-18).
 So on Autopilot every class sets the burst ceiling from the requests.
-Legion's issue and controller pods carry `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, which on Autopilot gives each a node of its own whenever possible ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so on the general-purpose platform an issue pod's ceiling is about its own requests, whatever its limits say:
-with `issue: {memory: 32Gi, memory_request: 8Gi}` the pod requests 8Gi and never reaches its 32Gi limit.
+An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed`, and the controller's pod carries it whatever its reservation ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+A pod carrying it gets a node of its own on Autopilot whenever possible, so on the general-purpose platform its ceiling is about its own requests, whatever its limits say.
+A `Burstable` issue pod carries it not at all:
+`issue: {memory: 32Gi, memory_request: 8Gi}` requests 8Gi under a 32Gi limit, asks for no extended run time, and so shares a node and bursts into that node's burstable capacity rather than into a node of its own.
+That burst is not reserved:
+GKE terminates containers in lower-QoS pods first once the pods of a node pass its burstable capacity, and the cluster may also end such a pod to repack a node, which costs the turn in flight and the work its roles did not push, unless its disk is a kept volume ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 On a `Performance` node the ceiling is those requests rounded up to a machine type, and a lower request still picks a smaller, cheaper VM.
 To give an issue real headroom on Autopilot, raise its request rather than its limit alone.
 
@@ -8226,7 +8334,11 @@ Legion sets no affinity itself (GKE Autopilot adds its own to an annotated pod, 
 each pod owns its volume and shares nothing with another pod, so the scheduler bin-packs it wherever a node of the cluster has room for its reservation, and Karpenter adds a node under its NodePool's limits when none has, of the smallest type that NodePool's requirements allow.
 In production (read 2026-10-08) those were the `legion` NodePool's `instance-cpu Gt 3` and `instance-memory Gt 65535`, so its floor was an 8-vCPU, 64 GiB type whose allocatable is about 7.9 CPU and 60.8 GiB:
 a 2 CPU / 8 GiB issue pod fits, three per node (7.9 / 2 by cpu, where 60.8 / 8 would place seven), cpu the binding dimension.
-On GKE Autopilot each issue and controller pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks pod count rather than this three-per-node packing.
+On GKE Autopilot the controller's pod and each `Guaranteed` issue pod tends to get a node of its own instead ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so node count there tracks the count of those pods rather than this three-per-node packing;
+a `Burstable` issue pod asks for no node of its own and shares one.
+`karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
+Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
+So an AWS deployment gains the uncharged continue from this release, and no repacking of its pods.
 The scheduler puts a pod with a kept volume only in the zones of the first pod that mounted its claim, one zone for a zonal disk and two for a regional disk, wherever else a node has room ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 The **controller's** pod, whose Sandbox owns its claim, and an issue pod with a kept volume are the pods that wait on a volume when they are relaunched onto another node:
 each one's `ReadWriteOnce` volume must detach from the old node first, which shows as transient `FailedAttachVolume` or `Multi-Attach` events until the old pod is gone; then it runs on.
@@ -8989,11 +9101,88 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 
 - **the orphan sweep** deletes a Sandbox of a tree whose cleanup confirmed or that has no lifecycle (`ReconcileOrphans`, `internal/runtime/sandbox/sandbox.go`), taking its pod, and the pod its disk;
 
-- **the node goes**, or the kubelet evicts the pod.
+- **the node goes**, or the kubelet evicts the pod, or anything else outside the pod ends it.
   Agent Sandbox recreates a `Running` Sandbox's pod under the same name at once, and that pod brings a claim of its own:
   the same name, a new uid, the new pod as its owner.
   Nothing waits for a detach, since the replacement mounts no volume the pod it replaces held, so the `FailedAttachVolume` and `Multi-Attach` events a reattached `ReadWriteOnce` volume used to produce do not arise for an issue's disk.
   Its role launchers' first hello binds the role Secrets to it, so the roles' next launches keep it rather than replace it again ([The daemon's Kubernetes request rate](#the-daemons-kubernetes-request-rate)).
+  The daemon continues the roles of such a pod uncharged where it read the end as one from outside the pod, and counts the end as a stop of each role's process where it did not (below).
+
+**An end from outside the pod.**
+The daemon reads what ended each watched pod where its informer delivers the end, and writes one line for the reading that decides the end, the daemon's own end or one from outside the pod (below), whether the first event of the end made that reading or a later event read the end again (`captureEndReading`, `internal/runtime/sandbox/end_reading.go`):
+`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and, as `ended`, every role of the pod whose process the end ended.
+A reading of neither kind decides nothing and writes no line, though the daemon keeps it and reads the end again at the pod's next event.
+An end read while the daemon watches no claim of the pod, as a boot reads each end that came while no daemon ran before its reconciliation adopts the pod's claims, writes that line once the reconciliation has adopted them (`tellEndReadings`), and only once.
+The line is written before any claim is decided on its reading and says what ended, nothing of what any claim got for it: each claim writes its own line for that (below).
+Two readings say something outside the pod ended it:
+
+- the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for, while the pod was not yet terminal.
+  The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and before each such act of its own it records the pod the act ends, so an end no record of its own answers for was made by something else, but for the three ends of its own below that no record answers for.
+  It finds that pod in its informer's store, or, where the store has not yet seen it, as for a pod the controller made a moment before, it reads the pod from the API server (`meanToEndPodOf`).
+  A read that fails records nothing: the daemon logs `sandbox runtime: could not read the pod an act of the daemon's is about to end; its end is not recorded as the daemon's own` at warning level, naming the Sandbox and the error, makes the act all the same, and reads the pod's end as an end from outside the pod, so its roles are relaunched uncharged.
+  The suspension of the Sandbox of a launch that failed after its `Running` patch looks in the store alone (`suspendFailedLaunch`), because a read before its patch would spend the patch's one 30 s bound and could leave the Sandbox `Running`; a pod the store has not yet seen then gets no record, which costs no role anything, since no role's process had started in the pod of that launch.
+  The record is held in memory alone (`meanToEndPod`), so after a daemon restart between its act and the pod's end, an end the daemon itself made is read as an end from outside the pod and its roles are relaunched uncharged;
+
+- the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
+  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `end_reading.go`).
+  A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+  An eviction for node memory or disk pressure whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested is not such an end, though it carries the condition (below).
+
+A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
+So a failed pod the cluster did not end is counted as a stop of each role's process whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
+The rule has one cost: an outside delete the daemon first sees when the pod is already terminal is counted as a stop of each role's process rather than continued uncharged.
+That is rare: the informer hands the daemon each watch event in order, and a graceful delete sets the deletion timestamp on the running pod before the kubelet makes it terminal, so the daemon sees the running pod's deletion first.
+It sees the terminal pod first only when its watch missed that update and a relist delivered only the later state, which is an inference from how client-go's watch and relist behave that no test proves.
+
+The daemon keeps each reading for as long as the pod stays in its informer's store, and for ten minutes after the informer delivers the pod's delete (`endReadingRecordLife`, `end_reading.go`), so a reading made when the end began still answers for the pod's roles when the end finishes.
+That is for a node that fails: its pods stay in the store under their deletion timestamps through the taint manager's evictions and the node's grace, which can run well past ten minutes, and no role of such a pod is judged for its end until the pod has left the store or its Sandbox holds a new pod.
+A later event of the same pod, such as a second eviction, leaves an end read from outside the pod, or as the daemon's own, as it was read; it reads again only an end of neither reading, so that end is read as it would have been had all its facts come in one event.
+An end the informer never saw is not read as an end from outside the pod, and is counted as a stop of each role's process as an end of neither reading is (below): a pod deleted while the daemon was restarting, since the readings are held in memory alone, or a pod the informer saw only while it was `Running`, because its watch missed the deletion and the relist that followed found the pod gone or replaced.
+An end from outside the pod that the daemon read is continued uncharged however each later report of that role's process is read, because the daemon keeps a record of that end from its first reading.
+A restarted daemon does the same where that record reached the daemon's store, whichever of the runtime's report of the ended pod and the boot's relaunch reaches each role first.
+The record goes into the store with any write of the role's claim.
+Where no write of the claim reached the store between the end and the restart, the new daemon continues the role uncharged only if it reads the end again as one from outside the pod, and otherwise counts the end as a stop of the role's process as an end of neither reading is (below): one death where the role held a task or a turn, and a task the role held is still sent to it again.
+An end the daemon first judged a death of the role's own process stays that death, whatever a later read of the pod says, and stays it after a restart where a write of the claim carried that judgement into the daemon's store.
+A read that finds the role's process running ends that judgement without telling the role it died.
+The death stays counted, as any death is.
+If the relaunch of that death still waits for its turn, in the wake pacing or behind a project pause, the daemon drops the relaunch and keeps the running process.
+The drop stands in for the ready of the launch it dropped: where the role's agent was already up, having said it was ready, the drop sets the launch failures to 0, as that ready would have.
+An agent that has not said it is ready, in any state before that ready, keeps its count until the next ready sets it to 0: its own, or that of the launch that replaces a process that cannot register.
+Otherwise, a launch failure the death's relaunch was charged stays counted until the role's next ready clears it.
+The next prompt still tells an earlier untold end in its own words, including the memory guidance if the task already carried an out-of-memory mark from that end.
+If the false death took the task back, the daemon sends it again with a sentence saying that it read the process wrongly as ended, after every end the same steps would tell with no false death, in its own words and with its memory guidance: an earlier end still untold, and an earlier end that took the task back itself.
+That take-back replaced the prompt the role was running, so a result of that prompt, a provider error among them, is stale: the task sent again carries no note of it and no retry for it.
+Each later send of that task to that process carries the sentence too, after a provider error or a second false death, until a turn runs the task to its result.
+The daemon judges a later end of that process afresh, and the role is told what the same end would tell with no false death before it, so an earlier untold end that the read put back is still told in its own words.
+An end that cut off the role's work tells its cause, and so does a death the daemon tells in plain words, for memory or for the pod's own disk, of a role that holds its task; any other end tells nothing of itself, so a role that holds a task is sent its task alone, and a role that holds none is not woken.
+An end the daemon first judged its own replacement of the pod stays that replacement: a later report of the pod read neither way, as after a restart that lost the daemon's record of its act, relaunches the role uncharged in its own session, telling it that its pod was replaced where the end cut off its work, on the daemon that judged it and after a restart where a write of the claim carried the record of the replacement into the daemon's store.
+
+An end of either reading costs its roles nothing, however often it comes.
+The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
+The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
+The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
+So a pod evicted because a neighbour's memory or disk use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
+That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
+Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
+Each claim writes its own line for what it got, at info:
+`supervise: the claim's pod ended from outside it; continued in its own session and charged nothing`, with `starting`, which says whether the claim's agent was still starting when its pod ended, and the `detail` of the reading.
+
+An end of neither reading is counted as before this release, as a stop of each role's process the pod ran ([Liveness rules](#liveness-rules)):
+each stop is one failed launch, which the relaunched agent's ready sets back to 0, as does the drop of that relaunch where the daemon finds an agent already up running while the relaunch still waits (above), so failed launches fail the claim only when they reach the limit with no ready between them; and, after the role's ready, a stop while the role held a task or a turn is also a death, which clears only when that work ends, so at the limit the deaths fail the claim.
+After a ready, a stop of a role that held neither is restarted with no limit, while a role that stops before its ready every time fails at the failed-launch limit.
+`Evicted` with no `DisruptionTarget` condition is such an end:
+the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
+An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`overRequest`, `end_reading.go`).
+The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
+An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too, for the same reason:
+its message names each such container in the words `Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage.`, counting as the container's use its own disk, its writable layer and its logs, and never `$TMPDIR`, which is on the issue's volume.
+Disk use in the pod's `emptyDir` volumes on the node's disk — each role's home, `/tmp` and `/var/tmp`, all on the role homes volume, and, where the deployment runs it in its `emptyDir` rather than on a disk of its own, the test database — names no container in that message.
+So on a pod whose ephemeral-storage request is below its limit, as at the daemon's defaults of a 6Gi request under an 80Gi limit, a node disk-pressure eviction of such use is read as a neighbour's and continued with no limit, each time on a new pod whose `emptyDir` volumes start empty.
+A pod whose ephemeral-storage request equals its limit is evicted by that limit first, since the pod's limit counts its `emptyDir` volumes too, and that end, `Evicted` with no `DisruptionTarget` condition, is charged as above.
+An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.
+A reason outside the cluster's three is such an end too, `UnexpectedAdmissionError` among them:
+a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
 
 The update round is how a configuration change reaches a running issue pod without taking the disk out from under it (INFRA-484).
 Every launch records the configuration its pod was built from on the pod template, as the `legion.dev/pod-shape` annotation (`podShape` in `internal/runtime/sandbox/drift.go`, written where the template is built):
@@ -9304,6 +9493,18 @@ On a kept volume, a new pod finds the workspace as the last pod left it, unpushe
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
 `docs/solutions/legion/worker-pane-shell-gotchas.md` has the mechanics).
+
+#### Rolling back the release that continues the roles of a pod the cluster ended
+
+A deployment that lowered an issue request under this release puts that request back to its limit **before** it re-pins the earlier daemon image.
+An earlier daemon annotates every issue pod `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` whatever its reservation ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+So a deployment that re-pins the image first has its `Burstable` issue pods annotated again, and on GKE Autopilot each of them then takes a node of its own at the smaller request:
+it would pay for a repack of the fleet and save nothing.
+Raising each lowered request back to its limit first makes those pods `Guaranteed` again, which is the shape the earlier daemon's annotation was written for.
+Each pod takes the new request at its own update round ([The disk dies with its pod](#the-disk-dies-with-its-pod)), so wait those rounds out before you pin the earlier image.
+
+An earlier daemon counts every pod end again as a stop of each role's process, as it did before this release, and records no reading.
+The uncharged continue keeps no column of its own in `claims`, so the rollback clears nothing of a claim's row.
 
 ### A kept volume on a microVM pod
 
@@ -10357,7 +10558,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   — three boot timeouts; the repository cache's waits, five more boot timeouts and the calls of one other ensure of the cache that may hold its turn ahead of the try;
   the launcher wait's backstop of twice the boot timeout plus `sandbox.Runtime.ProvisionBound`;
   the termination grace; and the try's client calls at their 30 s timeout
-  — about 6 h 5 min at the defaults; a try that reaches it is charged a launch failure and the next try runs, while a try the daemon's own stop ends is still charged nothing.
+  — about 6 h 7 min at the defaults; a try that reaches it is charged a launch failure and the next try runs, while a try the daemon's own stop ends is still charged nothing.
   Once the launch returns, the boot watchdog re-arms on the claim, bounded by its registration deadline (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, default 360 s, 6 min):
   under Kubernetes, the deadline carries an added bound of `sandbox.Runtime.ProvisionBound` until the shim's first hello, and from there the daemon re-arms the base deadline alone, the same one a tmux pane runs under throughout.
   A pod that never says hello is retired at the launch's return plus the base deadline plus the bound, armed as one (301 min at the defaults);
@@ -10969,6 +11170,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **The order those wakes go out in** is the daemon's: each paced wake waits in one of two queues in front of that bucket (`Pacer`, `internal/wakepace/pacer.go`).
   The first queue holds the wake of a role that has an Envoy message waiting and the relaunch of a role whose own process died.
+  The relaunch after an end from outside the pod charges no death, so it waits in the second queue, as the relaunch of a role whose pod was replaced under it does.
   The second holds every other paced wake: a resume by rule, the relaunch of a role whose pod was replaced under it, a stale-plugin relaunch and the catch-up that a start writes in place of a launch.
   At each turn of the bucket the pacing lets out the wake at the head of the first queue, except that while both queues hold wakes the turn after three first-queue wakes in a row goes to the head of the second, so the second queue keeps one turn in four.
   No two wakes are let out in one turn, so the queues change the order of a wave and never its rate.
@@ -11912,7 +12114,7 @@ the node mounts the share and gVisor's gofer serves it to the sandbox.
 An inline `csi` volume is not offered because a CSI driver runs outside gVisor's isolation with privileged access to the node ([GKE Sandbox, External dependencies](https://cloud.google.com/kubernetes-engine/docs/concepts/sandbox-pods#limitations)), so a pod naming an arbitrary driver would reach past the sandbox;
 a share behind a CSI driver is mounted through a claim the operator made, whose driver the cluster's administrator chose.
 `host_path` is refused too: Autopilot refuses a host path, and one would hand the agent the node's files.
-A claim named as Legion's own claims are (`issue-legion-…`, `cache-legion-…`, and `tree-legion-…` of the earlier layout) is refused at load, since every pod would then mount an issue's workspace or a repository cache.
+A claim named as Legion's own claims are (`issue-legion-…`, `cache-legion-…`, an issue pod's own disk `legion-…-issue` and its test database's disk `legion-…-testpg`, and `tree-legion-…` of the earlier layout) is refused at load, since every pod would then mount an issue's workspace, one pod's test database or a repository cache.
 The server must be an IP address or an ASCII DNS name with no scheme, port or path, and neither the node's loopback nor an unspecified address, and the export a clean absolute path;
 the claim a Kubernetes name, named by one volume only (the kubelet mounts a claim's volume once per pod, so two volumes of one claim would let one's `read_only` decide the other's;
 mount the one volume at each path instead).
@@ -12221,8 +12423,9 @@ With `agent_secrets.exchange_audience` set, the controller's pod also projects a
 So a controller given an account of its own loses that trade unless one of those two lists names its account too.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Once that token carries the tag `project-channels=slack`, a session whose credential names a private Dispatch project gets it only behind the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's owner named and on nothing else, so a private project's controller posts only to its project's channels and cannot read a Slack thread with it.
-Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
-"true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
+Legion sets no affinity on it, so under Karpenter it lands wherever a node has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
+"true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, both whatever its reservation
+— a `controller` request below its limit makes the pod `Burstable` and takes neither annotation away, where an issue pod carries the second only while its reservation is `Guaranteed` ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;
 GKE Autopilot holds off a scale-down or node-upgrade eviction of the pod for up to seven days ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) has what it does not stop), after which Autopilot may evict it like any other pod, and it is relaunched and resumes the same session like any claim's pod that dies ("The claim", above), unless the session has finished a turn and that death is its second end in a row before another finished turn, or the session is older than `controller_session_max_age_hours`, when the relaunch starts a fresh session (`controller_turn_bound_minutes` and `controller_session_max_age_hours` above say the rest).
 Its agent is told `LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_PROJECT`, `LEGION_DAEMON_URL`, the Envoy, NATS and Dispatch settings, `LEGION_SLACK_CHANNELS`, the project's Slack channels comma-separated and empty for none (the runtime's, always set, and refused in `runtime.kubernetes.pod.env` and `provider_keys`, so no list but the project's reaches it;

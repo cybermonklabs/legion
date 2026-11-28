@@ -13,8 +13,10 @@ import (
 //
 //   - LaunchFailures: launches that never became a working agent — a spawn or resume the runtime
 //     refused, a process that died, one whose agent never registered or registered and never said
-//     it was ready. Reset only by the agent's ready: a registration alone proves nothing about the
-//     next launch.
+//     it was ready. Reset by the agent's ready: a registration alone proves nothing about the
+//     next launch. A report that finds an agent already up running, while the relaunch of the
+//     death it ends waits, drops that relaunch and resets the count as the relaunch's own ready
+//     would have (dropOutlivedRelaunch).
 //   - Deaths: processes that died after their agent was ready with work outstanding — a pending
 //     task, or a turn the agent had begun and not ended, whether or not a task was behind it
 //     (chargeDeath). The relaunch reaches ready again whatever killed the last process, so ready
@@ -188,8 +190,9 @@ var FailureCauses = []FailureCause{
 //
 // ending is why the process the claim still records is let go, in the daemon's words, which the
 // launch records with what that process ended (launch, letGo); noEnd where the caller let it go
-// already (registrationDeadline). It is the record's words and no outcome: what the policy reads
-// is o alone.
+// already (registrationDeadline), and the boot's replay of a decided death, whose let-go records
+// nothing (relaunchRecordedDeath, recordEnd). It is the record's words and no outcome: what the
+// policy reads is o alone.
 //
 // place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
 // takes it, and nil for every caller but the boot's replay of a recorded death
@@ -225,12 +228,14 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 // is: by the report that decided it (died), by the sweep's next report of the same death, where
 // the lifecycle check refused the relaunch before (relaunchRefused keeps such a claim over its
 // dead process and arms no retry), and by the boot's replay of the death after a restart
-// (relaunchRecordedDeath). The first of them that passes the lifecycle check charges the launch
+// (relaunchRecordedDeath). A report read as from outside the pod is one of those reports: the
+// first judgement of a process stands, so judge sends such a report over a death died judged to
+// died (judgedDeath). The first of them that passes the lifecycle check charges the launch
 // failure, and the others charge none. What says the charge was made is the cause it records
-// (Claim.PendingCause): died clears it in the decision that charges the death (DeathCharged), and
-// the charge sets it to died in the same claim write as the count. So a write the claim makes
-// while the relaunch waits — a task a start queues meanwhile — stores the two together, and a
-// restart reads either both or neither.
+// (Claim.PendingCause), over an end the claim holds decided (Claim.DeathCharged): died clears
+// the cause in the decision that charges the death, and the charge sets it to died in the same
+// claim write as the count. So a write the claim makes while the relaunch waits — a task a start
+// queues meanwhile — stores the two together, and a restart reads either both or neither.
 func (m *Machine) deathLaunchFailureCharged(cause FailureCause) bool {
 	return cause == CauseDied && m.claim.DeathCharged && m.claim.PendingCause == CauseDied
 }

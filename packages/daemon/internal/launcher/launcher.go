@@ -57,6 +57,12 @@ type Config struct {
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
 	TestPostgres bool
+	// TestPostgresDisk says the test database's directory is a disk of its own
+	// (--test-postgres-disk, `runtime.kubernetes.test_postgres_disk`), a generic ephemeral
+	// volume rather than the pod's emptyDir. Unlike an emptyDir, that disk reports its own size,
+	// so the free bytes the launcher reads there are the cluster's own, and the launcher resets
+	// the cluster when they fall under a floor. It requires TestPostgres.
+	TestPostgresDisk bool
 	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm), in
 	// either form: the daemon renders it on a microVM issue pod's container and on the project
 	// controller's pod where the project's sandbox is a microVM. It decides the pod's memory watch
@@ -506,6 +512,9 @@ func (c Config) validate() error {
 	}
 	if err := c.validateMetadata(); err != nil {
 		return err
+	}
+	if c.TestPostgresDisk && !c.TestPostgres {
+		return errors.New("launcher: --test-postgres-disk says the test database's directory is a disk of its own: it needs --test-postgres")
 	}
 	if c.RolesDir == "" {
 		switch {

@@ -135,6 +135,7 @@ packages/daemon:
       - internal/supervise/supervisetest
       - internal/testbinary
       - internal/testbuild
+      - internal/testdoc
       - internal/testlog
       - internal/testnkeys
       - internal/testparallel

@@ -1,5 +1,7 @@
 package workspace
 
+//ci:reads packages/daemon/docker/worker.Dockerfile requireImagePackWindows reads ../../docker/worker.Dockerfile
+
 import (
 	"bufio"
 	"bytes"

@@ -50,15 +50,17 @@ func (w *wake) leave() {
 // WakeQueue is the queue a paced wake of c waits in, and the one statement of the rule that sorts
 // them (dispatch://INFRA-5682 R1, R2): the first queue (wakepace.First) for a claim whose message
 // mark stands (Claim.MessageMarked) — a wake for a role with an Envoy message waiting, which Envoy
-// drops once it has kept it an hour — and for one whose death is charged (Claim.DeathCharged), the
-// relaunch of a role whose own process died; the second (wakepace.Second) for every other. A
-// displaced relaunch charges no death, so it waits in the second queue with the rest of a
-// restart's backlog, which the pacer still lets out one turn in four. The gate reads it for the
-// place it joins (placeFor), a mark that comes while the wake waits moves the wake by it
-// (markMessage), and the boot reads it for the places it takes (internal/daemon's
-// placeRelaunches), so the three never sort a claim apart.
+// drops once it has kept it an hour — and for one that holds a charged death (Claim.chargedDeath),
+// the relaunch of a role whose own process died; the second (wakepace.Second) for every other. A
+// displaced relaunch charges no death, and neither does the relaunch of an end from outside the
+// pod, though its decision writes Claim.DeathCharged (decidedFromOutside), so each waits in the
+// second queue with the rest of a restart's backlog, which the pacer still lets out one turn in
+// four. The gate reads it for the place it joins (placeFor), a mark that comes while the wake
+// waits moves the wake by it (markMessage), the release of a launch a pause held joins it
+// (letOutHeldLaunch), and the boot reads it for the places it takes (internal/daemon's
+// placeRelaunches), so none of them sorts a claim apart.
 func WakeQueue(c *Claim) wakepace.Queue {
-	if c.MessageMarked() || c.DeathCharged {
+	if c.MessageMarked() || c.chargedDeath() {
 		return wakepace.First
 	}
 	return wakepace.Second

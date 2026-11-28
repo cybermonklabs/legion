@@ -172,21 +172,21 @@ func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
 // 10 (config), and ProvisionBound's 295 minutes (workspace.FetchBudget, whose terms hold the
 // fetch's 15-minute attempt on the repository cache's bucket, workspace.BucketFetchTimeout, +
 // workspace.CloneTimeout + workspace.CheckoutTimeout) — the start bound is the boot timeout, and
-// the sum is 6 h 4 min 41 s with relaunchCalls at 85: well past the 295-minute floor a
+// the sum is 6 h 6 min 41 s with relaunchCalls at 88: well past the 295-minute floor a
 // provisioning pod's rightful wait sets, and never under the boot timeout, ProvisionBound and the
 // grace together. With keep_volume on, the start bound is the kept-volume bound of 7 minutes
-// (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 9 min 41 s. The rig's runtime answers
+// (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 11 min 41 s. The rig's runtime answers
 // the same arithmetic over its own options.
 func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	t.Parallel()
 	boot, provision, grace := 120*time.Second, 295*time.Minute, 10*time.Second
-	if relaunchCalls != 85 || cacheEnsureCalls != 14 {
-		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
+	if relaunchCalls != 88 || cacheEnsureCalls != 15 {
+		t.Fatalf("relaunchCalls = %d, want 88: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
 	}
-	cache := 5*boot + 14*apiTimeout
+	cache := 5*boot + 15*apiTimeout
 	waits := 3*boot + cache + (boot + boot + provision + 2*recheckInterval) + grace
-	if got, want := launchBound(boot, boot, provision, grace), waits+85*apiTimeout; got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
-		t.Fatalf("launchBound = %s, want %s (6h4m41s)", got, want)
+	if got, want := launchBound(boot, boot, provision, grace), waits+88*apiTimeout; got != want || want != 6*time.Hour+6*time.Minute+41*time.Second {
+		t.Fatalf("launchBound = %s, want %s (6h6m41s)", got, want)
 	}
 	production := testOptions()
 	production.BootTimeout, production.TerminationGrace = boot, grace
@@ -202,8 +202,8 @@ func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	if r, err = configure(kept); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace); got != want || want != 6*time.Hour+9*time.Minute+41*time.Second {
-		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (6h9m41s)", got, want)
+	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace); got != want || want != 6*time.Hour+11*time.Minute+41*time.Second {
+		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (6h11m41s)", got, want)
 	}
 	g := newRig(t, nil)
 	if got, want := g.r.LaunchBound(), launchBound(g.opts.BootTimeout, g.opts.BootTimeout, g.r.ProvisionBound(), g.opts.TerminationGrace); got != want {

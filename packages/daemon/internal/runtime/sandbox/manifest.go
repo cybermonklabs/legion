@@ -49,8 +49,10 @@ const (
 	ghVolume        = "gh"
 	roleHomesVolume = "role-homes"
 	roleProbeVolume = "role-probe"
-	// testPGVolume is the disk emptyDir an issue pod keeps its own test PostgreSQL's cluster on
-	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres.
+	// testPGVolume is the volume an issue pod keeps its own test PostgreSQL's cluster on
+	// (TestPGDir), when the deployment sets runtime.kubernetes.test_postgres: a disk emptyDir, or
+	// a generic ephemeral volume of its own where runtime.kubernetes.test_postgres_disk sizes one
+	// (issuePod.mainVolumes).
 	testPGVolume = "testpg"
 	// workloadIdentityTokenVolume is the projected ServiceAccount token a microVM pod's launcher,
 	// an issue pod's or the controller's, exchanges for a Google one to serve the pod's metadata
@@ -96,11 +98,16 @@ const (
 	computeClassKey     = "cloud.google.com/compute-class"
 )
 
-// doNotDisruptAnnotation and safeToEvictAnnotation are the autoscaler annotation keys:
-// Karpenter's own (AWS), and the Cluster Autoscaler's, which GKE Autopilot honours as a request
-// for extended-duration protection. podTemplate sets both against eviction, unconditionally;
-// probeManifest sets only the first; and cachePodTemplate sets the first and the second as "true",
-// so the cluster autoscaler may move a cache pod and remove the node it held.
+// doNotDisruptAnnotation and safeToEvictAnnotation are the two autoscaler annotation keys a pod
+// template can carry: Karpenter's own (AWS), which every pod carries, the image probe's included
+// (podTemplate, probeManifest), and the Cluster Autoscaler's, which GKE Autopilot honours as a
+// request for extended-duration protection. podTemplate sets the second against eviction only on
+// a pod asking for that run time (podKind.asksExtendedRunTime): the controller's pod always, an
+// issue pod only while its reservation is Guaranteed. An issue pod whose cpu or memory request is
+// below its limit carries the second not at all, so Autopilot stops giving it a node of its own
+// and it shares a node and bursts; evictedOverRequest states which of the cluster's ends of such a
+// pod the daemon charges. cachePodTemplate sets the first and the second as "true", so the
+// cluster autoscaler may move a cache pod and remove the node it held.
 const (
 	doNotDisruptAnnotation = "karpenter.sh/do-not-disrupt"
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
@@ -1032,7 +1039,9 @@ func (r *Runtime) diskSpec(l launch) corev1.PersistentVolumeClaimSpec {
 // microVM issue pod's (MicroVM.StorageClass), and on storageClass
 // (runtime.kubernetes.storage_class) for every other pod, the controller's in either sandbox
 // included. Whatever declares a pod's disk takes its class from here: a launch (diskSpec) and the
-// boot census, which runs before any runtime is built (IssueDisks.templates).
+// boot census, which runs before any runtime is built (IssueDisks.templates). An issue pod's test
+// database disk is claimed here too, at its own size (issuePod.mainVolumes), so the test database's
+// disk is always on the class of the issue's own.
 func claimSpec(storageClass string, size resource.Quantity, kind podKind, microVM *MicroVM) corev1.PersistentVolumeClaimSpec {
 	if class := microVMDiskClass(kind, microVM); class != "" {
 		storageClass = class
@@ -1098,13 +1107,21 @@ func (r *Runtime) sandboxManifest(l launch) sandbox {
 // asks nothing of its placement: an ephemeral disk is made where the pod is scheduled, so the
 // scheduler puts such a pod wherever a node has room. A claim that outlives its pods binds each
 // later pod to the zones of its volume. The controller applies a template only to the next pod
-// it creates, so the template is rebuilt for every relaunch. Its metadata
-// carries, beside the two stop-eviction annotations, the configuration the pod is built from
-// (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
+// it creates, so the template is rebuilt for every relaunch. Its metadata carries Karpenter's
+// stop-eviction annotation, which every pod of every kind carries; the Cluster Autoscaler's, only
+// where the pod's kind and its reservation ask GKE for extended run time
+// (podKind.asksExtendedRunTime), a microVM pod's as a gVisor pod's; and the configuration the pod
+// is built from (podShapeAnnotation, podShape), its kind's in the sandbox the launch runs it in
 // (launch.shapeKey): the one write of it, so that a later sweep can read what a pod was built from
-// without rebuilding the launch that built it (drift.go). A microVM pod's labels carry
-// labelSandbox beside its kind's, on the template alone, so the Sandbox and its Secrets carry
-// exactly the labels a gVisor pod's do.
+// without rebuilding the launch that built it (drift.go); and, under a configured leak check
+// setting, the checker digest the pod was built under (leakCheckerAnnotation). Neither
+// stop-eviction annotation is in that shape, and the conditional one is not either: the only thing
+// that moves it is a request, which the shape already holds, so a pod whose annotation would move
+// is drifted by its reservation alone, while putting the annotation in the shape would change the
+// shape string of every pod of every deployment at this release and open a fleet-wide update
+// round for a value that did not change. A microVM pod's labels carry labelSandbox beside its
+// kind's, on the template alone, so the Sandbox and its Secrets carry exactly the labels a gVisor
+// pod's do.
 func (r *Runtime) podTemplate(l launch) podTemplate {
 	_, providersMounts := r.providers()
 	runtimeClass, selector, tolerations := r.placement(l)
@@ -1134,13 +1151,13 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 	for i := range spec.Containers {
 		kubeletLiteral(&spec.Containers[i])
 	}
+	annotations := map[string]string{doNotDisruptAnnotation: "true", podShapeAnnotation: r.podShapes[l.shapeKey()]}
+	if l.kind.asksExtendedRunTime(r) {
+		annotations[safeToEvictAnnotation] = "false"
+	}
 	labels := r.labels(l)
 	if l.microVM != nil {
 		labels[labelSandbox] = string(SandboxMicroVM)
-	}
-	annotations := map[string]string{
-		doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false",
-		podShapeAnnotation: r.podShapes[l.shapeKey()],
 	}
 	if r.leakCheck.Configured() {
 		annotations[leakCheckerAnnotation] = r.leakCheck.ManifestSHA256
@@ -1241,7 +1258,7 @@ func (r *Runtime) volumes(l launch) []corev1.Volume {
 	volume := corev1.Volume{Name: issueVolume, VolumeSource: disk}
 	config := corev1.Volume{Name: configVolume, VolumeSource: memory}
 	return slices.Concat([]corev1.Volume{volume}, l.kind.initVolumes(l), []corev1.Volume{config}, roleVolumes,
-		l.kind.mainVolumes(r), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), r.sessionWriterVolumes(), providers, r.pod.Volumes)
+		l.kind.mainVolumes(r, l), r.agentSecretsVolumes(l.roles), workloadIdentityVolumes(l), r.sessionWriterVolumes(), providers, r.pod.Volumes)
 }
 
 // agentSecretsVolumes are, for a pod the runtime enrolls with the secrets broker

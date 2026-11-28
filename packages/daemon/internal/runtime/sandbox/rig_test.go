@@ -32,6 +32,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/flowcontrol"
 
@@ -534,6 +535,8 @@ type rig struct {
 	noController bool
 	// hooks, when set, sees the runtime's Sandbox gets and deletes (withSandboxHooks).
 	hooks *sandboxHooks
+	// podReads, when set, runs before each pod Get the runtime sends (withPodReads).
+	podReads func(ctx context.Context, name string) error
 	// limit, when set, is the client-side rate limiter the runtime's requests wait on
 	// (withClientLimiter); secretGetsAsked counts each Secret get the runtime asked for, by name,
 	// whether or not the limiter let it through.
@@ -759,6 +762,45 @@ func (h hookedSandboxes) Get(ctx context.Context, name string, opts metav1.GetOp
 	return u, err
 }
 
+// withPodReads hands the runtime a typed client that runs read before each pod Get it sends, on
+// that request's own context, and answers read's error in place of the API server's answer where
+// read gives one: a read the API server is slow to answer, say. Only the runtime's requests go
+// through it; its informers list and watch on the fake itself.
+func withPodReads(read func(ctx context.Context, name string) error) rigOption {
+	return func(g *rig, _ *Options) { g.podReads = read }
+}
+
+// hookedKube is a typed client that runs read before each pod Get (withPodReads).
+type hookedKube struct {
+	kubernetes.Interface
+	read func(ctx context.Context, name string) error
+}
+
+func (k hookedKube) CoreV1() corev1client.CoreV1Interface {
+	return hookedCore{k.Interface.CoreV1(), k.read}
+}
+
+type hookedCore struct {
+	corev1client.CoreV1Interface
+	read func(ctx context.Context, name string) error
+}
+
+func (c hookedCore) Pods(namespace string) corev1client.PodInterface {
+	return hookedPods{c.CoreV1Interface.Pods(namespace), c.read}
+}
+
+type hookedPods struct {
+	corev1client.PodInterface
+	read func(ctx context.Context, name string) error
+}
+
+func (p hookedPods) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Pod, error) {
+	if err := p.read(ctx, name); err != nil {
+		return nil, err
+	}
+	return p.PodInterface.Get(ctx, name, opts)
+}
+
 // withHeldSandboxEvents holds the runtime's Sandbox watch at the first event hold picks until
 // release is closed, and every event behind it with it, as a watch the API server is slow to
 // deliver holds them: meanwhile the API answers the write that event carries and the runtime's
@@ -796,9 +838,40 @@ func heldReleaseRecord(event watch.Event) bool {
 	return ok && event.Type == watch.Modified && recordsRelease(u, u.GetUID())
 }
 
+// withHeldPodEvents holds the runtime's pod watch at the first event hold picks until release is
+// closed, and every event behind it with it, as withHeldSandboxEvents holds the Sandbox watch:
+// meanwhile the API holds the pod that event carries and the runtime's pod store does not, as an
+// informer that has not yet delivered a pod the Agent Sandbox controller made a moment ago. Only
+// the informers' watch goes through it; every request reads the tracker.
+func withHeldPodEvents(release <-chan struct{}, hold func(watch.Event) bool) rigOption {
+	return func(g *rig, _ *Options) {
+		g.kube.PrependWatchReactor("pods", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			var opts metav1.ListOptions
+			if w, ok := a.(k8stesting.WatchActionImpl); ok {
+				opts = w.ListOptions
+			}
+			inner, err := g.kube.Tracker().Watch(podsGVR, a.GetNamespace(), opts)
+			if err != nil {
+				return true, nil, err
+			}
+			return true, holdEvents(inner, release, hold), nil
+		})
+	}
+}
+
+// heldPodAdd picks the add of the pod named name, the event that would first put it in the
+// runtime's pod store (withHeldPodEvents).
+func heldPodAdd(name string) func(watch.Event) bool {
+	return func(event watch.Event) bool {
+		pod, ok := event.Object.(*corev1.Pod)
+		return ok && event.Type == watch.Added && pod.Name == name
+	}
+}
+
 // heldEvents is a watch whose events are inner's, in inner's order, the first event hold picks and
-// every one after it held until release is closed (withHeldSandboxEvents). inner is read at once
-// into a queue, so the tracker's bounded fake watcher never fills while the events wait.
+// every one after it held until release is closed (withHeldSandboxEvents, withHeldPodEvents).
+// inner is read at once into a queue, so the tracker's bounded fake watcher never fills while the
+// events wait.
 type heldEvents struct {
 	inner   watch.Interface
 	events  chan watch.Event
@@ -908,6 +981,9 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 	}
 	if g.limit != nil {
 		dyn, kube = limitedDynamic{dyn, g.limit}, limitedKube{kube, g.limit, g.askedSecret}
+	}
+	if g.podReads != nil {
+		kube = hookedKube{kube, g.podReads}
 	}
 	g.clients = runtimeClients{informers: kubeClients{dyn: g.dyn, kube: g.kube}, requests: kubeClients{dyn: dyn, kube: kube}}
 	g.countWatches(&g.dyn.Fake, &g.kube.Fake)
