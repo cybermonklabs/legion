@@ -47,10 +47,17 @@ type projectionStore struct {
 	// planTasks is the task of each issue that has plan rows at its generation, as
 	// record.Store.PlanTasksOf answers them.
 	planTasks []record.PlanTask
+	// branchRefusals is the refusal of each issue's branch row at the generation it stands in, as
+	// record.Store.BranchRefusals answers them.
+	branchRefusals []record.BranchRefusal
 }
 
 func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.PlanTask, error) {
 	return s.planTasks, nil
+}
+
+func (s projectionStore) BranchRefusals(context.Context, pgx.Tx, string) ([]record.BranchRefusal, error) {
+	return s.branchRefusals, nil
 }
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {

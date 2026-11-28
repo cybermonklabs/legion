@@ -60,7 +60,13 @@ type Result struct {
 // The ref name passes the deployment's private-name rules first, rules, the set the daemon
 // compiled at boot, as Create's does (leakguard.RuleSet.Check), and nothing is read or written for
 // a name they refuse. Nil rules are a deployment that names no rule file.
-func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.Repository, branch, base, fallback, mergedHead string, rules *leakguard.RuleSet) (Result, error) {
+//
+// An error the same call meets again is a *Refusal naming its kind (refusalKind,
+// PermanentRefusal): GitHub's refusal of the mutation, a repository read that names no node id,
+// and a base and a fallback GitHub has neither of among them. Every other error may pass on a
+// retry and is returned as it was met.
+func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.Repository, branch, base, fallback, mergedHead string, rules *leakguard.RuleSet) (_ Result, err error) {
+	defer func() { err = withRefusal(err) }()
 	ref := "refs/heads/" + branch
 	if rules != nil {
 		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
@@ -79,7 +85,7 @@ func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.R
 		}
 	}
 	if !found {
-		return Result{}, fmt.Errorf("read refs/heads/%s of %s: GitHub has no such branch", result.Base, repo)
+		return Result{}, fmt.Errorf("read refs/heads/%s of %s: %w", result.Base, repo, errNoBase)
 	}
 	result.Head = head
 
@@ -131,7 +137,8 @@ const updateRefsMutation = `mutation($repositoryId: ID!, $name: GitRefname!, $be
 
 // moveFrom moves branch of repo from the commit from to the commit to, with force, only while its
 // ref points at from (updateRefs's beforeOid), and answers whether it moved. The mutation names the
-// repository by its node id, which the REST API answers beside its name (`node_id`). A refusal
+// repository by its node id, which the REST API answers beside its name (`node_id`). A failure of
+// the mutation itself is a mutationFailure, so its refusal reads as the GraphQL API's. A refusal
 // GitHub answers in the mutation's errors reads the branch again: GitHub answers a stale beforeOid
 // with an error of no type and a generic message (a 200 with no data, seen when it was tried on a
 // scratch branch), so the refusal is judged by the branch rather than by its words. Where the
@@ -147,7 +154,7 @@ func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrep
 		return false, "", fmt.Errorf("read the node id of %s: %w", repo, err)
 	}
 	if repository.NodeID == "" {
-		return false, "", fmt.Errorf("read the node id of %s: GitHub named none", repo)
+		return false, "", fmt.Errorf("read the node id of %s: %w", repo, errNoNodeID)
 	}
 	var moved struct {
 		UpdateRefs *struct{} `json:"updateRefs"`
@@ -158,7 +165,7 @@ func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrep
 	var refused githubrest.GraphQLErrors
 	if !errors.As(err, &refused) {
 		if err != nil {
-			return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, err)
+			return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, mutationFailure{err})
 		}
 		return true, "", nil
 	}
@@ -167,7 +174,7 @@ func moveFrom(ctx context.Context, github, graphql githubrest.Client, repo ghrep
 		return false, "", readErr
 	}
 	if !found || now == from {
-		return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, err)
+		return false, "", fmt.Errorf("move %s on %s from %s to %s: %w", ref, repo, from, to, mutationFailure{err})
 	}
 	return false, now, nil
 }
@@ -190,7 +197,7 @@ func refCommit(ctx context.Context, github githubrest.Client, repo ghrepo.Reposi
 		return "", false, fmt.Errorf("read refs/heads/%s of %s: %w", branch, repo, err)
 	}
 	if read.Object.SHA == "" {
-		return "", false, fmt.Errorf("read refs/heads/%s of %s: GitHub named no commit", branch, repo)
+		return "", false, fmt.Errorf("read refs/heads/%s of %s: %w", branch, repo, errNoCommit)
 	}
 	return read.Object.SHA, true, nil
 }
@@ -211,5 +218,5 @@ func holds(ctx context.Context, github githubrest.Client, repo ghrepo.Repository
 	case "behind", "diverged":
 		return false, nil
 	}
-	return false, fmt.Errorf("compare %s with %s on %s: GitHub answered the status %q", tip, head, repo, compared.Status)
+	return false, fmt.Errorf("compare %s with %s on %s: %w %q", tip, head, repo, errCompareStatus, compared.Status)
 }

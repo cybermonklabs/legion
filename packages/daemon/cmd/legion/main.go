@@ -700,6 +700,9 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintln(stdout, entrySummary(state.Issues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
+	for _, line := range branchRefusedLines(state.Issues) {
+		fmt.Fprintln(stdout, line)
+	}
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
@@ -1318,6 +1321,26 @@ func heldSummary(held []api.HeldOutboxRow) string {
 	longest := slices.MaxFunc(held, func(a, b api.HeldOutboxRow) int { return cmp.Compare(a.WaitedSeconds, b.WaitedSeconds) })
 	return fmt.Sprintf("held lifecycle rows: %d; the longest waiting, %s row %d of %s, has waited %s behind row %d",
 		len(held), longest.Kind, longest.ID, longest.Issue, time.Duration(longest.WaitedSeconds)*time.Second, longest.WaitsOn)
+}
+
+// branchRefusedLines is the block an operator reads for the issues whose branch row GitHub refused
+// for good (api.Issue.BranchRefused): how many, then one line for each in key order, with the row,
+// what it wrote, the refusal's kind, when, and the row's error. Such a row ended and its roles
+// started without the write, so the block says none when none stands, as the held rows' line does.
+func branchRefusedLines(issues map[string]api.Issue) []string {
+	var lines []string
+	for _, key := range slices.Sorted(maps.Keys(issues)) {
+		refused := issues[key].BranchRefused
+		if refused == nil {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s row %d, %s refused as %s at %s: %s",
+			key, refused.Row, refused.Write, refused.Kind, refused.At.UTC().Format(time.RFC3339), refused.Reason))
+	}
+	if len(lines) == 0 {
+		return []string{"refused issue branches: none"}
+	}
+	return append([]string{fmt.Sprintf("refused issue branches: %d", len(lines))}, lines...)
 }
 
 // strandedPhrases is how `legion state` names each move that brings a stranded claim back
