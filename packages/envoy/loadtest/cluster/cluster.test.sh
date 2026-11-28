@@ -227,6 +227,10 @@ fi
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly cluster=$here/cluster.sh
 readonly real_path=$PATH
+real_sleep=$(PATH=$real_path command -v sleep)
+# Ten seconds gives the harness's processes time to finish handling TERM; only deliberate
+# stand-ins should need longer.
+readonly cleanup_term_seconds=10
 # Not readonly: cluster.sh's functions, which (e) to (g) source, declare a local tmp.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/cluster-test.XXXXXX")
 readonly outer_tmpdir=${TMPDIR:-/tmp} part_tmpdir=$tmp/scratch
@@ -247,6 +251,33 @@ own_steps() {
   done < <(pgrep -f -- "$cluster step --namespace $ns ")
 }
 
+# Expand the glob before grep forks so grep is not among the processes it reads.
+# Poll again after TERM because a process can still make a call while it handles the signal.
+part_processes_gone() {
+  local action=$1 proc pid cmdline pending=0
+  grep -lszxF -- "CLUSTER_TEST_MARK=$mark" /proc/[0-9]*/environ >"$scan" || true
+  while IFS= read -r proc; do
+    pid=${proc#/proc/}
+    pid=${pid%/environ}
+    [[ $pid != "$$" && $pid != "$check_pid" ]] || continue
+    ((++pending))
+    printf '%s\n' "$pid"
+    if [ "$action" = term ]; then
+      kill -TERM "$pid" 2>/dev/null || true
+    elif [ "$action" = kill ]; then
+      cmdline=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline") || continue
+      grep -qszxF -- "CLUSTER_TEST_MARK=$mark" "$proc" || continue
+      if kill -KILL "$pid" 2>/dev/null; then
+        printf 'cleanup: sent KILL to pid %s after %ss of TERM grace: %s\n' \
+          "$pid" "$cleanup_term_seconds" "$cmdline" >&2
+      fi
+    fi
+  done <"$scan"
+  ((pending == 0))
+}
+
+# The pidfiles and step scan stop known workloads. Other marked processes can still write
+# after TERM, so wait for all of them before removing the directory they can write into.
 cleanup() {
   local f pid
   for f in "$tmp"/root*/*/heartbeat.pid "$tmp"/root*/*/sampler.pid; do
@@ -260,6 +291,16 @@ cleanup() {
   while read -r pid _; do
     kill -TERM -- "$pid" 2>/dev/null || true
   done < <(own_steps)
+  local mark=$CLUSTER_TEST_MARK scan=$tmp/cleanup-processes check_pid=$BASHPID
+  if ! part_processes_gone term >/dev/null; then
+    local action=wait now=${EPOCHREALTIME/[.,]/} deadline
+    deadline=$((10#$now + cleanup_term_seconds * 1000000))
+    until part_processes_gone "$action" >/dev/null; do
+      now=${EPOCHREALTIME/[.,]/}
+      if ((10#$now >= deadline)); then action=kill; fi
+      "$real_sleep" 0.1 || true
+    done
+  fi
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -1055,7 +1096,6 @@ EOF
 # Every call, fast or real, of any length, is also a line "CALLER SECONDS" in naps.log. CALLER is
 # the pid of the shell that napped, so naps_by can count that shell's naps of every length. The
 # two disk watcher stop cases use their own caller pids to add "CALLER check WHAT" lines.
-real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
 [ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s %s\n' "\$PPID" "\$*" >>"\$FAKE_DIR/naps.log"
@@ -1447,24 +1487,6 @@ write_typing_bundle() {
   } >"$1/window.jsonl"
   printf '%s\n' "doc-1|$typing_l1" "doc-2|$typing_l2" "doc-3|$typing_l3" "doc-5|10000000-0000-4000-8000-000000000005" \
     "file-1|10000000-0000-4000-8000-00000000000f" >"$2"
-}
-
-# Expand the glob before grep forks so grep is not among the processes it reads.
-# Poll again after TERM because a process can still make a call while it handles the signal.
-part_processes_gone() {
-  local action=$1 proc pid pending=0
-  grep -lszxF -- "CLUSTER_TEST_MARK=$mark" /proc/[0-9]*/environ >"$scan" || true
-  while IFS= read -r proc; do
-    pid=${proc#/proc/}
-    pid=${pid%/environ}
-    [[ $pid != "$$" && $pid != "$check_pid" ]] || continue
-    ((++pending))
-    printf '%s\n' "$pid"
-    if [ "$action" = term ]; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
-  done <"$scan"
-  ((pending == 0))
 }
 
 # The daemon and sampler can remove their pidfiles before the last process of their sessions
@@ -5172,6 +5194,67 @@ for probe in without-namespace with-namespace; do
   fi
 done
 pass "the part-end check finds a process of the part by its marker, not by a pidfile, waits for a forked shell of the harness, and fails on its late call without -n"
+
+# Hold the child's setup after it makes its fake executables, so even a fast refusals part
+# cannot finish before we are ready to send TERM. The gate runs only in the re-exec'd shell.
+local late_dir=$tmp/term-cleanup late_pid late_mark='' late_tmp late_writer late_rc=0 late_left
+mkdir -m 700 "$late_dir" "$late_dir/child"
+mkfifo "$late_dir/hold"
+cat >"$late_dir/child-env" <<'EOF'
+if [ -v CLUSTER_TEST_MARK ]; then
+  unset BASH_ENV
+  cleanup_gate=${BASH_SOURCE[0]%/*}/hold
+  chmod() {
+    command chmod "$@" || return
+    while [ -p "$cleanup_gate" ]; do
+      read -r -t 0.1 || :
+    done <>"$cleanup_gate"
+  }
+fi
+EOF
+env -u CLUSTER_TEST_MARK PATH="$real_path" TMPDIR="$late_dir/child" BASH_ENV="$late_dir/child-env" \
+  bash "$here/cluster.test.sh" refusals >"$late_dir/out" 2>&1 &
+late_pid=$!
+
+late_child_ready() {
+  local entry
+  if ! kill -0 "$late_pid" 2>/dev/null; then
+    wait_impossible="child $late_pid exited: $(<"$late_dir/out")"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    case $entry in
+      CLUSTER_TEST_MARK=?*) late_mark=${entry#*=}; break ;;
+    esac
+  done 2>/dev/null <"/proc/$late_pid/environ" || return 1
+  [[ -n $late_mark && $late_mark != "$CLUSTER_TEST_MARK" ]] || return 1
+  for late_tmp in "$late_dir"/child/cluster-test.*; do
+    [ ! -f "$late_tmp/bin/kubectl" ] || return 0
+  done
+  return 1
+}
+wait_for "the child part to re-exec and install its cleanup trap" late_child_ready
+
+# The writer has no pidfile. With the old cleanup it can only leave its hold once the child
+# exits, so its write recreates the removed directory before the assertion reads it.
+env CLUSTER_TEST_MARK="$late_mark" bash -ec '
+  trap ": >\"\$2/term\"" TERM
+  : >"$2/ready"
+  while [ ! -e "$2/term" ] && kill -0 "$1" 2>/dev/null; do
+    "$4" 0.1 || :
+  done
+  mkdir -p -- "$3/root-late/run"
+' bash "$late_pid" "$late_dir" "$late_tmp" "$real_sleep" &
+late_writer=$!
+wait_for "the late writer to install its TERM trap" test -f "$late_dir/ready"
+kill -TERM "$late_pid"
+wait "$late_pid" || late_rc=$?
+wait "$late_writer" || fail "the late writer failed"
+late_left=$(find "$late_dir/child" -mindepth 1 -printf '%P\n')
+[ -z "$late_left" ] || fail "TERM cleanup left files in the child's TMPDIR: ${late_left//$'\n'/, }"
+((late_rc == 143)) || fail "the child exited $late_rc after TERM, expected 143: $(<"$late_dir/out")"
+[ -f "$late_dir/term" ] || fail "TERM cleanup did not stop the marked late writer"
+pass "a part that a TERM stops mid-run stops every process that carries its mark and waits for each before it removes its tmp, so a late write leaves nothing behind"
 }
 
 "part_${cluster_test_part//-/_}"
