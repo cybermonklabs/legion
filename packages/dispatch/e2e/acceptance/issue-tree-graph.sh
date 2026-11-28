@@ -12,13 +12,17 @@
 # spec, verification-md, plan-md and notes.md each hold the shapes seed-corpus.sh writes (headings
 # followed by paragraphs, a nested list, a list whose last item is empty, a typed block holding a
 # code block and a table, a quote holding a list) beside requirements, checks that serve them and
-# plan tasks; an image; comments citing blocks, a person's comment and messages; an answered ask and
-# an open one; results recorded on its checks; a child issue whose check serves a requirement of
-# its parent and one of its own; and an issue blocked by the first. It records the block ids and
-# their parents, the ask identities, the citation targets and each check_results row, byte for
-# byte, and stops that server. It boots this head's (the stamped envoy-dispatch on PATH) over the
-# same rows, with the hold settings lib-tree.sh gives every upgrade boot, waits for the backfill as
-# the Verification preamble states it (lib-tree.sh's tree_wait_backfill), and writes the head half,
+# plan tasks; an image; comments citing blocks, a person's comment and messages; a requirement r-from
+# with no parent attribute and no serves, whose From: line names, in that order, the agent's message
+# and the agent's comment, which no person wrote in and so are no conversation nodes, then the
+# person's message and the person's comment (the head half's names first the base half's person's
+# comment, of another issue); an answered ask and an open one; results recorded on its checks; a
+# child issue whose check serves a requirement of its parent and one of its own; and an issue
+# blocked by the first. It records the block ids and their parents, the ask identities, the
+# citation targets and each check_results row, byte for byte, and stops that server. It boots this
+# head's (the stamped envoy-dispatch on PATH) over the same rows, with the hold settings lib-tree.sh
+# gives every upgrade boot, waits for the backfill as the Verification preamble states it
+# (lib-tree.sh's tree_wait_backfill), and writes the head half,
 # the same shapes through this head's API, beside a criterion a person writes under a comment of
 # its own issue. The head half's child holds no requirement of its own, and its check serves its
 # parent's alone: an issue this head creates under an open parent that holds requirements is a
@@ -31,9 +35,11 @@
 # document_blocks rows that project them. Each node's current part_of names the node the rendering
 # draws it inside, the parent its path (GET /api/v1/artifacts/{id}/blocks/{block_id}) names, as
 # pmdoc.ValidDocument.BlockDescendantIDs walks the tree; an authored node's names its parent
-# attribute's target, else its first serves target of its own issue, else its issue; a top-level
-# block of a role document (spec, verification-md, plan-md, the tree's own fragment) hangs under
-# the issue and an uploaded document's under that document's node. Each row's parent_block_id is
+# attribute's target, else its first serves target of its own issue, else, for a requirement, the
+# conversation node of its own issue that its From: line names first (so r-from's names the
+# person's message), else its issue; each half must hold a requirement its From: line places; a
+# top-level block of a role document (spec, verification-md, plan-md, the tree's own fragment) hangs
+# under the issue and an uploaded document's under that document's node. Each row's parent_block_id is
 # the block its tuple names, where that is a block of the row's artifact, and none otherwise; a
 # difference prints the node, the parent the row holds and the parent the tuple gives. The
 # siblings of one document under one parent stand in the order of their source rows by rank, byte
@@ -111,6 +117,13 @@ readonly stamp
 sections=0
 base_issues=()
 head_issues=()
+# The conversation nodes the corpus writes, `<kind>:<id>`, of both halves: an ask, a person's
+# comment or message, and an agent's comment in a thread a person wrote in (refs.IsConversationNode).
+# The agent's comment and message of each half, which open threads no person writes in, are none.
+conversation=()
+# The base half's person's comment, which the head half's r-from names first in its From: line: a
+# conversation node of another issue, which places no requirement of the head half.
+from_elsewhere=""
 cleanup() {
   local code=$?
   tree_stop_head
@@ -133,10 +146,28 @@ issue_tree_graph_keys() {
   keys_sql="array[${list#,}]::text[]"
 }
 
+# issue_tree_graph_from_requirement SECTION ISSUE SPEC ITEM…: writes, as the agent, the requirement
+# r-from at the end of SPEC, ISSUE's spec, with no parent attribute and no serves, so its From:
+# line alone places it: the line names the conversation node of another issue from_elsewhere holds,
+# where it holds one, and then each ITEM (`<kind>/<id>`) of ISSUE, in that order.
+issue_tree_graph_from_requirement() {
+  local section="$1" issue="$2" spec="$3" line="From:" item
+  shift 3
+  [[ -z "$from_elsewhere" ]] || line+=" $from_elsewhere,"
+  for item in "$@"; do
+    line+=" dispatch://$issue/$item,"
+  done
+  corpus_edit "$section" "write the requirement r-from, which its From: line alone places, into $issue's spec" "$spec" \
+    "$(jq -cn --arg m ":::requirement{#r-from}"$'\n'"The census places a requirement by the line that says where it came from."$'\n\n'"${line%,}"$'\n'":::"$'\n' \
+      '[{op: "insert", after: "end", markdown: $m}]')"
+  printf 'wrote r-from into %s: %s\n' "$issue" "${line%,}"
+}
+
 # issue_tree_graph_write_half SECTION HALF: writes one half of the corpus through the server at
 # $base, and keeps its issues in HALF_issues (base_issues or head_issues).
 issue_tree_graph_write_half() {
   local section="$1" half="$2" shapes shapes_spec verification plan notes child blocked comment
+  local agent_comment agent_message person_message
   {
     printf 'The %s half of the tree census.\n\n## Requirements\n\n' "$half"
     printf ':::requirement{#r-shapes}\nEvery shape the census reads is in the corpus.\n:::\n\n'
@@ -176,15 +207,25 @@ issue_tree_graph_write_half() {
   corpus_blocks "$section" "$notes"
   corpus_comment agent "$section" "$shapes" \
     "dispatch://$shapes/spec#b-r-shapes is proved by dispatch://$shapes/artifact/verification-md#b-c-shapes."
+  agent_comment="$corpus_item"
   corpus_comment person "$section" "$shapes" \
     "Which shapes does dispatch://$shapes/artifact/plan-md#b-t-seed write?"$'\n\n'"The notes say why: dispatch://$shapes/artifact/notes-md#b-$corpus_paragraph."
   comment="$corpus_item"
   corpus_comment agent "$section" "$shapes" "Every one of them." "$comment" b2
+  conversation+=("comment:$comment" "comment:$corpus_item")
   corpus_message agent "$section" "$shapes" "The census reads dispatch://$shapes/artifact/plan-md#b-t-cite."
+  agent_message="$corpus_item"
   corpus_message person "$section" "$shapes" "Is every shape written?"
+  person_message="$corpus_item"
+  conversation+=("message:$person_message")
+  issue_tree_graph_from_requirement "$section" "$shapes" "$shapes_spec" \
+    "message/$agent_message" "comment/$agent_comment" "message/$person_message" "comment/$comment"
+  from_elsewhere="dispatch://$shapes/comment/$comment"
   corpus_ask "$section" "$shapes" "Which store holds the $half half?"
+  conversation+=("ask:$corpus_item")
   corpus_answer "$section" "$corpus_item" "Postgres, the database the pod runs." Postgres
   corpus_ask "$section" "$shapes" "Which store holds the next corpus?"
+  conversation+=("ask:$corpus_item")
   corpus_wait_settled "$section"
   corpus_result "$section" "$shapes" c-shapes pass "$corpus_commit_one" tester
   corpus_result "$section" "$shapes" c-both fail "$corpus_commit_one" implementer
@@ -228,13 +269,27 @@ issue_tree_graph_write_half() {
   pass "$section" "wrote the $half half: $shapes (with its four documents, an image, comments, messages, asks and results), its child $child, and $blocked, which $shapes blocks"
 }
 
+# The text of each requirement block of a text read with ?blocks=true, by block id: the slice of
+# that read's markdown its byte range (from, to) names, its whole block from its opening line, which
+# the census's From: arm reads (census_program's from_conversation). jq slices a string by code
+# point, so each byte offset is taken to the code point it falls after.
+readonly census_texts_program='
+  def byte_slice($from; $to):
+    . as $text
+    | [foreach explode[] as $c (0; . + (if $c < 128 then 1 elif $c < 2048 then 2 elif $c < 65536 then 3 else 4 end))] as $ends
+    | $text[([$ends[] | select(. <= $from)] | length):([$ends[] | select(. <= $to)] | length)];
+  .markdown as $markdown
+  | [.blocks[] | select(.type == "requirement") | .from as $from | .to as $to | {(.id): ($markdown | byte_slice($from; $to))}]
+  | add // {}'
+
 # issue_tree_graph_document SECTION HALF ID REF SLUG PRIMARY KIND ISSUE: gathers, into
 # $work/HALF/ID.json, what the census reads of one document: its blocks as the blocks read answers
-# them, each block's rendering parent as its path names it (the nearest block above it that holds
-# an id, none at the top), each block node the store holds of it (its current in_document names
-# the document) and each document_blocks row that projects one (a row whose document it is, as
-# refs' BlockDocumentSQL reads a row's document: the one its issue_room_blocks row names, else the
-# row's own artifact), with the parent the row holds and the address of the row's artifact.
+# them, each requirement with its text as the text read gives it (census_texts_program), each
+# block's rendering parent as its path names it (the nearest block above it that holds an id, none
+# at the top), each block node the store holds of it (its current in_document names the document)
+# and each document_blocks row that projects one (a row whose document it is, as refs'
+# BlockDocumentSQL reads a row's document: the one its issue_room_blocks row names, else the row's
+# own artifact), with the parent the row holds and the address of the row's artifact.
 #
 # An issue's tree artifact is read through the text read: the blocks read and the path read are a
 # document's alone (400 NOT_DOCUMENT for an artifact of kind tree), and the text read takes the
@@ -276,7 +331,13 @@ issue_tree_graph_document() {
         fail "$section" "read where $block stands in $ref" "no path in: $(body)"
       printf '%s\t%s\n' "$block" "$parent" >>"$dir/$id.parents"
     done < <(jq -r '.[].id' "$dir/$id.blocks")
+    tree_send GET "/api/v1/artifacts/$id/text?blocks=true"
+    tree_want 200 "$section" "read the text of $ref with its blocks"
   fi
+  jq -c "$census_texts_program" "$work/body" >"$dir/$id.texts" ||
+    fail "$section" "read the text of each requirement of $ref" "no markdown and blocks in: $(body)"
+  jq -e 'to_entries | all(.value | startswith(":::requirement"))' "$dir/$id.texts" >/dev/null ||
+    fail "$section" "read the text of each requirement of $ref off its byte range, from its opening line" "$(<"$dir/$id.texts")"
   query "$section" "read the block nodes of $ref" "
     select split_part(c.from_id, '#', 2) || '|' || c.from_id
     from (
@@ -295,10 +356,11 @@ issue_tree_graph_document() {
                     where r.tree_artifact_id = d.artifact_id and r.block_id = d.block_id), d.artifact_id) = '$id'"
   printf '%s\n' "$answer" >"$dir/$id.rows"
   jq -n --arg id "$id" --arg ref "$ref" --arg address "$address" --arg issue "$issue" --arg top "$top" \
-    --slurpfile blocks "$dir/$id.blocks" --rawfile parents "$dir/$id.parents" \
+    --slurpfile blocks "$dir/$id.blocks" --slurpfile texts "$dir/$id.texts" --rawfile parents "$dir/$id.parents" \
     --rawfile nodes "$dir/$id.nodes" --rawfile rows "$dir/$id.rows" '
     def lines($text): $text | split("\n") | map(select(. != ""));
-    {id: $id, ref: $ref, address: $address, issue: $issue, top: $top, blocks: $blocks[0],
+    {id: $id, ref: $ref, address: $address, issue: $issue, top: $top,
+     blocks: ($blocks[0] | map(. + {text: ($texts[0][.id] // null)})),
      parents: (lines($parents) | map(split("\t") | {(.[0]): (.[1] // "")}) | add // {}),
      nodes: (lines($nodes) | map(split("|") | {(.[0]): .[1]}) | add // {}),
      rows: (lines($rows) | map(split("|") | {(.[0]): {node: .[1], parent: .[2], artifact: .[3]}}) | add // {})}' \
@@ -348,8 +410,15 @@ issue_tree_graph_links() {
 }
 
 # The census the driver takes of one half's documents, over the JSON issue_tree_graph_census
-# gathers: {docs, part_of, rank, walk}. It prints one line per difference, then one `count` line
-# per count it took.
+# gathers: {docs, part_of, rank, walk, conversation}. It prints one line per difference, then one
+# `count` line per count it took.
+#
+# A requirement with no parent attribute and no serves target of its own issue hangs under the
+# conversation node of its own issue that its From: line names first (from_conversation), as refs'
+# fromLine and authoredPlaces.candidates read the line: the last `From:` that begins a word outside
+# a code span, to the end of its line, and of the references to an ask, a comment or a message it
+# holds, in the order it writes them, the first of the requirement's own issue that is a
+# conversation node (the corpus's own, `conversation`); else under its issue.
 readonly census_program='
   . as $h
   | ($h.docs | map({key: .address, value: .}) | from_entries) as $by
@@ -358,12 +427,27 @@ readonly census_program='
       | if ($part | length) == 2 and $by[$part[0]] != null then ($by[$part[0]].nodes[$part[1]] // null) else null end;
     def issue_of($address): $address | ltrimstr("dispatch://") | split("/")[0];
     def authored: . as $t | ["criterion", "requirement", "check", "plan_task"] | index($t) != null;
+    def from_conversation($d; $b):
+      (($b.text // "") | gsub("`[^`\n]*`"; "")) as $text
+      | ([$text | match("(^|[^A-Za-z0-9_])From:"; "g")] | last) as $label
+      | if $label == null then null
+        else
+          [ $text[($label.offset + $label.length):] | split("\n")[0]
+            | match("dispatch://([A-Za-z][A-Za-z0-9]*-[0-9]+)/(ask|comment|message)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(#[A-Za-z0-9_-]+)?"; "g")
+            | select(.captures[3].string == null and .captures[0].string == $d.issue)
+            | (.captures[1].string + ":" + .captures[2].string) as $address
+            | select($h.conversation | index($address) != null)
+            | $address ]
+          | first
+        end;
     def want($d; $b):
       if ($b.type | authored) then
         if ($b.attrs.parent // "") != "" then "names:" + ($b.attrs.parent | split("/") | last | split("#")[0])
         else
           ([($b.attrs.serves // "") | split(" ")[] | select(. != "" and issue_of(.) == $d.issue)] | first) as $serves
+          | (if $b.type == "requirement" then from_conversation($d; $b) else null end) as $from
           | if $serves != null then "block:" + (node_of($serves) // ("unresolved " + $serves))
+            elif $from != null then $from
             else "issue:" + $d.issue end
         end
       elif ($d.parents[$b.id] // "") != "" then "block:" + ($d.nodes[$d.parents[$b.id]] // ("unresolved " + $d.parents[$b.id]))
@@ -422,7 +506,9 @@ readonly census_program='
       "count block_nodes=\([$h.docs[].nodes | keys[]] | length)",
       "count document_blocks_rows=\([$h.docs[].rows | keys[]] | length)",
       "count parents_read=\([$h.docs[] | .nodes as $n | .blocks[] | select($n[.id] != null)] | length)",
-      "count ranked_siblings=\([$h.docs[] | .nodes as $n | .blocks[] | select($n[.id] != null and $h.rank[$n[.id]] != null)] | length)"'
+      "count ranked_siblings=\([$h.docs[] | .nodes as $n | .blocks[] | select($n[.id] != null and $h.rank[$n[.id]] != null)] | length)",
+      "count from_placed=\([$h.docs[] as $d | $d.blocks[] | select(.type == "requirement" and $d.nodes[.id] != null)
+        | want($d; .) | select(test("^(ask|comment|message):"))] | length)"'
 
 # issue_tree_graph_census SECTION HALF ISSUE…: the census of one half's documents
 # (census_program), its differences printed, failing on any.
@@ -469,12 +555,13 @@ issue_tree_graph_census() {
     jq -Rn --arg k "$key" '{($k): [inputs | select(. != "")]}' <"$dir/$key.walk" >>"$dir/walks"
   done
   pass "$section" "two reads of each tree of the $half half ($*) give one order"
-  jq -n --slurpfile walks "$dir/walks" --rawfile part_of "$dir/part_of" --rawfile rank "$dir/rank" '
+  jq -n --slurpfile walks "$dir/walks" --rawfile part_of "$dir/part_of" --rawfile rank "$dir/rank" \
+    --argjson conversation "$(printf '%s\n' "${conversation[@]}" | jq -Rnc '[inputs | select(. != "")]')" '
     def lines($text): $text | split("\n") | map(select(. != ""));
     {docs: [inputs],
      part_of: (lines($part_of) | map(split("|")) | group_by(.[0]) | map({key: .[0][0], value: map(.[1])}) | from_entries),
      rank: (lines($rank) | map(split("|")) | map({key: .[0], value: (.[1:] | join("|"))}) | from_entries),
-     walk: ($walks | add // {})}' "$dir"/*.json >"$dir/census.json" 2>"$work/jq" ||
+     walk: ($walks | add // {}), conversation: $conversation}' "$dir"/*.json >"$dir/census.json" 2>"$work/jq" ||
     fail "$section" "gather the census of the $half half" "jq: $(<"$work/jq")"
   jq -r "$census_program" "$dir/census.json" >"$dir/census.out" 2>"$work/jq" ||
     fail "$section" "take the census of the $half half" "jq: $(<"$work/jq")"
@@ -485,6 +572,9 @@ issue_tree_graph_census() {
   fi
   grep -q '^count document_blocks_rows=[1-9]' "$dir/census.out" ||
     fail "$section" "the $half half holds rows" "its census read none: $(grep '^count ' "$dir/census.out" | paste -sd ' ' -)"
+  grep -q '^count from_placed=[1-9]' "$dir/census.out" ||
+    fail "$section" "the $half half holds a requirement its From: line places under a conversation node" \
+      "its census read none: $(grep '^count ' "$dir/census.out" | paste -sd ' ' -)"
   pass "$section" "the $half half's blocks, nodes and rows agree id for id, every parent and every rank stands, and the walk keeps the source order"
 }
 

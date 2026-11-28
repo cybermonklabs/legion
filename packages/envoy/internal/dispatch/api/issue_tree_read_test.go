@@ -105,40 +105,49 @@ func (read treeAnswer) supertagged(supertag string) []model.IssueTreeNode {
 	return nodes
 }
 
-// firstBlockID is the id of the first current block of comment id.
-func firstBlockID(t *testing.T, database *store.Store, id string) string {
-	t.Helper()
-	var block string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select block_id from comment_blocks where comment_id = $1::uuid and position is not null order by position limit 1`, id).Scan(&block); err != nil {
-		t.Fatalf("read the first block of comment %s: %v", id, err)
-	}
-	return block
-}
-
 // treeEnd names a node as a tuple's end names it.
 func treeEnd(kind, id string) model.IssueTreeEnd { return model.IssueTreeEnd{Kind: kind, ID: id} }
 
 // TestTheTreeReadAnswersACriterionWithItsAuthorAndItsChain is c-criterion-page. An issue born
-// converted holds a person's comment of two blocks, a message and an open ask; a person writes a
-// criterion in the issue's room under the comment's first block. The tree read answers one
-// criterion node whose text is the text the room holds for it and whose author is that person;
-// its authored_by tuple names the person, and no attribute of the node holds the person, which a
-// planted copy of the attributes shows the search finds; following the parents the answer gives
-// from the criterion reaches the comment's block, the comment and its words, and the issue; and
-// ?view=spec answers the criterion as the query's, with its parent's id, supertag and first line
-// naming the comment's first block.
+// converted holds a person's comment of two blocks, a message and an open ask, each block id taken
+// from the item's own blocks read; a person writes a criterion in the issue's room under the
+// comment's first block. The tree read answers one criterion node whose text is the text the room
+// holds for it and whose author is that person; its authored_by tuple names the person, and no
+// attribute of the node holds the person, which a planted copy of the attributes shows the search
+// finds; following the parents the answer gives from the criterion reaches the comment's block,
+// the comment and its words, and the issue; and ?view=spec answers the criterion as the query's,
+// with its parent's id, supertag and first line naming the comment's first block.
+//
+// A requirement ra serving the criterion stands under it, and a check h1 and a plan node t1, each
+// serving ra, stand under ra, and the failing result recorded on h1 under h1. A second criterion
+// k2, a requirement rb serving the first criterion and rc serving the second, and one check h3
+// whose serves names rb, ra and rc in that order: the tree read answers h3 once, with one id, one
+// part_of and one rank, under rb, with one serves tuple to each requirement, and the serves tuples
+// into each of the three reach that one id. A check serving a criterion and a requirement serving
+// a check are each refused, by the schema's refusal of a pointer outside its declared targets. A
+// write of the spec's rendering in the room, one word of ra changed, leaves every parent and every
+// serves tuple as it read.
 func TestTheTreeReadAnswersACriterionWithItsAuthorAndItsChain(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
-	issue := createDigestIssue(t, handler, database, "CORE", "A criterion's chain", ":::requirement{#r1}\nAn urgent ask comes first.\n:::\n", false)
+	issue := createDigestIssue(t, handler, database, "CORE", "A criterion's chain", "The urgent asks come first.\n", false)
 	const commentBody = "We want the urgent asks first.\n\nAnd we want them quickly."
-	comment, blockRef := personComment(t, handler, database, issue.Key, commentBody)
+	comment := decodeBody[writtenRecord](t, created(t, "a person's comment", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": commentBody}, "alice"))).ID
+	commentBlocks := criterionPageItemBlocks(t, handler, refs.ItemComment, comment)
+	if len(commentBlocks) != 2 || commentBlocks[0].ID == "" || commentBlocks[0].Ref == "" {
+		t.Fatalf("the comment %s's own blocks read answers %+v, want the two blocks it was written with, each with its id and reference", comment, commentBlocks)
+	}
+	blockRef := commentBlocks[0].Ref
 	block := refs.ItemComment.BlockKind()
-	blockNode := string(refs.ItemComment) + "/" + comment + "#" + firstBlockID(t, database, comment)
-	created(t, "a person's message", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
-		map[string]any{"body": "The list must hold every urgent ask."}, "alice"))
+	blockNode := string(refs.ItemComment) + "/" + comment + "#" + commentBlocks[0].ID
+	message := decodeBody[writtenRecord](t, created(t, "a person's message", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
+		map[string]any{"body": "The list must hold every urgent ask."}, "alice"))).ID
+	messageBlocks := criterionPageItemBlocks(t, handler, refs.ItemMessage, message)
+	if len(messageBlocks) != 1 || messageBlocks[0].ID == "" || messageBlocks[0].Ref == "" {
+		t.Fatalf("the message %s's own blocks read answers %+v, want the one block it was written with, with its id and reference", message, messageBlocks)
+	}
 	createIssueAsk(t, handler, issue.Key, "Does the list hold answered asks?")
 	const words = "I want the urgent asks first."
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end",
@@ -221,6 +230,154 @@ func TestTheTreeReadAnswersACriterionWithItsAuthorAndItsChain(t *testing.T) {
 	if inSpec.Parent == nil || inSpec.Parent.Kind != block || inSpec.Parent.ID != blockNode ||
 		inSpec.Parent.Supertag != block || inSpec.Parent.FirstLine != "We want the urgent asks first." {
 		t.Errorf("?view=spec names the criterion's parent %+v, want the comment's first block %s with its supertag and first line", inSpec.Parent, blockNode)
+	}
+
+	// A requirement ra serving the criterion; a check h1 and a plan node t1, each serving ra; and one
+	// failing result of h1, recorded through recordCheckResult (POST /api/v1/issues/{key}/results).
+	owner := "/api/v1/issues/" + issue.Key
+	specRef, verificationRef := "dispatch://"+issue.Key+"/spec", "dispatch://"+issue.Key+"/artifact/verification-md"
+	k1Ref, k2Ref := refs.BlockRef(specRef, "k1"), refs.BlockRef(specRef, "k2")
+	raRef, rbRef, rcRef := refs.BlockRef(specRef, "ra"), refs.BlockRef(specRef, "rb"), refs.BlockRef(specRef, "rc")
+	const raWords, raChanged = "The list shows each urgent ask first.", "The list puts each urgent ask first."
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end",
+		"markdown": ":::requirement{#ra serves=\"" + k1Ref + "\"}\n" + raWords + "\n:::\n"}})
+	uploadDocument(t, handler, owner, "verification.md", checkServing("h1", raRef))
+	uploadDocument(t, handler, owner, "plan.md", planTaskServing("t1", raRef))
+	verification, plan := readDecisionDocument(t, database, issue.Key, "verification-md"), readDecisionDocument(t, database, issue.Key, "plan-md")
+	recorded := recordResult(t, handler, issue.Key, resultBody("h1", "fail", headCommit, map[string]any{"failed": 1}))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a failing result of h1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	if result.Verdict != "fail" {
+		t.Fatalf("the result recorded on h1 reads the verdict %q, want fail", result.Verdict)
+	}
+	ra, rb, rc := spec.address("ra"), spec.address("rb"), spec.address("rc")
+	h1, h3, t1 := verification.address("h1"), verification.address("h3"), plan.address("t1")
+	chained := treeRead(t, handler, issue.Key, "", "alice", false)
+	for _, placed := range []struct{ what, kind, id, parent string }{
+		{"the requirement ra, which serves the criterion", refs.BlockNodeKind, ra, refs.BlockNodeKind + ":" + criterionNode},
+		{"the check h1, which serves ra", refs.BlockNodeKind, h1, refs.BlockNodeKind + ":" + ra},
+		{"the plan node t1, which serves ra", refs.BlockNodeKind, t1, refs.BlockNodeKind + ":" + ra},
+		{"h1's failing result", graphstore.KindResult, result.ID, refs.BlockNodeKind + ":" + h1},
+	} {
+		if parent := criterionPageParent(chained, placed.kind, placed.id); parent != placed.parent {
+			t.Errorf("the tree read of %s answers %s, %s:%s, under %s, want %s", issue.Key, placed.what, placed.kind, placed.id, parent, placed.parent)
+		}
+	}
+
+	// A second criterion k2, under the message's block; rb serving the first criterion and rc the
+	// second; and one check h3 whose serves names rb, ra and rc, in that written order.
+	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end",
+		"markdown": ":::criterion{#k2 parent=\"" + messageBlocks[0].Ref + "\"}\nI want the answered asks last.\n:::\n\n" +
+			":::requirement{#rb serves=\"" + k1Ref + "\"}\nThe list keeps each urgent ask above the rest.\n:::\n\n" +
+			":::requirement{#rc serves=\"" + k2Ref + "\"}\nThe list ends with the answered asks.\n:::\n"}})
+	uploadDocument(t, handler, owner, "verification.md", checkServing("h1", raRef)+"\n"+checkServing("h3", rbRef+" "+raRef+" "+rcRef))
+	shared := treeRead(t, handler, issue.Key, "", "alice", false)
+	sharedChecks := shared.nodesNamed(refs.BlockNodeKind, h3)
+	if len(sharedChecks) != 1 {
+		t.Fatalf("the tree read of %s answers the check h3 %s %d times, want once: %v", issue.Key, h3, len(sharedChecks), shared.addresses())
+	}
+	if sharedCheck := sharedChecks[0]; sharedCheck.Rank == nil || sharedCheck.Parent == nil || sharedCheck.Parent.Kind != refs.BlockNodeKind || sharedCheck.Parent.ID != rb {
+		rank := "none"
+		if sharedCheck.Rank != nil {
+			rank = *sharedCheck.Rank
+		}
+		t.Errorf("the tree read of %s answers h3 %s under %+v with the rank %s, want it ranked under rb %s, the first requirement in the written order of its serves",
+			issue.Key, h3, sharedCheck.Parent, rank, rb)
+	}
+	parts, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, h3, []string{graphstore.TuplePartOf})
+	if err != nil {
+		t.Fatalf("read the part_of of h3 %s: %v", h3, err)
+	}
+	if len(parts) != 1 || parts[0].ToKind != refs.BlockNodeKind || parts[0].ToID != rb {
+		t.Errorf("h3 %s holds the part_of tuples %+v, want one, to rb %s", h3, parts, rb)
+	}
+	var servesOut []string
+	for _, tuple := range shared.Tuples {
+		if tuple.Kind == criterionPageServes && tuple.From == treeEnd(refs.BlockNodeKind, h3) {
+			servesOut = append(servesOut, tuple.To.Kind+":"+tuple.To.ID)
+		}
+	}
+	wantOut := []string{refs.BlockNodeKind + ":" + ra, refs.BlockNodeKind + ":" + rb, refs.BlockNodeKind + ":" + rc}
+	slices.Sort(servesOut)
+	slices.Sort(wantOut)
+	if !slices.Equal(servesOut, wantOut) {
+		t.Errorf("the tree read of %s answers the serves tuples out of h3 %v, want one to each of the three requirements %v", issue.Key, servesOut, wantOut)
+	}
+	for _, requirement := range []struct{ name, id string }{{"ra", ra}, {"rb", rb}, {"rc", rc}} {
+		reached := criterionPageServing(shared, refs.BlockNodeKind, requirement.id)
+		if slices.Index(reached, h3) < 0 || len(slices.DeleteFunc(slices.Clone(reached), func(id string) bool { return id != h3 })) != 1 {
+			t.Errorf("the serves tuples into %s %s come from %v, want them to reach h3's one id %s once", requirement.name, requirement.id, reached, h3)
+		}
+	}
+
+	// A check whose serves names the criterion, and a requirement whose serves names a check: the
+	// schema refuses each pointer as outside its attribute's declared targets, with one refusal.
+	var refusals []refusalAnswer
+	for _, refused := range []struct{ what, slug, markdown, targets string }{
+		{"a check serving the criterion k1", "verification-md", ":::check{#hx serves=\"" + k1Ref + "\" surface=\"cli\" run=\"go test ./...\"}\nA check of a criterion.\n:::\n",
+			`a "criterion" block; it points only at requirement`},
+		{"a requirement serving the check h1", "spec", ":::requirement{#rx serves=\"" + refs.BlockRef(verificationRef, "h1") + "\"}\nA requirement of a check.\n:::\n",
+			`a "check" block; it points only at criterion, requirement`},
+	} {
+		status, refusal, body := criterionPageRefusal(t, handler, issue.Key, refused.slug, refused.markdown)
+		if status != http.StatusBadRequest || refusal.Code == "" || !strings.Contains(refusal.Error, `attribute "serves"`) || !strings.Contains(refusal.Error, refused.targets) {
+			t.Errorf("%s in %s of %s answered %d: %s, want 400 naming the serves attribute and %q, the schema's refusal of a pointer outside its declared targets",
+				refused.what, refused.slug, issue.Key, status, body, refused.targets)
+		}
+		refusals = append(refusals, refusal)
+	}
+	if refusals[0].Code != refusals[1].Code {
+		t.Errorf("the check serving a criterion is refused %s and the requirement serving a check %s, want the same refusal", refusals[0].Code, refusals[1].Code)
+	}
+
+	// The rendering of the issue's room: the spec's text as the room renders its fragment, which
+	// holds every criterion and requirement. One word of ra changes and the rendering is written
+	// back to the room.
+	before := treeRead(t, handler, issue.Key, "", "alice", false)
+	for _, refused := range []string{verification.address("hx"), spec.address("rx")} {
+		if len(before.nodesNamed(refs.BlockNodeKind, refused)) != 0 {
+			t.Errorf("the tree read of %s answers %s, which a refused write wrote", issue.Key, refused)
+		}
+	}
+	parents, serves := criterionPagePlacement(before)
+	wantServes := []string{
+		refs.BlockNodeKind + ":" + ra + " serves " + refs.BlockNodeKind + ":" + criterionNode,
+		refs.BlockNodeKind + ":" + rb + " serves " + refs.BlockNodeKind + ":" + criterionNode,
+		refs.BlockNodeKind + ":" + rc + " serves " + refs.BlockNodeKind + ":" + spec.address("k2"),
+		refs.BlockNodeKind + ":" + h1 + " serves " + refs.BlockNodeKind + ":" + ra,
+		refs.BlockNodeKind + ":" + t1 + " serves " + refs.BlockNodeKind + ":" + ra,
+		refs.BlockNodeKind + ":" + h3 + " serves " + refs.BlockNodeKind + ":" + ra,
+		refs.BlockNodeKind + ":" + h3 + " serves " + refs.BlockNodeKind + ":" + rb,
+		refs.BlockNodeKind + ":" + h3 + " serves " + refs.BlockNodeKind + ":" + rc,
+	}
+	slices.Sort(wantServes)
+	if !slices.Equal(serves, wantServes) {
+		t.Fatalf("the tree read of %s answers the serves tuples %v, want %v: the round trip below proves nothing", issue.Key, serves, wantServes)
+	}
+	rendering := documentMarkdown(t, handler, spec.id)
+	if strings.Count(rendering, raWords) != 1 {
+		t.Fatalf("the room's rendering of the spec of %s reads %q, want ra's words %q once", issue.Key, rendering, raWords)
+	}
+	uploadAs(t, handler, issue.Key, "spec.md", strings.Replace(rendering, raWords, raChanged, 1), "alice")
+	after := treeRead(t, handler, issue.Key, "", "alice", false)
+	if node, _ := after.node(t, refs.BlockNodeKind, ra); !strings.Contains(node.Text, raChanged) {
+		t.Errorf("ra reads %q once the room took its changed rendering, want %q", node.Text, raChanged)
+	}
+	parentsAfter, servesAfter := criterionPagePlacement(after)
+	for address, parent := range parents {
+		if moved, held := parentsAfter[address]; !held || moved != parent {
+			t.Errorf("once the room took its changed rendering, the tree read of %s answers %s under %q (held %t), want %s, where it stood", issue.Key, address, moved, held, parent)
+		}
+	}
+	for address := range parentsAfter {
+		if _, held := parents[address]; !held {
+			t.Errorf("once the room took its changed rendering, the tree read of %s answers %s, which it did not answer before", issue.Key, address)
+		}
+	}
+	if !slices.Equal(servesAfter, serves) {
+		t.Errorf("once the room took its changed rendering, the tree read of %s answers the serves tuples %v, want them as before, %v", issue.Key, servesAfter, serves)
 	}
 }
 

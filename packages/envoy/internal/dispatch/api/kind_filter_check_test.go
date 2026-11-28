@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -128,6 +131,82 @@ func kindFilterRefused(t *testing.T, handler http.Handler, key, query, what stri
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusBadRequest || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Error, "kind") {
 		t.Errorf("%s on %s (%s) answered %d, not 400: %s, want 400 INVALID_QUERY naming kind", what, key, query, response.Code, response.Body.String())
+	}
+}
+
+// kindFilterChecks is a requirement's checks as a failure prints them: the count, "none" where
+// the node answers none, and "no node" where the read answers no such node (held false).
+func kindFilterChecks(checks *int, held bool) string {
+	switch {
+	case !held:
+		return "no node"
+	case checks == nil:
+		return "none"
+	}
+	return strconv.Itoa(*checks)
+}
+
+// kindFilterQuestion is an ask a read answers as a question: its id, the answer state its node
+// holds (asks.StateAnswered and the rest), and the kind of the resolution a resolved ask holds.
+type kindFilterQuestion struct {
+	id, state, resolution string
+}
+
+// kindFilterQuestions fails t unless read, the nodes of the read label names by their address,
+// answers as questions - nodes of the tree that are asks - each ask of questions once and no
+// other, and answers no `:::ask` block as a node of the tree: a stored ask block is the question's
+// place in its document, at an address of its own, never the question. Each question stands at
+// its ask's own address, `ask/<uuid>`, and holds the question's state, as the ask's own read (GET
+// /api/v1/asks/{id}) answers it: its question, its answer state and its resolution; no ask block
+// of read holds an answer state, which is its ask's node's alone.
+func kindFilterQuestions(t *testing.T, handler http.Handler, label string, read map[string]model.IssueTreeNode, questions []kindFilterQuestion) {
+	t.Helper()
+	var answered, want []string
+	for address, node := range read {
+		switch {
+		case node.Kind == graphstore.KindAsk && node.Role == treeRoleTree:
+			answered = append(answered, node.ID)
+		case node.Kind == refs.BlockNodeKind && node.Supertag == graphstore.SupertagAsk:
+			if node.Role == treeRoleTree {
+				t.Errorf("%s answers the ask block %s as a question of its own, want it only as an ancestor, as context", label, address)
+			}
+			if state, holds := node.Attributes[graphstore.TupleAnswerState]; holds {
+				t.Errorf("%s answers the ask block %s holding the answer state %q, which is its ask's node's alone", label, address, state)
+			}
+		}
+	}
+	for _, question := range questions {
+		want = append(want, question.id)
+	}
+	slices.Sort(answered)
+	slices.Sort(want)
+	if !slices.Equal(answered, want) {
+		t.Errorf("%s answers the questions %v, want each ask's own node once, %v", label, answered, want)
+	}
+	for _, question := range questions {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+question.id, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the ask %s: status=%d body=%s", question.id, response.Code, response.Body.String())
+		}
+		own := decodeBody[struct {
+			Ask model.Ask `json:"ask"`
+		}](t, response).Ask
+		if own.State != question.state {
+			t.Fatalf("the ask %s reads the state %q, want %q: this case proves nothing", question.id, own.State, question.state)
+		}
+		node := read[kindFilterAddress(graphstore.KindAsk, question.id)]
+		var resolution struct {
+			Kind string `json:"kind"`
+		}
+		if held := node.Attributes[graphstore.TupleResolution]; held != "" {
+			_ = json.Unmarshal([]byte(held), &resolution)
+		}
+		if _, err := uuid.Parse(node.ID); err != nil || node.Kind != graphstore.KindAsk || node.Ask == nil || node.Text != own.Question ||
+			node.Attributes[graphstore.TupleAnswerState] != own.State || resolution.Kind != question.resolution {
+			t.Errorf("%s answers the ask %s as %s/%s holding the question %q, the answer state %q and the resolution %q (ask member %t), want its own node ask/<uuid> holding the question's state: %q, %q and %q",
+				label, question.id, node.Kind, node.ID, node.Text, node.Attributes[graphstore.TupleAnswerState], resolution.Kind, node.Ask != nil,
+				own.Question, own.State, question.resolution)
+		}
 	}
 }
 
@@ -472,7 +551,7 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 		for read, nodes := range map[string]map[string]model.IssueTreeNode{label: kindNodes, "the read with no view of " + key: wholeNodes, "?view=spec of " + key: specNodes} {
 			node, held := nodes[kindFilterAddress(refs.BlockNodeKind, requirement.node)]
 			if !held || node.Checks == nil || *node.Checks != listed {
-				t.Errorf("%s answers %s with checks %v, want %d, the number the coverage read lists under it", read, requirement.block, node.Checks, listed)
+				t.Errorf("%s answers %s with checks %s, want %d, the number the coverage read lists under it", read, requirement.block, kindFilterChecks(node.Checks, held), listed)
 			}
 		}
 	}
@@ -524,21 +603,10 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 		t.Errorf("kind=callout of %s answers no memo: %v", key, callouts.addresses())
 	}
 	askRead, _ := kindFilterUnion(kindFilterPages(t, handler, key, kindFilterQuery("ask")))
-	var questions []string
-	for address, node := range askRead {
-		switch {
-		case node.Kind == graphstore.KindAsk && node.Role == treeRoleTree:
-			questions = append(questions, node.ID)
-		case node.Kind == refs.BlockNodeKind && node.Supertag == graphstore.SupertagAsk && node.Role == treeRoleTree:
-			t.Errorf("kind=ask of %s answers the ask block %s as a question of its own, want it only as an ancestor, as context", key, address)
-		}
-	}
-	want := []string{asked, declined}
-	slices.Sort(questions)
-	slices.Sort(want)
-	if !slices.Equal(questions, want) {
-		t.Errorf("kind=ask of %s answers the questions %v, want each ask's own node once, %v", key, questions, want)
-	}
+	// Each ask's own node, holding the question's state: a1 answered, the declined ask resolved by
+	// its decline.
+	questions := []kindFilterQuestion{{id: asked, state: asks.StateAnswered}, {id: declined, state: asks.StateResolved, resolution: "declined"}}
+	kindFilterQuestions(t, handler, "kind=ask of "+key, askRead, questions)
 
 	// The refusals.
 	for what, query := range map[string]string{
@@ -601,7 +669,11 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 	_, pinned := pinnedSpecQueryVersion(t, database, key)
 	head := treeRead(t, handler, key, "?view=spec", "alice", false)
 	if node := head.nodesNamed(refs.BlockNodeKind, spec.address("r3")); len(node) != 1 || node[0].Checks == nil || *node[0].Checks != 0 {
-		t.Errorf("?view=spec of %s answers r3, which no check serves, as %+v, want checks 0", key, node)
+		var checks *int
+		if len(node) == 1 {
+			checks = node[0].Checks
+		}
+		t.Errorf("?view=spec of %s answers r3, which no check serves, %d times, with checks %s, want once with checks 0", key, len(node), kindFilterChecks(checks, len(node) == 1))
 	}
 	uploadAs(t, handler, child.Key, "verification.md", checkServing("h2", r2Ref), "alice")
 	head = treeRead(t, handler, key, "?view=spec", "alice", false)
@@ -617,5 +689,28 @@ func TestTheTreeReadFiltersByNodeKind(t *testing.T) {
 		}
 		t.Errorf("r1 of %s answers checks %s at the head and %s at version %d of the spec query, want 1, h1 alone once h2 serves r2, and 2, h1 and h2 at that version",
 			key, entryJSON(t, atHead), entryJSON(t, atSaved), pinned)
+	}
+
+	// A stored ask block matches no kind by itself, and stands in a read only as the ancestor of a
+	// node the read selects, as context. No ask stands under its block (an ask's node stands under
+	// its issue), so the requirement r9, whose parent is the declined ask's block, is that node: the
+	// read with kind=ask and kind=requirement answers the block as context above r9 and the declined
+	// ask's own node, at another address, as the question; the read with kind=ask alone answers the
+	// block not at all.
+	editSpec(t, handler, key, []map[string]any{{"op": "insert", "after": "end",
+		"markdown": ":::requirement{#r9 parent=\"" + refs.BlockRef(specRef, "a9") + "\"}\nThe board pages no one.\n:::\n"}})
+	askBlock := kindFilterAddress(refs.BlockNodeKind, spec.address("a9"))
+	underAsk, _ := kindFilterUnion(kindFilterPages(t, handler, key, kindFilterQuery("ask", "requirement")))
+	if r9 := underAsk[kindFilterAddress(refs.BlockNodeKind, spec.address("r9"))]; r9.Role != treeRoleTree || r9.Parent == nil ||
+		kindFilterAddress(r9.Parent.Kind, r9.Parent.ID) != askBlock {
+		t.Fatalf("kind=ask&kind=requirement of %s answers r9 as %+v, want it a node of the tree under the declined ask's block %s: this case proves nothing", key, r9, askBlock)
+	}
+	if block, held := underAsk[askBlock]; !held || block.Role != treeRoleContext {
+		t.Errorf("kind=ask&kind=requirement of %s answers the declined ask's block %s, r9's parent, as %q (held %t), want it as context", key, askBlock, block.Role, held)
+	}
+	kindFilterQuestions(t, handler, "kind=ask&kind=requirement of "+key, underAsk, questions)
+	alone, _ := kindFilterUnion(kindFilterPages(t, handler, key, kindFilterQuery("ask")))
+	if block, held := alone[askBlock]; held {
+		t.Errorf("kind=ask of %s answers the declined ask's block %s as %q, which stands above no ask: an ask block matches no kind by itself", key, askBlock, block.Role)
 	}
 }
