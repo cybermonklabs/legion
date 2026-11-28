@@ -569,6 +569,38 @@ func TestTheMergersCompletionLandsBeforeTheNextChange(t *testing.T) {
 	})
 }
 
+// A merge fact with no merged_at, as an older listener sends it, leaves a snapshot that holds
+// none. Such a merge holds the next change for the merger's completion as any merge does: the
+// bound counts from the entry into verifying, the moment the daemon took the merge (mergedEntry),
+// and not from the zero time, which made the change due at once.
+func TestAMergeWithNoMergedAtWaitsForTheMergersCompletion(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	owedMerger(t, rig)
+	if result := rig.fact(intake.DefectReport{Issue: waitRoot, Role: claim.RoleMerger, By: mergerClaim, Text: "The retry never stops.",
+		Head: headOne}); result.Refusal != nil || result.Defect == nil {
+		t.Fatalf("the merger's report in merging = %+v, want it recorded", result)
+	}
+	rig.fact(intake.PullRequestMerged{Repo: waitRepo, Number: waitRootNumber, MergeSHA: waitRootMerge, HeadSHA: headOne})
+	entered := rig.now
+	if got := rig.issue(waitRoot); got.Phase != phase.Verifying || !got.Merge.MergedAt.IsZero() || !got.MergerCompletionOwed {
+		t.Fatalf("%s after the merge stands in %s, merged_at %s, completion owed %t; want verifying, no merged_at and the completion owed",
+			waitRoot, got.Phase, got.Merge.MergedAt, got.MergerCompletionOwed)
+	}
+	rig.ranOut(waitRoot, "close_read")
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.noChange(waitRoot, waitGeneration)
+	due := entered.Add(MergerCompletionBound)
+	if reads := issueOutboxOf(t, rig.pool, waitRoot, "close_read"); len(reads) != 1 || !reads[0].nextAt.Equal(due) {
+		t.Fatalf("the close_read rows = %+v, want one due an hour after the entry into verifying, at %s", reads, due)
+	}
+	rig.now = due
+	rig.ranOut(waitRoot, "close_read")
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+}
+
 // issuePhaseRow is role's phases row of key.
 func issuePhaseRow(t *testing.T, rig *waitRig, key string, role claim.Role) record.PhaseRow {
 	t.Helper()
@@ -727,6 +759,30 @@ func TestEachMultipleOfTheRoundCapTellsTheCountAndGoesOn(t *testing.T) {
 		}
 		rig.readAt(waitRoot, generation+1, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
 		rig.stands(waitRoot, phase.Verifying, "testing")
+	}
+}
+
+// The count names each change's pull request (D7), not the newest merged one alone. The root
+// merged #42, its first change merged #44, and the second change, the cap's first multiple,
+// names both.
+func TestTheCountNamesEachChangesPullRequest(t *testing.T) {
+	t.Parallel()
+	rig := newCapWaitRig(t, 2)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failingAt("c-after", waitRootMerge, "result-1")))
+	rig.started(waitRoot, changeGeneration, 1)
+	rig.changeMerges(waitRoot, 44, waitLaterMerge, headTwo)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failingAt("c-after", waitLaterMerge, "result-2")))
+	rig.started(waitRoot, changeGeneration+1, 2)
+
+	told := noticesOfKind(t, rig.pool, waitRoot, "next-change-count")
+	if len(told) != 1 {
+		t.Fatalf("the next-change-count notices = %+v, want one at the second change", told)
+	}
+	for _, number := range []string{"#42", "#44"} {
+		if !strings.Contains(told[0].Reason, number) {
+			t.Errorf("the count notice %q names no pull request %s: want each change's", told[0].Reason, number)
+		}
 	}
 }
 

@@ -229,11 +229,12 @@ func TestOneReconcileOfATreesNewsStandsQueued(t *testing.T) {
 	}
 }
 
-// A queue beside a reconcile that waits queues none, but makes that one due at the queue's moment
-// (ExpediteOutbox): the reconcile reads the record when it runs, and one on the backoff of a
-// failed run would carry the news the queue's write owes only when that backoff ran out. A later
-// queue leaves a nearer row where it stands.
-func TestAQueueOfTheNewsMakesTheWaitingReconcileDue(t *testing.T) {
+// A queue beside a reconcile on the backoff of a failed run queues none and leaves that backoff as
+// it stands. The reconcile reads the record when it runs, so it carries the queue's news at its
+// next attempt. Its backoff is what rides out a moment's fault of Dispatch over its bounded
+// attempts (the daemon's designChangesAttempts), and a queue that made it due at once would spend
+// those attempts on the fault.
+func TestAQueueOfTheNewsLeavesTheWaitingReconcilesBackoff(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -250,22 +251,19 @@ func TestAQueueOfTheNewsMakesTheWaitingReconcileDue(t *testing.T) {
 		})
 		return due
 	}
-	backoff := now.Add(10 * time.Minute)
+	backoff := now.Add(time.Minute)
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, root))
 		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
-		_, err := tx.Exec(ctx, `update outbox set next_at = $3 where kind = $1 and issue = $2`, string(OutboxKindDesignChanges), root.Key, backoff)
+		_, err := tx.Exec(ctx, `update outbox set attempts = 1, next_at = $3 where kind = $1 and issue = $2`,
+			string(OutboxKindDesignChanges), root.Key, backoff)
 		must(t, err)
 	})
-	change := now.Add(time.Minute)
+	change := now.Add(time.Second)
 	inTx(t, st, func(tx pgx.Tx) { must(t, QueueDesignNews(ctx, records, tx, root.Key, change)) })
-	if due := dueAt(); len(due) != 1 || !due[0].Equal(change) {
-		t.Fatalf("the reconciles of %s after a queue at %s beside one on its backoff to %s = due at %v, want the one, due at the queue",
+	if due := dueAt(); len(due) != 1 || !due[0].Equal(backoff) {
+		t.Fatalf("the reconciles of %s after a queue at %s beside one on its backoff to %s = due at %v, want the one, still due at its backoff",
 			root.Key, change, backoff, due)
-	}
-	inTx(t, st, func(tx pgx.Tx) { must(t, QueueDesignNews(ctx, records, tx, root.Key, change.Add(time.Minute))) })
-	if due := dueAt(); len(due) != 1 || !due[0].Equal(change) {
-		t.Fatalf("the reconciles of %s after a later queue = due at %v, want the one still due at %s", root.Key, due, change)
 	}
 }
 
