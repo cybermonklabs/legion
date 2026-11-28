@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/watch"
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -563,6 +564,113 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A relaunch takes for its pod only a pod that the API server holds and is not deleting, whatever
+// its pod store still holds. After an eviction the controller makes the issue's pod again for the
+// Running Sandbox. A relaunch whose pod store has lost the evicted pod and has not yet seen the new
+// one finds no live pod, so it suspends the Sandbox, and the controller ends the new pod. When the
+// API server has deleted that pod before awaitPodGone's confirming read, the read finds no pod, and
+// the relaunch never learns the pod's uid. After the Running patch the pod store can then hold that
+// deleted pod without its deletion while the Sandbox store holds the patch. The relaunch took that
+// pod and returned it, and the controller then made the pod the patch asked for: in
+// TestAKeptVolumeOutlivesItsPodsAndItsRelease the issue's pod was uid-pod-14 and the relaunch's
+// uid-pod-13 (run 46159035396). This test forces that order. The pod store gets no event from the
+// new pod's creation on until the Running patch is applied, and then the creation alone until the
+// relaunch reads the pod from the API server. The answer to the suspension comes only once the
+// controller has deleted the new pod.
+func TestARelaunchTakesNoPodThatTheAPIServerDeletedAndThePodStoreStillHolds(t *testing.T) {
+	t.Parallel()
+	name := SandboxName(childToken)
+	var armed, picked, suspended, running, confirmed atomic.Bool
+	first, rest := make(chan struct{}), make(chan struct{})
+	var firstOnce, restOnce sync.Once
+	openFirst := func() { firstOnce.Do(func() { close(first) }) }
+	openRest := func() { restOnce.Do(func() { close(rest) }) }
+	t.Cleanup(func() { openFirst(); openRest() })
+	// gate holds the pod watch, once armed, at the first creation of the issue's pod until first
+	// opens, and every event of that pod after it until rest opens.
+	gate := func(event watch.Event) bool {
+		pod, ok := event.Object.(*corev1.Pod)
+		switch {
+		case !armed.Load() || !ok || pod.Name != name:
+		case !picked.Load():
+			if event.Type == watch.Added {
+				picked.Store(true)
+				<-first
+			}
+		default:
+			<-rest
+		}
+		return false
+	}
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxGVisor, childIssue)), func(g *rig, _ *Options) {
+		g.kube.PrependWatchReactor("pods", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			var opts metav1.ListOptions
+			if w, ok := a.(k8stesting.WatchActionImpl); ok {
+				opts = w.ListOptions
+			}
+			inner, err := g.kube.Tracker().Watch(podsGVR, a.GetNamespace(), opts)
+			if err != nil {
+				return true, nil, err
+			}
+			return true, holdEvents(inner, nil, gate), nil
+		})
+	})
+	spec := childSpec(t)
+	loc := g.spawn(spec)
+
+	apply := k8stesting.ObjectReaction(generationTracker{g.dyn.Tracker()})
+	g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+		patch := a.(k8stesting.PatchAction)
+		if !armed.Load() || patch.GetName() != name {
+			return false, nil, nil
+		}
+		switch body := string(patch.GetPatch()); {
+		case modePatched(t, body, modeSuspended) && suspended.CompareAndSwap(false, true):
+			handled, object, err := apply(a)
+			for g.pod(name) != nil && g.ctx.Err() == nil {
+				time.Sleep(time.Millisecond)
+			}
+			return handled, object, err
+		case modePatched(t, body, modeRunning) && running.CompareAndSwap(false, true):
+			handled, object, err := apply(a)
+			openFirst()
+			return handled, object, err
+		}
+		return false, nil, nil
+	})
+	g.kube.PrependReactor("get", "pods", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
+		if running.Load() && a.GetSubresource() == "" && a.(k8stesting.GetAction).GetName() == name && confirmed.CompareAndSwap(false, true) {
+			openRest()
+			g.hold.Store(false)
+		}
+		return false, nil, nil
+	})
+
+	armed.Store(true)
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	var recreated types.UID
+	g.eventually("the controller to make the evicted pod again while the pod store holds no pod", func() bool {
+		pod := g.pod(name)
+		if pod == nil || string(pod.UID) == loc.Sandbox.PodUID {
+			return false
+		}
+		recreated = pod.UID
+		return g.r.storedPod(name) == nil
+	})
+	g.setHold(true)
+	next := g.resumeNext(loc, &spec)
+	openRest()
+	g.hold.Store(false)
+	if next.Sandbox.PodUID == string(recreated) {
+		t.Fatalf("the relaunch took the pod %s, which the API server deleted before the relaunch's Running patch; want the pod that patch made", recreated)
+	}
+	if pod := g.pod(name); pod == nil || string(pod.UID) != next.Sandbox.PodUID {
+		t.Fatalf("after the relaunch the issue's pod is %+v, want the relaunch's %s", pod, next.Sandbox.PodUID)
 	}
 }
 
