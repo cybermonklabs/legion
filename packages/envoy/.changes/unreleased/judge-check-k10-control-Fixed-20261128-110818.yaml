@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `judge-check.sh k10`'s first negative control can fail again. Its broker is now built from a copy
+  of the checked-out tree with the policy loader's one read of a key's judge tag taken out, so it
+  reads the stack's profiles file and store as the stack's brokers do and gives no key a judge. The
+  control built its broker from an older commit, which had to come from before a key's judge became
+  its own tag. No such commit reads a profiles file that declares kinds, and the stack's file does,
+  so the control reported UNKNOWN for the default commit and ended the run for an older one.
+  `JUDGE_CHECK_BASE` is gone.
+time: 2026-11-28T11:08:18Z
+custom:
+    Issue: judge-check-k10-control
