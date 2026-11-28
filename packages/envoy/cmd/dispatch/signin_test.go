@@ -23,7 +23,9 @@ import (
 // logged without a token. The bound runs on a fake clock, which the test moves to it once the
 // pool holds the first revocation, so the retirement can end on nothing but its bound.
 func TestRetirePlainRefreshTokensAtBootStopsAtItsBound(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
+	// to a wall-clock bound load could break (oidc.TokenTimeout, 10 s, the client's own bound on the
+	// held revocation, which must not end it before the test moves the fake clock to the bound).
 	ctx := context.Background()
 	pool := signInPool(t, "dispatch-client", "client-secret")
 	pool.DelayRevocation(stagedPastTheRun)

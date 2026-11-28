@@ -85,16 +85,19 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 func (s dispatchStart) awaitReconciled(t *testing.T) {
 	t.Helper()
 	reconciled := reconciledFor(s.boot)
+	hooks := func() string {
+		stall, hookErr := s.client.HookStall()
+		return fmt.Sprintf("hooked events %d, reconnect hooks due for %s, last failed run %v", s.client.HookedConnectionEvents(), stall, hookErr)
+	}
 	testwait.Until(t, fmt.Sprintf("Dispatch's start for %v to reconcile the stream", s.overrides), func() (string, bool) {
 		if !s.client.Connected() || s.client.HookedConnectionEvents() < 1 {
-			return fmt.Sprintf("hooked events %d", s.client.HookedConnectionEvents()), false
+			return hooks(), false
 		}
 		info, err := s.client.JS().StreamInfo(bus.Stream)
 		if err == nil && reconciled(info.Config) {
 			return "", true
 		}
-		stall, hookErr := s.client.HookStall()
-		return fmt.Sprintf("%+v (%v), reconnect hooks due for %s, last failed run %v", info, err, stall, hookErr), false
+		return fmt.Sprintf("%+v (%v), %s", info, err, hooks()), false
 	})
 }
 

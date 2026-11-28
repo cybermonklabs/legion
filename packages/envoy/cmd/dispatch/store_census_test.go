@@ -159,7 +159,7 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	requireInventoryCarriesEveryKind(t, inventory)
 	sessions := readSessionInventory(t, ctx, databaseURL)
 	before.Cmd.Process.Signal(os.Interrupt)
-	before.WaitExit(t, "SIGINT")
+	testwait.Receive(t, "the older build to exit after SIGINT", before.Exited)
 	requireTheSizingRunsBeforeTheMigration(t, databaseURL)
 
 	// ───── this build migrates the same database and backfills it ─────

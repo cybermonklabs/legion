@@ -853,6 +853,8 @@ func drainEnvelopes(t *testing.T, from <-chan contracts.Envelope, quiet time.Dur
 	}
 }
 
+// ───── the outbox's publisher across two processes ──────────────────────────
+
 const (
 	// takeOverWithin bounds a take-over: from the moment the publisher is killed, cut off NATS or
 	// frozen, the other process takes the publisher hold, publishes its first batch and a session
@@ -879,8 +881,6 @@ const (
 	sentBatch       = "sent batch"
 )
 
-// ───── the outbox's publisher across two processes ──────────────────────────
-
 // healthReport is what a process's /healthz says of NATS and of the outbox. OutboxPublisher is nil
 // when the body has no such field.
 type healthReport struct {
@@ -892,14 +892,10 @@ type healthReport struct {
 func (r healthReport) publishing() bool { return r.OutboxPublisher != nil && *r.OutboxPublisher }
 
 func (r healthReport) String() string {
-	nats := "no nats field"
-	if r.NATS != nil {
-		nats = fmt.Sprintf("nats %v", *r.NATS)
-	}
 	if r.OutboxPublisher == nil {
-		return nats + ", no outbox_publisher field"
+		return "no outbox_publisher field"
 	}
-	return fmt.Sprintf("%s, outbox_publisher %v", nats, *r.OutboxPublisher)
+	return fmt.Sprintf("outbox_publisher %v", *r.OutboxPublisher)
 }
 
 // healthClient is the client /healthz is read with: a process that does not answer within its
@@ -1293,28 +1289,23 @@ func writerFor(index, issues int, writers []*dispatchProcess) *dispatchProcess {
 }
 
 // writeAll writes count comments, round robin over the scene's issues, through writers in turn
-// (writerFor), sceneWritesAtOnce at a time, and fails the test for each write that failed. The
-// writes and the wait for a free slot among them run inside the shared wait (testwait.Returns): a
-// write that never returns holds its slot, so the one bound on the join bounds the slots too. Each
-// write's request also ends at the shared wait's end (sessionRig.writes).
+// (writerFor), sceneWritesAtOnce at a time, and fails the test for each write that failed.
 func (s *outboxScene) writeAll(t *testing.T, count int, writers ...*dispatchProcess) {
 	t.Helper()
 	failures := make(chan error, count)
-	testwait.Returns(t, fmt.Sprintf("the %d comment writes through the processes to return", count), func() {
-		slots := make(chan struct{}, sceneWritesAtOnce)
-		var writes sync.WaitGroup
-		for index := range count {
-			slots <- struct{}{}
-			writes.Go(func() {
-				defer func() { <-slots }()
-				issue := s.issues[index%len(s.issues)]
-				if err := s.write(writerFor(index, len(s.issues), writers), issue, fmt.Sprintf("Comment %d.", index)); err != nil {
-					failures <- err
-				}
-			})
-		}
-		writes.Wait()
-	})
+	slots := make(chan struct{}, sceneWritesAtOnce)
+	var writes sync.WaitGroup
+	for index := range count {
+		slots <- struct{}{}
+		writes.Go(func() {
+			defer func() { <-slots }()
+			issue := s.issues[index%len(s.issues)]
+			if err := s.write(writerFor(index, len(s.issues), writers), issue, fmt.Sprintf("Comment %d.", index)); err != nil {
+				failures <- err
+			}
+		})
+	}
+	writes.Wait()
 	close(failures)
 	for err := range failures {
 		t.Errorf("write a comment: %v", err)
@@ -1403,25 +1394,21 @@ func (s *outboxScene) delivered() bool {
 	return true
 }
 
-// waitDelivered waits for every session to take every written comment addressed to it, and fails
-// the test naming what each has not taken when they do not.
+// waitDelivered waits up to outboxDeliveryWithin for every session to take every written comment
+// addressed to it, and fails the test naming what each has not taken when they do not.
 func (s *outboxScene) waitDelivered(t *testing.T) {
 	t.Helper()
-	testwait.Until(t, "every session to take every comment written to it", func() (string, bool) {
-		if s.delivered() {
-			return "", true
-		}
-		var missing []string
-		for session, ids := range s.addressed() {
-			taken := session.takenComments()
-			for _, id := range ids {
-				if _, ok := taken[id]; !ok {
-					missing = append(missing, session.id+" has not taken "+id)
-				}
+	deadline := time.Now().Add(outboxDeliveryWithin)
+	for !s.delivered() {
+		if time.Now().After(deadline) {
+			addressed := s.addressed()
+			for _, session := range s.sessions() {
+				session.requireTakenOnce(t, addressed[session])
 			}
+			t.Fatalf("the written comments did not reach every session they are addressed to within %v", outboxDeliveryWithin)
 		}
-		return strings.Join(missing, "; "), false
-	})
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // requireOnceAndInOrder requires each session to have taken each written comment addressed to it,
@@ -2543,7 +2530,7 @@ func githubFakeAnswer(r *http.Request) (int, string) {
 		return http.StatusOK, "[" + githubFakeInstallation + "]"
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/app/installations/") && strings.HasSuffix(path, "/access_tokens"):
 		return http.StatusCreated, fmt.Sprintf(`{"token":"ghs_multiprocess","expires_at":%q}`,
-			time.Now().Add(stagedPastTheRun).UTC().Format(time.RFC3339))
+			time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 	case strings.HasPrefix(path, "/repos/") && strings.HasSuffix(path, "/installation"):
 		return http.StatusOK, githubFakeInstallation
 	case path == "/installation/repositories":
@@ -2558,15 +2545,18 @@ func githubFakeAnswer(r *http.Request) (int, string) {
 	return http.StatusNotFound, `{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}`
 }
 
-// holdFirstDeliveryListing holds a listing until Release or until its caller gives up, by the
-// process's own bound on the call (githubapp.RequestTimeout) or its exit; a listing after Release
-// is answered at once. Nothing else ends the hold, so a slow step of the row while it holds
-// changes nothing of what the row reads, and startGitHubFake releases it when the test ends, so a
-// row that fails before it releases leaves no listing held.
+// holdFirstDeliveryListing blocks the first listing until Release, the caller gives up, or
+// githubHoldCap passes, whichever comes first; every later listing is answered at once.
 func (f *githubFake) holdFirstDeliveryListing(ctx context.Context) {
 	select {
 	case <-f.release:
+		return
+	default:
+	}
+	select {
+	case <-f.release:
 	case <-ctx.Done():
+	case <-time.After(githubHoldCap):
 	}
 }
 
@@ -2806,6 +2796,8 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	t.Logf("the standby bound both durables %v after the stop", time.Since(stopped))
 }
 
+// ───── a frozen holder ──────────────────────────────────────────────────────
+
 // frozenHolderTakeOverWithin is what the standby gets to take a frozen holder's durable over,
 // read from the hold's own constants: the whole of delivery.intakeHoldTTL (15 s), since a freeze
 // the moment after a renewal leaves the hold its full life to lapse on the database's clock; one
@@ -2830,8 +2822,6 @@ const frozenHolderResumedWindow = 3 * 5 * time.Second
 // handling is four calls to a GitHub on loopback and a few writes, so this is a hang guard and
 // not a period being waited out.
 const frozenHolderHandledWithin = 60 * time.Second
-
-// ───── a frozen holder ──────────────────────────────────────────────────────
 
 // A process frozen with its NATS connection still open -- a long garbage collection pause, a
 // host that stops scheduling it, a pod whose node has stopped -- keeps every subscription it had
@@ -3784,6 +3774,14 @@ func processNames(pair *dispatchPair, processes []*dispatchProcess) string {
 	return strings.Join(names, " and ")
 }
 
+// buffers is both processes' whole output, labelled, which every failure of the delivery-durable
+// row prints: which process bound a durable and why the other did not is in the two logs read
+// together, and a message carrying one of them (waitForLog) leaves the job that failed without
+// the half saying what the other process was doing.
+func (p *dispatchPair) buffers() string {
+	return fmt.Sprintf("A:\n%s\nB:\n%s", p.a.Output.String(), p.b.Output.String())
+}
+
 // ───── documents ───────────────────────────────────────────────────────────
 
 // A spec tab is open on one process while the other writes the document. The write announces
@@ -4030,15 +4028,8 @@ func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) 
 // pass served (duty.Exclusive).
 func leasePeriodOf(t *testing.T, line string) string {
 	t.Helper()
-	return logAttributeOf(t, line, "period")
-}
-
-// logAttributeOf is the name= field of one whole slog text line, unquoted, and fails t when the
-// line carries none.
-func logAttributeOf(t *testing.T, line, name string) string {
-	t.Helper()
 	for _, match := range logAttribute.FindAllStringSubmatch(line, -1) {
-		if match[1] != name {
+		if match[1] != "period" {
 			continue
 		}
 		value := match[2]
@@ -4047,7 +4038,7 @@ func logAttributeOf(t *testing.T, line, name string) string {
 		}
 		return value
 	}
-	t.Fatalf("a log line carries no %s=: %s", name, line)
+	t.Fatalf("a leased pass line carries no period=: %s", line)
 	return ""
 }
 
@@ -4689,7 +4680,14 @@ func requireRefusedToStart(t *testing.T, p *dispatchProcess, name string) {
 	if stopped != nil && !errors.Is(stopped, os.ErrProcessDone) {
 		t.Fatalf("SIGTERM %s: %v", name, stopped)
 	}
-	p.WaitExit(t, "SIGTERM, once it logged the registry's refusal")
+	testwait.Until(t, name+" to exit after SIGTERM, once it logged the registry's refusal", func() (fmt.Stringer, bool) {
+		select {
+		case <-p.Exited:
+			return p.Output, true
+		default:
+			return p.Output, false
+		}
+	})
 	output := p.Output.String()
 	if code := p.Cmd.ProcessState.ExitCode(); stopped != nil && code != 1 {
 		t.Errorf("%s ended its wait for admission on its own and exited %d, want 1:\n%s", name, code, output)
@@ -7551,28 +7549,27 @@ func TestASendWhoseRequestIsCancelledAfterItsCommitReachesItsRecipient(t *testin
 	)
 }
 
-// takeOverDeliveries waits through the shared wait for the direct message and the mentioning
-// comment a row sent, by their bodies, to be stored, and answers each as the delivery it follows.
-// A try that finds no row of the body reads how many rows the table holds, which a give-up names.
+// takeOverDeliveries waits up to ten seconds for the direct message and the mentioning comment a
+// row sent, by their bodies, to be stored, and answers each as the delivery it follows.
 func takeOverDeliveries(t *testing.T, database *store.Store, messageBody, commentBody string) (direct, mention deliveryUnderTest) {
 	t.Helper()
 	storedID := func(table, body string) string {
-		var id string
-		testwait.Until(t, fmt.Sprintf("%q to be stored in %s", body, table), func() (string, bool) {
-			var stored *string
-			var rows int
-			if err := database.Pool.QueryRow(context.Background(),
-				`select (select id::text from `+table+` where body = $1 limit 1), (select count(*) from `+table+`)`,
-				body).Scan(&stored, &rows); err != nil {
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			var id string
+			err := database.Pool.QueryRow(context.Background(),
+				`select id::text from `+table+` where body = $1`, body).Scan(&id)
+			if err == nil {
+				return id
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
 				t.Fatalf("read the stored %s %q: %v", table, body, err)
 			}
-			if stored == nil {
-				return fmt.Sprintf("none of the %d rows of %s holds the body", rows, table), false
+			if time.Now().After(deadline) {
+				t.Fatalf("%q was not stored in %s within 10s", body, table)
 			}
-			id = *stored
-			return "stored as " + id, true
-		})
-		return id
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	direct = messageDelivery("the direct message", storedID("messages", messageBody)+":steer")
 	mention = mentionDelivery("the mention",
@@ -7938,7 +7935,7 @@ func startRateLimitGitHub(t *testing.T) *rateLimitGitHub {
 		fake.mu.Unlock()
 		if r.URL.Path == rateLimitedRead {
 			w.Header().Set("X-RateLimit-Remaining", "0")
-			w.Header().Set("Retry-After", strconv.Itoa(int(rateLimitRetryAfter.Seconds())))
+			w.Header().Set("Retry-After", strconv.Itoa(rateLimitRetryAfterSeconds))
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 77."}`)
 			return
@@ -7993,20 +7990,21 @@ func TestARateLimitOneProcessMetStopsTheOtherFromCallingGitHub(t *testing.T) {
 	if statusB != http.StatusServiceUnavailable || codeB != "GITHUB_RATE_LIMITED" {
 		t.Errorf("B's read inside the limit: status %d code %q, want 503 GITHUB_RATE_LIMITED", statusB, codeB)
 	}
-	if seconds, err := strconv.Atoi(retryB); err != nil || seconds < 1 || seconds > int(rateLimitRetryAfter.Seconds()) {
-		t.Errorf("B's Retry-After %q, want the seconds left of GitHub's %d", retryB, int(rateLimitRetryAfter.Seconds()))
+	if seconds, err := strconv.Atoi(retryB); err != nil || seconds < 1 || seconds > rateLimitRetryAfterSeconds {
+		t.Errorf("B's Retry-After %q, want the seconds left of GitHub's %d", retryB, rateLimitRetryAfterSeconds)
 	}
-	if statusA != http.StatusServiceUnavailable || codeA != "GITHUB_RATE_LIMITED" || retryA != strconv.Itoa(int(rateLimitRetryAfter.Seconds())) {
-		t.Errorf("A's limited read: status %d code %q Retry-After %q, want 503 GITHUB_RATE_LIMITED after %d", statusA, codeA, retryA, int(rateLimitRetryAfter.Seconds()))
+	if statusA != http.StatusServiceUnavailable || codeA != "GITHUB_RATE_LIMITED" || retryA != strconv.Itoa(rateLimitRetryAfterSeconds) {
+		t.Errorf("A's limited read: status %d code %q Retry-After %q, want 503 GITHUB_RATE_LIMITED after %d", statusA, codeA, retryA, rateLimitRetryAfterSeconds)
 	}
 }
 
-// rateLimitRetryAfter is the Retry-After the GitHub stand-in answers an exhausted limit with: the
-// longest wait the processes honour (serverwait.MaxWait, an hour, past which they hold GitHub's
-// to it), staged state they judge against their own clocks, not a wait. It is longer than the
-// multiprocess job's go test -timeout (35 minutes), the one lane this row runs in, so B's read,
-// however late a loaded machine makes it after A's, comes inside the limit A met.
-const rateLimitRetryAfter = serverwait.MaxWait
+// rateLimitRetryAfterSeconds is the Retry-After, in seconds, the GitHub stand-in answers an
+// exhausted limit with: the longest wait the processes honour (serverwait.MaxWait, an hour, past
+// which they hold GitHub's to it), staged state they judge against their own clocks, not a wait.
+// It is longer than the multiprocess job's go test -timeout (20 minutes), the one lane this row
+// runs in, so B's read, however late a loaded machine makes it after A's, comes inside the limit A
+// met.
+const rateLimitRetryAfterSeconds = int(serverwait.MaxWait / time.Second)
 
 // ───── the database's clock ────────────────────────────────────────────────
 
@@ -8326,14 +8324,13 @@ func TestTwoProcessesSyncingOneProjectNeverWriteTheOlderCommit(t *testing.T) {
 // ───── route status from one stored listener answer ────────────────────────
 
 // rosterEnv is what both processes of a route-status row are started with: the fake listener as
-// ENVOY_URL, and a listener answer that serves issue reads for a day
+// ENVOY_URL, and a listener answer that serves issue reads for stagedPastTheRun
 // (DISPATCH_TEST_ROUTE_ROSTER_TTL, under the test hooks every process here runs with): staged
-// state for the product's clock, not a wait, and longer than the longest go test -timeout CI
-// gives the package (80 minutes), so the row reads both processes inside one answer's life
-// however slow the machine, with no timing window.
+// state for the product's clock, not a wait, so the row reads both processes inside one answer's
+// life however slow the machine, with no timing window.
 func rosterEnv(listener *fakeListener) map[string]string {
 	env := listener.processEnv()
-	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = (24 * time.Hour).String()
+	env["DISPATCH_TEST_ROUTE_ROSTER_TTL"] = stagedPastTheRun.String()
 	return env
 }
 
@@ -8836,10 +8833,9 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 
 // The keyword fill (textversions.Run) writes search_text_versions under its hold,
 // search-text-versions-fill, one process at a time: the rows below read which process wrote each
-// of its batches from the cursor row's holder, and what duty_holds said of the hold in that
-// batch's own transaction, both recorded by a trigger of the row's own (recordKeywordFillWrites),
-// against the holder each process's line names when it takes the hold (keywordFillHolder). None
-// of them needs NATS, so every process here runs without it.
+// of its batches from the cursor row's holder, recorded by a trigger of the row's own
+// (recordKeywordFillWrites), against the holder each process's line names when it takes the hold
+// (keywordFillHolder). None of them needs NATS, so every process here runs without it.
 
 // The line a holder logs as it finds its hold lost, which these rows read beside the two lines of
 // main_test.go (keywordFillTookLine, keywordFillStandbyLine).
@@ -9156,14 +9152,11 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 		}
 		// A failure while the next lock's request waits ends the lock it waits behind first and
 		// then waits for the request, so no two statements ever run on its connection at once.
-		// That request waits behind the batch in the dispatch process, whose kill cleanup was
-		// registered before this one and so runs after it, so the wait goes through the shared
-		// wait: a batch that never ends fails it by name.
 		prev, locked, asked := s.held, make(chan error, 1), false
 		t.Cleanup(func() {
 			if asked {
 				_ = prev.Rollback(context.Background())
-				testwait.Receive(t, "the next lock of the keyword fill's cursor to answer once the lock it waited behind ended", locked)
+				<-locked
 			}
 			_ = next.Rollback(context.Background())
 		})
@@ -9176,26 +9169,12 @@ func (s *keywordFillSteps) through(t *testing.T, target int64) int64 {
 			_, err := next.Exec(ctx, `lock table search_text_versions_fill in exclusive mode`)
 			locked <- err
 		}()
-		testwait.Until(t, "the next lock of the keyword fill's cursor to queue behind the batch", func() (string, bool) {
+		testwait.Until(t, "the next lock of the keyword fill's cursor to queue behind the batch", func() (bool, bool) {
 			queued, err := storetest.QueuedBehind(ctx, s.held, pid)
 			if err != nil {
 				t.Fatalf("read the lock queue of the keyword fill's cursor: %v", err)
 			}
-			if queued {
-				return "queued", true
-			}
-			var locks string
-			if err := s.held.QueryRow(ctx, `
-				select coalesce(string_agg(mode || case when granted then ' granted' else ' waiting' end, ', '), 'none')
-				  from pg_locks where pid = $1 and relation = 'search_text_versions_fill'::regclass`, pid).Scan(&locks); err != nil {
-				t.Fatalf("read the next lock's locks of the keyword fill's cursor table: %v", err)
-			}
-			waiting, err := storetest.LockWaiters(ctx, s.held)
-			if err != nil {
-				t.Fatalf("count the backends waiting behind the keyword fill's cursor: %v", err)
-			}
-			return fmt.Sprintf("backend %d is not queued behind the batch: its locks of the cursor's table: %s; %d backends wait behind the held lock",
-				pid, locks, waiting), false
+			return queued, queued
 		})
 		if err := s.held.Rollback(ctx); err != nil {
 			t.Fatalf("let a batch of the keyword fill through: %v", err)

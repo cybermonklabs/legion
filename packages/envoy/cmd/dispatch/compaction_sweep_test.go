@@ -68,13 +68,13 @@ func TestTheCompactionSweepFoldsABackdatedLogWithNATSDisabled(t *testing.T) {
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
 	var rows, version int64
-	testwait.Until(t, "the compaction sweep to fold the document into one row", func() (int64, bool) {
+	testwait.Until(t, "the compaction sweep to fold the document into one row", func() (withOutput[int64], bool) {
 		if err := database.Pool.QueryRow(ctx,
 			`select count(*), coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
 		).Scan(&rows, &version); err != nil {
 			t.Fatalf("count the document's rows: %v", err)
 		}
-		return rows, rows == 1
+		return readWith(rows, process.Output), rows == 1
 	})
 	if version != head {
 		t.Fatalf("the compaction sweep folded the document into one row at version %d, want its log folded into the head %d alone:\n%s",

@@ -1,10 +1,10 @@
 // What the two suites that start more than one envoy-dispatch process on one Postgres and one NATS
-// share: the pair and its database, the API calls a row makes, the notification stream's head and
-// its full publication, and which process holds a delivery durable. The multiprocess suite
-// (multiprocess_test.go) starts two processes of this tree; the two-build suite (twobuild_test.go)
-// starts one of this tree and one of an earlier build. The processes' own logs, the stream read by
-// sequence, the delivery durables and settings, and the GitHub App a process boots with are in
-// nats_unreachable_test.go, which every build of the tests compiles.
+// share: the pair and its database, the API calls a row makes, and the notification stream's head
+// and its full publication. The multiprocess suite (multiprocess_test.go) starts two processes of
+// this tree; the two-build suite (twobuild_test.go) starts one of this tree and one of an earlier
+// build. The processes' own logs, the stream read by sequence, the delivery durables and settings,
+// and the GitHub App a process boots with are in nats_unreachable_test.go, which every build of the
+// tests compiles.
 //
 // This file carries no build constraint, so every build of the tests compiles it too. It holds no
 // test, only what the two tagged suites call: a constraint naming both tags
@@ -31,7 +31,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── the pair ─────────────────────────────────────────────────────────────
@@ -58,12 +57,8 @@ type dispatchPair struct {
 	// natsServer is the server nats names, for a row that reads the server's own connection
 	// listing rather than a client's view; nil for a pair started without one (startHookPair).
 	natsServer *testnats.Server
-	// monitorReads is the context a row reads natsServer's listings under: the shared wait's
-	// (testwait.Context) for the test that made the pair, made once, so a wait that reads them on
-	// every attempt makes no context of its own.
-	monitorReads context.Context
-	nats         string
-	proxies      map[*dispatchProcess]*testnats.Proxy
+	nats       string
+	proxies    map[*dispatchProcess]*testnats.Proxy
 }
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
@@ -80,10 +75,7 @@ func newPair(t *testing.T) *dispatchPair {
 func newPairOn(t *testing.T, database *store.Store) *dispatchPair {
 	t.Helper()
 	server, url := multiprocessNATS(t)
-	return &dispatchPair{
-		database: database, natsServer: server, monitorReads: testwait.Context(t), nats: url,
-		proxies: map[*dispatchProcess]*testnats.Proxy{},
-	}
+	return &dispatchPair{database: database, natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned
@@ -125,20 +117,6 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 		return "A"
 	}
 	return "B"
-}
-
-// buffers is both processes' whole output, labelled, which a failure about the pair prints: which
-// process bound a durable or ran a pass, and why the other did not, is in the two logs read
-// together, and a message carrying one of them (waitForLog) leaves the job that failed without
-// the half saying what the other process was doing. It is read when it is printed, so a wait whose
-// reading carries it (testwait.Until, readWith) copies neither output on its attempts.
-func (p *dispatchPair) buffers() pairBuffers { return pairBuffers{p} }
-
-// pairBuffers is a pair's output as buffers gives it, read by String.
-type pairBuffers struct{ pair *dispatchPair }
-
-func (b pairBuffers) String() string {
-	return fmt.Sprintf("A:\n%s\nB:\n%s", b.pair.a.Output.String(), b.pair.b.Output.String())
 }
 
 // ───── the API a row drives ─────────────────────────────────────────────────
@@ -245,24 +223,4 @@ func streamHead(t *testing.T, js natsgo.JetStreamContext) uint64 {
 		t.Fatalf("read the notification stream: %v", err)
 	}
 	return info.State.LastSeq
-}
-
-// ───── the delivery durables ────────────────────────────────────────────────
-
-// waitForDurableHolder waits for exactly one of the pair to log that it bound durable, and
-// answers which. Its failure prints both processes' output.
-func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string) *dispatchProcess {
-	t.Helper()
-	bound := `msg="dispatch delivery: NATS consumer bound"`
-	var holder *dispatchProcess
-	testwait.Until(t, fmt.Sprintf("one of the pair to log that it bound %s", durable), func() (fmt.Stringer, bool) {
-		switch {
-		case pair.a.logged(bound, "name="+durable):
-			holder = pair.a
-		case pair.b.logged(bound, "name="+durable):
-			holder = pair.b
-		}
-		return pair.buffers(), holder != nil
-	})
-	return holder
 }

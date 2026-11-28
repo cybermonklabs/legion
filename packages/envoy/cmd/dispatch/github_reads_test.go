@@ -257,25 +257,13 @@ func (p *dispatchProcess) readHealthz(t *testing.T, ctx context.Context) healthz
 func (p *dispatchProcess) waitForGitHubReads(t *testing.T, missing func(healthzAnswer) string) healthzAnswer {
 	t.Helper()
 	reading := testwait.Context(t)
-	return testwait.Until(t, "/healthz to report the GitHub reads", func() (gitHubReadsReading, bool) {
-		last := p.readHealthz(t, reading)
+	var last healthzAnswer
+	testwait.Until(t, "/healthz to report the GitHub reads", func() (withOutput[string], bool) {
+		last = p.readHealthz(t, reading)
 		lack := missing(last)
-		return gitHubReadsReading{lack: lack, last: last, process: p}, lack == ""
-	}).last
-}
-
-// gitHubReadsReading is one read of waitForGitHubReads: what missing found lacking in the answer,
-// the answer, and the process, whose output the wait's failure prints.
-type gitHubReadsReading struct {
-	lack    string
-	last    healthzAnswer
-	process *dispatchProcess
-}
-
-// String is what the wait's failure prints of its last read: what was lacking, the status and
-// body /healthz answered, and the process's output.
-func (r gitHubReadsReading) String() string {
-	return fmt.Sprintf("%s; last %d %s\n%s", r.lack, r.last.status, r.last.body, r.process.Output.String())
+		return readWith(fmt.Sprintf("%s; last %d %s", lack, last.status, last.body), p.Output), lack == ""
+	})
+	return last
 }
 
 // failedOn503 is what keeps read's entry in answer from being a failed attempt whose cause holds

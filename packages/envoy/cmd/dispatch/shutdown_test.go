@@ -64,10 +64,10 @@ const promptShutdown = 3 * time.Second
 
 // stagedPastTheRun is what a row stages a span at, where the row needs it never to end during the
 // run: a peer's heartbeat, the expiry of an installation token a GitHub stand-in answers, a
-// revocation a stand-in sign-in pool holds back. It is longer than any go test -timeout CI gives
-// this package (the multiprocess job's 35 minutes, every other lane's under 80), so no run reaches
-// it. It is staged state, not a wait: no wait of a test reads it, and each wait the rows make
-// still ends at the shared wait's give-up (testwait).
+// revocation a stand-in sign-in pool holds back, the life of the listener answer a route-status
+// row reads. It is longer than any go test -timeout CI gives this package (the longest, the memory
+// job's, is 60 minutes), so no run reaches it. It is staged state, not a wait: no wait of a test
+// reads it, and each wait the rows make still ends at the shared wait's give-up (testwait).
 const stagedPastTheRun = 24 * time.Hour
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent

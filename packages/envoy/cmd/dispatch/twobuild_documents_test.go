@@ -1061,8 +1061,16 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	// A version alone: the reader creates the same text the writer indexed in twin.
 	_, readerWrote := createDocument(t, reader.process, project, "Forms only the writer reads, written by the reader", formsOnlyMarkdown(key))
 	versionOwed := documentEdgesWritten{id: readerWrote, refs: onlyForms.refs, blocks: onlyForms.blocks}
-	testwait.Eventually(t, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
-		func() bool { return versionOwed.back(t, builds) })
+	// The waits on a build's block index here (this one, the reader's below and the writer's last)
+	// wait with Until, which has no minute: a block index drains every
+	// docs.BlockIndexReconcileInterval (30 s), and after rebuild-refs its first passes take every
+	// text that rebuild re-indexed and every document it marked owed a block index, which can take
+	// longer than Eventually's minute.
+	testwait.Until(t, "the "+writer.name+" to write its edges of the forms only it reads for the document the "+reader.name+" created holding them, owed by its version alone",
+		func() (bool, bool) {
+			back := versionOwed.back(t, builds)
+			return back, back
+		})
 
 	// Nothing runs from here until the reader starts again: the settlements of the writer's two
 	// documents have written their versions, and the reader holds no room of them.
@@ -1088,13 +1096,13 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	reader.process = builds.startPrevious(t, referenceEnv())
-	testwait.Eventually(t, "the "+reader.name+"'s block index to index the document naming its issue twice", func() bool {
+	testwait.Until(t, "the "+reader.name+"'s block index to index the document naming its issue twice", func() (*int, bool) {
 		var version *int
 		if err := builds.database.Pool.QueryRow(context.Background(),
 			`select version from document_block_versions where artifact_id = $1::uuid`, issueTwice).Scan(&version); err != nil {
 			t.Fatalf("read the block index of %s: %v", issueTwice, err)
 		}
-		return version != nil
+		return version, version != nil
 	})
 	if !formsOwed(t, builds, issueTwice) {
 		t.Fatalf("after the %s's block index dropped a block's edge of the document naming its issue twice, the document is not owed: its blocks hold %v",
@@ -1102,8 +1110,11 @@ func requireEachTriggerOwesTheDocument(t *testing.T, builds *twoBuilds, writer, 
 	}
 
 	writer.process = builds.startCurrent(t, referenceEnv())
-	testwait.Eventually(t, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
-		func() bool { return onlyForms.back(t, builds) && twice.back(t, builds) })
+	testwait.Until(t, "the "+writer.name+" to write back the edges of the documents the "+reader.name+"'s rebuild-refs and block index re-indexed",
+		func() (bool, bool) {
+			back := onlyForms.back(t, builds) && twice.back(t, builds)
+			return back, back
+		})
 }
 
 // rebuildRefsOnPrevious runs the previous build's `envoy-dispatch rebuild-refs` against the pair's

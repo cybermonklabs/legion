@@ -1,7 +1,8 @@
 kind: Changed
 body: |-
-  The Dispatch server's stop and its boot repairs arm their timers on Envoy's one module clock
-  (the real clock in production): the stop's wait for the requests in flight, its timeout around
-  the document service's shutdown and its wait for the events outbox, and the bound of each boot
-  repair, the retirement of the refresh tokens stored in plain text among them. No timer's length
-  changes.
+  The Dispatch server's stop arms three of its waits on Envoy's one module clock (the real clock in
+  production): its share of the wait for the requests in flight, its timeout around the document
+  service's shutdown, and its wait for the events outbox. Each boot repair, the retirement of the
+  refresh tokens stored in plain text among them, arms its bound on that clock too. The stop's
+  pauses while the pool goes idle, its poll as it closes the pool and its health probes stay on the
+  wall clock. No timer's length changes.

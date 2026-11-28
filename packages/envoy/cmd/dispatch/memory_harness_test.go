@@ -110,9 +110,10 @@ func (h *memoryHarness) waitForSettlement(t *testing.T, upload uploadResult) {
 // row as it commits. Its reading is when that row was marked, while it is there.
 func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 	t.Helper()
+	reading := testwait.Context(t)
 	testwait.Until(t, fmt.Sprintf("document %s to settle every write it has had (its doc_settlements_pending row gone)", artifactID), func() (string, bool) {
 		var markedAt *time.Time
-		if err := h.database.Pool.QueryRow(testwait.Context(t),
+		if err := h.database.Pool.QueryRow(reading,
 			`select max(marked_at) from doc_settlements_pending where artifact_id = $1`, artifactID,
 		).Scan(&markedAt); err != nil {
 			t.Fatalf("read the document's pending settlement: %v", err)
@@ -536,10 +537,7 @@ func (p *memoryServer) collect(t *testing.T) (collection, int) {
 			t.Fatalf("the server exited before it reported the collection it was asked for:\n%s", p.outputTail())
 		default:
 		}
-		if len(logged) > 4000 {
-			logged = logged[len(logged)-4000:]
-		}
-		return "what the server wrote since the ask: " + logged, false
+		return "what the server wrote since the ask: " + tailOf(logged), false
 	})
 	return reported, end
 }
@@ -884,8 +882,8 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 
 // waitForRequestLine waits until the server's output past offset holds the access log line of a
 // request whose line carries every one of fields, and fails the test if the server exits first.
-// The shared wait (testwait.Until) is its one bound, and a give-up prints what the server wrote
-// past offset.
+// The shared wait (testwait.Until) is its one bound, and a give-up prints the last 4,000 bytes the
+// server wrote past offset.
 func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
 	t.Helper()
 	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
@@ -901,18 +899,20 @@ func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...st
 			t.Fatalf("the server exited before it logged the request %q:\n%s", fields, p.outputTail())
 		default:
 		}
-		if len(logged) > 4000 {
-			logged = logged[len(logged)-4000:]
-		}
-		return "what the server wrote since the request began: " + logged, false
+		return "what the server wrote since the request began: " + tailOf(logged), false
 	})
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.
 func (p *memoryServer) outputTail() string {
-	output := p.output.String()
+	return tailOf(p.output.String())
+}
+
+// tailOf is the last 4,000 bytes of output, as outputTail and the waits on the server's output show
+// it.
+func tailOf(output string) string {
 	if len(output) > 4000 {
-		output = output[len(output)-4000:]
+		return output[len(output)-4000:]
 	}
 	return output
 }
