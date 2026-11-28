@@ -295,7 +295,10 @@ printf '%s\n' "$*" >>"$FAKE_DIR/kubectl.log"
 # call in between, and whatever lines one call's arguments span. Not the process group: kube and
 # kube_for run kubectl under timeout, which gives each call a process group of its own. Truncated
 # to stay one short write, which the kernel appends whole.
-call_sid=$(sed -E 's/^.*\) //' "/proc/$$/stat" | cut -d' ' -f4)
+# Read the fourth field after the command name with builtins, so each call starts no parser.
+# Strip through the last ") " because the command name can itself contain ") ".
+IFS= read -r stat_line <"/proc/$$/stat"
+IFS=' ' read -r _ _ _ call_sid _ <<<"${stat_line##*) }"
 call_args=${*//$'\n'/\\n}
 printf '%s\t%s\n' "$call_sid" "${call_args:0:1000}" >>"$FAKE_DIR/kubectl-calls.log"
 verb="" sel="" ctr="" prev="" has_ns=false seen=false cmd=()
@@ -934,8 +937,8 @@ case $1 in
   codepaths) echo '# Code paths' >"$out/CODEPATHS.md" ;;
   # The fake oidc-mint: for each -sub <subject>=<file>, a token of the shape loadgen's own writes
   # (three dot-joined segments), or FAKE_MINT_TOKEN's, written to that file by printf, a builtin, so
-  # the token is in no argument jq-argv.log could record; then the key id and point it prints (43
-  # base64url characters each).
+  # the token is in no argument the jq stand-in could record in part path. It then prints the
+  # key id and point (43 base64url characters each).
   oidc-mint)
     prev=""
     for a in "$@"; do
@@ -1069,9 +1072,10 @@ fi
 exec $real_sleep "\$@"
 EOF
 
-# The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
-# jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
-# (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+# The jq stand-in is on PATH only during part path and case (ff) in stops. It records arguments in
+# jq-argv.log, one call a line, then runs the real jq. In path, no_credential_in_args reads that log
+# as it reads kubectl.log, since any pod user can read arguments in /proc/<pid>/cmdline.
+# Case (ff) uses the stand-in to hold each daemon before it writes its pidfile.
 #
 # FAKE_DAEMON_START_NAPS=N holds a daemon's start, as a loaded machine does: the first jq call of a
 # `cluster.sh _heartbeat` or `_sampler` on its run's state.json, which use_run makes before the
@@ -1082,7 +1086,7 @@ EOF
 # and its end a line "NAME RUN_DIR NAPS" in daemon-start-releases, NAPS the naps the waiter took
 # meanwhile or "gone". The hold polls in real 0.01 s naps, and it ends too once FAKE_DIR is gone.
 real_jq=$(PATH=$real_path command -v jq)
-cat >"$bin/jq" <<EOF
+cat >"$tmp/jq-stand-in" <<EOF
 #!/usr/bin/env bash
 [ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
 if [ -n "\${FAKE_DAEMON_START_NAPS:-}" ] && [[ \${!#} == */state.json ]]; then
@@ -1115,7 +1119,7 @@ if [ -n "\${FAKE_DAEMON_START_NAPS:-}" ] && [[ \${!#} == */state.json ]]; then
 fi
 exec $real_jq "\$@"
 EOF
-chmod +x "$bin"/*
+chmod +x "$bin"/* "$tmp/jq-stand-in"
 
 export FAKE_DIR=$fake FAKE_NS=$ns
 export LOADTEST_CLUSTER_ROOT=$tmp/root
@@ -1659,6 +1663,9 @@ pass "cluster.test.sh with no part, or with an unknown one, exits 2 before its s
 
 part_path() {
 # ---- (c) the whole path ----------------------------------------------------------------------------
+
+ln -s -- ../jq-stand-in "$bin/jq"
+hash -r
 
 # guarded_by_lock_read PATTERN: the last kubectl call that holds PATTERN came right after a read
 # of the lock by the same command, which is what a write through a guarded helper (runner_exec,
@@ -4761,6 +4768,8 @@ pass "a runner pod that stops answering exec bounds the wait past its deadline, 
 # exiting launcher for the daemon would call a live daemon ended. Those two starts are judged by
 # start_daemon's naps as well (judged_start): once the fact it waits for holds, it may nap
 # start_spare more times and no more, so no wall clock decides any part of this case.
+ln -s -- ../jq-stand-in "$bin/jq"
+hash -r
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-slowstart
 readonly start_naps=100 start_spare=20
@@ -4880,6 +4889,8 @@ monitor_hb=$(cat -- "$monitor_dir/heartbeat.pid" 2>/dev/null) && kill -0 "$monit
   fail "the heartbeat start_daemon started with job control on is not running: $(cat "$monitor_dir/logs/heartbeat.log" 2>/dev/null)"
 kill -TERM -- "-$monitor_hb" 2>/dev/null || true
 pass "up waits for each daemon until it writes its pidfile, however many naps its start is held for, start_daemon ends non-zero, naming the daemon's end, once a daemon has ended without writing it, and a shell with job control on starts a daemon that lives"
+rm -- "$bin/jq"
+hash -r
 
 # (gg) The suite's guard is the pool's bound for the suite and nothing else, which envoy-go-checks'
 # command hands it as LEGION_PROOF_DEADLINE_MS, and proof_guard_from_env makes every wait give up
