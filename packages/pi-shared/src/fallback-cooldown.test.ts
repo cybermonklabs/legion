@@ -19,7 +19,15 @@ const EMPTY: FallbackCooldownState = { levels: {} };
 function refused(state: FallbackCooldownState, selector: string, now: number, entryId = "e1") {
   return stepFallbackCooldown(
     state,
-    { kind: "fallback-applied", restoreTo: selector, entryId, cause: "refusal", now },
+    {
+      kind: "fallback-applied",
+      restoreTo: selector,
+      thinkingLevel: undefined,
+      fallbackLevel: undefined,
+      entryId,
+      cause: "refusal",
+      now,
+    },
     DEFAULT_FALLBACK_COOLDOWN
   );
 }
@@ -96,7 +104,15 @@ describe("when the session goes back", () => {
   test("any other fallback waits for the host to stop suppressing the model", () => {
     const state = stepFallbackCooldown(
       EMPTY,
-      { kind: "fallback-applied", restoreTo: OPUS, entryId: "e9", cause: "other", now: 5_000 },
+      {
+        kind: "fallback-applied",
+        restoreTo: OPUS,
+        thinkingLevel: undefined,
+        fallbackLevel: undefined,
+        entryId: "e9",
+        cause: "other",
+        now: 5_000,
+      },
       DEFAULT_FALLBACK_COOLDOWN
     );
     expect(state.arming).toEqual({
@@ -200,6 +216,7 @@ describe("what a relaunch restores", () => {
         kind: "fallback-applied",
         restoreTo: OPUS,
         thinkingLevel: "xhigh",
+        fallbackLevel: "max",
         entryId: "e1",
         cause: "other",
         now: 1_000,
@@ -212,6 +229,7 @@ describe("what a relaunch restores", () => {
       dueAt: 1_000,
       cause: "other",
       thinkingLevel: "xhigh",
+      fallbackLevel: "max",
     });
     expect(restoreFallbackCooldown([entry(recordedFallbackCooldown(state))])).toEqual(state);
     // An arming with no level records no key for one, as an older build's record holds none.

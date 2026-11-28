@@ -7,8 +7,11 @@ body: |-
   the session's transcript when the fallback starts (the newest `thinking_level_change` before the
   walk's first step, with `auto` kept as `auto`), keeps it in the transcript record with the
   arming, and sets it again after the model. A level changed after the fallback's switch, by a
-  person's `/thinking` for example, is not the fallback's move, and the return leaves it. A record
-  that an older build wrote has no level, and its return sets the model alone, as before.
+  person's `/thinking` for example, is not the fallback's move, and the return leaves it: as Oh My
+  Pi's own restore does, it sets the earlier level only while the session's level is still the one
+  the fallback's switch left. A `/thinking` to that same level writes no transcript entry, so the
+  return replaces it. A record that an older build wrote has no level, and its return sets the
+  model alone, as before.
 time: 2026-11-28T18:50:00Z
 custom:
   Issue: fallback-return-thinking-level

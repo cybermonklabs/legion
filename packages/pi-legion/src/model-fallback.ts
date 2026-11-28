@@ -168,10 +168,10 @@ interface NewestChange {
   /** The thinking level the session ran at before the first step of this walk (`levelBefore`), or
    * undefined when the branch records none: the level an arming sets again with the model. */
   readonly walkedFromLevel: string | undefined;
-  /** Whether the branch holds a `thinking_level_change` after this entry's own switch
-   * (`levelChangedAfter`): a level a person or the host set since, which a return of this entry's
-   * arming leaves where it is. */
-  readonly levelChangedSince: boolean;
+  /** The level the session runs at now, as the branch's newest `thinking_level_change` names it
+   * (`levelBefore` at the branch's end): read when an arming is made, it is the level the switch
+   * left (`FallbackArming.fallbackLevel`); read at the return, it is compared with that. */
+  readonly currentLevel: string | undefined;
 }
 
 /** A `model_change` as `getBranch()` hands it back (`ModelChangeEntry`, `src/pi-types.ts`). The
@@ -190,13 +190,16 @@ function isModelChange(entry: unknown): entry is ModelChangeEntry {
 }
 
 /** A `thinking_level_change` as `getBranch()` hands it back (`ThinkingLevelChangeEntry`,
- * `src/pi-types.ts`), read field by field as `isModelChange` reads its own. */
+ * `src/pi-types.ts`): its type and its id, read as `isModelChange` reads its own. */
 function isThinkingLevelChange(entry: unknown): entry is ThinkingLevelChangeEntry {
   return (
     typeof entry === "object" &&
     entry !== null &&
     "type" in entry &&
-    entry.type === "thinking_level_change"
+    entry.type === "thinking_level_change" &&
+    "id" in entry &&
+    typeof entry.id === "string" &&
+    entry.id !== ""
   );
 }
 
@@ -260,42 +263,8 @@ function newestModelChange(ctx: ModelFallbackContext): NewestChange | undefined 
     previous: isModelChange(before) ? before : undefined,
     walkedFrom: isModelChange(from) ? from : undefined,
     walkedFromLevel: levelBefore(branch, start),
-    levelChangedSince: levelChangedAfter(branch, at),
+    currentLevel: levelBefore(branch, branch.length),
   };
-}
-
-/**
- * Whether the level changed after the switch the `model_change` at `at` made: whether the branch
- * holds a `thinking_level_change` after it other than the one that switch wrote itself.
- *
- * At tag `v18.18.6-sami.20261127-055727` a switch writes its level, when it changes one, as the
- * entry right after its `model_change`: the host's walk at `session/turn-recovery.ts:3153`
- * (`appendModelChange`) and `:3155` (`setThinkingLevel`, which appends at
- * `session/model-controls.ts:597` or `:620`), `pi.setModel` at `model-controls.ts:331` and `:349`.
- * What follows comes after the level: `syncAfterModelChange` (`turn-recovery.ts:3169`,
- * `model-controls.ts:350`), the host's `retry_fallback_applied` (`turn-recovery.ts:3170`), and this
- * plugin's arming record (`ModelFallbackDeps.saveState`). The first level entry after the
- * `model_change` is read as the switch's own past any entry no turn wrote, so a custom entry
- * written between the two by another build is no change since. A turn's message (`type:
- * "message"`, `session/session-entries.ts:120`) before any level entry means the switch set none,
- * and every level entry after it is a change since.
- */
-function levelChangedAfter(branch: readonly unknown[], at: number): boolean {
-  let index = at + 1;
-  while (index < branch.length) {
-    const entry = branch[index];
-    if (isThinkingLevelChange(entry)) {
-      index += 1;
-      break;
-    }
-    if (typeof entry === "object" && entry !== null && "type" in entry && entry.type === "message")
-      break;
-    index += 1;
-  }
-  for (; index < branch.length; index += 1) {
-    if (isThinkingLevelChange(branch[index])) return true;
-  }
-  return false;
 }
 
 /** The index of the first step of the walk ending at `at`, as the branch records it: the steps of
@@ -579,6 +548,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       step({
         kind: "fallback-applied",
         ...restoreTarget(change, selector),
+        fallbackLevel: change.currentLevel,
         entryId: change.entry.id,
         cause: "refusal",
         now: deps.now(),
@@ -661,6 +631,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
             kind: "fallback-applied",
             restoreTo: state.arming.restoreTo,
             thinkingLevel: state.arming.thinkingLevel,
+            fallbackLevel: state.arming.fallbackLevel,
             entryId: state.arming.entryId,
             cause: "refusal",
             now: deps.now(),
@@ -749,13 +720,12 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       });
       return;
     }
-    // The switch kept the level the fallback model ran at (`ModelFallbackDeps.setThinkingLevel`),
-    // so the level the session ran at before the fallback is set again with its model, while the
-    // session still runs at the fallback's own level. A level changed since (a person's
-    // `/thinking`) is not the fallback's move, and the return leaves it, as it leaves a model
-    // changed since. An arming that records no level (the branch named none, or an older build
-    // armed it) sets the model alone, as before.
-    if (arming.thinkingLevel !== undefined && !newest.levelChangedSince)
+    // The return sets the level the session ran at before the fallback (`setModel` leaves the
+    // fallback's level or sets the target's default, `ModelFallbackDeps.setThinkingLevel`) while
+    // the branch's level, read before the switch, is still the one the fallback's switch left. A
+    // level set since (a person's `/thinking`) is not the fallback's move, and the return leaves
+    // it, as the host's own restore does (`session/turn-recovery.ts:3713-3721` at the pinned tag).
+    if (arming.thinkingLevel !== undefined && newest.currentLevel === arming.fallbackLevel)
       deps.setThinkingLevel(arming.thinkingLevel);
     // `restore` can replace the state while the switch is awaited: this arming's return is not
     // that state's to record.
@@ -815,6 +785,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
             kind: "fallback-applied",
             restoreTo: walkedFrom.model,
             thinkingLevel: walkedFromLevel,
+            fallbackLevel: change.currentLevel,
             entryId: entry.id,
             cause: "refusal",
             now: changedAt(entry) ?? deps.now(),
@@ -858,6 +829,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
             kind: "fallback-applied",
             cause: refusal?.kind === "content-filter" ? "refusal" : "other",
             ...restoreTarget(own, event.from),
+            fallbackLevel: own.currentLevel,
             entryId: own.entry.id,
             now: deps.now(),
           })

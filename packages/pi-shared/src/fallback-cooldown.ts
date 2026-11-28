@@ -38,10 +38,14 @@ export interface FallbackArming {
   readonly cause: FallbackCause;
   /** The thinking level the session ran at before the fallback's first step (`xhigh`, `auto`, as
    * the session's `thinking_level_change` entry names it), which the return sets again with the
-   * model unless the level changed after the fallback's switch. Absent when the branch records no
-   * level before the fallback, and in a record an older build wrote: the return then sets the
-   * model alone. */
+   * model while the session still runs at `fallbackLevel`. Absent when the branch records no level
+   * before the fallback, and in a record an older build wrote: the return then sets the model
+   * alone. */
   readonly thinkingLevel?: string;
+  /** The level the fallback's switch left the session at, as the branch named it when the arming
+   * was made. A different level at the return was set since, and the return leaves it. Absent
+   * when the branch named none. */
+  readonly fallbackLevel?: string;
 }
 
 export interface FallbackCooldownState {
@@ -55,8 +59,11 @@ export type FallbackCooldownInput =
   | {
       readonly kind: "fallback-applied";
       readonly restoreTo: string;
-      /** The thinking level the session ran at before the fallback (`FallbackArming`). */
-      readonly thinkingLevel?: string;
+      /** The thinking level the session ran at before the fallback, and the level the switch left
+       * (`FallbackArming`), each undefined when none is known. Required, so no caller drops one
+       * by leaving it out. */
+      readonly thinkingLevel: string | undefined;
+      readonly fallbackLevel: string | undefined;
       readonly entryId: string;
       readonly cause: FallbackCause;
       readonly now: number;
@@ -99,10 +106,13 @@ export function stepFallbackCooldown(
 ): FallbackCooldownState {
   switch (input.kind) {
     case "fallback-applied": {
-      const { restoreTo, thinkingLevel, entryId, cause, now } = input;
-      // An arming with no level records no `thinkingLevel` key, as a state with no arming records
-      // no `arming` key (`recordedFallbackCooldown`).
-      const thinking = thinkingLevel === undefined ? {} : { thinkingLevel };
+      const { restoreTo, thinkingLevel, fallbackLevel, entryId, cause, now } = input;
+      // An arming with no level records no key for it, as a state with no arming records no
+      // `arming` key (`recordedFallbackCooldown`).
+      const thinking = {
+        ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+        ...(fallbackLevel === undefined ? {} : { fallbackLevel }),
+      };
       if (cause === "other") {
         return { ...state, arming: { restoreTo, entryId, dueAt: now, cause, ...thinking } };
       }
@@ -213,13 +223,22 @@ function armingFrom(value: unknown): FallbackArming | undefined {
   const dueAt = "dueAt" in value ? value.dueAt : undefined;
   const cause = "cause" in value ? value.cause : undefined;
   const thinkingLevel = "thinkingLevel" in value ? value.thinkingLevel : undefined;
+  const fallbackLevel = "fallbackLevel" in value ? value.fallbackLevel : undefined;
   if (typeof restoreTo !== "string" || restoreTo === "") return undefined;
   if (typeof entryId !== "string" || entryId === "") return undefined;
   if (typeof dueAt !== "number" || !Number.isFinite(dueAt)) return undefined;
   if (cause !== "refusal" && cause !== "other") return undefined;
-  if (thinkingLevel === undefined) return { restoreTo, entryId, dueAt, cause };
-  if (typeof thinkingLevel !== "string" || thinkingLevel === "") return undefined;
-  return { restoreTo, entryId, dueAt, cause, thinkingLevel };
+  for (const level of [thinkingLevel, fallbackLevel]) {
+    if (level !== undefined && (typeof level !== "string" || level === "")) return undefined;
+  }
+  return {
+    restoreTo,
+    entryId,
+    dueAt,
+    cause,
+    ...(typeof thinkingLevel === "string" ? { thinkingLevel } : {}),
+    ...(typeof fallbackLevel === "string" ? { fallbackLevel } : {}),
+  };
 }
 
 /** The levels one record's `levels` field holds, or undefined when it holds anything that is not
