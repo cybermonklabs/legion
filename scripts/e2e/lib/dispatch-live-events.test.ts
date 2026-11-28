@@ -5,12 +5,19 @@ import { join } from "node:path";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import type { Server } from "bun";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 // The rows wait on files, processes or local servers, which a loaded machine slows. Their bound
 // is a hang guard, not a verdict, for every row of this file that states none of its own.
 setDefaultTimeout(HANG_GUARD_MS);
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
+// A row whose probe waits for an answer the stand-in Dispatch sends (a matching event, a refusal)
+// gives it the end of the row's waits as its --timeout (lib/row-waits.ts): how soon the frames
+// reach the probe is a loaded host's, and the probe then exits on the answer, not on its timeout.
+// The row whose subject is the timeout itself keeps a short one.
+const waits = rowWaits(libRowBoundMs);
+const untilTheRowsEnd = () => String(waits.secondsLeft());
 const servers: Server<undefined>[] = [];
 const scratchDirectories: string[] = [];
 
@@ -101,11 +108,9 @@ test("the live event probe resumes after rotation and stops once an event matche
     "--until",
     "needle",
     "--timeout",
-    "5"
+    untilTheRowsEnd()
   );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
   expect(upgrades).toEqual(["alice@example.com", "alice@example.com"]);
   expect(subscriptions).toEqual([
     { sub: "events", type: "subscribe", view: { kind: "events" } },
@@ -117,6 +122,8 @@ test("the live event probe resumes after rotation and stops once an event matche
     { resubscribed: "6" },
     { event: { id: 7, note: "needle", type: "issue.updated" } },
   ]);
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 });
 
 test("the live event probe subscribes again from its cursor when Dispatch ends the feed", async () => {
@@ -170,11 +177,9 @@ test("the live event probe subscribes again from its cursor when Dispatch ends t
     "--until",
     "needle",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
   expect(upgrades).toBe(1);
   expect(subscriptions).toEqual([
     { sub: "events", type: "subscribe", view: { kind: "events" } },
@@ -185,6 +190,8 @@ test("the live event probe subscribes again from its cursor when Dispatch ends t
     { ended: "behind", resubscribed: "6" },
     { event: { id: 7, note: "needle", type: "issue.updated" } },
   ]);
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 });
 
 // A redial resumes after the cursor, so Dispatch replays nothing at or below it; a duplicate that
@@ -237,11 +244,9 @@ test("the live event probe writes a duplicate once and no event lowers its curso
     "--until",
     "needle",
     "--timeout",
-    "5"
+    untilTheRowsEnd()
   );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
   expect(subscriptions).toEqual([
     { sub: "events", type: "subscribe", view: { kind: "events" } },
     { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
@@ -255,6 +260,8 @@ test("the live event probe writes a duplicate once and no event lowers its curso
     { duplicate: "7" },
     { event: { id: 8, note: "needle", type: "issue.updated" } },
   ]);
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
   // What the stage proofs' audits count: each event's line, once.
   const counted = result.stdout.flatMap((line) =>
     typeof line === "object" && line !== null && "event" in line ? [line.event] : []
@@ -314,11 +321,9 @@ test("the live event probe takes every events_start as its cursor, below what it
     "--until",
     "needle",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
   expect(subscriptions).toEqual([
     { resume: { since: "100" }, sub: "events", type: "subscribe", view: { kind: "events" } },
     { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
@@ -332,6 +337,8 @@ test("the live event probe takes every events_start as its cursor, below what it
     { duplicate: "3" },
     { event: { id: 4, note: "needle", type: "issue.updated" } },
   ]);
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
 });
 
 test("the live event probe prints Dispatch's refusal of the feed and exits 1", async () => {
@@ -364,7 +371,7 @@ test("the live event probe prints Dispatch's refusal of the feed and exits 1", a
     "--user",
     "alice@example.com",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(1);
@@ -457,10 +464,11 @@ test("--from-whoami resumes the feed from whoami's event_head under the cookie i
     "--subscribe-after",
     "0.2",
     "--until",
-    "committed while loading"
+    "committed while loading",
+    "--timeout",
+    untilTheRowsEnd()
   );
 
-  expect(result.code).toBe(0);
   expect(cookies).toEqual(["dispatch_session=signed-cookie", "dispatch_session=signed-cookie"]);
   expect(subscriptions).toEqual([
     { resume: { since: "41" }, sub: "events", type: "subscribe", view: { kind: "events" } },
@@ -470,6 +478,7 @@ test("--from-whoami resumes the feed from whoami's event_head under the cookie i
     { subscribing_in: 0.2 },
     { event: { id: 42, note: "committed while loading", type: "comment.created" } },
   ]);
+  expect(result.code).toBe(0);
 });
 
 // The coordinator's ruling on the review of 81d860a8f7: a whoami answer with no event_head is named

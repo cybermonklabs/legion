@@ -7277,8 +7277,8 @@ every other call waits on the lock and serves the key the holder kept.
 The mint runs with the lock's descriptor closed, since `hawk-token` can start a detached refresh that would otherwise hold the lock for minutes.
 
 Oh My Pi kills a `!command` 10 s after it starts it, so every call but the preflight gives up at 9500 ms of a clock that starts with its own process (under load bash can take half a second to reach its first line), whether it is waiting on the lock or minting under `timeout`, and logs why.
-A waiter that takes the lock with under 2000 ms left starts no mint:
-the fastest mint measured on the devbox took 2006 ms, and each attempt is another keyring read.
+A waiter that takes the lock with under 2600 ms left starts no mint:
+the fastest mint measured on the devbox took 2006 ms, a loaded host can take half a second more to start it, and each attempt is another keyring read.
 A waiter's wait is bounded by one mint, since it started no earlier than the call it waits on, so a wave served by a mint that succeeds is served inside every caller's ten seconds.
 
 Every agent's call appends one tab-separated line to `<dir>/hawk-token.calls`, and to the caller's `MODEL_GATEWAY_CALLS_FILE` when its environment names one:

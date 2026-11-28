@@ -4,8 +4,10 @@
 //
 //   bun scripts/e2e/lib/nats-stream.ts last <nats-url> <stream> <subject-filter> <seconds>
 //     prints {"subject","time","seq"} of the newest message on the filter (wildcards allowed), read
-//     through one ordered consumer delivery that starts at the stream's last matching message; exits
-//     1 when the stream holds none within <seconds>
+//     through one ordered consumer delivery that starts at the stream's last matching message. A
+//     read that got no message by <seconds> exits 3: a stream that holds none and a server that
+//     did not answer both end the read at its deadline, so it cannot say which, and says so. A
+//     connect that fails exits 1, and a refused command 2
 //   bun scripts/e2e/lib/nats-stream.ts consumers <nats-url> <stream> <name-prefix>
 //     prints one {"name","filters","pending"} line per durable consumer whose name starts with the
 //     prefix
@@ -51,8 +53,12 @@ export async function readLast(
     stopTimer = () => clearTimeout(timer);
   });
   let messages: ConsumerMessages | undefined;
+  // The JetStream API request that makes the consumer has a timeout of its own, 5 s by default,
+  // which bounded a read whatever its budget: a server slower than that failed the read with
+  // TIMEOUT before the budget ran out. It ends a second after the budget, so the read's own
+  // deadline is what ends it, and the request's late rejection is caught below.
   const nextMessage = nc
-    .jetstream()
+    .jetstream({ timeout: timeoutMilliseconds + 1_000 })
     .consumers.get(stream, {
       filterSubjects: [subjectFilter],
       deliver_policy: DeliverPolicy.Last,
@@ -66,6 +72,9 @@ export async function readLast(
       return undefined;
     });
   try {
+    // nextMessage resolves to undefined both when the fetch ended with no message and when it did
+    // not end at all before the deadline, which resolves to undefined too: the read cannot tell a
+    // stream with no such message from a server that did not answer.
     const result = await Promise.race([nextMessage, deadline]);
     if (result === undefined) {
       if (messages) {
@@ -77,16 +86,14 @@ export async function readLast(
       }
       return { message: undefined, timedOut: true };
     }
-    return result
-      ? {
-          message: {
-            subject: result.subject,
-            time: new Date(result.info.timestampNanos / 1e6).toISOString(),
-            seq: result.seq,
-          },
-          timedOut: false,
-        }
-      : { message: undefined, timedOut: false };
+    return {
+      message: {
+        subject: result.subject,
+        time: new Date(result.info.timestampNanos / 1e6).toISOString(),
+        seq: result.seq,
+      },
+      timedOut: false,
+    };
   } finally {
     stopTimer();
   }
@@ -108,6 +115,11 @@ async function main(): Promise<void> {
   } catch (error) {
     refuse(messageFor(error));
   }
+  // `last`'s budget, read before the connect, which it bounds too: a connect that waited a fixed
+  // 10 s ended a read with a longer budget early.
+  const seconds = command === "last" ? Number(extra ?? "10") : 10;
+  if (!Number.isFinite(seconds) || seconds <= 0)
+    refuse(`seconds must be a positive number, not ${extra}`);
   // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
   // given, a credential in it included (a malformed URL's `input`): the line names the server by
   // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
@@ -115,7 +127,7 @@ async function main(): Promise<void> {
   try {
     nc = await connect({
       servers: url,
-      timeout: 10_000,
+      timeout: Math.max(10_000, Math.ceil(seconds * 1000)),
       name: "legion-e2e-nats-stream",
       ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
     });
@@ -127,17 +139,13 @@ async function main(): Promise<void> {
   }
   try {
     if (command === "last") {
-      const seconds = Number(extra ?? "10");
-      if (!Number.isFinite(seconds) || seconds <= 0)
-        refuse(`seconds must be a positive number, not ${extra}`);
       const result = await readLast(nc, stream, argument, seconds);
       if (!result.message) {
-        process.stderr.write(`nats-stream: stream ${stream} holds no message on ${argument}\n`);
-        process.exitCode = 1;
-        if (result.timedOut) {
-          void nc.close();
-          process.exit(1);
-        }
+        process.stderr.write(
+          `nats-stream: no message on ${argument} from stream ${stream} within ${seconds} s: unknown whether it holds one, since a stream with none and a server that did not answer read the same\n`
+        );
+        void nc.close();
+        process.exit(3);
       } else {
         process.stdout.write(`${JSON.stringify(result.message)}\n`);
       }

@@ -49,7 +49,9 @@ export function readAgentReplay(read: AgentReplayRead): Promise<unknown> {
       new Error(
         responding === null
           ? `Dispatch sent nothing for the agent view within ${seconds}s`
-          : `the session did not answer Dispatch's replay request within ${seconds}s (responding: false), so the agent view has no replay`
+          : responding
+            ? `Dispatch said the session is responding and sent no replay within ${seconds}s (responding: true), so the agent view has no replay`
+            : `the session did not answer Dispatch's replay request within ${seconds}s (responding: false), so the agent view has no replay`
       )
     );
   }, read.timeoutMs);

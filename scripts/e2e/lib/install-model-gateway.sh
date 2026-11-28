@@ -190,9 +190,10 @@ margin=300
 window=300
 deadline_ms=9500
 # The fastest mint measured on the devbox (hawk-token's Python start and one refresh grant) took
-# 2006 ms, so a waiter left with less than this after its wait starts none: it could not finish,
-# and each attempt is another keyring read.
-min_mint_ms=2000
+# 2006 ms, and under load a process can take half a second more to start (below), so a waiter left
+# with less than 2600 ms after its wait starts none: even the fastest mint could not finish, and each
+# attempt is another keyring read. No slower mint has been measured, so the worst case is not known.
+min_mint_ms=2600
 case "${1-}" in
 "") preflight= ;;
 --preflight) preflight=1 ;;
@@ -274,7 +275,11 @@ if [ -n "$preflight" ]; then
   key=$(/usr/bin/env "${command[@]}" 2>"$err" {lock}>&-) || status=$?
 else
   left_ms
-  [ "$left" -ge "$min_mint_ms" ] || no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock with $left ms of the call's $deadline_ms ms left, under the $min_mint_ms ms a mint needs"
+  if [ "$left" -lt "$min_mint_ms" ]; then
+    # A lock that came at the deadline itself leaves no time at all, not a negative figure of it.
+    [ "$left" -gt 0 ] || no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock at the call's $deadline_ms ms deadline or after it"
+    no_key timeout "waited $((deadline_ms - left)) ms for another call's mint and took the lock with $left ms of the call's $deadline_ms ms left, under the $min_mint_ms ms a mint needs"
+  fi
   printf -v mint_s '%d.%03d' $((left / 1000)) $((left % 1000))
   key=$("$timeout" --kill-after=0.2 "$mint_s" /usr/bin/env "${command[@]}" 2>"$err" {lock}>&-) || status=$?
 fi

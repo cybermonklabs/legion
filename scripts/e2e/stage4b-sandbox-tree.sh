@@ -1469,6 +1469,21 @@ scrub() {
   if [ "${#args[@]}" -eq 0 ]; then cat; else sed "${args[@]}"; fi
 }
 nats_stream() { bun "$root/scripts/e2e/lib/nats-stream.ts" "$@" 2> >(scrub >&2); }
+# stream_carries SUBJECT notes the newest message production NATS's $stream holds on SUBJECT, read
+# within 20 s, and blocks the run when there is none to note. A read with no message by its budget
+# (nats-stream.ts exit 3) cannot tell a stream that holds none from a server that did not answer, so
+# its verdict is UNKNOWN, never "carries no message"; any other failure (a connect that failed, a
+# refused command) is UNKNOWN too, and nats-stream.ts's line above it says why.
+stream_carries() {
+  local subject=$1 seen status=0
+  local read="bun scripts/e2e/lib/nats-stream.ts last \$LEGION_E2E_NATS_URL $stream '$subject'"
+  seen=$(nats_stream last "$nats_url" "$stream" "$subject" 20) || status=$?
+  case $status in
+  0) note "production NATS $stream carries $subject: newest $(jq -c . <<<"$seen")" ;;
+  3) blocked "UNKNOWN whether production NATS $stream carries a message on $subject: none came within 20 s, and a stream with none and a server that did not answer read the same ($read); the daemon's intake would miss that half of the workflow if it holds none" ;;
+  *) blocked "UNKNOWN whether production NATS $stream carries a message on $subject: the read exited $status before it could say ($read)" ;;
+  esac
+}
 
 # ---- the daemon ----------------------------------------------------------------------------------
 
@@ -3474,14 +3489,12 @@ if ! dispatch_get projects | jq -e --arg repo "$repo" --arg project "$project" \
   note "set $repo as $project's default repository"
 fi
 # The configured stream carries both halves of the workflow's intake. Each `last` call reads one
-# ordered-consumer message under its 20-second budget instead of draining every matching subject.
-# Dispatch publishes every project's issue events under subjects that name the issue, so any
-# project's shows the Dispatch half (LEGSMOKE's own age out between runs; admission is where the
-# run's are seen); the GitHub half is the smoke repository's own.
+# ordered-consumer message under its 20-second budget instead of draining every matching subject
+# (stream_carries). Dispatch publishes every project's issue events under subjects that name the
+# issue, so any project's shows the Dispatch half (LEGSMOKE's own age out between runs; admission is
+# where the run's are seen); the GitHub half is the smoke repository's own.
 for subject in "notifications.dispatch.issue.>" "notifications.github.sjawhar.legion-smoke.>"; do
-  seen=$(nats_stream last "$nats_url" "$stream" "$subject" 20) ||
-    blocked "production NATS $stream carries no message on $subject (bun scripts/e2e/lib/nats-stream.ts last \$LEGION_E2E_NATS_URL $stream '$subject'): the daemon's intake would miss that half of the workflow"
-  note "production NATS $stream carries $subject: newest $(jq -c . <<<"$seen")"
+  stream_carries "$subject"
 done
 # From a throwaway pod placed as the run's Sandbox pods are (run_node_selector, run_tolerations),
 # with the restricted pod shape: every service a Sandbox pod reaches.
