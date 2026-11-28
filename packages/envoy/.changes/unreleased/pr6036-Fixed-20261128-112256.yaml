@@ -1,9 +1,10 @@
 kind: Fixed
 body: |-
     `agent-secrets --help` says how to read one account's token out of a GitHub profile's JSON
-    object of installations, `GH_TOKEN=$(printf %s "$NAME" | jq -r ".installations[\"ACCOUNT\"].token")`,
-    keyed by the login as GitHub writes it, and says never to echo the variable. It said only that
-    the variable holds the object, and a command that sent `$NAME` as the token got 401 from GitHub.
+    object of installations, keyed by the login as GitHub writes it, and stop when the object holds
+    no token for that login: `token=$(printf %s "$NAME" | jq -er ".installations[\"ACCOUNT\"].token") || { echo "no token for ACCOUNT" >&2; exit 1; }; GH_TOKEN=$token gh ...`.
+    It also says never to echo the variable. It said only that the variable holds the object, and a
+    command that sent `$NAME` as the token got 401 from GitHub.
 time: 2026-11-28T11:22:56.153957801Z
 custom:
     Issue: pr6036

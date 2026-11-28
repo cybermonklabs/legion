@@ -5,6 +5,10 @@
 package main
 
 import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -65,18 +69,61 @@ func TestTheRunFormsHelpNamesTargetAndNoRemovedFlag(t *testing.T) {
 	}
 }
 
-// TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken: the exec form's help gives the jq read of
-// one account's token out of a GitHub profile's JSON object of installations, which GitHub answers
-// 401 when it is sent as a token, and says never to echo the variable, which prints a live token.
+// TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken runs the command the exec form's help gives
+// for reading one account's token out of a GitHub profile's JSON object of installations, as the
+// help prints it, with a stand-in gh that prints the GH_TOKEN it was handed. For the login the
+// object holds, gh gets that account's token. For a login the object does not hold, here the same
+// login in another letter case, the command exits 1 naming the login and gh never runs: a read
+// with jq -r alone handed gh the token "null", which GitHub answers 401. The help also says never
+// to echo the variable, which prints a live token.
 func TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken(t *testing.T) {
 	t.Parallel()
 	summary := lookupCommand("").summary
-	for _, want := range []string{
-		`GH_TOKEN=$(printf %s "$NAME" | jq -r ".installations[\"ACCOUNT\"].token")`,
-		"Never echo $NAME",
+	if !strings.Contains(summary, "Never echo $NAME") {
+		t.Errorf("the run form's help does not say never to echo $NAME:\n%s", summary)
+	}
+	// The command is the help's indented lines, the only ones in the summary.
+	var lines []string
+	for _, line := range strings.Split(summary, "\n") {
+		if rest, indented := strings.CutPrefix(line, "  "); indented {
+			lines = append(lines, rest)
+		}
+	}
+	if len(lines) == 0 || !strings.HasSuffix(lines[len(lines)-1], " gh ...'") {
+		t.Fatalf("the run form's help gives no command that ends in gh ...; its indented lines: %q", lines)
+	}
+	command := strings.Join(lines, "\n")
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Fatalf("the help's command runs jq, which is not on PATH: %v", err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho \"gh ran with GH_TOKEN=$GH_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const release = `{"installations":{"acme":{"installation_id":7,"token":"ghs-fake7","expires_at":"2026-11-28T17:00:00Z"}}}`
+	for _, tc := range []struct {
+		account, stdout, stderr string
+		exit                    int
+	}{
+		{account: "acme", stdout: "gh ran with GH_TOKEN=ghs-fake7\n", exit: 0},
+		{account: "Acme", stderr: "no token for Acme\n", exit: 1},
 	} {
-		if !strings.Contains(summary, want) {
-			t.Errorf("the run form's help does not say %q:\n%s", want, summary)
+		run := strings.Replace(strings.ReplaceAll(command, "ACCOUNT", tc.account), " gh ...'", " gh api /repos/acme/proofs'", 1)
+		cmd := exec.Command("sh", "-c", run)
+		cmd.Env = append(os.Environ(), "NAME="+release, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		exit := 0
+		if err := cmd.Run(); err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("run the help's command for %s: %v", tc.account, err)
+			}
+			exit = exitErr.ExitCode()
+		}
+		if exit != tc.exit || stdout.String() != tc.stdout || stderr.String() != tc.stderr {
+			t.Errorf("the help's command for %s: exit %d, stdout %q, stderr %q; want exit %d, stdout %q, stderr %q\nthe command:\n%s",
+				tc.account, exit, stdout.String(), stderr.String(), tc.exit, tc.stdout, tc.stderr, run)
 		}
 	}
 }
