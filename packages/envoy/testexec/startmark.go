@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// ClockTick is the unit of /proc/<pid>/stat's starttime: USER_HZ, a hundredth of a second on every
+// clockTick is the unit of /proc/<pid>/stat's starttime: USER_HZ, a hundredth of a second on every
 // Linux, which is also how finely /proc/uptime counts. A process's starttime truncates to the tick.
 // Linux's /proc/uptime truncates to it too, and gVisor's rounds to it, so each reading is off by
 // less than a tick, and the bias is gVisor's: there an uptime reads half a tick later on average
@@ -18,12 +18,12 @@ import (
 // TestTheStartClockAgreesWithTheUptimeClock checks that a process this machine starts writes a
 // starttime, by its own MarkStart, within a tick of the span from an uptime read before its Start
 // to one read after its Wait.
-const ClockTick = 10 * time.Millisecond
+const clockTick = 10 * time.Millisecond
 
 // MarkStart is shell that writes, to the file the shell word to names, when the kernel made the
 // process the shell runs in and when the shell reached this line: the starttime of /proc/self/stat,
 // which for a command a runner starts is that start itself, and /proc/uptime. Both count from boot
-// in hundredths of a second (ClockTick says how closely they agree), and SinceBoot reads uptime.
+// in hundredths of a second (clockTick says how closely they agree), and SinceBoot reads uptime.
 // The shell reads both itself (`read` is a builtin), so /proc/self is its own process, the one its
 // runner started, and it forks nothing. The first time is the kernel's own record of the start:
 // nothing a loaded machine or the product does to the shell after its start moves it. The second
@@ -56,43 +56,41 @@ func ReadNowMark(path string) (time.Duration, error) {
 	return at, nil
 }
 
-// StartMark is what MarkStart wrote: when the kernel made the process, and when its shell reached
+// startMark is what MarkStart wrote: when the kernel made the process, and when its shell reached
 // the mark, each as a time since boot.
-type StartMark struct{ Started, Reached time.Duration }
+type startMark struct{ Started, Reached time.Duration }
 
-// ReadStartMark reads the mark MarkStart wrote at path: its uptime line, then its stat line, each
-// read as ParseStartMark reads it.
-func ReadStartMark(path string) (StartMark, error) {
+// readStartMark reads the mark MarkStart wrote at path: its uptime line, then its stat line, each
+// read as parseStartMark reads it.
+func readStartMark(path string) (startMark, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return StartMark{}, err
+		return startMark{}, err
 	}
 	up, stat, ok := strings.Cut(strings.TrimSuffix(string(raw), "\n"), "\n")
 	if !ok {
-		return StartMark{}, fmt.Errorf("the start mark %s holds no stat line: %q", path, raw)
+		return startMark{}, fmt.Errorf("the start mark %s holds no stat line: %q", path, raw)
 	}
-	mark, err := ParseStartMark(up, stat)
+	mark, err := parseStartMark(up, stat)
 	if err != nil {
-		return StartMark{}, fmt.Errorf("the start mark %s: %w", path, err)
+		return startMark{}, fmt.Errorf("the start mark %s: %w", path, err)
 	}
 	return mark, nil
 }
 
-// ParseStartMark is the start mark of the two readings a shell took of itself, as MarkStart takes
+// parseStartMark is the start mark of the two readings a shell took of itself, as MarkStart takes
 // them: uptime, the /proc/uptime line it read or that line's first field, and stat, its own
-// /proc/<pid>/stat line whole (starttimeOf). A stand-in that keeps its marks in a form of its own,
-// such as one line per run in a file each run appends to, writes those two readings there and
-// reads each mark back with this.
-func ParseStartMark(uptime, stat string) (StartMark, error) {
+// /proc/<pid>/stat line whole (starttimeOf).
+func parseStartMark(uptime, stat string) (startMark, error) {
 	reached, err := uptimeOf(uptime)
 	if err != nil {
-		return StartMark{}, err
+		return startMark{}, err
 	}
 	started, err := starttimeOf(stat)
 	if err != nil {
-		return StartMark{}, err
+		return startMark{}, err
 	}
-	return StartMark{Started: started, Reached: reached}, nil
+	return startMark{Started: started, Reached: reached}, nil
 }
 
 // starttimeOf is the starttime a /proc/<pid>/stat line gives, as a time since boot. Its fields are
@@ -112,7 +110,7 @@ func starttimeOf(stat string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("starttime %q: %w", fields[starttime], err)
 	}
-	return time.Duration(ticks) * ClockTick, nil
+	return time.Duration(ticks) * clockTick, nil
 }
 
 // uptimeOf is the time since boot that a /proc/uptime line gives first, to its hundredth of a
@@ -123,7 +121,7 @@ func uptimeOf(line string) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read the uptime %q: %w", line, err)
 	}
-	return time.Duration(math.Round(value*float64(time.Second/ClockTick))) * ClockTick, nil
+	return time.Duration(math.Round(value*float64(time.Second/clockTick))) * clockTick, nil
 }
 
 // SinceBoot is the time since boot now, on the clock MarkStart's marks count on.
@@ -141,8 +139,8 @@ func SinceBoot(t testing.TB) time.Duration {
 }
 
 // clockSlack is how far apart a starttime and an uptime of one moment can read: each is off by
-// less than a tick (ClockTick).
-const clockSlack = 2 * ClockTick
+// less than a tick (clockTick).
+const clockSlack = 2 * clockTick
 
 // checkStarted fails a start the kernel dates more than clockSlack before called, a time since
 // boot read just before the call that made it: no start can come before its call, so the two
@@ -160,7 +158,7 @@ func checkStarted(started, called time.Duration) error {
 // than pass.
 func StartedAfter(t testing.TB, path string, called time.Duration) time.Duration {
 	t.Helper()
-	mark, err := ReadStartMark(path)
+	mark, err := readStartMark(path)
 	if err != nil {
 		t.Fatalf("read the command's start mark: %v", err)
 	}

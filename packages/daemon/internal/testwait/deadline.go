@@ -10,7 +10,7 @@ import (
 // StandInDeadline is a context that stands in, in a test, for one a deadline ends — the
 // context.WithTimeout or context.WithTimeoutCause that production code runs a command or an
 // attempt under — where the test decides the moment its deadline passes: a fact of the run under
-// test, such as the end of the process group a probe attempt started, rather than a time a loaded
+// test, such as the moment a probe's stand-in writes that it hangs, rather than a time a loaded
 // machine can reach before that run has started. It ends as the real one does, so code that tells
 // one end from another reads the same answer from both:
 //
@@ -31,9 +31,9 @@ import (
 // This is the one place it differs from a real deadline on purpose, whose Deadline never changes.
 //
 // A test clock that stands in for a production limit, budget or deadline, where the code under
-// test reads its end by Err, context.Cause, its parent's end or Deadline, uses it
-// (docs/testing.md). PassedDeadline, beside it, is the smaller form a test uses to stop a child
-// process where nothing reads more than Done and Err. A clock built on context.WithCancelCause
+// test reads its end by context.Cause, its parent's end or Deadline, uses it (docs/testing.md).
+// PassedDeadline, beside it, is the smaller form a test uses to stop a child process where nothing
+// reads more than Done and Err. A clock built on context.WithCancelCause
 // keeps the cause but gives Err context.Canceled, which no real limit gives, so code that tells one
 // end from another by Err passes a test it should fail.
 func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cause error), cancel context.CancelFunc) {

@@ -156,7 +156,7 @@ func TestAStandInDeadlineReadsItsParentsEndAtOnce(t *testing.T) {
 // channel alone, never the stand-in, since every read of the stand-in looks at its parent first and
 // would end it on its own. A stand-in that learns the end closes the channel at once, so the wait
 // is Eventually's, which gives up testwait's margin, 30 s, before the test binary's deadline: under
-// go's default -timeout a stand-in that does not learns nothing fails here by name. Under a -timeout
+// go's default -timeout a stand-in that does not learn the end fails here by name. Under a -timeout
 // of 30 s or less the margin has passed before the wait begins, and the row fails at once.
 func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	errParent := errors.New("the parent's cause")

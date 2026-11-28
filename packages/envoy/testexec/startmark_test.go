@@ -21,27 +21,27 @@ func TestTheStartClockAgreesWithTheUptimeClock(t *testing.T) {
 		t.Fatalf("the marking shell: %v", err)
 	}
 	after := SinceBoot(t)
-	own, err := ReadStartMark(mark)
+	own, err := readStartMark(mark)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if own.Started < before-ClockTick || own.Started > after+ClockTick {
+	if own.Started < before-clockTick || own.Started > after+clockTick {
 		t.Errorf("the process's own MarkStart says it started at %s since boot, outside the row's reads before Start (%s) and after Wait (%s): this machine's process start times and /proc/uptime are not one clock", own.Started, before, after)
 	}
-	if own.Reached < own.Started-ClockTick || own.Reached > after+ClockTick {
+	if own.Reached < own.Started-clockTick || own.Reached > after+clockTick {
 		t.Errorf("the process's own mark says it reached its first line at %s since boot, outside its start (%s) and the row's read after Wait (%s)", own.Reached, own.Started, after)
 	}
 }
 
-// ParseStartMark reads starttime as field 22 of the stat line counted from after its last ')', so
+// parseStartMark reads starttime as field 22 of the stat line counted from after its last ')', so
 // a command's name that holds one moves nothing, and the uptime from its line's first field, and
 // fails a stat line cut short of starttime, one with no ')', and an uptime that is no number.
 func TestParseStartMarkReadsTheTwoReadings(t *testing.T) {
 	stat := "4242 (a) (b) S" + strings.Repeat(" 0", 18) + " 12345 77 88"
-	want := StartMark{Started: 123450 * time.Millisecond, Reached: 130500 * time.Millisecond}
+	want := startMark{Started: 123450 * time.Millisecond, Reached: 130500 * time.Millisecond}
 	for _, uptime := range []string{"130.50 999.99", "130.50"} {
-		if mark, err := ParseStartMark(uptime, stat); err != nil || mark != want {
-			t.Errorf("ParseStartMark(%q, %q) = %+v, %v; want %+v", uptime, stat, mark, err, want)
+		if mark, err := parseStartMark(uptime, stat); err != nil || mark != want {
+			t.Errorf("parseStartMark(%q, %q) = %+v, %v; want %+v", uptime, stat, mark, err, want)
 		}
 	}
 	for _, c := range []struct{ uptime, stat string }{
@@ -49,8 +49,8 @@ func TestParseStartMarkReadsTheTwoReadings(t *testing.T) {
 		{"130.50", "4242 a S" + strings.Repeat(" 0", 18) + " 12345"},
 		{"up", stat},
 	} {
-		if mark, err := ParseStartMark(c.uptime, c.stat); err == nil {
-			t.Errorf("ParseStartMark(%q, %q) = %+v; want an error", c.uptime, c.stat, mark)
+		if mark, err := parseStartMark(c.uptime, c.stat); err == nil {
+			t.Errorf("parseStartMark(%q, %q) = %+v; want an error", c.uptime, c.stat, mark)
 		}
 	}
 }
