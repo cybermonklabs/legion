@@ -279,21 +279,24 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // is closed (settleRoomWithin).
 //
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
-// which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the
-// update to the reloaded room. A refused update on a closed issue is dropped and closes the room
+// which is the close-and-reload a replaced history needs (plan D3.3). Nothing in Dispatch stores
+// the update later: the reloaded room holds it only if a transaction stored it, or if a browser
+// client that holds it sends it when it syncs (room_appends.go, "What a nil return means").
+// A refused update on a closed issue is dropped and closes the room
 // for its issue (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
 // under the document's advisory lock, so it is never this process's own write in flight, and
 // needs no room-sync lane to run.
 //
 // An update that never reaches the store - its room failed, or a live write, a settlement or a
 // catch-up already made it durable - lands its credit here instead: the room drops it with the
-// update, which the browser resends. Whichever way the append ends, the update leaves its
-// instance's unstored updates once it has.
+// update. Nothing in Dispatch stores a failed room's dropped update later (room_appends.go,
+// "What a nil return means"). Whichever way the append ends, the update leaves its instance's
+// unstored updates once it has.
 func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
 	if a.service.roomFailed(room) {
-		// The failed room's update is dropped and its browser resends it to the room that
-		// replaces this one, but its class is taken all the same, so the work the record counts
-		// for it ends here (dropUpdate).
+		// The failed room's update is dropped, and nothing in Dispatch stores it later
+		// (room_appends.go, "What a nil return means"), but its class is taken all the same, so
+		// the work the record counts for it ends here (dropUpdate).
 		a.dropUpdate(room, update)
 		return nil
 	}

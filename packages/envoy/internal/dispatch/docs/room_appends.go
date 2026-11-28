@@ -18,86 +18,114 @@ import (
 )
 
 // A room's browser updates reach the store through ygo's per-room persistence worker, which calls
-// StoreUpdateContext once per update, in order (PersistCoalesceWindow = -1 keeps one call, and one
-// stored row, per update). The flush of a CloseRoom or of the idle sweep returns once every update
-// ygo's persistence observer handed over before the flush began has had its call return. ygo runs
-// a transaction's update observers only after the transaction has released the crdt.Doc's lock,
-// so an update committed before the flush began whose observer had not run yet is not covered.
-// Such an update, like one handed over after the flush began, is stored by the worker or, once
-// the worker has exited, through ygo's persistStranded, which can be after CloseRoom has returned.
-// Shutdown waits for the rooms' workers, and then until no writer ygo counts (its feeders and the
-// committing goroutines in its persistence observer) is left, but only until its ctx runs out: it
-// then returns ctx.Err() with the updates still queued not stored, and a commit that begins after
-// that count reached zero is not covered (ygo's Server.Shutdown). A person typing makes an update
-// every keystroke or so. Stored in a transaction each, on a connection of the shared request
-// pool, every keystroke cost the API a connection and about ten round trips under the document's
-// lock. The room's queued updates are stored together instead, which is what this file does.
+// StoreUpdateContext for each update ygo's persistence observer hands over, with that update's
+// own bytes (PersistCoalesceWindow = -1: ygo merges none). The calls follow the order of the
+// hand-overs, which is not always the order of the commits (ygo runs a transaction's observers
+// once it has released the crdt.Doc's lock), and not always even that: a call the worker's
+// cancelled context aborted is made again as the worker exits, and once the worker has retired,
+// the committing goroutine or the room's feeder calls for the updates the worker no longer takes
+// (persistStranded). The stored order does not come from the calls: a batch stores the room's
+// queued updates in the room's commit order (below), one row for each update it stores, and a call
+// whose update is suppressed, dropped or refused appends none. A person typing makes an update
+// every keystroke or so. Stored in a transaction each, on a connection of the shared request pool,
+// every keystroke cost the API a connection and about ten round trips under the document's lock.
+// The room's queued updates are stored together instead, which is what this file does.
+//
+// Dispatch waits for a room's appends on its own counts (waitForRoomIdle, under "A stored class's
+// counts" below), not on ygo's teardown, whose waits can end before an update's call has returned.
+// A CloseRoom's or the idle sweep's flush waits for the updates queued for the room's feeder to
+// reach the worker's channel, then for the worker's calls of what its channel holds as the request
+// reaches it, and acks whether they returned nil. Once the worker has exited, no flush runs, and
+// the feeder's calls can come after the close returns (ygo's room.flushReq and persistStranded).
+// Shutdown waits, until its ctx runs out, for the workers of the rooms it found loaded and then
+// for the persistence observers and feeders in flight, so it can return with calls still to come
+// or running (ygo's Server.Shutdown).
 //
 // The batch. Every update a room commits has a class its update observer recorded before ygo's
 // persistence observer queues the same update (onLoadDocument), so when ygo calls for an update u,
-// the room's class queue already holds u and every update the room recorded after it. Unless
-// something waits on the room, u's call lingers until roomAppendLinger after u was recorded, so a
-// burst of keystrokes is queued by the time it goes on. The call then reads, under the room's state
-// lock, the commit position its batch runs through (roomBatchThrough): the last of the run of
-// classes queued after u that is durable work of the room instance u was made in (its cursor), is
-// not stored, and does not take the run past roomAppendBatchUpdates updates or roomAppendBatchBytes
-// bytes - u's own position at least. It hands that position to AppendRoomFlush, whose transaction
-// stores every update of the instance recorded at a position through it that no writer has stored
-// yet (Service.flushRun, the run a transaction's Service.flushThrough stores too), in the room's
+// the room's class queue already holds u, and every update the room recorded after it whose own
+// call has not finished. u's call can linger until roomAppendLinger after u was recorded
+// (roomBatchThrough says when it does not), so a burst of keystrokes is queued by the time it goes
+// on. The call then reads, under the room's state lock, the commit position its batch runs through
+// (roomBatchThrough): the last of the run of classes queued after u that is durable work of the
+// room instance u was made in (its cursor), is neither stored nor handed to a call of its own, and
+// does not take the run past roomAppendBatchUpdates updates or roomAppendBatchBytes bytes - u's
+// own position at least. It hands that position to AppendRoomFlush, whose transaction stores the
+// updates of the instance recorded at a position through it that no writer has stored yet
+// (Service.flushRun, the run a transaction's Service.flushThrough stores too), in the room's
 // commit order, as one insert statement of one row per update with its own content class and
-// credit (appendWrites), and one pair of notifications.
-// The whole transaction is about three round trips under the document's lock, on a connection of
-// the room-appends pool.
+// credit (appendWrites), and one pair of notifications. A document whose issue has closed admits
+// only the updates the room took in time; the rest meet the gate again on their own calls
+// (gateAppend). The whole transaction is about three round trips under the document's lock, on a
+// connection of the room-appends pool.
 //
 // What holds:
 //
-//   - Durable on return. A call returns nil only once its update is committed: by its own
+//   - What a nil return means. A call returns nil once its update is committed - by its own
 //     transaction, or by another writer's that stored it first and marked its class stored
-//     (RoomFlush.markStored). A flush of ygo's still means every update it covers, each one ygo's
-//     persistence observer handed over before the flush began, is durable.
+//     (RoomFlush.markStored) - or once it has dropped the update, storing nothing, because its
+//     room failed or because the store refused it for a closed issue (refuseClosedIssueAppend).
+//     Nothing in Dispatch stores a failed room's dropped update later: its class has left the
+//     queue, so no flush takes it, and the room's next load reads the store. The reloaded room
+//     holds it only if a transaction stored it - its writer's, as a published live write's and a
+//     committed repair's are; another process's, as a catch-up's is; or a batch's before the
+//     failure - or if a browser's client that holds it sends it to the reloaded room when it
+//     syncs. A call that returns an error has failed the room (failRoom). So ygo's flush ack, true
+//     when every call the flush made returned nil, does not mean each update it covers is
+//     durable, and it says nothing of a call made before it.
 //   - Stored once. No class is stored by two transactions. A class is stored only by a transaction
 //     that holds the document's advisory lock and finds it, under the room's state lock, still
-//     queued and not stored (Service.flushRun), and every such transaction marks what it
-//     stored before it releases that lock, so a transaction that takes the lock next finds the
-//     marks. A class leaves the queue only with its own update's call (finishUpdateClass), so a
-//     call whose update another writer stored finds the mark and appends nothing.
+//     queued and not stored (Service.flushRun), and such a transaction marks what it stored before
+//     the next to take that lock can read the queue: a room's batch before it releases the lock, a
+//     writer's transaction under the state lock it holds across its commit (commitConsuming). A
+//     class leaves its record's queue only with its own update's call (finishUpdateClass), or
+//     moves, mark and all, to the record that replaces a failed room's (handOverFailedRoomLocked),
+//     so a call whose update another writer stored finds the mark and appends nothing.
 //   - Versions follow the order in which transactions commit, and within one the room's commit
 //     order: a flush's run is stored at consecutive versions from the head its gate read, in the
 //     order the room recorded the updates, their update-log order (documentUpdateClass.seq).
-//   - A stored class's counts. A durable class's append is counted from the moment its observer
-//     recorded it (queueUpdateClass) until its own call returns (finishUpdateClass), whether that
-//     call stored the update or found it stored by another writer, so a wait for the room's
-//     appends (waitForRoomIdle) ends only once ygo has handed every update over.
+//   - A stored class's counts. A durable class's append is counted from the moment the room's
+//     update observer recorded it (queueUpdateClass) until its own call returns
+//     (finishUpdateClass), whether that call stored the update, found it stored by another writer
+//     or dropped it. A wait for the room's appends (waitForRoomIdle) ends once the record it finds
+//     counts none, or it finds none. It does not count a commit no update observer has recorded
+//     yet (ygo runs the observers once the commit has released the crdt.Doc's lock), nor an append
+//     still in flight on a failed room's record once that record is handed over
+//     (handOverFailedRoomLocked), so it can end before such an update's call has returned.
 //   - Failure outcomes. A refused gate (ErrRoomBehindHead), or a statement or a commit the database
 //     refuses, stores nothing and marks nothing: the call that ran the batch fails the room and
-//     returns the error, and every other update of the batch meets the failed room on its own call,
-//     which drops it, ends its counts and lands its credit, as any failed room's update. The
-//     call's own credit lands before the transaction releases the document's lock, committed or
-//     not; the other updates' credits land with their own calls unless the transaction committed
-//     them (UpdateCredit.landed does nothing the second time).
-//   - A suppression slot forces the lone position. A published live write's update and a repair's
-//     are already durable, and the room's persistence knows each by the suppression slot queued for
-//     it, which the update it is handed takes wherever that slot stands in the queue
-//     (consumeSuppressedPersistence); their classes are queued stored, so no flush takes them. A
-//     call that finds a slot of the room queued runs its batch through its own update's position
-//     alone.
+//     returns the error. Each other update of the batch whose call comes while the room is failed
+//     is dropped, its counts ended and its credit landed, as any failed room's update; one whose
+//     call comes after the eviction has handed the record over meets the record that replaced it
+//     (handOverFailedRoomLocked). The call's own credit lands before the transaction releases the
+//     document's lock, committed or not; the other updates' credits land with their own calls
+//     unless the transaction committed them (UpdateCredit.landed does nothing the second time).
+//   - A suppression slot forces the lone position. A published live write's update is already
+//     durable, a repair's is its writer's to store, and the room's persistence knows each by the
+//     suppression slot queued for it, which the update it is handed takes wherever that slot
+//     stands in the queue (consumeSuppressedPersistence); their classes are queued stored, so no
+//     flush takes them. A call that finds a slot of the room queued runs its batch through its own
+//     update's position alone.
 //   - No holder of a document lock waits for a RoomAppends connection. A batch takes its connection
 //     (store.Pool.RoomAppends) before the document's lock and holds store.HoldsConnection on its
-//     context, so nothing under it takes a second connection; and nothing else takes a connection of
-//     that pool - settlements, live writes and the withRoomLock writers keep theirs. Whoever holds a
-//     lock a batch waits on finishes without one of these connections, so the pool cannot deadlock.
+//     context, so nothing under it takes a second connection; and nothing else takes one but a
+//     room load's warm-up (warmRoomAppends), which holds no lock and gives it straight back -
+//     settlements, live writes and the withRoomLock writers keep theirs. Whoever holds a lock a
+//     batch waits on finishes without one of these connections, so the pool cannot deadlock.
 //
 // The ways an update reaches the store, and why none stores a class another transaction stored:
 //
 //   - A room's batch (AppendRoomFlush) stores the run its flush reads under the document's lock,
 //     which holds no class another writer has marked stored.
 //   - An update with no class - one no room recorded, as a test hands on, or a repair's whose
-//     record was released - is stored alone (AppendUpdatesWithCredit) with nothing to mark: no
-//     flush holds it, since a flush's run comes from the queue.
+//     record was released - is stored alone (AppendUpdatesWithCredit), unless its room failed or a
+//     suppression slot takes it, with nothing to mark: no flush holds it, since a flush's run
+//     comes from the queue.
 //   - A writer's own update - a live write's, a settlement's repair or stamp, the block-id
 //     backfill's, a seed's - is stored by its writer in its own transaction (AppendUpdateTx), which
 //     stores the room's unstored updates before it (Ledger.flushThrough). The room's persistence
-//     skips it by its suppression slot, and its class is queued stored.
+//     skips it by its suppression slot or, when a browser update of the same bytes took that slot,
+//     by its class, which is queued stored.
 //   - AppendUpdate, which no room's call makes (a test's, a seed's), stores what it is handed and
 //     marks nothing: no class holds its update.
 
@@ -571,12 +599,11 @@ func (f *roomAppendFigures) committed(size int) {
 	f.sizes[min(sort.SearchInts(roomAppendBatchSizes[:], size), len(f.sizes)-1)].Add(1)
 }
 
-// dropUpdate takes an update the room's persistence does not store off its record: a failed
-// room's, or one a suppression slot matched, which its writer made durable. A failed room's update
-// is dropped and its browser resends it to the room that replaces this one, but its class is taken
-// all the same, so the work the record counts for it ends here, and the update leaves its
-// instance's unstored updates. Left counted, it would be an append no callback can ever finish:
-// the record - or the one registered in its place, which carries the updates the room's
+// dropUpdate takes a failed room's update, which the room's persistence does not store, off its
+// record. Nothing stores the update later ("What a nil return means" at the top of this file), but
+// its class is taken all the same, so the work the record counts for it ends here, and the update
+// leaves its instance's unstored updates. Left counted, it would be an append no callback can ever
+// finish: the record - or the one registered in its place, which carries the updates the room's
 // persistence never took (handOverFailedRoomLocked) - would wait on it for ever, so its settlement
 // would retry without end, and the record would never be released (unusedLocked).
 func (a *servicePersistenceAdapter) dropUpdate(room string, update []byte) {
