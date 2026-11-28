@@ -24,11 +24,13 @@ import (
 )
 
 // countingTrigger is one trigger the coverage counts are kept by, as pg_trigger holds it: the
-// table it is on, its name, whether it fires for each row or once for each statement, the events
-// it fires after, in the order insert, update, delete, truncate, and the columns an update must
-// name to fire it, sorted, nil for an update of any column.
+// table it is on, its name, whether it fires before or after its events, whether it fires for
+// each row or once for each statement, the events it fires on, in the order insert, update,
+// delete, truncate, and the columns an update must name to fire it, sorted, nil for an update of
+// any column.
 type countingTrigger struct {
 	table, name string
+	timing      string
 	row         bool
 	events      []string
 	columns     []string
@@ -44,45 +46,52 @@ func (trigger countingTrigger) String() string {
 	if len(trigger.columns) > 0 {
 		events += " (update of " + strings.Join(trigger.columns, ", ") + ")"
 	}
-	return fmt.Sprintf("%s on %s: after %s, for each %s", trigger.name, trigger.table, events, level)
+	return fmt.Sprintf("%s on %s: %s %s, for each %s", trigger.name, trigger.table, trigger.timing, events, level)
 }
 
-// countingTriggers is every trigger the coverage counts are kept by (migration
-// 20261124011834_search_coverage_counts), each named search_coverage_<table>_<what>: the name is
-// the contract this test holds the migration to, so a trigger the migration names otherwise is
-// missing here and one it adds that this list does not hold is an extra. On embeddings, three
-// statement triggers, after insert, after update and after delete, since Postgres takes
-// transition tables only on a trigger of one event; on components, artifact_versions,
-// check_results and handoffs two each, after insert and after delete. The row triggers of issues,
-// artifacts and artifact_versions refresh the state row of the issue a write concerns, each fired
-// by an update of the columns that issue's class is read from: an issue's title and created_at,
-// an artifact's issue_key and is_primary, and a version's markdown, the issue's spec where the
-// artifact is its primary document. Each of those seven tables has a statement trigger after
-// truncate, and search_coverage_issues has a row trigger of its own that writes the old class
+// countingTriggers is every trigger the coverage counts are kept by (migrations
+// 20261124011834_search_coverage_counts and 20261128105250_ci_check_results_coverage_counts),
+// each named search_coverage_<table>_<what>: the name is the contract this test holds the
+// migrations to, so a trigger a migration names otherwise is missing here and one it adds that
+// this list does not hold is an extra. On embeddings, three statement triggers, after insert,
+// after update and after delete, since Postgres takes transition tables only on a trigger of one
+// event; on components, artifact_versions, check_results, ci_check_results and handoffs two each,
+// after insert and after delete. The row triggers of issues, artifacts and artifact_versions
+// refresh the state row of the issue a write concerns, each fired by an update of the columns that
+// issue's class is read from: an issue's title and created_at, an artifact's issue_key and
+// is_primary, and a version's markdown, the issue's spec where the artifact is its primary
+// document. Each of those eight tables has a statement trigger on truncate: after it on six, and
+// before it on check_results and ci_check_results, the two tables of the one result class, whose
+// trigger counts the rows the truncate takes as their delete trigger counts the rows a delete
+// takes, where the trigger after a truncate sets the class to 0 and so would take the other
+// table's rows too. search_coverage_issues has a row trigger of its own that writes the old class
 // minus and the new class plus as delta rows. route_roster is read directly and has none.
 var countingTriggers = []countingTrigger{
-	{"embeddings", "search_coverage_embeddings_insert", false, []string{"insert"}, nil},
-	{"embeddings", "search_coverage_embeddings_update", false, []string{"update"}, nil},
-	{"embeddings", "search_coverage_embeddings_delete", false, []string{"delete"}, nil},
-	{"embeddings", "search_coverage_embeddings_truncate", false, []string{"truncate"}, nil},
-	{"components", "search_coverage_components_insert", false, []string{"insert"}, nil},
-	{"components", "search_coverage_components_delete", false, []string{"delete"}, nil},
-	{"components", "search_coverage_components_truncate", false, []string{"truncate"}, nil},
-	{"artifact_versions", "search_coverage_artifact_versions_insert", false, []string{"insert"}, nil},
-	{"artifact_versions", "search_coverage_artifact_versions_delete", false, []string{"delete"}, nil},
-	{"artifact_versions", "search_coverage_artifact_versions_rows", true, []string{"insert", "update", "delete"}, []string{"markdown"}},
-	{"artifact_versions", "search_coverage_artifact_versions_truncate", false, []string{"truncate"}, nil},
-	{"check_results", "search_coverage_check_results_insert", false, []string{"insert"}, nil},
-	{"check_results", "search_coverage_check_results_delete", false, []string{"delete"}, nil},
-	{"check_results", "search_coverage_check_results_truncate", false, []string{"truncate"}, nil},
-	{"handoffs", "search_coverage_handoffs_insert", false, []string{"insert"}, nil},
-	{"handoffs", "search_coverage_handoffs_delete", false, []string{"delete"}, nil},
-	{"handoffs", "search_coverage_handoffs_truncate", false, []string{"truncate"}, nil},
-	{"issues", "search_coverage_issues_rows", true, []string{"insert", "update", "delete"}, []string{"created_at", "title"}},
-	{"issues", "search_coverage_issues_truncate", false, []string{"truncate"}, nil},
-	{"artifacts", "search_coverage_artifacts_rows", true, []string{"insert", "update", "delete"}, []string{"is_primary", "issue_key"}},
-	{"artifacts", "search_coverage_artifacts_truncate", false, []string{"truncate"}, nil},
-	{"search_coverage_issues", "search_coverage_issue_classes", true, []string{"insert", "update", "delete"}, nil},
+	{"embeddings", "search_coverage_embeddings_insert", "after", false, []string{"insert"}, nil},
+	{"embeddings", "search_coverage_embeddings_update", "after", false, []string{"update"}, nil},
+	{"embeddings", "search_coverage_embeddings_delete", "after", false, []string{"delete"}, nil},
+	{"embeddings", "search_coverage_embeddings_truncate", "after", false, []string{"truncate"}, nil},
+	{"components", "search_coverage_components_insert", "after", false, []string{"insert"}, nil},
+	{"components", "search_coverage_components_delete", "after", false, []string{"delete"}, nil},
+	{"components", "search_coverage_components_truncate", "after", false, []string{"truncate"}, nil},
+	{"artifact_versions", "search_coverage_artifact_versions_insert", "after", false, []string{"insert"}, nil},
+	{"artifact_versions", "search_coverage_artifact_versions_delete", "after", false, []string{"delete"}, nil},
+	{"artifact_versions", "search_coverage_artifact_versions_rows", "after", true, []string{"insert", "update", "delete"}, []string{"markdown"}},
+	{"artifact_versions", "search_coverage_artifact_versions_truncate", "after", false, []string{"truncate"}, nil},
+	{"check_results", "search_coverage_check_results_insert", "after", false, []string{"insert"}, nil},
+	{"check_results", "search_coverage_check_results_delete", "after", false, []string{"delete"}, nil},
+	{"check_results", "search_coverage_check_results_truncate", "before", false, []string{"truncate"}, nil},
+	{"ci_check_results", "search_coverage_ci_check_results_insert", "after", false, []string{"insert"}, nil},
+	{"ci_check_results", "search_coverage_ci_check_results_delete", "after", false, []string{"delete"}, nil},
+	{"ci_check_results", "search_coverage_ci_check_results_truncate", "before", false, []string{"truncate"}, nil},
+	{"handoffs", "search_coverage_handoffs_insert", "after", false, []string{"insert"}, nil},
+	{"handoffs", "search_coverage_handoffs_delete", "after", false, []string{"delete"}, nil},
+	{"handoffs", "search_coverage_handoffs_truncate", "after", false, []string{"truncate"}, nil},
+	{"issues", "search_coverage_issues_rows", "after", true, []string{"insert", "update", "delete"}, []string{"created_at", "title"}},
+	{"issues", "search_coverage_issues_truncate", "after", false, []string{"truncate"}, nil},
+	{"artifacts", "search_coverage_artifacts_rows", "after", true, []string{"insert", "update", "delete"}, []string{"is_primary", "issue_key"}},
+	{"artifacts", "search_coverage_artifacts_truncate", "after", false, []string{"truncate"}, nil},
+	{"search_coverage_issues", "search_coverage_issue_classes", "after", true, []string{"insert", "update", "delete"}, nil},
 }
 
 // The bits of pg_trigger.tgtype (Postgres's catalog/pg_trigger.h, TRIGGER_TYPE_*).
@@ -97,11 +106,10 @@ const (
 )
 
 // installedCountingTrigger is one trigger whose name begins search_coverage_ as pg_trigger holds
-// it: what countingTrigger names, its timing, and tgenabled, 'O' for a trigger that fires in the
-// ordinary mode of session_replication_role.
+// it: what countingTrigger names, and tgenabled, 'O' for a trigger that fires in the ordinary mode
+// of session_replication_role.
 type installedCountingTrigger struct {
 	countingTrigger
-	timing  string
 	enabled string
 }
 
@@ -171,8 +179,8 @@ func countingTriggersDiffer(installed map[string]installedCountingTrigger) []str
 		switch {
 		case !found:
 			differences = append(differences, "missing: "+want.String())
-		case got.timing != "after" || got.row != want.row || !slices.Equal(got.events, want.events) || !slices.Equal(got.columns, want.columns):
-			differences = append(differences, fmt.Sprintf("%s is %s (%s), want %s", key, got.countingTrigger, got.timing, want))
+		case got.timing != want.timing || got.row != want.row || !slices.Equal(got.events, want.events) || !slices.Equal(got.columns, want.columns):
+			differences = append(differences, fmt.Sprintf("%s is %s, want %s", key, got.countingTrigger, want))
 		case got.enabled != "O":
 			differences = append(differences, fmt.Sprintf("%s has tgenabled %q, want 'O': it must fire in the ordinary mode", key, got.enabled))
 		}
@@ -187,7 +195,7 @@ func countingTriggersDiffer(installed map[string]installedCountingTrigger) []str
 
 // TestEveryCountedTableCarriesItsCountingTrigger holds R7h: every table the coverage counts are
 // read from carries the triggers that keep them (countingTriggers), each an ordinary trigger
-// that fires after its events and is enabled, on a fresh database and again after
+// that fires at the time the list names and is enabled, on a fresh database and again after
 // withTableTriggersOff has turned each such table's triggers off and back on, as the tests that
 // seed past the triggers do. The triggers are ordinary, not `enable always`, since the migration
 // census admits no ENABLE ALWAYS TRIGGER (internal/pgmigrate/exempt.go): a write under
@@ -346,9 +354,9 @@ func TestAClaimOfAnIssuesRowRefreshesNothing(t *testing.T) {
 	requireMainsAnswer(t, database, "after the update of embedded_hash")
 }
 
-// countedTables are the seven tables the counting triggers are on (countingTriggers, but for the
+// countedTables are the eight tables the counting triggers are on (countingTriggers, but for the
 // issues' state rows, which the triggers write themselves).
-var countedTables = []string{"embeddings", "issues", "artifacts", "artifact_versions", "components", "check_results", "handoffs"}
+var countedTables = []string{"embeddings", "issues", "artifacts", "artifact_versions", "components", "check_results", "ci_check_results", "handoffs"}
 
 // writeTally is what the session it runs in has written and not yet sent to the cumulative
 // statistics, as pg_stat_xact_user_tables counts it: the rows inserted, updated or deleted in the
@@ -915,6 +923,106 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 			}
 			requireMainsAnswerFor(t, database, "after one recount", configured.identity)
 		})
+	}
+}
+
+// TestBothResultsTablesKeepTheResultCount holds the result kind's kept count to the two tables
+// that hold results (notIndexedKinds): check_results, what a role recorded, and ci_check_results,
+// what a CI job recorded. Right after each write, with no fold and no recount between, the report's
+// result count is the rows the two tables hold together (requireResultsKept), and the write
+// inserted a delta row, which is where the report reads it from: a CI job's two results in one
+// statement, one of them deleted, and an issue's delete, which cascades to a result of each table;
+// then a truncate of each table while the other holds rows, which takes the truncated table's rows
+// from the count and leaves the other's, where a trigger that set the result class to 0 would take
+// both. After the writes, a recount answers the same count.
+func TestBothResultsTablesKeepTheResultCount(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	database := storetest.Open(t)
+	q := database.Pool
+	const project = "RSLT"
+	seedIssue(t, database, project, "RSLT-1", "An issue whose delete cascades to a result of each table")
+	seedIssue(t, database, project, "RSLT-2", "An issue that holds results")
+	var document string
+	if err := q.QueryRow(ctx, `
+		insert into artifacts (project_key, slug, name, kind, created_by, ref_key)
+		values ($1, 'checks', 'checks.md', 'doc', '{"kind":"user","id":"alice"}', $1 || '/checks')
+		returning id::text`, project).Scan(&document); err != nil {
+		t.Fatalf("seed the document the results are of: %v", err)
+	}
+	roleResults := func(q querier, issue string, rows int) {
+		t.Helper()
+		mustExec(t, q, `insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+				check_version, check_sha256, role, commit_sha, verdict, actor)
+			select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb
+			from generate_series(1, $3::int) g`, issue, document, rows)
+	}
+	jobResults := func(q querier, issue string, rows int) {
+		t.Helper()
+		mustExec(t, q, `insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+				check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
+			select $1, $1, $2::uuid, 'k' || g, 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/' || $1, 'pass',
+			       '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb
+			from generate_series(1, $3::int) g`, issue, document, rows)
+	}
+	roleResults(q, "RSLT-1", 1)
+	jobResults(q, "RSLT-1", 1)
+	fillCounts(t, database)
+	requireResultsKept(t, database, "after the fill", 1, 1)
+
+	for _, write := range []struct {
+		name      string
+		run       func(q querier)
+		role, job int64
+	}{
+		{"a CI job's two results inserted in one statement", func(q querier) { jobResults(q, "RSLT-2", 2) }, 1, 3},
+		{"a CI job's result deleted", func(q querier) {
+			mustExec(t, q, `delete from ci_check_results where id = (select id from ci_check_results where issue_key = 'RSLT-2' limit 1)`)
+		}, 1, 2},
+		{"an issue's delete, which cascades to a result of each table", func(q querier) {
+			mustExec(t, q, `delete from issues where key = 'RSLT-1'`)
+		}, 0, 1},
+		{"a role's two results inserted", func(q querier) { roleResults(q, "RSLT-2", 2) }, 2, 1},
+		{"a truncate of ci_check_results while check_results holds rows", func(q querier) {
+			mustExec(t, q, `truncate ci_check_results cascade`)
+		}, 2, 0},
+		{"a CI job's two results inserted after the truncate", func(q querier) { jobResults(q, "RSLT-2", 2) }, 2, 2},
+		{"a truncate of check_results while ci_check_results holds rows", func(q querier) {
+			mustExec(t, q, `truncate check_results cascade`)
+		}, 0, 2},
+	} {
+		before := deltaRows(t, database)
+		write.run(q)
+		if after := deltaRows(t, database); after <= before {
+			t.Errorf("%s: search_coverage_deltas holds %d rows, as many as before it or fewer (%d), want the write's own: no trigger counted it", write.name, after, before)
+		}
+		requireResultsKept(t, database, "after "+write.name, write.role, write.job)
+	}
+
+	if err := recountCoverage(ctx, database); err != nil {
+		t.Fatalf("recount: %v", err)
+	}
+	requireResultsKept(t, database, "after one recount", 0, 2)
+}
+
+// requireResultsKept fails the test unless check_results holds role rows and ci_check_results job
+// rows, and the report counts role + job results, read when stage was reached.
+func requireResultsKept(t *testing.T, database *store.Store, stage string, role, job int64) {
+	t.Helper()
+	ctx := context.Background()
+	var roles, jobs int64
+	if err := database.Pool.QueryRow(ctx, `select (select count(*) from check_results), (select count(*) from ci_check_results)`).Scan(&roles, &jobs); err != nil {
+		t.Fatalf("%s: count the results: %v", stage, err)
+	}
+	if roles != role || jobs != job {
+		t.Fatalf("%s: check_results holds %d rows and ci_check_results %d, want %d and %d", stage, roles, jobs, role, job)
+	}
+	report, err := Coverage(ctx, database, "")
+	if err != nil {
+		t.Fatalf("%s: Coverage: %v", stage, err)
+	}
+	if kept := notIndexedCountsOf(t, report)["result"]; kept != role+job {
+		t.Errorf("%s: the report counts %d results, want the %d of check_results and the %d of ci_check_results", stage, kept, role, job)
 	}
 }
 

@@ -3673,6 +3673,14 @@ Every statement is a `set`, a `create table` of a table that holds no row, a `cr
 its census answers `0`.
 The release before it neither reads nor writes the new tables, and the triggers are the database's, so its writes keep the counts as well;
 rolled back past it, the triggers stay and write delta rows that no process folds, a few for each write statement, until a release with the counts loop runs again.
+Migration `20261128105250_ci_check_results_coverage_counts` keeps the result class by both tables that hold results, `check_results` and `ci_check_results`, as the recount counts it.
+`ci_check_results` gets the two statement triggers `check_results` has, after insert and after delete, through the same function;
+and the truncate trigger of each of the two tables runs before the truncate and writes minus the rows it is about to take (`search_coverage_results_truncating`), where `20261124011834`'s trigger after a truncate set the whole class to 0 and so took the other table's rows too.
+The rows `ci_check_results` holds when it applies are counted by the next recount; a release that also takes `20261116213930` creates the table with none.
+It drops and creates triggers on `check_results`, then on `ci_check_results`, under the same `lock_timeout` of 500 ms as `20261124011834`, and reads no row.
+Every statement is a `set`, a `create function`, a `drop trigger` or a `create trigger`, so the census exempts it from the table-size limit, except behind a pending `20261125125703_btree_gin`, as for every migration numbered above it;
+its census answers `0` and names no table, since `ci_check_results` does not exist yet where `20261116213930` is pending.
+
 
 Migrations `20261124011835_embeddings_window_unembedded_since` and `20261124011836_embeddings_window_embedded_since` create `embeddings_window_unembedded_since` on `embeddings (kind, dead, pending_since)` and `embeddings_window_embedded_since` on `embeddings (kind, dead, model, pending_since)`, and `20261124011837_drop_embeddings_window_embedded` and `20261124011838_drop_embeddings_window_unembedded` drop `20261118011208`'s `embeddings_window_embedded` and `20261118011258`'s `embeddings_window_unembedded` behind them.
 The coverage route reads kept counts (`20261124011834`), and its oldest lacking age is no count:
@@ -4631,7 +4639,7 @@ The same report names, under `not_indexed`, every kind of node neither leg of se
 A kind nothing indexes is named rather than left out, so a reader cannot read it as a kind that is covered with nothing left to embed; it carries no current, lacking or failed count, and it is in no total.
 The report reads counts the writes keep, never the rows it counts, so what one call reads does not grow with the corpus (migration `20261124011834_search_coverage_counts`, `embedqueue`'s `coverageRead`).
 A count is kept for each class, a kind with a model, whether its items are matched (embedded at their current text) and whether they are dead.
-`search_coverage_counts` holds the base, and each write statement on `embeddings`, `issues`, `artifacts`, `artifact_versions`, `components`, `check_results` or `handoffs` inserts, through its table's triggers and in its own transaction, one row into `search_coverage_deltas` for each class it moved, never a counter row that every write would update.
+`search_coverage_counts` holds the base, and each write statement on `embeddings`, `issues`, `artifacts`, `artifact_versions`, `components`, `check_results`, `ci_check_results` or `handoffs` inserts, through its table's triggers and in its own transaction, one row into `search_coverage_deltas` for each class it moved, never a counter row that every write would update.
 An issue's class is read from its state row in `search_coverage_issues`, which the triggers refresh when a write changes the issue's title or `created_at`, its primary document, its spec or what its embeddings row says of a vector;
 a queue claim, which moves `next_attempt_at` alone, refreshes nothing.
 The report sums the base and the delta rows not yet folded in one statement, so every number reads one snapshot, and reads each covered kind's oldest lacking age as the first entry of an index:
