@@ -256,8 +256,9 @@ run_forced_order_tests() {
     jq --unbuffered -nRj '
       def start_line: if .open_source == null then "" else "\n" end;
 
-      # Package strings and false (non-JSON text) can leave a line open.
-      # A null source starts a script-written verdict on its own line.
+      # The output of a package (source "" for an event with no Package) can leave a line open, and
+      # text from another source then starts a new line. A non-JSON line (source false) and the
+      # verdict this script writes (source null) always end their line.
       def emit($text; $source):
         if $text == "" then .text = ""
         else

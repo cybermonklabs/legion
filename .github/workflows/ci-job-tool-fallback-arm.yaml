@@ -74,7 +74,7 @@ jobs:
     # 24.8 minutes (25). The five probes that mark the log before these faulted installs each
     # make two requests bounded at 15 s (3). The probe that reads the fault before any install
     # meets it is already in the Bun halves' 15. The rest of these cases, the readings, the
-    # stand-in and the removals, took 1 s in run 44073112404 and 1 s in the every-job run
+    # stand-in and the removals, took 2 s in run 44073112404 and 1 s in the every-job run
     # 46131305951 at 8cc4da41 (1). That is 29, and with the Bun halves' 15 it is 44, so the limit
     # is the next minute up, 45.
     # A lower limit can end a run that would pass during that outage. A job its own limit cuts
