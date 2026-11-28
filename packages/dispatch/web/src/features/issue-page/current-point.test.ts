@@ -398,7 +398,7 @@ function renderPoint(root: TreeNode) {
     createElement(
       QueryClientProvider,
       { client },
-      createElement(OutlineWriterProvider, { children, issueKey: KEY })
+      createElement(OutlineWriterProvider, { children, issueKey: KEY, openAsks: [] })
     );
   const view = renderHook(() => ({ point: useCurrentPoint(root), writer: useOutlineWriter() }), {
     wrapper,

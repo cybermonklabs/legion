@@ -40,7 +40,7 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 				service.settleWG.Add(1)
 				timerID := service.nextSettleTimer.Add(1)
 				service.registerSettleTimer(timerID)
-				timer := time.NewTimer(time.Hour)
+				timer := service.clock.NewTimer(time.Hour)
 				service.attachSettleTimer(timerID, timer)
 				state.settle = timer
 			},

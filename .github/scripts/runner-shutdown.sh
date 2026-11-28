@@ -12,7 +12,9 @@
 #   stopped, or a manually started runner is canceled.
 #   Process completed with exit code 143.
 #
-# 143 is 128 + SIGTERM, the status of a step the runner killed. The pair was read whole on
+# 143 is 128 + SIGTERM, the status of a step whose shell a TERM from outside the runner ended,
+# before the runner cancelled the step (a step the runner stops itself gets no exit status at
+# all). The pair was read whole on
 # example-org/deployment run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
 # (dispatch://INFRA-49/comment/4083a833-8bb4-4dba-9d61-8f20757ca82c). The job's result is
 # `failure`, the same result a test of the change failing gives it, so the result alone cannot

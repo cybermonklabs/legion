@@ -209,6 +209,9 @@ func (p *relayProcess) awarenessWindows() awarenessWindows { return p.windows }
 // log is the default logger at each line, as a service given no logger writes (logTo).
 func (p *relayProcess) log() *slog.Logger { return logTo(nil) }
 
+// countAwarenessChange counts nothing: a schedule runs no test hooks.
+func (p *relayProcess) countAwarenessChange(string, uint64, awarenessChange) {}
+
 // holds is what p's room holds of client now, and whether it holds a state of it at all.
 func (p *relayProcess) holds(client uint64) (awareness.ClientState, bool) {
 	state, held := p.aw.GetStates()[client]
