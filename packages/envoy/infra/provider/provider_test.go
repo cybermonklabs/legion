@@ -203,11 +203,16 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
 	require.ElementsMatch(t, []string{
-		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "clientNamespaces", "allowedHosts",
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "natsAudience", "clientNamespaces", "allowedHosts",
 		"oidcIssuer", "oidcAudience", "oidcAccounts", "senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
 		"consumerNames", "replaceUnderHold",
 	}, slices.Collect(maps.Keys(listener.Properties)))
-	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
+	// The listener connects as its seed's user (nkey, seedSecretName, seedSecretKey) or, with
+	// natsAudience, by its projected ServiceAccount token, so the schema requires neither
+	// identity's inputs: the hub requires the seed's three where natsAudience is unset.
+	require.ElementsMatch(t, []string{"image"}, listener.Required)
+	require.Equal(t, "string", listener.Properties["natsAudience"].Type)
+	require.False(t, listener.Properties["natsAudience"].Secret, "natsAudience is an audience, no secret")
 	// The consumer-name mode and the writer hold's update rule: a plain string and a plain boolean,
 	// optional, which a consumer's stack values give.
 	require.Equal(t, "string", listener.Properties["consumerNames"].Type)
@@ -255,6 +260,13 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.Equal(t, "string", dispatch.InputProperties["verdictAppId"].Type)
 	require.False(t, dispatch.InputProperties["verdictAppId"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "verdictAppId")
+	// natsAudience, the audience of the projected token each of Dispatch's pods presents to the
+	// NATS auth service in natsSeedSecret's place, is an optional plain string and no secret: the
+	// broker and the kubelet both read it, and it admits nothing by itself.
+	require.Equal(t, "string", dispatch.InputProperties["natsAudience"].Type)
+	require.True(t, dispatch.InputProperties["natsAudience"].Plain)
+	require.False(t, dispatch.InputProperties["natsAudience"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "natsAudience")
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
 	// takes a Secret Manager path, the keyless form a tenant and a client id.
 	for _, input := range []string{

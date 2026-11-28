@@ -5,56 +5,55 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/cputest"
 )
 
-// workSamples is how many times each text is judged, the sizes in turn, so that a change of the
-// machine's load reaches each. A busy machine can only add to the CPU time of a judgment, so the
-// least of the samples is its work.
-const workSamples = 3
-
 // workScale is how many times the larger text of a row of the work table is the smaller one, and
-// workBound how many times its work may grow: work in proportion to the text grows about 16 times,
-// n log n work at most about 22 times for the smallest n of the table, and work for each pair of
-// units about 256 times. So a walk for each pair breaks the bound once it is a fifteenth of the
-// work of the smaller text. Measured on a machine of 288 cores for the table's present sizes: in 10
-// plain runs of the table at a load average of 138 to 310 (the race build claims no bound), the
-// worst growth was 28.7 (the row "many addresses of a pull request"); and with each walk that a
-// row is for made a walk for each pair in turn, the least growth of a broken row was 39.0 (the
-// ste-lint walk). With the three rows of the split, 10 more plain runs at a load average of 414
-// to 978 gave a worst growth of 22.2 (the row "many claims that refer to one long footnote of two
-// verbs for one action"), and each of those rows, a walk that it guards broken, grew 60.5 times
-// or more in 5 of 5 runs (the walks below). Those numbers are of the user time of the thread
-// alone; the table now reads its user and system time (cputest's thread clock). Read on both over
-// the same windows, in 4 plain runs at a load average of 205 to 366, two of them in a cgroup full
-// of page cache, one of which took 363 MiB of reclaim on the test's own thread, the worst growth
-// was 21.1 to 21.8 on
-// user and system time and 20.4 to 21.3 on user time alone.
+// workBound how many times the count of its judgment's work may grow. A count of work in
+// proportion to the text grows about workScale times, less while a fixed cost counts; n log n work
+// grows 16·log(16n)/log(n) times, 27.3 at 50 units; and work for each pair of units grows
+// workScale² = 256 times, so a walk for each pair breaks the bound once its count is a fourteenth
+// of the count of the rest of the smaller text's judgment ((32 - 16) / (256 - 32)). Counted at the
+// table's n on 2026-11-28, at the merge of main that brought the rows of the terms (R50), which
+// were first counted there, the rows grew 12.71 times ("many addresses of a person in one
+// sentence", of 12 units, a fifth of whose smaller count is a fixed cost) to 16.91 ("many
+// definitions of terms that the list holds", a row of R50), and the count of a correct judgment
+// reads the same in each run.
+// Each walk planted as a walk for each pair in code of a counted package failed each row that it
+// is for, by 46.5 times or more: ste-lint's count of a column written as a loop of ste 241.4 to
+// 248.6 times on three of its four rows, and the fourth by its counter's wrap (workVerdict); the
+// list of distinct addresses and titles read through for each one 84.1 to 98.0; a footnote's count
+// of sentences that does not stop once it is full 46.5, at the row's n of 750; and the
+// instructions rule's split read again from each instruction to the end of the sentence 172.3 to
+// 173.7. 32 is about twice the most that a row grew, more than n log n work grows at each n of
+// the table but the least, and two thirds of the least that a planted walk grew.
 const (
 	workScale = 16
 	workBound = 32
 )
 
-// workRaceShrink is how many times smaller each row's n is under the race detector, whose
-// instrumentation makes the judgment 10 to 20 times the work (16 at the median row): the race
-// build runs each row for about the plain build's time, its windows last about as long as the
-// plain build's, and it claims no bound.
-const workRaceShrink = 12
-
-// workJudgment builds the judgment of a text of n units: the text is built once, before any
-// window, and the judgment judges it.
+// workJudgment builds the text of n units, which is not the judgment's work, and returns the
+// judgment of it.
 type workJudgment func(t *testing.T, n int) func() []Finding
 
 // workRow is one row of the work table: the shape of text that grows, the rule whose finding the
-// judgment of each size gives ("" for a shape that breaks no rule), the n of its smaller text in
-// the plain build, and its judgment.
+// judgment of each size gives ("" for a shape that breaks no rule), the n of its smaller text, and
+// its judgment.
 type workRow struct {
 	name  string
 	rule  Rule
 	n     int
 	judge workJudgment
 }
+
+// workRaceShrink is how many times smaller each row's n is under the race detector (raceEnabled).
+// The detector's instrumentation makes the judgment that this build runs to check each row's
+// findings 10 to 20 times the work, and at the plain build's n the table took 512 s under -race on
+// 2 CPUs, against about 140 s plain. The count of a judgment is the same with the detector or
+// without it, so the race build holds each row to the same verdict and bound (workVerdict) at its
+// smaller n. The plain build is the one whose n each planted walk was measured at (workBound): at
+// a smaller n a walk for each pair adds less to the count beside the rest of the judgment, so the
+// plain build is the one that holds the walks.
+const workRaceShrink = 12
 
 // workRows is the work table in a build: each row of workTable at its n, or under the race
 // detector (race) at its n over workRaceShrink, which is the one difference of the two builds.
@@ -80,51 +79,104 @@ func workRows(race bool) []workRow {
 // footnotes of the chains hold a verb of a synonym group, which Dispatch carries into each text
 // that holds them, as it carries their sentences. The reader refuses a link definition, which many
 // links could share, and a link and an image hold their own address and title. Each row judges a
-// text of n units and one of workScale times n, and the work of the larger grows less than
-// workBound times (Growth): the smaller text is judged workScale times in one window and the
-// larger once, so that both windows last about as long. The work is the CPU time, user and system,
-// of the thread that judges (Growth, on cputest's thread clock): a wait for a core is not in it,
-// nor the collector's mark workers; the kernel's work for the thread, such as the page faults of
-// its allocation, is in it, and so is work that allocates nothing. The smaller window of each row
-// lasts long enough that the collector's work and a cold cache are a small part of it. A row whose
-// judgment finds no finding of its rule at either size reads nothing, so it fails; a row of a rule
-// "" is a shape that breaks no rule. A row's n is the larger of two: twice the least n at which the
-// walk that the row is for, made a walk for each pair, still failed the bound when its n was
-// searched at steps of about 1.41, and the n at which the row's smaller window lasts about 110 ms
-// on the machine of 288 cores, so that a machine somewhat faster still reads a window of tens of
-// milliseconds. Each of the fifteen walks failed its rows in 5 of 5 runs at the table's n, each
-// walk broken in turn: ste-lint's count of a column from the start of the line (many semicolons,
-// many phrasal verbs, many marketing adjectives, many nominalizations); the list of distinct
-// addresses and titles, read through for each one (many links, many titles, many images); the
-// texts already kept for a node,
-// read through for each new one (many purpose lines of one id); the links found, read through for
-// each key (many references, many keys); the brackets before each closing bracket of a reference,
-// counted again (one reference before many closing brackets); a word's letters before each stop,
-// read again (one word of many stops); the names found, read through for each handle and each
-// name (many handles, many names of a person); the pull requests found, read through for each
-// form (many numbers of a pull request, many pull requests of a repository); a footnote's count of
-// sentences that does not stop once it is full (many statements that refer to one chain of
-// footnotes); goldmark's own footnote reference parser, which reads every definition for each
-// reference (many footnotes, one statement that refers to many footnotes); the record of the
-// footnotes a text was given, made new for each text (many statements that refer to one long
-// footnote, to one footnote of many links, or to one chain of footnotes); the instructions rule's
-// read of a sentence's words again at each word (one long procedure sentence, one sentence of many
-// spans of code); its split of a sentence into one sentence for each instruction, read again from
-// each instruction to the end of the sentence (one sentence of many instructions, also after a
-// condition inside its first instruction, the two sentences of many instructions that it splits),
-// 84.1 times or more; its reading of the conditions of a sentence whose split could change what it
-// means, read again from each word (the same two rows), 60.5 times or more; its reading of the
-// condition that opens a sentence as a sentence of its own, read again from each comma (one
-// sentence of many instructions after the condition that opens it, which it does not split), 85.1
-// times or more. Each of those last three walks was broken in the code that this table reads. A
-// row's smaller text can be shorter than 16 KB, which Go's regexp reads a faster way, so that its
-// growth is up to about 1.3 times more; the worst growth of the
-// table (workScale) holds that. A walk for each pair whose step is a comparison of a few
-// nanoseconds needs units that cost little else: so the footnotes of the rows "many footnotes" and
-// "one statement that refers to many footnotes", and the statements of the first, hold a word or
-// two each, and the row of purpose lines of one id times the reader alone (read), since the walk
-// that it is for is the reader's, and the judgment of each line costs several times the reading of
-// it.
+// text of n units and one of workScale times n, and the count of the work of the larger grows
+// less than workBound times the count of the smaller (workVerdict). The count is of the statements
+// that the judgment executes in this package and in every package outside the standard library
+// that it imports (countedPackages: ste, the reader pmdoc, goldmark and its extensions, the
+// server's reference grammar text, golang.org/x/text and the rest), each counted by the coverage
+// counter of its block in a build of this package's tests (counted_work_test.go), less the
+// statements of a run that builds the text and does not judge it: building the text, an extracted
+// row's markdown among it, is not the judgment's work, and reading that markdown is. No load of
+// the machine, no collector and no race detector moves the count, so each text is judged once here
+// and once in the counted build. The race build judges each row at a smaller n (workRaceShrink),
+// to the same verdict and bound. A row whose judgment finds no finding of its rule at either size
+// reads nothing, so it fails; a row of a rule "" is a shape that breaks no rule. A row's n, the n
+// of the plain build, is the n it had when this table read CPU time: the larger of twice the least
+// n at which the walk that the row is for, made a walk for each pair, still failed that table's
+// bound, and the n at which judging the row's smaller text 16 times took about 110 ms on a machine
+// of 288 cores. The one row whose n is new is that of many statements that refer to one chain of
+// footnotes: its n is about twice the least n at which its walk fails this table's bound
+// (footnoteJudge.carry, below).
+//
+// The counters see each turn of every loop of the counted packages, and a call back into one (a
+// strings.ContainsFunc of a function of this package counts each character it reads), but no work
+// inside a call into the standard library, which counts as the one statement that calls it: a
+// regular expression's search, strings.Index and strings.Count, utf8.RuneCountInString,
+// slices.Contains, and the runtime's copies and maps. So the count sees a walk for each pair where
+// the pass that the walk repeats is code of a counted package, and sees one statement a step where
+// that pass is a call into the standard library. The fifteen walks that the rows are for, each
+// broken into a walk for each pair once when this table read CPU time, to show that its rows
+// failed, and four of them again for the count (workBound), are these, each with the code that
+// holds it:
+//
+//   - ste-lint's count of a column from the start of the line (many semicolons, many phrasal verbs,
+//     many marketing adjectives, many nominalizations): ste's columns.at, whose count is runes,
+//     which is utf8.RuneCountInString, inside the standard library. Counted from the start of the
+//     line through runes, the walk is one statement a finding, and these rows do not see it; they
+//     hold the rest of ste's work on the line, its scans, its matches and its findings, where a
+//     count of the column written as a loop of ste fails them. ste's
+//     TestEachRuleThatWalksMatchesCountsEachCharacterOfALineOnce counts the characters that runes
+//     reads, for the same four rules, so it holds that walk by a count.
+//   - the list of distinct addresses and titles, read through for each one (many links, many
+//     titles, many images): firstOfEach, of this package.
+//   - the texts already kept for a node, read through for each new one (many purpose lines of one
+//     id): extraction.add, of this package.
+//   - the links found, read through for each key (many references, many keys): referenceForms, of
+//     this package.
+//   - the brackets before each closing bracket of a reference, counted again (one reference before
+//     many closing brackets): text's trimReference, which counts the brackets once with
+//     strings.Count, inside the standard library, and walks back over the closers in a loop of its
+//     own. Counted again for each closer through strings.Count, the walk is one statement a
+//     closer, and the row does not see it; it holds the walk back and the rest of the judgment of
+//     the reference. text's TestExtractTrimsALongClosingRunInLinearTime holds that walk, on a run
+//     of a mebibyte, to 3 s of wall time.
+//   - a word's letters before each stop, read again (one word of many stops): joinedStops, of this
+//     package.
+//   - the names found, read through for each handle and each name (many handles, many names of a
+//     person): personNames, of this package.
+//   - the pull requests found, read through for each form (many numbers of a pull request, many
+//     pull requests of a repository): referenceForms, of this package.
+//   - a footnote's count of sentences that does not stop once it is full (many statements that
+//     refer to one chain of footnotes): footnoteJudge.carry, of this package, whose check of the
+//     footnotes that a count already holds is slices.Contains, inside the standard library. The
+//     counters see three statements a step of that walk, not the footnotes that slices.Contains
+//     reads, which were most of its CPU time: at the 130 statements the row had when this table
+//     read CPU time, the walk grew the row's count 22.3 times. The walk adds about 3n² statements
+//     to the row's 16,000 or so a statement, so it fails the bound from about n = 372 on, and the
+//     row's n is 750, where it grew the count 46.5 times.
+//   - goldmark's own footnote reference parser, which reads every definition for each reference
+//     (many footnotes, one statement that refers to many footnotes): a loop of goldmark's
+//     extension package, in place of which pmdoc's footnoteReferenceParser reads maps; both are
+//     counted.
+//   - the record of the footnotes a text was given, made new for each text (many statements that
+//     refer to one long footnote, to one footnote of many links, or to one chain of footnotes):
+//     footnoteJudge.walk, of this package.
+//   - the instructions rule's read of a sentence's words again at each word (one long procedure
+//     sentence, one sentence of many spans of code): sentenceWords and isInstruction, of this
+//     package.
+//   - its split of a sentence into one sentence for each instruction, read again from each
+//     instruction to the end of the sentence (one sentence of many instructions, also after a
+//     condition inside its first instruction, and after the condition that opens it):
+//     instructionBreaks and eachInstruction, of this package.
+//   - its reading of the conditions of a sentence, read again from each word (one sentence of many
+//     instructions, also after a condition inside its first instruction), and of the condition
+//     that opens a sentence, read again from each comma (one sentence of many instructions after
+//     the condition that opens it): instructionStart and opensInstruction, of this package.
+//     instructionStart finds the comma that ends an opening condition with slices.Index, inside
+//     the standard library, so a search for that comma made again from each word would be one
+//     statement a word.
+//
+// A walk for each pair whose step is a statement or two needs units whose judgment counts few
+// statements else: so the footnotes of the rows "many footnotes" and "one statement that refers to
+// many footnotes", and the statements of the first, hold a word or two each, and the row of
+// purpose lines of one id counts the reader alone (read), since the walk that it is for is the
+// reader's, and the judgment of each line counts several times the statements of its reading.
+//
+// It does work in proportion to its text for each rule of the terms (R50) too: many definitions
+// of two sentences, many definitions of one term, many definitions of terms that the list holds,
+// many term lines outside Terms that name a defined term, many names of terms outside the
+// alphabet, one name of a term of many characters outside the alphabet, and many headings that
+// read as Terms in another form.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -220,6 +272,14 @@ func workTable() []workRow {
 	procedureCheck := func(run string) string {
 		return fmt.Sprintf(":::check{#v run=%q}\nDispatch keeps each record.\n:::\n", run)
 	}
+	// defined judges the definitions that terms makes of n units against the list that it makes.
+	defined := func(terms func(n int) (proposed, list []Term)) workJudgment {
+		return func(_ *testing.T, n int) func() []Finding {
+			proposed, list := terms(n)
+			in := Input{Proposed: proposed, List: list}
+			return func() []Finding { return check(context, in) }
+		}
+	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
 	return []workRow{
@@ -257,7 +317,7 @@ func workTable() []workRow {
 		{"many footnotes", "ste100-semicolon", 1_400, extracted(units("", "[^%[1]d]: It; it.\n\n:::requirement{#s-%[1]d}\nIt[^%[1]d].\n:::\n\n", ""))},
 		{"many statements that refer to one long footnote", "ste100-semicolon", 70,
 			extracted(shared("Dispatch keeps record %d; it waits. ", "", statementUnit))},
-		{"many term lines that refer to one long footnote", "", 50,
+		{"many term lines that refer to one long footnote", ruleDefinitionSentences, 50,
 			extracted(shared("Dispatch keeps the record of answer %d for one year. ", "# Terms\n\n", "- **term %d**: One record of a claim[^shared].\n"))},
 		{"many component rows that refer to one long footnote", "", 52,
 			extracted(shared("Dispatch keeps the record of answer %d for one year. ", "| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n",
@@ -266,7 +326,7 @@ func workTable() []workRow {
 			extracted(shared("Dispatch keeps the record of answer %d for one year. ", "", "Purpose of c%d: It keeps one record[^shared].\n\n"))},
 		{"many statements that refer to one footnote of many links", ruleDispatchLink, 120,
 			extracted(shared("[it](dispatch://ACME-%d) ", "", statementUnit))},
-		{"many statements that refer to one chain of footnotes", ruleSentences, 130,
+		{"many statements that refer to one chain of footnotes", ruleSentences, 750,
 			extracted(func(n int) string {
 				return chain(n) + units("", ":::requirement{#s-%d}\nDispatch keeps it[^1].\n:::\n\n", "")(n)
 			})},
@@ -295,31 +355,57 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
+		{"many definitions of two sentences", ruleDefinitionSentences, 120,
+			extracted(units("# Terms\n\n", "- **term %d**: Dispatch keeps it. It waits.\n", ""))},
+		{"many definitions of one term", ruleTermSecondDefinition, 120,
+			extracted(units("# Terms\n\n", "- **lease**: Dispatch keeps record %d.\n", ""))},
+		{"many definitions of terms that the list holds", ruleTermSecondDefinition, 210, defined(func(n int) (proposed, list []Term) {
+			for index := range n {
+				name := fmt.Sprintf("term %d", index+1)
+				proposed = append(proposed, Term{Name: name, Definition: "Dispatch keeps it.", Where: where})
+				list = append(list, Term{Name: name, Definition: "Dispatch keeps it.", Where: "terms.md version 1 of ACME-1"})
+			}
+			return proposed, list
+		})},
+		{"many term lines outside Terms that name a defined term", ruleTermSecondDefinition, 570,
+			extracted(units("# Terms\n\n- **lease**: Dispatch keeps it.\n\n# Notes\n\n", "- **lease**: Dispatch keeps record %d.\n", ""))},
+		{"many names of terms outside the alphabet", ruleTermName, 120,
+			extracted(units("# Terms\n\n", "- **termé %d**: Dispatch keeps it.\n", ""))},
+		{"one name of a term of many characters outside the alphabet", ruleTermName, 6_400, defined(func(n int) (proposed, list []Term) {
+			var name strings.Builder
+			for index := range n {
+				name.WriteRune(rune(0x20000 + index)) // a letter of another script, each one another
+			}
+			return []Term{{Name: name.String(), Definition: "Dispatch keeps it.", Where: where}}, nil
+		})},
+		{"many headings that read as Terms in another form", ruleTermsHeading, 1_100,
+			extracted(units("", "## terms\n\nDispatch keeps record %d.\n\n", ""))},
 	}
 }
 
-// TestTheWorkOfAJudgmentGrowsInProportionToItsText runs each row of the work table (workTable) at
-// the n of this build (workRows): under the race detector it runs each row's judgments, their
-// findings and their windows, and claims no bound. The power of the table is in the plain build.
+// TestTheWorkOfAJudgmentGrowsInProportionToItsText judges each row of the work table (workTable) at
+// the n of this build (workRows) and at workScale times it, here, where each judgment must find a
+// finding of its row's rule, and in the counted build (countedBinary, countedWork), whose judgment
+// must answer the same, and holds the two counts to workBound (workVerdict).
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
+	binary := countedBinary(t)
 	for _, row := range workRows(raceEnabled) {
 		t.Run(row.name, func(t *testing.T) {
-			sizes := []int{row.n, workScale * row.n}
-			judges := []func() []Finding{row.judge(t, sizes[0]), row.judge(t, sizes[1])}
-			findings := make([][]Finding, len(sizes))
-			growth, small, large := cputest.Growth(workSamples, workScale,
-				cputest.Again(func() { findings[0] = judges[0]() }), cputest.Again(func() { findings[1] = judges[1]() }))
-			for index, found := range findings {
+			sizes := [2]int{row.n, workScale * row.n}
+			var counts [2]countedJudgment
+			for index, n := range sizes {
+				found := row.judge(t, n)()
 				if has := slices.ContainsFunc(found, func(finding Finding) bool { return finding.Rule == row.rule }); row.rule != "" && !has {
-					t.Fatalf("the judgment of %d units finds no finding of %s, so this row reads nothing: %.300v", sizes[index], row.rule, found)
+					t.Fatalf("the judgment of %d units finds no finding of %s, so this row reads nothing: %.300v", n, row.rule, found)
 				} else if row.rule == "" && len(found) > 0 {
-					t.Fatalf("the judgment of %d units finds %.300v, want none", sizes[index], found)
+					t.Fatalf("the judgment of %d units finds %.300v, want none", n, found)
 				}
+				counts[index] = countedWork(t, binary, row.name, n, findingsAnswer(found))
 			}
-			t.Logf("%d units %d times: %v; %d units once: %v; %.1f times", sizes[0], workScale, small, sizes[1], large, growth)
-			if !raceEnabled && growth >= workBound {
-				t.Errorf("the work grew %.1f times, from %v for %d runs of %d units to %v for one run of %d, want less than %d times",
-					growth, small, workScale, sizes[0], large, sizes[1], workBound)
+			if line, ok := workVerdict(sizes, counts); ok {
+				t.Log(line)
+			} else {
+				t.Error(line)
 			}
 		})
 	}
@@ -345,5 +431,70 @@ func TestTheWorkTableRunsEachRowUnderTheRaceDetector(t *testing.T) {
 			t.Errorf("row %q: the race build reads rule %q at n %d, want rule %q at n %d (%d over %d)",
 				row.name, race[index].rule, race[index].n, row.rule, want, row.n, workRaceShrink)
 		}
+	}
+}
+
+// workVerdict is the verdict on the counts of a row's judgment at its two sizes, without a
+// *testing.T to report through: one line of the counts, their ratio and the busiest block of each,
+// and whether they pass. They fail where a count reads none, since a growth from nothing says
+// nothing and a counter that sees nothing of the judgment passes any growth; where a block of the
+// smaller text's run, grown as a walk for each pair grows (workScale²), reaches countedWrap, since
+// the larger text's count of it can then be a remainder, which can read as any growth; where the
+// larger text's count is below the smaller's, which is a counter that wrapped; and where the
+// count grew workBound times or more.
+func workVerdict(sizes [2]int, counts [2]countedJudgment) (string, bool) {
+	small, large := counts[0], counts[1]
+	line := fmt.Sprintf("%d units: %d statements; %d units: %d statements", sizes[0], small.statements, sizes[1], large.statements)
+	switch {
+	case small.statements == 0 || large.statements == 0:
+		return line + ": a count of none, so the counters see nothing of the judgment, and its growth says nothing", false
+	case small.busiest*workScale*workScale >= countedWrap:
+		return line + fmt.Sprintf(": the block %s ran %d times at %d units, and %d times that, the growth of a walk for each pair, "+
+			"reaches 2^32, where its counter wraps, so the count at %d units can be a remainder", small.busiestBlock, small.busiest,
+			sizes[0], workScale*workScale, sizes[1]), false
+	case large.statements < small.statements:
+		return line + ": the larger text's count is below the smaller's, which is a counter that wrapped, not a reading", false
+	}
+	growth := float64(large.statements) / float64(small.statements)
+	line += fmt.Sprintf("; %.2f times (busiest block %d, then %d)", growth, small.busiest, large.busiest)
+	if growth >= workBound {
+		return line + fmt.Sprintf(", %d times or more: the work grows faster than the text", workBound), false
+	}
+	return line + fmt.Sprintf(", less than %d", workBound), true
+}
+
+// workVerdict passes work in proportion to the text and fails work for each pair of its units, a
+// count of none at the smaller text or at both (whose growth, 0/0, is no number, which no bound
+// fails), a block whose counter can wrap at the larger text, and a larger count below the smaller:
+// no counted run reads any of the last three on a correct judgment.
+func TestTheWorkVerdictFailsAWalkForEachPairACountOfNoneAndACounterThatWraps(t *testing.T) {
+	sizes := [2]int{1_000, workScale * 1_000}
+	linear := func(n int) countedJudgment {
+		return countedJudgment{statements: uint64(400*n + 30_000), busiest: uint64(3 * n)}
+	}
+	pairs := func(n int) countedJudgment {
+		judgment := linear(n)
+		judgment.statements += uint64(n * n)
+		judgment.busiest = uint64(n * n / 2)
+		return judgment
+	}
+	for _, test := range []struct {
+		name   string
+		counts [2]countedJudgment
+		pass   bool
+	}{
+		{"work in proportion to the text", [2]countedJudgment{linear(sizes[0]), linear(sizes[1])}, true},
+		{"work for each pair of units", [2]countedJudgment{pairs(sizes[0]), pairs(sizes[1])}, false},
+		{"a count of none", [2]countedJudgment{{}, linear(sizes[1])}, false},
+		{"two counts of none", [2]countedJudgment{{}, {}}, false},
+		{"a block whose counter can wrap", [2]countedJudgment{{statements: 1 << 28, busiest: countedWrap / (workScale * workScale)},
+			{statements: 1 << 31}}, false},
+		{"a larger count below the smaller", [2]countedJudgment{linear(sizes[1]), linear(sizes[0])}, false},
+	} {
+		line, pass := workVerdict(sizes, test.counts)
+		if pass != test.pass {
+			t.Errorf("%s: passed %t, want %t: %s", test.name, pass, test.pass, line)
+		}
+		t.Logf("%s: %s", test.name, line)
 	}
 }

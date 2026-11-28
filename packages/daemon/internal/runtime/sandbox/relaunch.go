@@ -795,10 +795,11 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // suspension patch, or for a Sandbox already Suspended the patch of the reset mark, which a try
 // sends in its place (1); awaitPodGone's confirming Get, which may begin just before its deadline
 // (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
-// repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
-// generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
+// repository cache's ensure (cacheEnsureCalls); the Running patch (1); awaitNewPod's confirming
+// Get, which may begin just before its deadline too (1); the stop of an earlier generation (1); the
+// address record patch (1); the Start frame (1) — 17, the cache's ensure apart.
 // A try that replaces its Sandbox for another disk shape or a reset of its kept volume
-// (replaceSupersededSandbox) still spends one call more, and so sets the count at 17: its
+// (replaceSupersededSandbox) still spends one call more, and so sets the count at 18: its
 // deleteStoredSandbox Get, the fenced Delete, awaitSandboxDeleted's confirming Get and the Create
 // (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox being deleted spends.
 // That try never takes that wait: a Sandbox that ensureSandbox waited out is gone, and the one it
@@ -809,14 +810,14 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // Only a try that does not replace its Sandbox sends it, because the Sandbox that a replacement
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
-// deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
+// deleted. It thus spends 15 calls at the most, the cache's ensure apart, under the 18.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
 var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
 
 const (
-	relaunchPodCalls  = 17 + cacheEnsureCalls
+	relaunchPodCalls  = 18 + cacheEnsureCalls
 	relaunchRoleCalls = 9
 	// cacheEnsureCalls is one ensure of a repository's cache (ensureRepositoryCache) at its most:
 	// ensureCacheSandbox's Get and Create, the Get after a Create that found the name taken, and
@@ -1372,11 +1373,18 @@ func (r *Runtime) awaitPodGone(ctx context.Context, s *sandbox) (map[types.UID]b
 // bumps it on every spec write) and shows it Running, so nothing that reads the stores right
 // after the launch — a Probe, a Suspend — sees its pod and not its Sandbox, or any copy from before
 // the patch: the Suspended one it was created as, or, for a relaunch over a Running Sandbox, the
-// Running one from before the relaunch.
+// Running one from before the relaunch. The store can still hold a pod that the API server has
+// deleted or is deleting. So the wait reads the pod from the API server once before it takes it,
+// as awaitPodGone does before it says a pod is gone. A pod that the API server does not hold,
+// holds under another uid or is deleting joins old, and the wait goes on. After an eviction the
+// controller makes the pod again for the Running Sandbox. A relaunch whose store has not yet seen
+// that pod finds no live pod and suspends the Sandbox. When the controller deletes the pod before
+// awaitPodGone's read, old does not hold its uid, and after the Running patch the store can still
+// show it as it was made (TestARelaunchTakesNoPodThatTheAPIServerDeletedAndThePodStoreStillHolds).
 func (r *Runtime) awaitNewPod(ctx context.Context, s *sandbox, old map[types.UID]bool) (*corev1.Pod, error) {
 	var found *corev1.Pod
 	what := fmt.Sprintf("a new pod of sandbox %s and its Running patch in the Sandbox store", s.Name)
-	err := r.await(ctx, r.bootTimeout, what, func(context.Context) (bool, error) {
+	err := r.await(ctx, r.bootTimeout, what, func(ctx context.Context) (bool, error) {
 		pod := r.storedPod(s.Name)
 		if !ownedBy(pod, s.UID) || old[pod.UID] || pod.DeletionTimestamp != nil {
 			return false, nil
@@ -1386,6 +1394,14 @@ func (r *Runtime) awaitNewPod(ctx context.Context, s *sandbox, old map[types.UID
 			return false, err
 		}
 		if stored.Generation < s.Generation || stored.mode() != modeRunning {
+			return false, nil
+		}
+		held, err := r.kube.CoreV1().Pods(r.namespace).Get(ctx, s.Name, metav1.GetOptions{})
+		if err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		if err != nil || held.UID != pod.UID || held.DeletionTimestamp != nil {
+			old[pod.UID] = true
 			return false, nil
 		}
 		found = pod

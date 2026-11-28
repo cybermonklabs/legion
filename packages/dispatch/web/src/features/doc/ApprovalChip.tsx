@@ -66,8 +66,8 @@ import {
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
  * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
  * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
- * review are the ink, the reviewer's reason and a label the muted grey, Close, a pending read and
- * the line under the reason box the quiet grey, a refusal the failed red; Approve and the
+ * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
+ * the quiet grey, a refusal the failed red; Approve and the
  * dialog's Request changes are filled with the ink, as the header's one filled control is, and
  * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
  * application's one focus indicator.
@@ -86,7 +86,6 @@ const ON_PAGE = {
   failure: pageFailedText,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   heading: pageInkText,
-  hint: pageQuietText,
   label: pageMutedText,
   pending: pageQuietText,
   reason: pageMutedText,
@@ -305,7 +304,6 @@ function RequestChangesDialog({
             fieldRef={(handle) => {
               textareaRef.current = handle?.textarea() ?? null;
             }}
-            hintClassName={page === null ? undefined : `text-xs ${ON_PAGE.hint}`}
             issueKey={issueKey}
             label="Reason"
             labelClassName={

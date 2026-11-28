@@ -6,8 +6,6 @@ import type {
 } from "@legion/proof-editor";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { useTooltips } from "../../components/tooltips";
-import { pageQuietText, textMutedOnCanvas } from "../../theme/classes";
 import { RefPickerList } from "../refs/RefPickerList";
 import { type RefPickerInsertion, readTrigger } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
@@ -70,11 +68,10 @@ export function DocumentRefPicker({
   issueKey?: string;
   /** The project a document of a project belongs to, whose components it offers. */
   project?: string;
-  /** The box's row of the writing list, whose words the line under the editor says and whose
-   *  write says which parties a pick may name: a document's body where it is left out. */
+  /** The box's row of the writing list, whose write says which parties a pick may name: a
+   *  document's body where it is left out. */
   writing?: DispatchWritingBoxRow;
 }): ReactNode {
-  const tooltips = useTooltips();
   const [caret, setCaret] = useState<ReferencePickerCaret | undefined>(undefined);
   const picker = useRefPicker({
     caret: caret?.text.length ?? 0,
@@ -127,31 +124,18 @@ export function DocumentRefPicker({
     };
   }, [bridge, editor, enabled]);
 
-  if (!enabled) return null;
+  if (!enabled || caret === undefined || !picker.open) return null;
   return (
-    <>
-      {caret === undefined || !picker.open ? null : (
-        // Fixed, by the caret the editor reported: the list belongs to where the reader is
-        // typing, which in a document of any length is nowhere near its foot.
-        <div
-          className="fixed z-50 w-80"
-          style={{ left: `${caret.left}px`, top: `${caret.bottom + LIST_GAP_PX}px` }}
-        >
-          <RefPickerList
-            onTake={(insertion) => editor?.insertReference(documentInsertion(insertion))}
-            picker={picker}
-          />
-        </div>
-      )}
-      {/* What a pick does here, in the writing list's own words, as every other box says it.
-          Inside `NoTooltips` it is the new issue page's quiet words, as the document's other
-          lines there are the page's. */}
-      <p
-        className={`mt-2 text-xs ${tooltips ? textMutedOnCanvas : pageQuietText}`}
-        data-testid={`${writing.box}-hint`}
-      >
-        {writing.hint}
-      </p>
-    </>
+    // Fixed, by the caret the editor reported: the list belongs to where the reader is typing,
+    // which in a document of any length is nowhere near its foot.
+    <div
+      className="fixed z-50 w-80"
+      style={{ left: `${caret.left}px`, top: `${caret.bottom + LIST_GAP_PX}px` }}
+    >
+      <RefPickerList
+        onTake={(insertion) => editor?.insertReference(documentInsertion(insertion))}
+        picker={picker}
+      />
+    </div>
   );
 }

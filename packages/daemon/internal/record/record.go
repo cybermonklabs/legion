@@ -3758,6 +3758,90 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	return PhaseRow{}
 }
 
+// EntriesDiffer is whether entry, the one a claim serves (supervise.Claim.ServingAt, which api's
+// claimServes reads), and rowEntry, the one its role's phases row stands on
+// (PhaseRow.Entry), are both set and differ. Either one 0 is nothing to compare, for the reasons
+// the completion route's entry fence gives (api's entryFence). It is the one comparison that fence
+// and the owed answer (api's owedBy, through PhaseOwed) make, so the two routes read one rule.
+func EntriesDiffer(entry, rowEntry int64) bool {
+	return entry != 0 && rowEntry != 0 && entry != rowEntry
+}
+
+// PhaseOwed is whether a claim that works its issue's phase owes that phase's completion, from
+// the facts the record holds of it: serving, the run the claim serves, and generation, the
+// issue's; entry, the phase entry the claim serves (serving and entry as
+// supervise.Claim.ServingAt reads them), and rowEntry, the one its role's phases row stands on
+// (PhaseRow.Entry); completed, whether that row records the role's completion
+// (PhaseRow.Completed); mergeForwardHeld, whether a merge forward holds the role
+// (MergeForwardHolds, which the caller reads of the issue's pull request at the phase the issue
+// stands in); and merged, whether the issue stands in merging with its pull request merged
+// (MergedInMerging). It answers false for a claim that serves no run or a run the issue has left,
+// for one behind or above its row's entry (EntriesDiffer), for one whose completion the row
+// records, for one a merge forward holds and for one whose merging its merged pull request has
+// finished, and true otherwise. Whether the claim's role works the phase the issue stands in is
+// its caller's to ask first.
+//
+// It is the one rule the daemon holds a phase worker to wherever it asks whether that worker owes
+// its phase (dispatch://INFRA-2746 R1): the owed answer (api's owedBy), which tells the claim's
+// session whether it owes its phase; the idle release's reminder hold (workflow's IdleRelease,
+// IdleHoldReminder), which keeps a pod for a reminder only of a claim that owes its phase; and
+// the backstop of a released or pause-stopped worker (internal/daemon's getsBackstop, read by
+// armBackstops, projectPause.stopTx, and the paused cancel and the paused decline of a release),
+// which arms no wake for a claim that owes nothing but for two kinds of claim. The other two read
+// the owed answer's rule because a claim that owes nothing is reminded of nothing and mostly waits
+// on nothing a backstop stands in for: the silence sweep does not nudge a role whose completion
+// stands, so a hold on such a claim's reported wake would never end, and a backstop would wake it
+// every backstop_minutes to do nothing where any work it gets later comes as a task or a message
+// of the daemon's, which wakes the pod once it is sent. The two kinds the backstop keeps each hold
+// a task of the issue's run and phase that no turn has confirmed and that nothing else would bring
+// the pod back for; getsBackstop is their one statement (with internal/daemon's
+// holdsUndeliveredEntryTask and holdsUndeliveredNewsTask).
+func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
+	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged
+}
+
+// MergedInMerging is whether the issue stands in merging (at) with pr, its pull request, merged:
+// the fact that finishes merging, by the rule workflow.PhaseFinished applies, since the merger
+// merges and a merged root then stands in merging until the rest of its tree leaves, which can be
+// days. A merger in merging owes nothing once it holds (PhaseOwed), and owes the merge while the
+// pull request is not merged. A pull request the record does not hold (nil) is not merged.
+func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
+	return at == phase.Merging && pr != nil && pr.State == PullRequestMerged
+}
+
+// FillIdleClaims gives each of claims, the claims of issue's pod as the idle view reads them
+// (pods.IdleView), what the record holds of its role while issue stands at at: the entry its
+// role's phases row stands on and whether that row records a completion (PhaseRowOf,
+// PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, whether a
+// merge forward of the issue's pull request holds the role (MergeForwardHolds), and whether that
+// pull request is merged while issue stands in merging (MergedInMerging). Those are the facts the
+// idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
+// PhaseOwed), and the ones a backstop's writer reads of the one claim it would arm a backstop for
+// (internal/daemon's getsBackstop). It reads them through tx, the caller's own transaction, in two
+// statements whatever the number of claims: the issue's phases rows and its pull request's row
+// alone (Store.PullRequestRow), since it writes nothing back and reads none of what that pull
+// request remembers of its settled heads, as the completion route's position reads them (api's
+// handoffPosition). The store's idle view calls it through the reader the daemon hands it
+// (store.IdleRecords), since that package cannot import this one.
+func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+	rows, err := store.Phases(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	pr, err := store.PullRequestRow(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	merged := MergedInMerging(pr, at)
+	for i := range claims {
+		row := PhaseRowOf(rows, claims[i].Role)
+		claims[i].RowEntry, claims[i].RowCompleted = row.Entry, row.Completed()
+		claims[i].MergeForwardHeld = MergeForwardHolds(pr, at, claims[i].Role)
+		claims[i].MergedInMerging = merged
+	}
+	return nil
+}
+
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
 // re-admission clears it.
 func (i Issue) Lingers() bool { return i.LingerUntil != nil }

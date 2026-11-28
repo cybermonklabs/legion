@@ -96,6 +96,7 @@ function reminderRig() {
     project: "legion",
     limits: DEFAULT_STALL_LIMITS,
     log: { debug: () => {}, warn: () => {} },
+    wakeChanged: () => {},
   });
   return { reminder, timers };
 }

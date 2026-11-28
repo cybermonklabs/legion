@@ -35,7 +35,7 @@ group that this job's own result decides, it posts the failing ci-ok at once
 The budget, added up from the slowest run this job can have, the way the
 tool-fallback-arm job of .github/workflows/ci-job-tool-fallback-arm.yaml adds up its own:
 the job's set-up, the two checkouts and the runner's download of the actions (1), the two
-steps that read the package and the manifest, and `stage`, which fetches about 320 MB over
+steps that read the package and the manifest, and `stage`, which fetches about 323 MB over
 the real sources while the network is whole and so keeps the pinned ladder (2), the
 jj-primary case, which runs before the fault (1), the fault and its probe, whose two
 requests are bounded at 15 s each (1), the one case that keeps the ladder, the head's own
@@ -47,7 +47,7 @@ and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 
 get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
 ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
 honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
-which took more than a second (1), the bytes the installs and the eighteen cases move,
+which took more than a second (1), the bytes the installs and the twenty cases move,
 over npm, PyPI, get.pulumi.com, the package and loopback, the two 107 MB Bun tarballs
 among them (3), and the readings, the `ladder-report` step, the stop-fault step and the
 report (1).
@@ -81,8 +81,14 @@ two Bun tarballs the bytes item already carries. Its two fetches of get.helm.sh 
 fault are shortened like every fetch of a host FAULT_HOSTS holds, so each takes about a
 second, as the other shortened fetches of that item do.
 
+The gotestsum row adds a faulted install, a timed install with nowhere to go and two
+corrupted-payload cases. Its tarball is 2,622,918 bytes: `stage`, the faulted install
+and the two corrupted cases move about 10.5 MB in all. The arranged network failures
+use the shortened ladder. The extra work fits the same budget: 12 minutes plus 10
+minutes of headroom, for a 22-minute limit.
+
 EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-six installs whose control accepts a failure are timed as well, against
+and the twenty-nine installs whose control accepts a failure are timed as well, against
 the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
 runner ends at its own bound leaves `outcome=failure` behind it, which those controls
 accept, so the wall time is the only reading that tells a hang from the refusal the case
@@ -91,7 +97,7 @@ The eleven minutes is derived from the installs as they ran before the ladders s
 sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
 part of that window counted as well as the thirty-two-install shape it carried for the
-rest; it carries thirty-five now — gave a median of
+rest; it carries thirty-nine now — gave a median of
 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
 slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
 so no step that would have finished is ended by it. Since the ladders stopped sleeping
@@ -155,10 +161,10 @@ It starts before the fault, so the two tools `start` asks to name a directory ar
 routed through a proxy that refuses them. The report prints and never fails the job:
 this is the measurement, not a new gate.
 
-## Case 5 of 18, and why it runs before the fault
+## Case 5 of 20, and why it runs before the fault
 
-Case 5 of 18 of the corrupted payloads, and the one that runs here rather than with the
-other seven: the jj binary in mise's install directory is one byte changed.
+Case 5 of 20 of the corrupted payloads runs before the fault: the jj binary in mise's
+install directory is one byte changed.
 That directory is where .github/actions/install-jj reads an installed jj from, so a
 changed binary there is the primary path's own mismatch: `mise install` finds the tool
 installed, the action holds the binary mise points at to the jj row, and refuses it.
@@ -238,11 +244,11 @@ fault is met only by what an action fetches.
 
 ## The negative control, and why it does not expire
 
-The negative control, under the same fault: eight installs with nowhere to go — the
-merge base's seven, each given a dead port where its second source would be read, a ghcr
-base, an npm base, a URL base or a proxy, and the docker provider plugin, which the
-merge base has no action for, as the head's own action with its second source on a dead
-port — so every one of them must fail here.
+The negative control, under the same fault: nine installs with nowhere to go. Seven
+use the merge base's actions, with a dead port for their second source or proxy.
+The docker provider plugin and gotestsum use the head's actions because the original
+merge base has neither action. Each has its second source on a dead port. All nine
+must fail.
 What it asserts is a property of this change and not a fact about history: an install
 whose primary meets the fault and whose second source cannot be reached fails. That is
 what makes the passes of the head's own installs a reading of the second source rather than of a cache, of a
@@ -254,8 +260,8 @@ Its elan, uv and Pulumi CLI read no seam at all, each being a `curl` of its own:
 and uv's one source is the release asset this fault holds, and the CLI's is
 get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its
 own instead.
-Once this change is on main the base is this tree, and every one of the eight fails for
-the dead ports alone, which leave its second source nothing to reach.
+Once this change is on main the base is this tree. The fault and the dead ports
+still leave the nine installs with no reachable source.
 A control that leaned on the merge base having one source each would expire the day this
 change lands on main: the base would then be this tree, each primary would meet the
 fault, each second source would reach the real ghcr — whose blobs redirect to
@@ -280,7 +286,7 @@ it.
 
 ## Why each install with nowhere to go carries a mark step
 
-When the install a mark step names started (`mark-base-crane` for `base-crane`, and so on). Each of the eight with nowhere to go carries a mark step
+When the install a mark step names started (`mark-base-crane` for `base-crane`, and so on). Each of the nine with nowhere to go carries a mark step
 of its own, and the control step after them reads every one, because a bound that fires
 on one of them is otherwise silent: each carries `continue-on-error` and the control
 accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
@@ -314,6 +320,13 @@ names in the controls that lean on the merge base: it reads nothing of the
 base tree, and the property it states — an install whose primary is faulted and whose
 second source cannot be reached fails — is a property of the head itself.
 
+## The gotestsum control
+
+The original merge base has no install-gotestsum action. As for the docker provider
+plugin, the control uses the head's action. The fault stops the release download.
+`CI_TOOLS_GHCR_BASE` points to a dead port, so the copy cannot answer either.
+The control reads the outcome and elapsed time, so a timeout cannot count as a refusal.
+
 ## The Pulumi CLI's control, and the two proxy spellings it carries
 
 The Pulumi CLI is the row whose primary this job does not fault: get.pulumi.com is where
@@ -330,7 +343,7 @@ why the rig writes the four spellings of the fault through $GITHUB_ENV.
 
 ## Why the control step reads the clock as well
 
-A bound belongs only where firing it is loud, and on these eight it is not: each carries
+A bound belongs only where firing it is loud, and on these nine it is not: each carries
 `continue-on-error`, and this step's test, .github/scripts/tool-fallback-nowhere-controls.sh, accepts a step whose `outcome` is `failure`,
 which is what the runner leaves when it ends a step at its bound. So this step reads the
 clock as well. Without it an install that hung would satisfy its own control and leave
@@ -340,7 +353,7 @@ which cancels it and fails ci-ok, so somebody looked.
 ## The head's own installs under the fault
 
 The head's own installs, under the same fault and with no continue-on-error: each must
-succeed, and the eight whose primary the fault holds do it through the second source
+succeed, and the nine whose primary the fault holds do it through the second source
 their row names, with no seam of any kind. The Pulumi CLI, whose primary this fault does
 not hold, is read by the case at the end of this list instead.
 install-jj meets an empty mise data directory here, since nothing warmed one before the
@@ -391,18 +404,18 @@ image carries a helm of its own (Helm 3.22.1 on ubuntu-24.04 image 20261116.376.
 .github/actions/install-helm finds no helm already installed and fetches every time, so this
 step, unlike the elan steps, takes nothing away before it.
 
-## The eighteen corrupted payloads, and case 1 of them
+## The twenty corrupted payloads, and case 1 of them
 
-The eighteen corrupted payloads, one case at a time: the rig says which rows the origin
+The twenty corrupted payloads, one case at a time: the rig says which rows the origin
 serves with one byte changed, the install meets them through the seams the case's
 own env: names, and the report after it is what passes or fails this job.
 
-Case 1 of 18: crane's primary serves one byte changed, and the second source must stay
+Case 1 of 20: crane's primary serves one byte changed, and the second source must stay
 untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
 
-## Case 6 of 18, and what the case before it left
+## Case 6 of 20, and what the case before it left
 
-Case 6 of 18: the copy of the jj binary serves one byte changed, with mise unable to
+Case 6 of 20: the copy of the jj binary serves one byte changed, with mise unable to
 install the tool at all.
 Its data directory goes, so `mise install` must reach the faulted host and fails, which
 is what sends the action to the second source. Only jj is corrupted, so the action's own
@@ -411,9 +424,9 @@ Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install
 verifies the binary where mise put it and copies only after that passes, so a refused
 jj never reaches that path.
 
-## Case 7 of 18, and the branch setup-bun takes for it
+## Case 7 of 20, and the branch setup-bun takes for it
 
-Case 7 of 18: the installed Bun is one byte changed and still answers the pinned revision,
+Case 7 of 20: the installed Bun is one byte changed and still answers the pinned revision,
 so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
 version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
 one writes for it is `existing-install` — and the fourth step refuses those bytes.
@@ -423,26 +436,26 @@ branch this case needs is the branch it takes. The `Change the last byte of the 
 and refuses the case rather than proving another one, should a later Bun read its own
 last byte.
 
-## Case 8 of 18, and why it takes the Bun pair away itself
+## Case 8 of 20, and why it takes the Bun pair away itself
 
-Case 8 of 18: with no Bun of the pinned version on this runner, setup-bun's third step
+Case 8 of 20: with no Bun of the pinned version on this runner, setup-bun's third step
 must read the second source, and the npm package serves one byte changed.
 This case takes the pair away itself rather than leaning on the case before it. That
 case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
 fourth step says so — but a case that must read the second source is held to its own
 state and not to the one the case before it happened to leave.
 
-## Case 11 of 18, and the digest the changed byte trips
+## Case 11 of 20, and the digest the changed byte trips
 
-Case 11 of 18: uv's primary serves one byte changed, and PyPI must stay untried.
+Case 11 of 20: uv's primary serves one byte changed, and PyPI must stay untried.
 What the changed byte trips here is the row's `primary_digest`, the sha256 of the
 tarball GitHub serves, which is read before the binary is taken out of it: the row's own
 `digest` is of that binary, so the archive carries a digest of its own and this is the
 refusal this case is about.
 
-## Case 12 of 18, where the changed byte is, and how each archive refuses it
+## Case 12 of 20, where the changed byte is, and how each archive refuses it
 
-Case 12 of 18: PyPI's wheel serves one byte changed, after the primary — the real host,
+Case 12 of 20: PyPI's wheel serves one byte changed, after the primary — the real host,
 which the fault holds — did not serve the tarball at all.
 The byte the origin changes here is inside the wheel's own member, and the rig says
 why: a zip's last byte is in its end-of-directory record, which a reader taking a
@@ -460,34 +473,34 @@ that filled up with one exit, so that refusal names no cause at all — it names
 member and the archive and leaves tar's own words on stderr to say why.
 Either way nothing unverified is installed, which is what the case is for.
 
-## Case 14 of 18, and the one payload the origin serves on two routes
+## Case 14 of 20, and the one payload the origin serves on two routes
 
-Case 14 of 18: get.pulumi.com serves the plugin's tarball with one byte changed, after
+Case 14 of 20: get.pulumi.com serves the plugin's tarball with one byte changed, after
 the release asset — the real host, which the fault holds — did not serve it at all.
 Pulumi serves one file at both addresses, so the origin serves one payload under one
 name on its two routes, and which route a case read is what its report prints.
 
-## Case 15 of 18, and why the untried reading is a reading
+## Case 15 of 20, and why the untried reading is a reading
 
-Case 15 of 18: the Pulumi CLI's primary serves one byte changed, and the release asset
-must stay untried. This row's two sides are cases 11 to 14 of 18 reversed: its primary
+Case 15 of 20: the Pulumi CLI's primary serves one byte changed, and the release asset
+must stay untried. This row's two sides are cases 11 to 14 of 20 reversed: its primary
 is get.pulumi.com, so the seam that puts a corrupted primary in front of it is the URL
 one, and the GitHub seam is here so that the untried reading is a reading: with it the
 origin can serve this row's second source, and what the case says is that it was never
 asked to. Without it that source would be the faulted real host, which answers nothing
 whether the rule holds or not.
 
-## Case 16 of 18, and why it is a dead port rather than the fault
+## Case 16 of 20, and why it is a dead port rather than the fault
 
-Case 16 of 18: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
+Case 16 of 20: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
 one byte changed, after its primary found a dead port where get.pulumi.com is.
 The dead port and not the fault, because this job leaves get.pulumi.com alone; the
 origin stands in for the release asset, as it does in the install that must succeed
 (the Pulumi CLI's own fallback), and here it serves those bytes with one changed.
 
-## Case 17 of 18, and the seam a helm-releases primary is read through
+## Case 17 of 20, and the seam a helm-releases primary is read through
 
-Case 17 of 18: helm's primary serves its tarball with one byte changed, and the copy must
+Case 17 of 20: helm's primary serves its tarball with one byte changed, and the copy must
 stay untried. A `helm-releases` side of a row is read through CI_TOOLS_URL_BASE, as a
 `pypi` or `pulumi-releases` side is, so that seam puts the origin in front of the primary;
 the ghcr seam is here so that the untried reading is a reading, for the reason case 15
@@ -496,12 +509,19 @@ digest before install-helm takes anything out of it.
 Case 18 is case 2's shape on this row: get.helm.sh is faulted, so the primary serves
 nothing and the copy serves the changed byte.
 
-## What this runner holds after the eighteen refusals
+## Cases 19 and 20: the two gotestsum sources
 
-What this runner holds after the eighteen refusals, said plainly: no corrupted byte was
+Case 19 serves a corrupted gotestsum tarball from the primary. The install must refuse
+the tarball without asking the copy for bytes. Case 20 faults the primary and serves
+the corrupted tarball from the copy. Both cases check the digest before extraction,
+so neither can replace the gotestsum the faulted install put on PATH.
+
+## What this runner holds after the twenty refusals
+
+What this runner holds after the twenty refusals, said plainly: no corrupted byte was
 installed, and what the installs themselves left is what this step reads.
 .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
-so every refused fetch of the eighteen cases left nothing behind, and the two installs that meet a
+so every refused fetch of the twenty cases left nothing behind, and the two installs that meet a
 binary a third party put there refuse it without leaving it either. install-jj verifies
 the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
 the jj here is the pinned one the head's own install under the fault wrote and neither
@@ -509,10 +529,10 @@ jj case moved it. setup-bun removes the bun and the bunx it refused from ~/.bun/
 which is on this job's PATH, so the bun-primary case took away the Bun it refused; the
 case after it took that pair away again before its own install and then refused the npm
 bytes before anything was written in their place: this runner ends with no bun at all.
-crane, changie and helm are held to the version they answer, because their rows pin the
-release tarball rather than the binary inside it; install-helm takes the binary out of the
-tarball only after the fetch verified it, so neither helm case moved the helm the head's
-own install wrote. jj is held to its row's own digest, which is of the installed binary.
+crane, changie, gotestsum and helm are held to the version they answer because their rows
+pin the release tarball rather than the binary inside it. Each action extracts only after
+the fetch verifies the tarball, so the corrupted cases do not replace the binaries the
+head's installs wrote. jj is held to its row's own digest, which is of the installed binary.
 
 ## What the reading of the stand-in curl refuses
 

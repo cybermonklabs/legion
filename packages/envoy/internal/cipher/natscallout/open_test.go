@@ -86,7 +86,7 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 		edge, err := natsgrant.Edge("edge-a", []string{"PRIV"})
 		require.NoError(t, err)
 		for name, grant := range map[string]natsgrant.Permissions{
-			"Session": session, "Daemon": natsgrant.Daemon(), "Measure": natsgrant.Measure(),
+			"Session": session, "Daemon": natsgrant.Daemon(), "Measure": natsgrant.Measure(), "JSRead": natsgrant.JSRead(),
 			"Listener": natsgrant.Listener("example-hub"), "Dispatch": natsgrant.Dispatch("example-dispatch"),
 			"Host": natsgrant.Host("example-host-a"), "ListenerHost": natsgrant.ListenerHost("example-hub"),
 			"Edge": edge,

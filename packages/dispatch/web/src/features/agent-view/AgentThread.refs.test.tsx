@@ -4,7 +4,7 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
+import type { AgentStreamCommand } from "@legion/contracts";
 // biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, and Safari's key code 229, which user-event has no form for
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -495,14 +495,9 @@ test("Enter takes the highlighted row while the picker is open, and sends while 
   await waitFor(() => expect(pane?.sent).toEqual(["See dispatch://CORE-2 "]));
 });
 
-test("a picked agent is written as the mention that names it, and the hint says who is told", async () => {
+test("a picked agent is written as the mention that names it", async () => {
   const user = userEvent.setup();
   const input = renderThread();
-
-  // The words the list owns, read as the box reads them: a change of them is made in one place.
-  expect(screen.getByTestId("agent-message-hint").textContent).toBe(
-    dispatchWritingBox("agent-live-composer", "agent-message").hint
-  );
 
   await type(user, input, "@plan");
   await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));

@@ -239,6 +239,67 @@ func TestPrivateProjectsRefuseTheSeededListener(t *testing.T) {
 	}
 }
 
+// TestPrivateProjectsAcceptATokenListenerThatRequiresACredential: privateProjects is taken beside
+// a session listener in the token mode wherever that listener requires every caller's token on
+// /v1: declared as the hub's own listener input, and as a tailnet.listener with clientNamespaces
+// and the token check. Such a listener renders no NATS user
+// (TestAClusteredHubsTokenListenerHasNoStaticUser), so core's refusal of a stored client seed has
+// nothing of it to refuse, and its /v1 serves no caller that presents no token: its container
+// renders the token check and not ENVOY_API_ALLOW_UNAUTHENTICATED. Each hub resolves and
+// registers.
+func TestPrivateProjectsAcceptATokenListenerThatRequiresACredential(t *testing.T) {
+	for _, placement := range clusteredListenerPlacements() {
+		t.Run(placement.name, func(t *testing.T) {
+			args := privateClusteredHub()
+			placement.edit(args)
+			l, path := clusteredListenerAt(args)
+			byToken(l)
+			if args.Listener == nil {
+				// A tailnet.listener requires a caller's token only with clientNamespaces.
+				withCredential(l).ClientNamespaces = []string{"legion"}
+			}
+			_, err := gcp.ResolveClusteredNatsHub(args)
+			require.NoError(t, err, "privateProjects was refused beside a token-mode %s that requires every caller's token", path)
+			m, err := runClustered(t, "example-clustered-hub", args, nil)
+			require.NoError(t, err)
+			require.Contains(t, m.Types(), clusteredHubType)
+			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, clusteredListenerName), "listener"))
+			require.NotContains(t, env, "ENVOY_API_ALLOW_UNAUTHENTICATED", "the private hub's listener serves /v1 with no credential")
+			require.Equal(t, clusteredListenerAudience, env["ENVOY_OIDC_AUDIENCE"], "the private hub's listener checks no caller's token")
+		})
+	}
+}
+
+// TestPrivateProjectsRefuseAnOpenTokenListener: privateProjects refuses a session listener in the
+// token mode that serves /v1 with no credential, a tailnet.listener with no clientNamespaces,
+// which renders ENVOY_API_ALLOW_UNAUTHENTICATED: that /v1 serves the messages of every project, a
+// private project's among them, to every caller the tailnet hosts forward. The refusal is a
+// core.InputError naming tailnet.listener, in the words of the monitoring port's
+// (TestPrivateProjectsNeedTheAuthService), with the two ways out, and nothing registers. The same
+// hub without privateProjects resolves, so the refusal is privateProjects'. Control: delete
+// gcp/clusteredhub.go's refusal of the open token-mode listener beside privateProjects, and the
+// test fails with "privateProjects was taken beside a token-mode tailnet.listener that serves /v1
+// with no credential".
+func TestPrivateProjectsRefuseAnOpenTokenListener(t *testing.T) {
+	const want = "tailnet.listener and privateProjects: a tailnet.listener with no clientNamespaces serves /v1 with no credential (ENVOY_API_ALLOW_UNAUTHENTICATED)"
+	args := privateClusteredHub()
+	// clusteredArgs' tailnet entry, whose listener has no clientNamespaces.
+	full := clusteredArgs()
+	args.Tailnet, args.TailnetAuthKey = full.Tailnet, full.TailnetAuthKey
+	byToken(args.Tailnet.Listener)
+	_, err := gcp.ResolveClusteredNatsHub(args)
+	require.ErrorContains(t, err, want, "privateProjects was taken beside a token-mode tailnet.listener that serves /v1 with no credential")
+	require.ErrorContains(t, err, "declare it as listener, or give it clientNamespaces with oidcIssuer, oidcAudience and oidcAccounts")
+	requireInputError(t, err, "tailnet.listener")
+	m, err := runClustered(t, "example-clustered-hub", args, nil)
+	require.ErrorContains(t, err, want)
+	require.Empty(t, m.Registrations(), "nothing registered")
+
+	args.PrivateProjects = false
+	_, err = gcp.ResolveClusteredNatsHub(args)
+	require.NoError(t, err, "the same hub without privateProjects")
+}
+
 // TestAPrivateClusteredHubsChartWaitsForItsNetworkPolicy: with privateProjects the nats chart
 // registers only after the hub pods' NetworkPolicy, whose rules admit the monitoring port, 8222,
 // from no namespace, so no server takes the server tag from the chart's ConfigMap, by reload or by

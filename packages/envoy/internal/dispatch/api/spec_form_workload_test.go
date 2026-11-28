@@ -46,14 +46,15 @@ const levelTwoWorkGrowth = 6
 // judgment (specFormOf) of a document of four times as many statements sends as many statements to
 // the database, so it reads the database once for the document and not once for each text, and
 // its work grows less than levelTwoWorkGrowth times, so it does no work for each pair of texts.
-// The work is the CPU time, user and system, of the thread that judges, measured as the form's own
-// table measures it (cputest.Growth, on cputest's thread clock, as
-// specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText does): a wait for a core is not in it,
-// nor the work of Postgres, which the count of statements bounds; the kernel's work for the
-// thread, its sends to the server among it, is in it, and so is work that allocates nothing. All
-// the documents stand under the root before any is judged, since the judgment reads each other
-// covered document under it. Through the request route, the broken document of 301 statements is
-// refused, and the clean one opens.
+// The work is the CPU time, user and system, of the thread that judges (cputest.Growth, on
+// cputest's thread clock): a wait for a core is not in it, nor the work of Postgres, which the
+// count of statements bounds; the kernel's work for the thread, its sends to the server among it,
+// is in it, and so is work that allocates nothing. The form's own table
+// (specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText) counts the statements that a
+// judgment executes, with coverage counters, and reads no clock. All the documents stand under the
+// root before any is judged, since the judgment reads each other covered document under it.
+// Through the request route, the broken document of 301 statements is refused, and the clean one
+// opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	served := tree.deps.SpecForm
@@ -141,12 +142,12 @@ func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing
 	sent := map[int]int{}
 	for _, count := range []int{1, 4, 7} {
 		approve(count)
-		read, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, tree.root, map[string]bool{judged.PrimaryArtifactID: true})
+		read, err := served.approvedSpecTexts(context.Background(), tree.database.Pool, tree.root)
 		if err != nil {
 			t.Fatalf("read the approved documents under a root of %d: %v", count, err)
 		}
-		if len(read.SystemNames) != count {
-			t.Fatalf("under a root of %d approved documents the judgment read the names %q, want %d", count, read.SystemNames, count)
+		if names := read.systemNames(map[string]bool{judged.PrimaryArtifactID: true}); len(names) != count {
+			t.Fatalf("under a root of %d approved documents the judgment read the names %q, want %d", count, names, count)
 		}
 		counter := &countingQueryer{q: tree.database.Pool}
 		if _, err := served.specFormOf(context.Background(), counter, documents, specform.ActRequest); err != nil {
