@@ -98,11 +98,7 @@ func newRelayRigUnownedOn(t *testing.T, url string, first, max time.Duration, ed
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		relays.stop(ctx)
-	})
+	t.Cleanup(func() { testwait.Returns(t, "the session relays to stop", func() { relays.stop(testwait.Context(t)) }) })
 	// Set before the first relay starts, which gaining the binding is what does.
 	relays.pauseFirst, relays.pauseMax = first, max
 	return &relayRig{sessionConsumerRig: rig, relays: relays, url: url}
@@ -1339,7 +1335,14 @@ func keepTheDurableReading(t *testing.T, rig *relayRig, topic string) string {
 // paths rather than racing them.
 func awaitFanoutFinished(t *testing.T, rig *relayRig, durable string, seq uint64) {
 	t.Helper()
-	awaitDurableState(t, rig.harness.client, durable, 0, seq)
+	ctx := testwait.Context(t)
+	testwait.Until(t, fmt.Sprintf("the durable %s to have acked through %d with no pending acks", durable, seq), func() (string, bool) {
+		info, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, durable, natsgo.Context(ctx))
+		if err != nil {
+			t.Fatalf("read the durable %s: %v", durable, err)
+		}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == 0 && info.AckFloor.Stream >= seq
+	})
 }
 
 // deliveryExceptionsFor returns the reasons already published for sessionID. Call it

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -85,9 +86,18 @@ func newSessionConsumerReapRig(t *testing.T) *sessionConsumerReapRig {
 // delivery field names what it is delivered to through.
 func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) listenerwire.SubscribeResponse {
 	t.Helper()
+	return requireReapRegistration(t, sessionID, rig.postRegistration(sessionID))
+}
+
+func (rig *sessionConsumerReapRig) postRegistration(sessionID string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	body := strings.NewReader(consumerRegistration(sessionID, "e"))
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", body))
+	return recorder
+}
+
+func requireReapRegistration(t *testing.T, sessionID string, recorder *httptest.ResponseRecorder) listenerwire.SubscribeResponse {
+	t.Helper()
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("register %s: status %d: %s", sessionID, recorder.Code, recorder.Body.String())
 	}
@@ -98,36 +108,22 @@ func (rig *sessionConsumerReapRig) register(t *testing.T, sessionID string) list
 	return answer
 }
 
-// waitForRecordDeleted waits, reading the bucket rather than the cache, until sessionID has no
-// record there (session.SessionRegistry.Refresh). It is how a test holding a registration open
-// waits for the reaper pass it started to have deleted the record that registration is replacing,
-// so the pass's consumer delete is one the registration really raced. A deadline reached is
-// reported and not fatal: the caller holds the session's lock, which a fatal would never release,
-// and the pass that deleted nothing fails the test on its own count.
+// waitForRecordDeleted reads the bucket, not the cache, until the reaper has deleted the
+// record that the held registration will replace.
 func (rig *sessionConsumerReapRig) waitForRecordDeleted(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	for {
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the reaper to delete the session record of "+sessionID, func() (error, bool) {
 		_, err := rig.sessions.Refresh(ctx, sessionID)
-		if errors.Is(err, nats.ErrKeyNotFound) {
-			return
-		}
-		if ctx.Err() != nil {
-			t.Errorf("the record of %s is still in the bucket (%v); want the pass to have deleted it", sessionID, err)
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return err, errors.Is(err, nats.ErrKeyNotFound)
+	})
 }
 
 // requireConsumer fails the test unless the stream holds sessionID's consumer, when saying when it
 // was read.
 func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := rig.consumers.Info(ctx, sessionID); err != nil {
+	if _, err := rig.consumers.Info(testwait.Context(t), sessionID); err != nil {
 		t.Fatalf("the consumer of %s %s: %v; want the stream holding it", sessionID, when, err)
 	}
 }
@@ -137,9 +133,7 @@ func (rig *sessionConsumerReapRig) requireConsumer(t *testing.T, sessionID, when
 // deleted.
 func (rig *sessionConsumerReapRig) reap(t *testing.T) int {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	return rig.sessions.ReapSessions(ctx, session.SessionReaper{
+	return rig.sessions.ReapSessions(testwait.Context(t), session.SessionReaper{
 		DeleteConsumer: func(ctx context.Context, sessionID string) {
 			rig.delivery.deleteConsumer(ctx, rig.deps, sessionID, nil)
 		},
@@ -173,9 +167,7 @@ func TestAReaperPassDeletesTheReapedSessionsConsumerAndKeepsTheOthers(t *testing
 		t.Fatalf("the pass reaped %d records, want the one past the gone horizon", reaped)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if info, err := rig.consumers.Info(ctx, "ses_reaped"); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+	if info, err := rig.consumers.Info(testwait.Context(t), "ses_reaped"); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
 		t.Fatalf("the consumer of ses_reaped after the pass: %+v, %v; want it deleted with the session's record", info, err)
 	}
 	rig.requireConsumer(t, "ses_stalled", "after the pass that reaped ses_reaped")
@@ -203,21 +195,31 @@ func TestARegistrationThatRacesTheReapOfItsRecordKeepsItsConsumer(t *testing.T) 
 	rig.now.advance(3 * time.Minute)
 	rig.requireConsumer(t, "ses_back", "after its first registration")
 
-	reaped := make(chan int, 1)
+	filterWritten, release := make(chan struct{}), make(chan struct{})
+	releaseRegistration := sync.OnceFunc(func() { close(release) })
+	defer releaseRegistration()
 	var raced sync.Once
 	rig.delivery.afterRegisterFilter = func() {
 		raced.Do(func() {
-			go func() { reaped <- rig.reap(t) }()
-			rig.waitForRecordDeleted(t, "ses_back")
+			close(filterWritten)
+			<-release
 		})
 	}
-	answer := rig.register(t, "ses_back")
+	registered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { registered <- rig.postRegistration("ses_back") }()
+	testwait.Receive(t, "the registration to write the consumer filter", filterWritten)
+	reaped := make(chan int, 1)
+	go func() { reaped <- rig.reap(t) }()
+	// Wait outside the hook so a failed wait still releases the held registration.
+	rig.waitForRecordDeleted(t, "ses_back")
+	releaseRegistration()
+	answer := requireReapRegistration(t, "ses_back", testwait.Receive(t, "the racing registration to answer", registered))
 
 	if answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer {
 		t.Fatalf("the registration that raced the pass was answered delivery %+v, want %s",
 			answer.Delivery, deliveryModeConsumer)
 	}
-	if records := <-reaped; records != 1 {
+	if records := testwait.Receive(t, "the reaper pass to finish", reaped); records != 1 {
 		t.Fatalf("the pass deleted %d records, want the one it judged gone", records)
 	}
 	rig.requireConsumer(t, "ses_back", "after the pass that deleted the record it was registering over")

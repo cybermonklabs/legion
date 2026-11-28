@@ -41,13 +41,11 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// consumerFilterFenceWait bounds the calls the cases below make themselves: the delete whose
-// restore is held open over a registration, and the relay restart one of them drives.
-const consumerFilterFenceWait = 10 * time.Second
 
 // A registration's confirm keeps the topic a registration on another listener added while the
 // confirm was between its read of the bucket and its consumer call (confirmRegistered,
@@ -69,6 +67,8 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
 	filtered, stored := make(chan struct{}), make(chan struct{})
+	letStore := sync.OnceFunc(func() { close(stored) })
+	defer letStore()
 	var answered <-chan int
 	var onceFilter, onceBefore, onceAfter sync.Once
 	b.deps.consumers.afterRegisterFilter = func() {
@@ -80,13 +80,13 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 	a.deps.consumers.beforeRepairPlan = func() {
 		onceBefore.Do(func() {
 			answered = postAsync(b, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1", kept, added))
-			<-filtered
+			testwait.Receive(t, "the other listener to write the consumer filter", filtered)
 		})
 	}
 	a.deps.consumers.afterRepairPlan = func() {
 		onceAfter.Do(func() {
-			close(stored)
-			if status := <-answered; status != http.StatusOK {
+			letStore()
+			if status := testwait.Receive(t, "the other listener's registration to answer", answered); status != http.StatusOK {
 				t.Errorf("the registration on the other listener answered %d, want 200", status)
 			}
 		})
@@ -122,8 +122,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 	const added = "notifications.dispatch.issue.RESTOREFENCEADD.>"
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait*3)
-	defer cancel()
+	ctx := testwait.Context(t)
 	// The registration whose record and row the restore reads, and the record delete every
 	// delete of a consumer follows.
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-2", kept))
@@ -173,7 +172,8 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	const added = "notifications.dispatch.issue.REFOLLOWFENCEADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
 
-	unlock := a.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(a.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 	answered := postAsync(a, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
 	awaitLockUsers(t, &a.deps.consumers.locks, sessionID, 2)
 	// From here this listener's watch delivers nothing: its cache holds the row its own
@@ -191,7 +191,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	}
 
 	unlock()
-	if status := <-answered; status != http.StatusOK {
+	if status := testwait.Receive(t, "the unsubscribe to answer", answered); status != http.StatusOK {
 		t.Fatalf("the unsubscribe answered %d, want 200", status)
 	}
 	requireFilters(t, b, sessionID, kept, added)
@@ -222,7 +222,8 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 	const added = "notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
 
-	unlock := a.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(a.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 	answered := postAsync(a, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
 	awaitLockUsers(t, &a.deps.consumers.locks, sessionID, 2)
 	// From here this listener's watch delivers nothing: its cache holds the row its own
@@ -245,7 +246,7 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 		once.Do(a.harness.client.Close)
 	}
 	unlock()
-	if status := <-answered; status != http.StatusOK {
+	if status := testwait.Receive(t, "the unsubscribe to answer", answered); status != http.StatusOK {
 		t.Fatalf("the unsubscribe answered %d, want 200", status)
 	}
 	a.deps.consumers.afterStoredRowRead = nil
@@ -276,8 +277,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRe
 	}
 	requireFilters(t, b, sessionID, kept, added)
 
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	if pull == nil {
 		t.Fatalf("the restart of %s pulled nothing, outcome %v", sessionID, outcome)
@@ -319,8 +319,7 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 		// consumer call built from it, which goes over the session-consumer connection.
 		once.Do(a.harness.client.Close)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
 	if pull == nil {
@@ -380,8 +379,7 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	a.deps.consumers.afterStoredRowRead = func() {
 		once.Do(func() { b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added)) })
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	_, pull, outcome := a.relays.restart(ctx, &relayRun{sessionID: sessionID})
 	a.deps.consumers.afterStoredRowRead = nil
 	if pull == nil {
@@ -443,11 +441,9 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	const sessionID = "ses_fence_converges"
 	const kept = "notifications.dispatch.issue.FENCEPASSKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-	// Each pass of the repair runs a whole registration on b (the hook below), work of the test's
-	// own: the repair and both listeners' registrations are given the test's deadline
-	// (budgetsUntilTheDeadline), or three of b's registrations at a load of 1,270 to 1,760 spend
-	// the repair's bound and the fence ends one pass short, its row moved under 3 passes.
-	budgetsUntilTheDeadline(t, a.deps, b.deps)
+	// Each repair pass runs a registration on b. Keep both listeners' registration and
+	// consumer-call clocks still so the test's own work does not spend either budget.
+	freezeFenceRegistrationBudgets(a.deps, b.deps)
 
 	topics, moves := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -486,7 +482,7 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	const kept = "notifications.dispatch.issue.FENCEOUTKEPT.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	// As in TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow, each pass runs a registration on b.
-	budgetsUntilTheDeadline(t, a.deps, b.deps)
+	freezeFenceRegistrationBudgets(a.deps, b.deps)
 
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
@@ -673,8 +669,7 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 		case 2:
 			// The delete of the consumer, landing between the corrective pass's plan and the
 			// call it makes from it.
-			ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-			defer cancel()
+			ctx := testwait.Context(t)
 			if _, err := rig.consumers.Delete(ctx, sessionID, nil); err != nil {
 				t.Errorf("delete the consumer of %s under its own refollow: %v", sessionID, err)
 			}
@@ -975,8 +970,7 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 			}
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
-	defer cancel()
+	ctx := testwait.Context(t)
 	// The record delete every delete of a consumer follows, with the record read first: the
 	// entry write of the registration that raced the delete puts it back from inside the
 	// restore's first pass (deleteConsumer, repairRegistered).
@@ -1013,4 +1007,13 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
 	}
 	return registered, movedTo
+}
+
+// freezeFenceRegistrationBudgets keeps each listener's registration and consumer calls on
+// the same clock so their deadlines do not advance while the test moves the row.
+func freezeFenceRegistrationBudgets(listeners ...*listenerDeps) {
+	fake := clocktest.New(time.Unix(1, 0))
+	for _, d := range listeners {
+		d.clock, d.consumers.clock = fake, fake
+	}
 }

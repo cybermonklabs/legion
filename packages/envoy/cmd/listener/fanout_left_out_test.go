@@ -1,14 +1,18 @@
 package main
 
 import (
+	"fmt"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A message the durable path reads that matches an earlier build's interest row only through a
@@ -26,8 +30,7 @@ import (
 // The window keys on both: a second topic of the same session and a second session on the same
 // topic each get a line of their own inside the window, and the first pair gets one again once the
 // window has passed, read on the limiter's clock moved past it. The test isolates the limiter
-// (leftOutLogLimiter.isolate), so no entry an earlier run stored, at a time that clock read ahead
-// of the wall clock, suppresses this run's first lines.
+// (leftOutLogLimiter.isolate), so no entry an earlier run stored suppresses this run's first lines.
 //
 // Before, both places skipped the session as one whose consumer relays the message, with no word,
 // while its consumer's filter did not carry the topic.
@@ -36,10 +39,8 @@ func TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt(t *testi
 	// handler of the process shares (leftOutLogLimiter.isolate), and asserts on the lines it
 	// lets through.
 	const leftLine = "listener left a topic out of the session's consumer filter"
-	// The limiter's clock runs offset ahead of the wall clock; it is set before the durable starts
-	// and put back after it stops, so no handler reads it in between.
-	var offset atomic.Int64
-	t.Cleanup(fanoutLeftOutLogs.isolate(func() time.Time { return time.Now().Add(time.Duration(offset.Load())) }))
+	fake := clocktest.New(time.Unix(1, 0))
+	t.Cleanup(fanoutLeftOutLogs.isolate(fake.Now))
 	rig := newRecipientRig(t)
 	registry := rig.harness.registry
 	consumer := "listener-left-out-" + id.New()
@@ -52,21 +53,18 @@ func TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt(t *testi
 	// readAll waits until the durable has acknowledged every message the stream holds.
 	readAll := func(t *testing.T) {
 		t.Helper()
-		stream, err := rig.harness.client.JS().StreamInfo(bus.Stream)
+		ctx := natsgo.Context(testwait.Context(t))
+		stream, err := rig.harness.client.JS().StreamInfo(bus.Stream, ctx)
 		if err != nil {
 			t.Fatalf("read the stream: %v", err)
 		}
-		deadline := time.Now().Add(15 * time.Second)
-		for {
-			info, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, consumer)
-			if err == nil && info.AckFloor.Stream >= stream.State.LastSeq {
-				return
+		testwait.Until(t, fmt.Sprintf("the durable %s to have acked through %d", consumer, stream.State.LastSeq), func() (string, bool) {
+			info, err := rig.harness.client.JS().ConsumerInfo(bus.Stream, consumer, ctx)
+			if err != nil {
+				return err.Error(), false
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the durable acknowledged up to %v of %d within 15s (%v)", info, stream.State.LastSeq, err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			return fmt.Sprintf("ack floor %d", info.AckFloor.Stream), info.AckFloor.Stream >= stream.State.LastSeq
+		})
 	}
 	// oldRow registers sessionID through the route, then adds leftOut to its row as an earlier
 	// build stored it: a merging write, which no plan of this build's registration shapes.
@@ -157,7 +155,7 @@ func TestAFanOutThatMatchesAnEarlierBuildsRowThroughALeftOutTopicLogsIt(t *testi
 		if got := len(linesIn(rig.harness.logs.String()[before:], leftLine, map[string]any{"session_id": first, "topic": firstTopic, "from": "fanout"})); got != 0 {
 			t.Errorf("%s's %s, logged inside the window already, logged %d lines more, want none", first, firstTopic, got)
 		}
-		offset.Store(int64(fanoutLeftOutLogWindow + time.Second))
+		fake.Advance(fanoutLeftOutLogWindow + time.Second)
 		before = rig.harness.logs.Len()
 		fanoutLines(t, firstSubject, "window-passed", first, firstTopic)
 		logs := rig.harness.logs.String()[before:]

@@ -3,17 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A topic that a session's consumer filter leaves out by its fourth or fifth kind
@@ -189,8 +189,7 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 		if _, err := kv.Put(sesB, earlier); err != nil {
 			t.Fatalf("store %s's row as an earlier build stored it: %v", sesB, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		before := rig.harness.logs.Len()
 		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesB, "left-out test"); outcome != filterWriteLanded {
 			t.Errorf("storedFilterStep for %s answered %v, want a write that landed", sesB, outcome)
@@ -213,25 +212,17 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 		if _, err := registry.Upsert(store.Interest{SessionID: sesC, MachineID: "other-machine"}, earlier); err != nil {
 			t.Fatalf("store %s's row as an earlier build stored it: %v", sesC, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if err := rig.known.RecordWithin(ctx, session.KnownSession{SessionID: sesC, Title: "an earlier build's session", Topics: earlier}); err != nil {
 			t.Fatalf("store %s's known-session record as an earlier build stored it: %v", sesC, err)
 		}
-		deadline := time.Now().Add(10 * time.Second)
-		for {
+		testwait.Until(t, fmt.Sprintf("the caches to hold %s's earlier row and record with its left-out topics", sesC), func() (string, bool) {
 			row, cached := registry.CachedInterest(sesC)
 			record, known := rig.known.Get(sesC)
-			if cached && known && slices.Contains(row.Topics, outside) && slices.Contains(record.Topics, outside) &&
-				slices.Contains(row.Topics, pairFoo) && slices.Contains(row.Topics, pairBar) {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the caches hold %s's row %v (%t) and record %v (%t), want both with %s, %s and %s: the earlier build's window is not there to test",
-					sesC, row.Topics, cached, record.Topics, known, outside, pairFoo, pairBar)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+			ready := cached && known && slices.Contains(row.Topics, outside) && slices.Contains(record.Topics, outside) &&
+				slices.Contains(row.Topics, pairFoo) && slices.Contains(row.Topics, pairBar)
+			return fmt.Sprintf("row %v (%t), record %v (%t)", row.Topics, cached, record.Topics, known), ready
+		})
 		if got := recipients(t, keptC); got != 1 {
 			t.Errorf("a publish on %s, which %s alone follows, counts %d recipients, want 1, so the count does not see the session", keptC, sesC, got)
 		}
@@ -276,13 +267,13 @@ func TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration(t *
 	}
 	url := testnats.URL(t)
 	deployNewerBuildsStream(t, url, newer)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(100*time.Millisecond))
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithPromptReconnect())
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
+	readDeployedCaptureAfterReconnect(t, client, append([]string{subject}, pair...)...)
 	for _, topic := range append([]string{subject}, pair...) {
-		bustest.AwaitDeployedCapture(t, client, topic, true, 15*time.Second)
 		if client.ReachesNoSession(topic) {
 			t.Fatalf("the listener's client reads %s as reaching no session, so the registration would split it off as uncaptured", topic)
 		}

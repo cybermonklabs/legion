@@ -7,10 +7,8 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -50,14 +48,12 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 	)
 	url := testnats.URL(t)
 	deployNewerBuildsStream(t, url, newer)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(100*time.Millisecond))
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithPromptReconnect())
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
-	for _, topic := range []string{pairFoo, pairBar, stored} {
-		bustest.AwaitDeployedCapture(t, client, topic, true, 15*time.Second)
-	}
+	readDeployedCaptureAfterReconnect(t, client, pairFoo, pairBar, stored)
 	rig := newSessionConsumerRigOn(t, client, url)
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
@@ -176,8 +172,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		// One message is delivered and left unacked, so the restart deletes the consumer and
 		// creates it again rather than keeping it (RestartAtFloor).
 		deliverUnacked(t, session, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
 			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
 		}
@@ -200,8 +195,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		filteringOn(t, session, pairFoo, kept)
 		store(t, stored, "narrowing-faulted-1", "narrowing-faulted-2")
 		deliverUnacked(t, session, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
 			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
 		}
@@ -267,8 +261,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			filteringOn(t, tc.session, pairFoo, kept)
 			store(t, stored, tc.session+"-1", tc.session+"-2")
 			deliverUnacked(t, tc.session, 1)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
+			ctx := testwait.Context(t)
 			if info, err := rig.consumers.Info(ctx, tc.session); err != nil || info.NumAckPending != 1 {
 				t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", tc.session, info, err)
 			}
@@ -345,8 +338,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		filteringOn(t, session, pairFoo, kept)
 		store(t, stored, "narrowing-unapplied-1", "narrowing-unapplied-2")
 		deliverUnacked(t, session, 1)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 1 {
 			t.Fatalf("the consumer of %s awaits %v acks (%v), want one: the restart would keep it", session, info, err)
 		}
@@ -390,8 +382,7 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 		filteringOn(t, session, pairFoo, kept)
 		store(t, stored, "narrowing-unacked-1", "narrowing-unacked-2", "narrowing-unacked-3")
 		deliverUnacked(t, session, 2)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if info, err := rig.consumers.Info(ctx, session); err != nil || info.NumAckPending != 2 {
 			t.Fatalf("the consumer of %s awaits %v acks (%v), want two", session, info, err)
 		}
@@ -427,4 +418,22 @@ func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
 			t.Errorf("a widening logged %v, want no narrowing line: it passes nothing over", lines)
 		}
 	})
+}
+
+// readDeployedCaptureAfterReconnect drives the owning client's subject read instead of waiting
+// for its periodic refresh. The completed hooks include the owning client's stream reconcile.
+func readDeployedCaptureAfterReconnect(t *testing.T, client *bus.Client, topics ...string) {
+	t.Helper()
+	before := client.HookedConnectionEvents()
+	if err := client.Connection().ForceReconnect(); err != nil {
+		t.Fatalf("reconnect the listener to read the deployed subjects: %v", err)
+	}
+	testwait.Eventually(t, "the listener's reconnect hooks to read the deployed subjects", func() bool {
+		return client.HookedConnectionEvents() > before
+	})
+	for _, topic := range topics {
+		if !client.DeployedStreamCaptures(topic) {
+			t.Fatalf("the listener's client did not read deployed capture of %s", topic)
+		}
+	}
 }

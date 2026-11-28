@@ -2,12 +2,12 @@ package main
 
 import (
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A session stand-in that its own test closes while it is answering a frame reports nothing: the
@@ -32,11 +32,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 			if standIn == nil {
 				return
 			}
-			select {
-			case <-standIn.frames:
-			case <-time.After(listenerWaitBound(t)):
-				t.Error("the stand-in never finished answering the frame")
-			}
+			testwait.Receive(t, "the stand-in to finish answering the frame", standIn.frames)
 		})
 		standIn = startSessionStandIn(t, url, sessionID, func(relayedFrame) []string {
 			close(answering)
@@ -52,11 +48,7 @@ func TestAStandInClosedWhileItAnswersAFrameReportsNothing(t *testing.T) {
 		if err := sender.PublishMsg(frame); err != nil {
 			t.Fatalf("send the stand-in a frame: %v", err)
 		}
-		select {
-		case <-answering:
-		case <-time.After(listenerWaitBound(t)):
-			t.Fatal("the stand-in never started answering the frame")
-		}
+		testwait.Receive(t, "the stand-in to start answering the frame", answering)
 	})
 	if !passed {
 		t.Fatal("a stand-in its own test closed while it answered a frame failed that test")
