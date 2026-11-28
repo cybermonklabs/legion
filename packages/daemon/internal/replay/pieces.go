@@ -764,11 +764,19 @@ func (d *driver) architectRequest(key string) (claim.Token, uint64, record.StepE
 	return token, issue.Generation, entry, err
 }
 
+// signOffHeldLine is the msg of the line a run writes to its log at each sign-off the engine holds
+// for the work under the issue (driver.signOff, workflow.SignOffHeld), at the moment it is held:
+// the issue, the refusal's code and its message, which names what holds it. The line is the
+// replay's own: no daemon writes it, the trace reads nothing of it (TraceReads) and the run's tap
+// takes none of it, so no move and no measure is read from it.
+const signOffHeldLine = "replay: a sign-off is held"
+
 // signOff applies key's architect's sign-off (intake.SignOff) through the engine's own handler.
 // A sign-off the engine holds for the work under the issue (workflow.SignOffHeld: a member beneath
 // in the workflow, a root resting on its approval, an open Dispatch child, or the parent's wait in
 // awaiting_children) is applied again at each leave of a member of its tree (observe), and is no
-// refusal: the record shows the architect signing off again at once.
+// refusal: the record shows the architect signing off again at once. Each hold is a line of the
+// run's log (signOffHeldLine), so a reader sees which sign-offs waited and for what.
 func (d *driver) signOff(key string) error {
 	by, generation, entry, err := d.architectRequest(key)
 	if err != nil {
@@ -782,6 +790,7 @@ func (d *driver) signOff(key string) error {
 	case result.Refusal == nil:
 		delete(d.signOffs, key)
 	case workflow.SignOffHeld(result.Refusal.Code):
+		d.log.Info(signOffHeldLine, "issue", key, "code", result.Refusal.Code, "reason", result.Refusal.Message)
 		if !d.signOffs[key] {
 			d.counters.HeldSignOffs++
 		}

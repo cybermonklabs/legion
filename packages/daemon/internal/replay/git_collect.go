@@ -36,11 +36,12 @@ const (
 
 // gitFetchBatch is how many commits, or pull requests' head refs, one fetch asks the remote for at
 // most, gitListBatch how many head refs one git ls-remote asks it for, and gitMergeBatch how many
-// base commits one git merge-tree --stdin merges a head with.
+// base commits one git merge-tree --stdin merges a head with: few, since the command keeps the
+// trees and blobs of each of its merges in its directory until it ends (gitClone.merge).
 const (
 	gitFetchBatch = 40
 	gitListBatch  = 200
-	gitMergeBatch = 200
+	gitMergeBatch = 25
 )
 
 // gitMergeObjects is the directory, in the clone beside its objects, under which each merge-tree

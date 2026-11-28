@@ -79,6 +79,7 @@ type replayLine struct {
 	From    string               `json:"from"`
 	To      string               `json:"to"`
 	Trigger workflow.TriggerKind `json:"trigger"`
+	Code    string               `json:"code"`
 }
 
 // replayLog is every line of the replay log in out, in order.

@@ -360,7 +360,7 @@ commit it needs that the clone lacks, its blobs with it, so no merge fetches. It
 each commit of the base branch changes, and for each head the paths it changes since its merge
 base and git's verdict of merging it with the base as it stands at each later commit of the base
 that changes one of those paths, up to the pull request's own merge (git merge-tree --stdin, up to
-200 merges to a command). Each merge-tree writes the objects it merges into a directory of its
+25 merges to a command). Each merge-tree writes the objects it merges into a directory of its
 own in the clone, under merge-objects, which collect-git removes as the command ends, so the clone
 does not grow with the merges. Each git command runs under a guard of its own, its process group
 killed once its memory passes --memory-cap or it runs past its time, a merge-tree --stdin's time
@@ -1609,6 +1609,7 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 			fmt.Fprintf(stdout, "  a children wait gives the slot back: %t\n", rule.ChildrenWaitGivesBack)
 			fmt.Fprintf(stdout, "  a wait gives the slot back after: %s\n", rule.WaitGrace)
 			fmt.Fprintf(stdout, "  a wait stops the phase under way: %t\n", rule.WaitStopsPhase)
+			fmt.Fprintf(stdout, "  an open child holds the acceptance: %t\n", rule.OpenChildHoldsAcceptance)
 			fmt.Fprintf(stdout, "  the line's order: %s\n", rule.Order)
 			fmt.Fprintf(stdout, "  the line stands by priority first: %t\n", rule.PriorityFirst)
 			fmt.Fprintf(stdout, "  a start takes: %s\n", rule.Take)
@@ -1629,29 +1630,30 @@ func newReplayRulesCommand(stdout, _ io.Writer) *cobra.Command {
 // under JSON names, since the rule itself is no wire type, and its grace and its idle return as Go
 // durations ("5m0s"), as the rule's text prints them.
 type slotRuleView struct {
-	Name                  string              `json:"name"`
-	Commit                string              `json:"commit"`
-	KeepsSlotIn           []phase.Phase       `json:"keepsSlotIn"`
-	LinkWaitGivesBack     bool                `json:"linkWaitGivesBack"`
-	ChildrenWaitGivesBack bool                `json:"childrenWaitGivesBack"`
-	WaitGrace             string              `json:"waitGrace"`
-	WaitStopsPhase        bool                `json:"waitStopsPhase"`
-	Order                 record.LineOrder    `json:"order"`
-	PriorityFirst         bool                `json:"priorityFirst"`
-	Take                  record.StartTake    `json:"take"`
-	Conflict              record.ConflictPath `json:"conflict"`
-	ReleaseAtReady        bool                `json:"releaseAtReady"`
-	StartsNow             bool                `json:"startsNow"`
-	IdleReturn            string              `json:"idleReturn"`
-	Signals               signals.Mode        `json:"signals,omitempty"`
+	Name                     string              `json:"name"`
+	Commit                   string              `json:"commit"`
+	KeepsSlotIn              []phase.Phase       `json:"keepsSlotIn"`
+	LinkWaitGivesBack        bool                `json:"linkWaitGivesBack"`
+	ChildrenWaitGivesBack    bool                `json:"childrenWaitGivesBack"`
+	WaitGrace                string              `json:"waitGrace"`
+	WaitStopsPhase           bool                `json:"waitStopsPhase"`
+	OpenChildHoldsAcceptance bool                `json:"openChildHoldsAcceptance"`
+	Order                    record.LineOrder    `json:"order"`
+	PriorityFirst            bool                `json:"priorityFirst"`
+	Take                     record.StartTake    `json:"take"`
+	Conflict                 record.ConflictPath `json:"conflict"`
+	ReleaseAtReady           bool                `json:"releaseAtReady"`
+	StartsNow                bool                `json:"startsNow"`
+	IdleReturn               string              `json:"idleReturn"`
+	Signals                  signals.Mode        `json:"signals,omitempty"`
 }
 
 // slotRuleViewOf is rule as `legion replay rules --json` prints it (slotRuleView).
 func slotRuleViewOf(rule record.SlotRule) slotRuleView {
 	return slotRuleView{Name: rule.Name, Commit: rule.Commit, KeepsSlotIn: rule.KeepsSlotIn, LinkWaitGivesBack: rule.LinkWaitGivesBack,
 		ChildrenWaitGivesBack: rule.ChildrenWaitGivesBack, WaitGrace: rule.WaitGrace.String(), WaitStopsPhase: rule.WaitStopsPhase,
-		Order: rule.Order, PriorityFirst: rule.PriorityFirst, Take: rule.Take, Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady,
-		StartsNow: rule.StartsNow, Signals: rule.Signals,
+		OpenChildHoldsAcceptance: rule.OpenChildHoldsAcceptance, Order: rule.Order, PriorityFirst: rule.PriorityFirst, Take: rule.Take,
+		Conflict: rule.Conflict, ReleaseAtReady: rule.ReleaseAtReady, StartsNow: rule.StartsNow, Signals: rule.Signals,
 		IdleReturn: rule.IdleReturn.String()}
 }
 

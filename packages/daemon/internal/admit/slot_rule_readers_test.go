@@ -283,6 +283,14 @@ func statusIn(stands phase.Phase) string {
 //     neither a P0 holder nor a P0 candidate against the cap. The
 //     intake's decode, admit's record of each observation and the engine's write of a fact carry
 //     the priority to the record and read no rule. No row.
+//
+// The holds cybermonklabs/legion#4592 added to an issue's acceptance, an open Dispatch child of it
+// and a root resting on its approval (record.SlotRule.OpenChildHoldsAcceptance), are read by one
+// seam, workflow's acceptanceHeld, which the sign-off, the close of a root and the retro of a
+// parent no sign-off accepts all read. A row, through the sign-off: the open child holds it under
+// the daemon's own rule and not under one whose release came before #4592. The resting root needs
+// a design-gate step resting on an ancestor's approval, which the same seam reads in the same
+// branch. No row of its own.
 func slotRuleReaders() []slotRuleReader {
 	var rows []slotRuleReader
 	for _, stands := range phase.All {
@@ -537,6 +545,26 @@ func slotRuleReaders() []slotRuleReader {
 			changed: "ACME-100 is held as unclassified; ACME-100 waits on no open child",
 			why: "a started parent's open children are judged apart from the children-first wait of a first phase (record.SlotRule.StartedParents), " +
 				"and the parent the admission pass moved into awaiting_children by them is held by that word, under a rule whose wait stops the phase alone",
+		},
+		slotRuleReader{
+			reader:  "workflow's acceptanceHeld in the sign-off: an open Dispatch child holds the acceptance",
+			changes: []string{"OpenChildHoldsAcceptance"},
+			rule: ruleWith("main with no acceptance held for an open child", func(rule *record.SlotRule) {
+				rule.OpenChildHoldsAcceptance = false
+			}),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const parent, child = "ACME-205", "ACME-206"
+				acmeRoot(t, pool, parent, phase.Accepting, "needs_review", "a", nil, nil)
+				approvedGate(t, pool, parent)
+				openChild(t, pool, child, parent)
+				return signOffWord(t, pool, ruledAdmission(t, 1, rule, silent()), parent)
+			},
+			main:    "the sign-off of ACME-205 is refused SIGNOFF_CHILD_OPEN",
+			changed: "the sign-off of ACME-205 is taken",
+			why: "an open Dispatch child of an issue holds its acceptance under a rule that holds one for it, the daemon's own since " +
+				"cybermonklabs/legion#4592; the releases before it, which the recorded windows ran, held it for the issues beneath it in the workflow alone",
 		},
 		slotRuleReader{
 			reader:  "record.Waiting's order of the line: returned work by rank",
@@ -1465,6 +1493,21 @@ func acmeToken(t *testing.T, key string, role claim.Role) claim.Token {
 func signOffOf(t *testing.T, key string) intake.SignOff {
 	t.Helper()
 	return intake.SignOff{Issue: key, By: acmeToken(t, key, claim.RoleArchitect), Generation: 1}
+}
+
+// signOffWord applies key's architect's sign-off (signOffOf) through the daemon's own chain of
+// handlers (Handlers) and says whether the workflow took it or refused it, with the refusal's code.
+func signOffWord(t *testing.T, pool *pgxpool.Pool, admission *Admission, key string) string {
+	t.Helper()
+	result, err := intake.ApplyFact(context.Background(), pool, "api", "sign-off", signOffOf(t, key),
+		Handlers(record.NewStore(), acmeProject, admission.engine, admission)...)
+	if err != nil {
+		t.Fatalf("apply the sign-off of %s: %v", key, err)
+	}
+	if result.Refusal != nil {
+		return "the sign-off of " + key + " is refused " + result.Refusal.Code
+	}
+	return "the sign-off of " + key + " is taken"
 }
 
 // approvedGate registers root's design gate with a person's approval on its document's current

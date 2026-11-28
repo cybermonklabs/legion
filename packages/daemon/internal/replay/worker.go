@@ -79,7 +79,7 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindDesignChanges}: {Way: OutboxExecuted,
 		Does: "reconciles the tree's news of its approved design as the executor does, reading from the replay's copy of Dispatch the version each review history names: records each change set the news names, read with nothing listed from version 0 and unavailable from any other, since the copy holds no document's text, raises a told row past a pair that changed no work, and queues the news-only start of each other row's holder"},
 	{Kind: record.OutboxKindSupervise, Op: "start"}: {Way: OutboxExecuted,
-		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery; a launch implies readiness, clearing a start failure and its time but not the last death; resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
+		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery of its task, the row's text or, for the resume of a root a person answered, the wait it answers; a launch implies readiness, clearing a start failure and its time but not the last death; resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
 	{Kind: record.OutboxKindSupervise, Op: "suspend"}: {Way: OutboxExecuted,
 		Does: "suspends the role's claim, its task taken back, and pauses the issue's segment it works, or cancels it where the issue has left the workflow"},
 	{Kind: record.OutboxKindSupervise, Op: "step_stop"}: {Way: OutboxExecuted,
@@ -683,14 +683,16 @@ func (d *driver) phaseEntry(issue string, role claim.Role) (int64, error) {
 // first start, re-pointed at the issue's tree where it stands in another, launched again where it
 // was queued, suspended, failed or retired (`supervise: launched`), and given the row's task unless
 // it holds that phase's task already or was given the row's entry (supervise's queue), with a
-// confirmed delivery, in one transaction with the row's finish; a task of an entry given so carries
-// the news its claim is owed, as the daemon's start attaches it (newsForStart), which the replay
-// credits (creditNews). Last, the work the start brings: the issue's paused segment of the role
-// resumes; a start whose entry is above the one the claim was given, or that resends its entry,
-// opens the issue's next recorded segment of the role (and an issue the record never started takes
-// the never-started scenario's work); a start that re-sends an entry already given is counted as a
-// reassertion. The settling of a root architect's claim whose root handed work to a person is told
-// the pass (Settled).
+// confirmed delivery, in one transaction with the row's finish. The task is the row's text, or, for
+// the resume of a root a person answered, which carries no text, the wait it answers
+// (record.SuperviseRequest.Awaiting), from which the daemon's send writes the text; a task of an
+// entry given so carries the news its claim is owed, as the daemon's start attaches it
+// (newsForStart), which the replay credits (creditNews). Last, the work the start brings: the
+// issue's paused segment of the role resumes; a start whose entry is above the one the claim was
+// given, or that resends its entry, opens the issue's next recorded segment of the role (and an
+// issue the record never started takes the never-started scenario's work); a start that re-sends
+// an entry already given is counted as a reassertion. The settling of a root architect's claim
+// whose root handed work to a person is told the pass (Settled).
 func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
 	c, found := d.claims[token]
 	if payload.WakeKind != "" && found && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByDaemon {
@@ -778,7 +780,7 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		if payload.Entry > 0 && c.Pending.Entry == payload.Entry && payload.Entry > c.GivenEntry {
 			c.GivenEntry = payload.Entry
 		}
-	} else if payload.Task != "" && !queuedAlready(c, row.ID, payload) {
+	} else if (payload.Task != "" || payload.Awaiting != nil) && !queuedAlready(c, row.ID, payload) {
 		now := d.now()
 		if c.Pending != nil {
 			// The task the claim held was taken by a turn, or is superseded: the newer one takes
@@ -792,8 +794,17 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		if payload.Kept == nil {
 			kept = nil
 		}
+		// A resume start carries the wait it answers and no text: its delivery holds that wait,
+		// encoded as the daemon's outbox encodes it (internal/daemon's resumeJSON), which the
+		// daemon's send writes the task's text from. The replay reads no task's text.
+		var resume []byte
+		if payload.Awaiting != nil {
+			if resume, err = json.Marshal(payload.Awaiting); err != nil {
+				return err
+			}
+		}
 		c.Pending = &supervise.Delivery{ID: fmt.Sprintf("outbox:%d", row.ID), Task: payload.Task, Phase: payload.Phase,
-			Generation: payload.Generation, Entry: payload.Entry, Kept: kept, RoundNamed: payload.RoundNamed,
+			Generation: payload.Generation, Entry: payload.Entry, Kept: kept, Resume: resume, RoundNamed: payload.RoundNamed,
 			QueuedAt: now, DeliveredAt: now, ConfirmedAt: now, Prompted: true}
 		c.DeliveredRows = append(slices.Clone(c.DeliveredRows), row.ID)
 		if payload.Entry > 0 {

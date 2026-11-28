@@ -554,3 +554,78 @@ func TestSeedNamesAnIssueOnlyForAFactItsStartStateRestsOn(t *testing.T) {
 		t.Errorf("the seed names %+v; want ACME-2 alone, for the slot the trace could not place", unplaced)
 	}
 }
+
+// unslottedAcceptingWindow is a window from 10:00 to 12:00 recorded under legion-v19.57.3 at a cap
+// of 3, its inputs reaching back to the daemon's boot at 08:00. ACME-1, a root promoted at 08:05,
+// plans from 08:20 through the window. ACME-2, a child filed under it at 08:25, starts at 08:30 on
+// a slot the record holds with no line of it (heldWithNoLine, as the slots an upgrade's boot holds
+// are), works 15 minutes in each phase to its review and moves into accepting at 09:30, where no
+// worker of it starts to the window's end: the architect is the role of accepting, and the record
+// runs no child's architect there.
+func unslottedAcceptingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "legion-v19.57.3"
+	b.reaches(2 * time.Hour)
+	b.capped(3)
+	b.boot(clock(8, 0))
+	promotedRoot(b, clock(8, 5), "ACME-1", "a1")
+	b.rootDesigned(clock(8, 20), "ACME-1")
+	b.file(clock(8, 25), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a2"})
+	b.heldWithNoLine("ACME-2")
+	b.moved(clock(8, 30), "ACME-2", phase.Admitted, phase.Planning, workflow.TriggerGateOpened)
+	b.info(clock(8, 30), "workflow: this child names no issue it waits on any longer, so it starts", "issue", "ACME-2", "tree", "ACME-1")
+	b.launched(clock(8, 30), "ACME-2", claim.RoleArchitect, false)
+	b.turnStarts(clock(8, 30), "ACME-2", claim.RolePlanner)
+	b.through("ACME-2", phase.Planning, builtMove{clock(8, 45), phase.Implementing, workflow.TriggerPlannerCompleted},
+		builtMove{clock(9, 0), phase.Testing, workflow.TriggerImplementationReady},
+		builtMove{clock(9, 15), phase.Reviewing, workflow.TriggerTesterPassed})
+	b.turnEnds(clock(9, 30), "ACME-2", claim.RoleReviewer)
+	b.moved(clock(9, 30), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	return b.build()
+}
+
+// An issue that stands in accepting at the window's start with no slot owes no start that waits
+// for one, whatever slot the rule keeps there: the architect is the role of accepting, and an
+// architect's turn starts on no slot of its issue's (workerPhase), so a slot the line gave it would
+// hold a worker the record never ran. The test seeds unslottedAcceptingWindow at 10:00 under
+// legion-v19.57.3, which keeps a slot in accepting: ACME-2 owes no start, and the start state names
+// it, since the record holds its slot with no line, which the trace infers for no architect's
+// phase (assumption 34), and the line then holds it by no word. Replayed under that rule, the
+// passes give no slot out and launch no architect of ACME-2.
+func TestAnIssueInAcceptingWithNoSlotOwesNoStartThatWaitsForOne(t *testing.T) {
+	t.Parallel()
+	window := unslottedAcceptingWindow(t)
+	trace := placedTrace(t, window)
+	report := seedTrace(t, seedStore(t), trace, window.From, func(tx pgx.Tx) {
+		owed, err := record.NewStore().OwedStarts(context.Background(), tx, builtProject)
+		if err != nil {
+			t.Fatalf("read the seeded owed starts: %v", err)
+		}
+		var starts []string
+		for _, start := range owed {
+			starts = append(starts, start.Issue+" "+string(start.Role)+" "+start.CreatedAt.UTC().Format("15:04"))
+		}
+		if len(starts) != 0 {
+			t.Errorf("the seeded owed starts are %q, want none: ACME-2 stands in accepting, whose architect starts on no slot", starts)
+		}
+	})
+	if len(report.Unplaced) != 1 || report.Unplaced[0].Issue != "ACME-2" || !strings.Contains(report.Unplaced[0].Reason, string(record.HeldUnclassified)) {
+		t.Errorf("the seed names %+v; want ACME-2 alone, held by no word in accepting with the slot the record holds with no line", report.Unplaced)
+	}
+
+	out := t.TempDir()
+	if _, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, "legion-v19.57.3"), Branch: MainBranch, Seed: 1,
+		Slowdown: 1, PGDSN: replayDSN(t), Out: out}); err != nil {
+		t.Fatalf("replay unslottedAcceptingWindow under legion-v19.57.3: %v", err)
+	}
+	log := replayLog(t, out)
+	if given := slotsGiven(log); len(given) != 0 {
+		t.Errorf("the replay gives the slots %q, want none", given)
+	}
+	architect := string(builtToken(t, "ACME-2", claim.RoleArchitect))
+	if launched := linesAt(log, func(line replayLine) bool {
+		return line.Claim == architect && (line.Msg == "supervise: launched" || line.Msg == "supervise: a turn started")
+	}); len(launched) != 0 {
+		t.Errorf("ACME-2's architect is launched or starts a turn at %s, want never", describeTimes(launched))
+	}
+}

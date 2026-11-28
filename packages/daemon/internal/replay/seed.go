@@ -977,7 +977,10 @@ func (s *seeder) waitingArchitects() error {
 // its work came back to it by a move while it held no slot and no worker of that phase has started:
 // a start of that phase's role that waits for the issue's slot (needsSlot), created at the moment
 // its work first came back, the move into the first of the visits since then in which no worker
-// started, since a later move writes over the owed start and keeps its place (EnqueueStart).
+// started, since a later move writes over the owed start and keeps its place (EnqueueStart). It
+// writes none for an issue standing in a phase the architect works (workerPhase), accepting, which
+// the daemon starts on no slot of the issue's whatever slot the rule keeps there, so a start that
+// waited for one would put a worker to work on a slot the record never gave it.
 func (s *seeder) owedStarts() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
@@ -989,7 +992,7 @@ func (s *seeder) owedStarts() error {
 		}
 		_, visits := s.run(iss)
 		at := slices.IndexFunc(visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, s.at) })
-		if at < 0 {
+		if at < 0 || !workerPhase(visits[at].Phase) {
 			continue
 		}
 		// A visit whose worker started did so before it ended, so only the visit standing at the
@@ -1060,7 +1063,10 @@ func (s *seeder) pullRequests() error {
 // pass at the start reads it (blockers.JudgeLine over the project's live issues and slots, under the
 // rule and the gate steps the window ran, and record.HeldList over its judgement), and names each
 // issue that reading holds by no word it has: a state the record could not have left the daemon
-// in, such as a phase held from past the review with no slot.
+// in, such as a phase held from past the review with no slot. Under a rule that gives the slot
+// back at the merger's ready mark the reading carries the mark of each issue standing in merging
+// past it (readyMarkAt, record.LineFacts.Ready), which the replay keeps for that pass
+// (driver.seed) and the start state writes no record of.
 func (s *seeder) unclassified() error {
 	issues, err := s.records.LiveIssues(s.ctx, s.tx, s.t.Project)
 	if err != nil {
@@ -1078,6 +1084,15 @@ func (s *seeder) unclassified() error {
 	facts, err := record.ReadLineFactsUnder(s.ctx, s.tx, s.records, s.t.Project, issues, s.t.GateSteps, s.rule)
 	if err != nil {
 		return fmt.Errorf("replay: read back the seeded line facts of %s: %w", s.t.Project, err)
+	}
+	if s.rule.ReadsReadyMark() {
+		for _, issue := range issues {
+			if iss, traced := s.t.Issues[issue.Key]; traced && record.StandsAt(issue) == phase.Merging {
+				if _, ready := readyMarkAt(iss, s.at); ready {
+					facts.Ready[issue.Key] = struct{}{}
+				}
+			}
+		}
 	}
 	_, facts, line, dropped, err := blockers.JudgeLine(s.ctx, s.tx, s.records, s.t.Project, issues, own, facts, nil, s.at)
 	if err != nil {

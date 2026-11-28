@@ -1943,17 +1943,20 @@ func (b *traceBuilder) inferSlots() {
 // line names one, and it took one again by a way the window holds no slot line of. The issue
 // holds no slot span that stands at the start; no wait of it stands at the start that gives the
 // slot back under the rule (a link or its children where the rule gives the slot back for them, a
-// person or a hold where it keeps none awaiting a person or held); and a worker of the run started
-// in it after its last slot went back and before the start, which is the record's sight of the
-// slot, since the daemon starts the worker of a phase that keeps a slot only once its issue holds
-// one (workflow.StartOrOwe). An issue whose work came back with no slot and whose worker has not
-// started owes its start (Seed's owedStarts), and an architect's turn starts on no slot, so neither
-// is given one. The slot runs from the later of the run's entry and the end of the issue's last
-// slot until the rule gives it back (slotKeptUntil, as inferSlots reads it); a slot line after the
-// start that gives the issue a slot before then shows it held none, and leaves it without. Each is
-// counted (Trace.InferredSlots). An issue the slot puts in flight at the start has its link waits
-// read again, since they are read in flight alone, and one of them that stands at the start, which
-// would have given the slot back, takes it away again.
+// person or a hold where it keeps none awaiting a person or held); its visit to merging, where it
+// stands in one, holds no merger's ready mark before the start that the rule then gave the slot
+// back at (readyMarkAt, record.SlotRule.ReadsReadyMark), since from that mark on the issue keeps
+// no slot in the visit and its merger works on none; and a worker of the run started in it after
+// its last slot went back and before the start, which is the record's sight of the slot, since
+// the daemon starts the worker of a phase that keeps a slot only once its issue holds one
+// (workflow.StartOrOwe). An issue whose work came back with no slot and whose worker has not
+// started owes its start (Seed's owedStarts), and an architect's turn starts on no slot, so
+// neither is given one. The slot runs from the later of the run's entry and the end of the issue's
+// last slot until the rule gives it back (slotKeptUntil, as inferSlots reads it); a slot line
+// after the start that gives the issue a slot before then shows it held none, and leaves it
+// without. Each is counted (Trace.InferredSlots). An issue the slot puts in flight at the start
+// has its link waits read again, since they are read in flight alone, and one of them that stands
+// at the start, which would have given the slot back, takes it away again.
 func (b *traceBuilder) inferStartSlots() {
 	from := b.t.From
 	rule := b.t.ruleAt(from)
@@ -1962,6 +1965,9 @@ func (b *traceBuilder) inferStartSlots() {
 		at := slices.IndexFunc(iss.Visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, from) })
 		if at < 0 || !workerPhase(iss.Visits[at].Phase) || !b.t.ruleAt(iss.Visits[at].Enter).PhaseKeepsSlot(iss.Visits[at].Phase) ||
 			slotStandsAt(iss, from) || waitGivesBackAt(iss, from, rule) {
+			continue
+		}
+		if mark, ready := readyMarkAt(iss, from); ready && b.t.ruleAt(mark).ReadsReadyMark() {
 			continue
 		}
 		first := at
@@ -2038,6 +2044,26 @@ func (b *traceBuilder) slotKeptUntil(iss *IssueTrace, from int) time.Time {
 func workerPhase(p phase.Phase) bool {
 	role := phaseRole(p)
 	return role != "" && role != claim.RoleArchitect
+}
+
+// readyMarkAt is the merger's ready mark (IssueTrace.Ready) that stands at at in iss's visit to
+// merging: the first mark before at of the visit to merging that stands at at (standsAt), and
+// whether there is one. Under a rule that gives the slot back at that mark
+// (record.SlotRule.ReadsReadyMark) the issue keeps no slot in the visit from the mark on, which
+// the start state reads (inferStartSlots, seeder.unclassified) and the replay keeps for its passes
+// as it keeps a mark it applies (driver.seed, ReadyMark).
+func readyMarkAt(iss *IssueTrace, at time.Time) (time.Time, bool) {
+	for _, visit := range iss.Visits {
+		if visit.Phase != phase.Merging || !standsAt(visit.Enter, visit.Exit, at) {
+			continue
+		}
+		for _, mark := range iss.Ready {
+			if !mark.Before(visit.Enter) && mark.Before(at) {
+				return mark, true
+			}
+		}
+	}
+	return time.Time{}, false
 }
 
 // slotStandsAt says whether a slot span of iss stands at at: begun at or before it and not ended
