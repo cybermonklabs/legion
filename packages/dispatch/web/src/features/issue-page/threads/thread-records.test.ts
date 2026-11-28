@@ -271,7 +271,7 @@ test("a record that a reply with a quote begins links to the post that reply ans
   }
 });
 
-test("a quoting reply's record links to the entry the reply answers, and to the root where the thread holds no such entry", () => {
+test("a quoting reply's record links to the entry the reply answers, and to no node where the thread holds no such entry", () => {
   const row = commentRow("18ddeb81");
   const colleague = (row.replies ?? []).find((reply) => reply.id.startsWith("718e3e52"));
   if (colleague === undefined) throw new Error("The post's thread holds no colleague's reply.");
@@ -285,10 +285,7 @@ test("a quoting reply's record links to the entry the reply answers, and to the 
     id: colleague.id,
     kind: "comment",
   });
-  expect(recordOf(threadRecords(answering("no-such-comment")), "b6099daa").node).toEqual({
-    id: row.comment.id,
-    kind: "comment",
-  });
+  expect(recordOf(threadRecords(answering("no-such-comment")), "b6099daa").node).toBeUndefined();
 });
 
 test("a quoting reply's record in a thread no person wrote in links to no node, since Conversation draws none of it", () => {
