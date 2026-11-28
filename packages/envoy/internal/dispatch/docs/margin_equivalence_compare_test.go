@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -229,7 +230,7 @@ func (side *equivalenceSide) run(t *testing.T, document *equivalenceDocument, fl
 	ctx := context.Background()
 	var observed flowObservation
 	if side.classes == nil {
-		t.Fatal("no room of the side was loaded with the class recorder (recordClasses), which a flow that starts from the browser edit installs")
+		t.Fatal("the side has no class recorder")
 	}
 	side.classes.mu.Lock()
 	classesFrom := len(side.classes.classes)
@@ -338,7 +339,15 @@ func (side *equivalenceSide) rowEffects(t *testing.T, document *equivalenceDocum
 	if len(appended) != len(versions) {
 		t.Fatalf("the transaction appended %d rows, the store holds %d of them", len(versions), len(appended))
 	}
-	doc := newDocumentCopy()
+	var doc *crdt.Doc
+	if len(history) != 0 && bytes.Equal(history[0].update, document.seed) {
+		// Clone only when the actual stored prefix matches the decoded seed. Replay
+		// the browser edit and any other remaining updates as stored.
+		doc = document.replayedSeed.Clone(documentCopyOptions(maxUpdateItems)...)
+		history = history[1:]
+	} else {
+		doc = newDocumentCopy()
+	}
 	for _, row := range history {
 		if err := crdt.ApplyUpdateV1(doc, row.update, nil); err != nil {
 			t.Fatalf("decode the stored history: %v", err)
