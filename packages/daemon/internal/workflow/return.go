@@ -36,8 +36,8 @@ import (
 // An issue already in Legion's work moves only on a todo: a todo on a held issue releases its hold
 // (releaseHeldRoot), and a todo on a root whose architect claim failed starts that claim again
 // (retryFailedArchitect); a held root whose architect claim failed takes both, the release first
-// and the architect restart on the updated record. Any other status in work changes nothing here;
-// admission records it.
+// and the architect restart on the updated record. Either start is decided only where the todo is
+// a decision (decides). Any other status in work changes nothing here; admission records it.
 func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	switch {
 	case issue.Phase == phase.Done:
@@ -61,7 +61,7 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		issue = *updated
 	}
-	return e.retryFailedArchitect(ctx, tx, issue)
+	return e.retryFailedArchitect(ctx, tx, issue, decides(fact))
 }
 
 // opensNewRun says whether fact, a status in work, opens a new run of issue, a record at phase
@@ -601,16 +601,19 @@ func (e *Engine) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) e
 // queued for that claim is that start, so no second one is queued. It writes nothing for any other
 // issue or claim.
 //
-// The start is marked decided (record.SuperviseRequest.Decided), as the operator's `legion claims
-// retry` is: a person or the controller asked for it. So it takes that retry's rule exactly, the
-// claim's own session, or a new one for a claim held for OpenAI's cyber-policy refusal, which only
-// a decided start launches again (supervise's freshSession, supervise.Claim.RetryHeld). The root
-// and its architect are the Dispatch chain's (holdsOwnGate), and the outbox's start launches it
-// under the gate root it reads there, its own key (the daemon outbox's launchOf).
+// The start is marked decided (record.SuperviseRequest.Decided) where decided says the todo is a
+// decision (decides), as the operator's `legion claims retry` is: a person or the controller asked
+// for it. So it takes that retry's rule exactly, the claim's own session, or a new one for a claim
+// held for OpenAI's cyber-policy refusal, which only a decided start launches again (supervise's
+// freshSession, supervise.Claim.RetryHeld). A todo a session wrote, which the workflow takes on a
+// chain no issue of which carries the legion label (sessionStatusWrite), asks for nothing, so its
+// start is not marked and launches no such claim. The root and its architect are the Dispatch
+// chain's (holdsOwnGate), and the outbox's start launches it under the gate root it reads there,
+// its own key (the daemon outbox's launchOf).
 //
 // The claim is read before the chain: a root whose architect has not failed is the common case,
 // and the keyed reads answer it without reading the chain at all.
-func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue, decided bool) error {
 	if !record.InLegionsWork(issue) {
 		return nil
 	}
@@ -635,6 +638,6 @@ func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue reco
 	}
 	e.logOnCommit(ctx, "workflow: a todo on a root whose architect failed starts that architect again", "issue", issue.Key, "phase", issue.Phase)
 	start := childArchitectStart(issue)
-	start.Decided = true
+	start.Decided = decided
 	return e.enqueue(ctx, tx, issue.Key, start)
 }

@@ -198,6 +198,38 @@ func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
 	assertRoleMessages(t, pool, "LEGION-208", want)
 }
 
+// An issue out of Legion's work stands where its stop left it, every role of it suspended
+// (leave), so a settlement that reaches it is recorded and nobody is told (tellChecks): a message
+// to a role nobody holds reaches nobody, and the issue's return to work hands its worker the
+// phase's work again. LEGION-209, testing under LEGION-208, is moved to the backlog by a person.
+// Negative control, run when this was written and then reverted: without the guard, the
+// settlement told the tester, the implementer and the architect.
+func TestASettlementOfAnIssueMovedToTheBacklogTellsNobody(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	parent := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Parent: &parent,
+		Project: "LEGION", Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", DispatchStatus: "testing", Rank: "V", LastDispatchSeq: 1})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion",
+		Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "test-claim"})
+	applyRefusingNothing(t, pool, mergingEngine(), intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
+		Type: "issue.updated", Status: "backlog", Title: "child", Parent: parent, Rank: "V"})
+	if moved := issueRecord(t, pool, "LEGION-209"); moved == nil || record.InLegionsWork(*moved) || moved.Phase != phase.Testing {
+		t.Fatalf("LEGION-209 after the person's backlog = %+v, want it out of Legion's work in testing", moved)
+	}
+
+	applyRefusingNothing(t, pool, mergingEngine(), settledAt("head", 1, "unit"))
+
+	assertRoleMessages(t, pool, "LEGION-209", nil)
+	if checked := recordedPR(t, pool, "LEGION-209").CheckedHead; checked != "head" {
+		t.Fatalf("the settlement stands for %q, want it recorded at head while the issue is out of Legion's work", checked)
+	}
+}
+
 // A settlement of a commit the head's settlement is not - an earlier head the branch has left -
 // stands for no head, so there is nothing to tell: the daemon knows nothing of the head's CI, and
 // a message naming another commit's checks would be read as the head's.

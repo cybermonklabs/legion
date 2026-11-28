@@ -430,6 +430,49 @@ func TestAnEscalatedChildKeepsItsHoldWhenItsRootStops(t *testing.T) {
 	}
 }
 
+// A held issue a person moves to the backlog keeps its hold, escalation included (R20 of
+// dispatch://INFRA-3320), and its architect's retry of it is refused (retryOrEscalate): no role
+// works an issue out of Legion's work, so the retry would start the held phase's worker on an
+// issue that has left the workflow. The refusal names the status the issue stands at, as
+// backward's refusal of the same issue does, and nothing changes: the issue stays held from the
+// same phase for the same reason, for its return to work, and no worker is started. Negative
+// control, run when this was written and then reverted: without the guard, the retry answered no
+// refusal.
+func TestARetryOfAnIssueMovedToTheBacklogKeepsTheHoldAndItsReason(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	ctx := context.Background()
+	root := "LEGION-208"
+	seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root",
+		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION",
+		Title: "child", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 1})
+	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	if result := apply("backlog", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "backlog", Title: "child", Parent: root, Rank: "V"}); result.Refusal != nil {
+		t.Fatalf("the person's backlog was refused: %+v", result.Refusal)
+	}
+
+	result := apply("retry", intake.RetryOrEscalate{Issue: "LEGION-209", Decision: intake.RetryDecision})
+
+	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "PHASE_NOT_RESTARTED" ||
+		result.Refusal.Message != "LEGION-209 is out of Legion's work (backlog), so the architect's retry changed nothing" {
+		t.Fatalf("the retry of the child on the backlog = %+v, want 409 PHASE_NOT_RESTARTED naming its status", result.Refusal)
+	}
+	var gotPhase phase.Phase
+	var heldFrom, holdReason *string
+	var starts int
+	if err := pool.QueryRow(ctx, `select phase, held_from, hold_reason,
+		(select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'task', '') <> '')
+		from issues where key = $1`, "LEGION-209").Scan(&gotPhase, &heldFrom, &holdReason, &starts); err != nil {
+		t.Fatalf("read the child: %v", err)
+	}
+	if gotPhase != phase.Held || heldFrom == nil || *heldFrom != string(phase.Implementing) || holdReason == nil || *holdReason != string(record.HoldEscalated) || starts != 0 {
+		t.Fatalf("after the retry the child is in %s held from %v for %v with %d starts; want held from implementing, escalated, and no start", gotPhase, heldFrom, holdReason, starts)
+	}
+}
+
 // projectedHold is the issue's phase and hold reason as the state view shows them.
 func projectedHold(t *testing.T, pool *pgxpool.Pool, key string) (phase.Phase, string) {
 	t.Helper()
@@ -731,6 +774,85 @@ func TestASessionsTodoOnAHeldRootKeepsTheHold(t *testing.T) {
 				t.Fatalf("the counts after the session's todo = %+v, want the %+v the hold left", got, counted)
 			}
 		})
+	}
+}
+
+// heldForCyberPolicy records role's claim of key failed on OpenAI's cyber-policy refusal, as the
+// store writes it: `provider_error` beside held_for `cyber_policy`, which record.RoleClaim reads
+// back as the machine holds it (supervise.CauseCyberPolicy).
+func heldForCyberPolicy(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `update claims set state = 'failed', suspended_by = '', failure_cause = 'provider_error',
+		failure = 'a provider error that cannot clear ended this claim''s turn', held_for = 'cyber_policy' where token = $1`,
+		treeRoleToken(t, key, role)); err != nil {
+		t.Fatalf("fail the %s of %s for cyber policy: %v", role, key, err)
+	}
+}
+
+// R26 of dispatch://INFRA-3320 takes any session's status write on a chain no issue of which
+// carries the legion label (sessionStatusWrite), so the workflow takes a todo that an agent of the
+// tree writes on a root whose label a person took off: it releases a held phase and restarts that
+// phase's worker (releaseHeldRoot, restart), and on a root whose architect failed it starts that
+// architect again (retryFailedArchitect). No person or architect decided either start, so neither
+// is marked decided (decides), and the outbox's start launches no agent held for OpenAI's
+// cyber-policy refusal again: the agent stays held (supervise.ErrHeldForCyberPolicy), and so does
+// the issue (the daemon outbox's heldStartRefused). A person's todo on the same root is a decision,
+// and its start is marked decided, which launches the held agent again in a new session. Negative
+// control, run when this was written and then reverted: with every such start marked decided, the
+// session's todo queued a decided start in both cases.
+func TestASessionsTodoOnAnUnlabelledRootLiftsNoCyberPolicyHold(t *testing.T) {
+	t.Parallel()
+	const root = "LEGION-208"
+	for _, tc := range []struct {
+		name string
+		// held is whether the root is held from implementing; role is the role whose claim is
+		// held for the refusal: the held phase's worker, or the architect of a root in work.
+		held bool
+		role claim.Role
+	}{
+		{name: "a held phase's worker", held: true, role: claim.RoleImplementer},
+		{name: "a failed root architect", role: claim.RoleArchitect},
+	} {
+		for _, writer := range []struct {
+			name    string
+			session string
+			decided bool
+		}{
+			{name: "a session of its tree", session: "ses"},
+			{name: "a person", decided: true},
+		} {
+			t.Run(tc.name+", written by "+writer.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				issue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+					Title: "root", Phase: phase.Implementing, Generation: 3, Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 4}
+				if tc.held {
+					issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Implementing}
+				}
+				seedIssue(t, pool, issue)
+				seedSlot(t, pool, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)})
+				seedPhase(t, pool, record.PhaseRow{Issue: root, Role: claim.RoleImplementer})
+				seedPhaseWorker(t, pool, root, claim.RoleArchitect, "")
+				seedPhaseWorker(t, pool, root, tc.role, "")
+				heldForCyberPolicy(t, pool, root, tc.role)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: root, Project: "LEGION", Seq: 9,
+						Labels: record.Carry([]string{})})
+				})
+
+				applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets",
+					Seq: 5, Type: "issue.updated", Status: "todo", Title: "root", Rank: "U", ActorSession: writer.session})
+
+				starts := roleStartsOf(t, pool, root, tc.role)
+				if len(starts) != 1 || starts[0].Decided != writer.decided {
+					t.Fatalf("the %s starts after the todo = %+v, want one, marked decided %t", tc.role, starts, writer.decided)
+				}
+				if tc.held {
+					if released := storedIssue(t, pool, root); released.Phase != phase.Implementing || released.Hold != nil {
+						t.Fatalf("the root after the todo = %#v, want the write taken: the hold released into implementing", released)
+					}
+				}
+			})
+		}
 	}
 }
 

@@ -289,7 +289,7 @@ func (e *Engine) applyCallWrite(ctx context.Context, tx pgx.Tx, call intake.Stat
 // of dispatch://INFRA-3320), as the workflow takes the same status from anyone (applyStatus): a
 // status out of work stops the issue, and a todo brings it back into work, a new run where
 // rerun_child opens one (NewRun). The record keeps the status Dispatch shows (DispatchStatus), so
-// Dispatch's refusal of the write sets the record back to it (statusRefused).
+// Dispatch's refusal of the write undoes it by taking that status again (statusRefused).
 //
 // An issue the daemon does not record is counted only where release_children names it with its
 // view (intake.StatusCallIssue.View): it is recorded under its parent at work as a child of a todo

@@ -608,10 +608,14 @@ func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if fact.Status == "done" && issue.PendingClose != nil {
 			return e.closeLanded(ctx, tx, issue)
 		}
+		// The close the daemon queued went with those writes, so its mark goes too: a mark left at
+		// the fence the issue returns at would answer the close its return queues again
+		// (closeAwaitingMerge) as one still on its way (writeClose).
+		//
 		// The record holds the status the issue left for, as admission's observation of the event
 		// writes it after this handler, so every read of the issue in this fact — its leave, and
 		// the settle that ends the step it ran (SettleFact, runOver) — reads it out of work.
-		issue.Status = fact.Status
+		issue.PendingClose, issue.Status = nil, fact.Status
 		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -653,7 +657,8 @@ func (e *Engine) applyStatus(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // returning is whether the todo is a return to work after a stop (ReturnToWork): the start of the
 // held phase's worker then raises the phase entry as every return's start does (retryPhase), so
 // each queued effect of the entry before the stop is refused where it commits (R20 of
-// dispatch://INFRA-3320). A todo on a held issue that never left Legion's work raises none.
+// dispatch://INFRA-3320). A todo on a held issue that never left Legion's work raises none, and
+// its restart of the held phase's worker is decided only where the todo is a decision (decides).
 //
 // A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
 // its stopped task ends the stop: a task whose work ran starts again at its first step
@@ -693,7 +698,7 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		return e.restartTask(ctx, tx, released, w, restartReason)
 	}
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false, returning)
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false, returning, decides(fact))
 	if err != nil {
 		return err
 	}
@@ -709,6 +714,18 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // of its first step's worker and the log line of the restart carry, for the same reason, and the log
 // line of a task stopped before its first step that waits for that step again.
 const restartReason = "the issue was set to todo while its task was stopped"
+
+// decides says whether fact, a status the workflow takes, is someone's decision: a person's move,
+// and the daemon's own write of a call to its API (the controller's set_status, an operator's
+// `legion issue status`, an architect's rerun_child), carry no session
+// (intake.DispatchIssue.ActorSession). A session's write the workflow takes decides nothing: no
+// person or architect asked for what it starts, as with any session's write on a chain no issue of
+// which carries the legion label (sessionStatusWrite). So a start it causes is not marked decided
+// (record.SuperviseRequest.Decided), and it launches no agent held for OpenAI's cyber-policy
+// refusal again (supervise.ErrHeldForCyberPolicy).
+func decides(fact intake.DispatchIssue) bool {
+	return fact.ActorSession == ""
+}
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim on an issue of the written issue's Dispatch chain —
@@ -2484,7 +2501,10 @@ func noticeFailure(fact intake.ClaimFailed) *record.NoticeFailure {
 // hold is from and starts its role again (retryPhase), and an escalation records the reason
 // `escalated` and tells the controller. A hold its plan holds the issue in, a stopped task or a
 // parent held for its children, is neither one's to release, and both are refused
-// (planHoldRefusal) with nothing changed.
+// (planHoldRefusal) with nothing changed. A stop keeps an issue's hold (R20 of
+// dispatch://INFRA-3320) and no role works an issue out of Legion's work, so a retry of one is
+// refused too (PHASE_NOT_RESTARTED), naming its status as backward's refusal of the same issue
+// does, and its hold and the hold's reason stay for its return to work.
 func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.RetryOrEscalate) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Phase != phase.Held || issue.Hold == nil {
@@ -2511,11 +2531,12 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		return intake.Result{}, nil
 	}
 	if !record.InLegionsWork(*issue) {
-		return intake.Result{}, nil
+		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("%s is out of Legion's work (%s), so the architect's retry changed nothing",
+			issue.Key, issue.Status)), nil
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
 	// line for the release both carry; a decision that names none keeps the daemon's.
-	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false, false)
+	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false, false, true)
 	return intake.Result{}, err
 }
 
@@ -2542,7 +2563,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if refusal, err := e.planHoldRefusal(ctx, tx, *issue); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession, false)
+	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession, false, true)
 	return intake.Result{}, err
 }
 
@@ -2563,7 +2584,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
 // none, and resumes the recorded session, whatever the claim's run of refused turns (supervise's
-// freshSession).
+// freshSession). decided is whether someone decided on the retry: the architect, the operator, or
+// whoever wrote a todo that is a decision (decides). It marks the restart's start (restart), the
+// one start that launches again an agent held for OpenAI's cyber-policy refusal.
 //
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,
 // which is the architect's own words where its retry named any. An issue that was held logs the
@@ -2596,7 +2619,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // reads (releaseHeldRoot): from, where nothing moved, awaiting_children where a child holds the
 // start, and otherwise the phase the move took the issue to, read back from the record because the
 // move's own row chose that target (transition).
-func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession, returning bool) (phase.Phase, error) {
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession, returning, decided bool) (phase.Phase, error) {
 	held := issue.Phase == phase.Held
 	// The retry keeps the task's place (moveTask): it puts back Hold.From, the phase that place
 	// derives, so the task never moved.
@@ -2660,7 +2683,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err := e.start(ctx, tx, issue, w, phase.RoleFor(from), told, from, true); err != nil {
 			return "", err
 		}
-	} else if err := e.restart(ctx, tx, issue, phase.RoleFor(from), told, freshSession); err != nil {
+	} else if err := e.restart(ctx, tx, issue, phase.RoleFor(from), told, freshSession, decided); err != nil {
 		return "", err
 	}
 	// The release puts the issue back in the phase the hold is from, which is no move between
@@ -3013,7 +3036,10 @@ func (e *Engine) childrenOpen(ctx context.Context, tx pgx.Tx, issue record.Issue
 // on the phases row of the role of the step before accepting, with the pull request. An issue with
 // no plan rows walks today's line, where that step is the review, so its retro is told the
 // review's handoff, as the approval told it before acceptance existed. Outside accepting it
-// changes nothing and says so.
+// changes nothing and says so (SIGNOFF_OUTSIDE_ACCEPTING), and so it does on an issue in accepting
+// that is out of Legion's work: a stop keeps the issue's phase (R20 of dispatch://INFRA-3320), and
+// no step of an issue out of Legion's work moves, so the refusal names its status, as backward's
+// refusal of the same issue does.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
@@ -3053,6 +3079,10 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil
+	}
+	if !record.InLegionsWork(*issue) {
+		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is out of Legion's work (%s), so the architect's sign-off changed nothing",
+			issue.Key, issue.Status)), nil
 	}
 	held, err := e.acceptanceHeld(ctx, tx, *issue)
 	if err != nil {

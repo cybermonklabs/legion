@@ -63,14 +63,21 @@ func seedReparentFixture(t *testing.T, pool *pgxpool.Pool) {
 // it.
 func moveParent(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, parent string, seq int64) {
 	t.Helper()
+	moveParentAt(t, pool, engine, id, parent, "in_progress", seq)
+}
+
+// moveParentAt is moveParent of an event that shows the moved issue at status, whose observation
+// records the status Dispatch shows as well.
+func moveParentAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, parent, status string, seq int64) {
+	t.Helper()
 	applyMirrored(t, pool, engine, id, intake.DispatchIssue{Key: reparentMoved, ResolvedRepo: "sjawhar/legion", Seq: seq,
-		Type: "issue.updated", Status: "in_progress", Title: "the moved issue", Parent: parent, Rank: "Z"})
+		Type: "issue.updated", Status: status, Title: "the moved issue", Parent: parent, Rank: "Z"})
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		issue, err := record.NewStore().Issue(t.Context(), tx, reparentMoved)
 		if err != nil {
 			return err
 		}
-		issue.Parent, issue.LastDispatchSeq = record.ParentOf(parent), seq
+		issue.Parent, issue.LastDispatchSeq, issue.DispatchStatus = record.ParentOf(parent), seq, status
 		return record.NewStore().PutIssue(t.Context(), tx, *issue)
 	})
 }
@@ -118,6 +125,47 @@ func TestAParentChangeIsSeededOncePerNewParent(t *testing.T) {
 		Type: "issue.updated", Status: "backlog", Title: "parked", Parent: reparentSecond, Rank: "Y"})
 	if got := reparentSeeds(t, pool, "LEGION-501"); len(got) != 0 {
 		t.Fatalf("the re-parent seeds of an issue on the backlog = %#v, want none: it is not in Legion's work", got)
+	}
+}
+
+// A move made while the issue is out of Legion's work tells nobody, but it moves the issue from the
+// parent it was told of (tellParentChange), so a later move in Legion's work back to that parent is
+// told (R18 of dispatch://INFRA-3320). LEGION-500, at work under LEGION-208, moves under LEGION-300
+// in work, which is told; a person moves it to the backlog, moves it back under LEGION-208 there
+// and sets it todo, which brings it back into work under LEGION-208; then it moves under LEGION-300
+// again, in work. That move queues its seed, from LEGION-208 to LEGION-300, and the seed's read
+// tells the issue's own architect, LEGION-208's and LEGION-300's. Negative control, run when this
+// was written and then reverted: with the move out of work leaving the parent told as it was, the
+// last move queued no seed, since LEGION-300 was still the parent told.
+func TestAMoveBackToAToldParentAfterAMoveOutOfWorkIsToldAgain(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedReparentFixture(t, pool)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	moveParent(t, pool, engine, "moved-under-300", reparentSecond, 5)
+	moveParentAt(t, pool, engine, "backlog", reparentSecond, "backlog", 6)
+	moveParentAt(t, pool, engine, "moved-back-under-208-out-of-work", reparentFirst, "backlog", 7)
+	if seeds := reparentSeeds(t, pool, reparentMoved); len(seeds) != 1 {
+		t.Fatalf("the re-parent seeds after the move out of work = %#v, want the first alone: a move out of work tells nobody", seeds)
+	}
+	moveParentAt(t, pool, engine, "todo", reparentFirst, "todo", 8)
+	if back := issueRecord(t, pool, reparentMoved); back == nil || !record.InLegionsWork(*back) {
+		t.Fatalf("%s after the todo = %+v, want it back in Legion's work", reparentMoved, back)
+	}
+
+	moveParent(t, pool, engine, "moved-under-300-again", reparentSecond, 9)
+
+	seeds := reparentSeeds(t, pool, reparentMoved)
+	if len(seeds) != 2 || seeds[1].Parent != reparentSecond || seeds[1].OldParent != reparentFirst {
+		t.Fatalf("the re-parent seeds after the move back under %s in work = %#v, want a second, from %s to %s", reparentSecond, seeds, reparentFirst, reparentSecond)
+	}
+	if got := toldParent(t, pool, reparentMoved); got != reparentSecond {
+		t.Fatalf("the parent recorded as told = %q, want %s", got, reparentSecond)
+	}
+	applyMirrored(t, pool, engine, "read", intake.ReparentRead{Issue: reparentMoved, Seed: seeds[1]})
+	told := noticesOfKind(t, pool, reparentMoved, "reparented")
+	if got := slices.Sorted(slices.Values(toldTo(told))); !slices.Equal(got, []string{reparentFirst, reparentSecond, reparentMoved}) {
+		t.Fatalf("the reparented notices go to %v, want one each to %s, %s and %s", got, reparentFirst, reparentSecond, reparentMoved)
 	}
 }
 

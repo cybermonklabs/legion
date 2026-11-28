@@ -31,7 +31,9 @@ const reparentRan = "its run, its phase, its slot and its design-gate steps stay
 // told_parent is the once-mark: a listing or an event that repeats the same parent tells nobody
 // again, and a move back to an earlier parent is told anew. A move to no parent is told whenever
 // it is a change, since "" is also the mark of an issue never told. Nothing is told of an issue
-// not in Legion's work (record.InLegionsWork): no architect acts on its run.
+// not in Legion's work (record.InLegionsWork): no architect acts on its run. Its move clears
+// told_parent all the same, since the issue no longer stands under the parent told, so a later
+// move in Legion's work back to that parent is a change of parent that is told.
 //
 // Before any of that, a change of parent that moves the issue's gate root forgets what its holder
 // took of the approved design (forgetToldAcrossGateRoots), in or out of Legion's work, since that
@@ -50,7 +52,14 @@ func (e *Engine) tellParentChange(ctx context.Context, tx pgx.Tx, issue *record.
 	if err := e.forgetToldAcrossGateRoots(ctx, tx, *issue, old); err != nil {
 		return err
 	}
-	if (fact.Parent != "" && fact.Parent == issue.ToldParent) || !record.InLegionsWork(*issue) {
+	if !record.InLegionsWork(*issue) {
+		if issue.ToldParent == "" {
+			return nil
+		}
+		issue.ToldParent = ""
+		return e.store.PutIssue(ctx, tx, *issue)
+	}
+	if fact.Parent != "" && fact.Parent == issue.ToldParent {
 		return nil
 	}
 	seed, err := e.reparentSeed(ctx, tx, *issue, old, fact.Parent)
@@ -282,9 +291,9 @@ func copyParent(ctx context.Context, tx pgx.Tx, store record.Store, issue record
 // seedSuperseded says whether a later move has superseded seed, so the issue no longer stands
 // under the seed's new parent: the issue has been told of a later parent (record.Issue.ToldParent),
 // whose move has a seed of its own, or its current Dispatch parent, current (copyParent), is
-// another. Both are read because a move made while the issue was out of Legion's work changes its
-// parent without telling anyone (tellParentChange leaves told_parent as it was), so told_parent
-// alone still names the seed's parent after it.
+// another. Both are read because a move made while the issue was out of Legion's work tells nobody
+// and clears told_parent (tellParentChange), and "" is also the parent of a seed of a move to no
+// parent, so told_parent alone still names that seed's parent after such a move.
 func seedSuperseded(issue record.Issue, current string, seed record.ReparentSeed) bool {
 	return issue.ToldParent != seed.Parent || current != seed.Parent
 }

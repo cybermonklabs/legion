@@ -79,7 +79,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 		{
 			name: "the retry of a hold (retryPhase)", at: phase.Held, heldFrom: phase.Implementing, generation: 1, place: reviewing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false, false)
+				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false, false, true)
 				return err
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in implementing, and its task a is running at {Kind:step Position:3}, which stands in reviewing",

@@ -390,6 +390,57 @@ func TestTheRecordKeepsWhetherItsPullRequestMergedOrClosed(t *testing.T) {
 	}
 }
 
+// A stop drops every status write the daemon queued for the issue (applyStatus), its queued close
+// among them, so the close's mark goes with it (record.PendingClose). LEGION-208 merged in merging,
+// which queued its close; a person's backlog before the close landed dropped it, and a person's
+// todo brings the issue back into merging, where its merge has already landed, so the return
+// queues its close again (closeAwaitingMerge) and marks it. Negative control, run when this was
+// written and then reverted: with the mark kept through the stop, the todo queued no close, since
+// writeClose read the mark at the fence the issue returned at as a close on its way.
+func TestAStopThatDropsAQueuedCloseLetsTheReturnQueueItAgain(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	root := stepRoot(t, pool, phase.Merging)
+	root.Status, root.DispatchStatus = "retro", "retro"
+	seedIssue(t, pool, root)
+	apply := applyFacts(t, pool, engine)
+	if result := apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}); result.Refusal != nil {
+		t.Fatalf("the merge was refused: %+v", result.Refusal)
+	}
+	if closing := issueOf(t, pool, engine, root.Key); closing.PendingClose == nil || !slices.Equal(statusWritesOf(t, pool, root.Key), []string{"done"}) {
+		t.Fatalf("%s after its merge has the close %+v and the status writes %v, want its close queued and marked",
+			root.Key, closing.PendingClose, statusWritesOf(t, pool, root.Key))
+	}
+	backlog := personsTodo(root.Key)
+	backlog.Status = "backlog"
+	if result := apply("backlog", backlog); result.Refusal != nil {
+		t.Fatalf("the person's backlog was refused: %+v", result.Refusal)
+	}
+	if writes := statusWritesOf(t, pool, root.Key); len(writes) != 0 {
+		t.Fatalf("the status writes of %s after the backlog = %v, want none: the stop drops the close", root.Key, writes)
+	}
+	// Admission records the event's observation after the engine (recordObservation).
+	parked := issueOf(t, pool, engine, root.Key)
+	parked.DispatchStatus, parked.LastDispatchSeq = "backlog", backlog.Seq
+	seedIssue(t, pool, parked)
+	todo := personsTodo(root.Key)
+	todo.Seq = 3
+
+	if result := apply("todo", todo); result.Refusal != nil {
+		t.Fatalf("the person's todo was refused: %+v", result.Refusal)
+	}
+
+	back := issueOf(t, pool, engine, root.Key)
+	if back.Phase != phase.Merging || !record.InLegionsWork(back) || back.PendingClose == nil || back.PendingClose.Kind != closeKindMerge {
+		t.Fatalf("%s after the todo stands in %s at %q with the close %+v, want it back in merging with its merge's close marked",
+			root.Key, back.Phase, back.Status, back.PendingClose)
+	}
+	if writes := statusWritesOf(t, pool, root.Key); !slices.Contains(writes, "done") {
+		t.Fatalf("the status writes of %s after the todo = %v, want its close queued again", root.Key, writes)
+	}
+}
+
 // The notice that tells the architect above a child that the child left Legion's work keeps its
 // first sentence, "<KEY> is <status>", and names after it what the move leaves for that architect
 // to act on (dispatch://INFRA-3178/spec R4): the child's pull request while it is open, since the

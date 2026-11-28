@@ -610,16 +610,17 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // (supervise.Machine.queue). Its task is told as start's is, from the standing it reads only for
 // a worker it starts.
 //
-// It is marked decided as well (record.SuperviseRequest.Decided), the one phase worker's start
-// that is: every road into it is a person's or the issue's architect's own request — the
-// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker
-// (intake.RestartPhase or the held phase's retry), a person's todo on a held root
-// (releaseHeldRoot). So it is the one start of a phase worker that launches again the agent of a
-// claim held for OpenAI's cyber-policy refusal, which it starts in a new session whether or not
-// freshSession asks for one (supervise's freshSession), since the recorded session would send the
-// refused content to OpenAI again. The other starts so marked are a promoted root's architect's
-// (StartPromotedArchitect) and a failed root architect's that a todo on its root asks for
-// (retryFailedArchitect).
+// It is marked decided as well (record.SuperviseRequest.Decided) where decided says someone
+// decided on it, the one phase worker's start that can be: the architect's retry_or_escalate, the
+// operator's `legion claims retry` of a phase worker (intake.RestartPhase or the held phase's
+// retry), and a todo on a held root that is a decision (releaseHeldRoot, decides): a person's, or
+// the daemon's own write of a call to its API. So it is the one start of a phase worker that
+// launches again the agent of a claim held for OpenAI's cyber-policy refusal, which it starts in a
+// new session whether or not freshSession asks for one (supervise's freshSession), since the
+// recorded session would send the refused content to OpenAI again. A todo a session wrote decides
+// nothing, so its restart is not marked and launches no such agent. The other starts so marked
+// are a promoted root's architect's (StartPromotedArchitect) and a failed root architect's that a
+// todo on its root asks for (retryFailedArchitect), where that todo is a decision.
 //
 // The retry's task is written on that row first, as the task the role was given for that entry in
 // the issue's generation, as it was composed (record.PhaseRow.Given, record.GivenTask), beside the
@@ -633,7 +634,7 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // sends it decorated: with the base-merge sentence where the issue is a parent in testing
 // (withBaseMergeRun) and, for the reviewer, the round's sentences the queue adds (queuedRow). So a
 // held start keeps neither, and the return decorates it once.
-func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
+func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession, decided bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -658,7 +659,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, row.Entry, startMarks{resend: true, decided: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, sent, row.Entry, startMarks{resend: true, decided: decided, freshSession: freshSession})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -804,8 +805,9 @@ type startMarks struct {
 	// (record.SuperviseRequest.Decided), which makes it a start that launches again the agent of a
 	// claim held for OpenAI's cyber-policy refusal (supervise.RequestRetry.Decided). Of the phase
 	// workers' starts, restart alone sets it, the held phase's retry, which every such request
-	// comes through; no start the daemon makes by itself may, or it would send the refused content
-	// to OpenAI again.
+	// comes through, and only where its caller says someone decided on the retry; no start the
+	// daemon makes by itself may, nor one a session's todo causes, or it would send the refused
+	// content to OpenAI again.
 	decided bool
 	// resumeTask says the task is the phase's resume task (ResumeTask), so a claim that
 	// already holds a task of this generation and phase is given it once it is ready and the

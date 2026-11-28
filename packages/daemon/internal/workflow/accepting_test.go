@@ -91,6 +91,36 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 	}
 }
 
+// A person's backlog takes an issue in accepting out of Legion's work and keeps its phase (R20 of
+// dispatch://INFRA-3320), so the architect's sign-off then finds it in accepting. No step of an
+// issue out of Legion's work moves, so the sign-off is refused as one outside accepting, naming
+// the status the issue stands at, as backward refuses its move there, and it changes nothing.
+// Negative control, run when this was written and then reverted: without the refusal the
+// sign-off answered no refusal.
+func TestSignOffOfAnIssueOutOfLegionsWorkIsRefused(t *testing.T) {
+	t.Parallel()
+	pool := migratedPool(t)
+	seedAccepting(t, pool)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	if result := apply("backlog", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 1, Type: "issue.updated",
+		Status: "backlog", Title: "root", Rank: "U"}); result.Refusal != nil {
+		t.Fatalf("the person's backlog was refused: %+v", result.Refusal)
+	}
+	rows := outboxRowsOf(t, pool, "LEGION-208")
+
+	result := apply("signoff", rootsSignOff(t, pool, engine, "LEGION-208"))
+
+	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "SIGNOFF_OUTSIDE_ACCEPTING" ||
+		result.Refusal.Message != "LEGION-208 is out of Legion's work (backlog), so the architect's sign-off changed nothing" {
+		t.Fatalf("the sign-off of the issue on the backlog = %+v, want 409 SIGNOFF_OUTSIDE_ACCEPTING naming its status", result.Refusal)
+	}
+	assertPhase(t, pool, phase.Accepting)
+	if got := outboxRowsOf(t, pool, "LEGION-208"); got != rows {
+		t.Fatalf("the refused sign-off queued %d outbox rows, want none", got-rows)
+	}
+}
+
 // The architect's sign_off in accepting moves the issue to retro, since the acceptance is the
 // last step of the default steps this issue walks, with the status retro and starts the
 // implementer there, its task naming the phase, the review's handoff record (the reviewer's
