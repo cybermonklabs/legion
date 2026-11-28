@@ -360,7 +360,7 @@ await test("rebindElement keeps every plugin the view holds, including readingsI
   }
 });
 
-await test("the rebind's own updateState destroys and makes no plugin view, and makes the root's node view for the new block", async () => {
+await test("in the rebind's own view.updateState no plugin view is destroyed or made again, and the root's node view is made for the new block", async () => {
   const room = await seededRoom();
   const fragment = room.getXmlFragment("prosemirror");
   try {
