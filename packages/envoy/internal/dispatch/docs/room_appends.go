@@ -60,25 +60,27 @@ import (
 // its own content class and credit (appendWrites), and one pair of notifications. A document
 // whose issue has closed admits only a prefix of that run, the updates the room took in time
 // (gateAppend). The rest stay queued and meet the gate again on their own calls, but for u
-// itself: when u is among them, its call returns nil with u not stored, and nothing stores it
-// later, since its class leaves the queue as the call ends. The whole transaction is about three
-// round trips under the document's lock, on a connection of the room-appends pool.
+// itself, whose class leaves the queue as its call ends: when u is among them, its call commits
+// the prefix and then refuses u as a call whose whole run the gate refused does
+// (refuseClosedIssueAppend, RoomFlush.cut), so each update the gate refuses is refused to its
+// sender whichever call's batch met it. The whole transaction is about three round trips under
+// the document's lock, on a connection of the room-appends pool.
 //
 // What holds:
 //
 //   - What a nil return means. A call returns nil once its update is committed - by its own
 //     transaction, or by another writer's that stored it first and marked its class stored
-//     (RoomFlush.markStored) - or once it has dropped the update: its room failed, the store
-//     refused its whole run for a closed issue (refuseClosedIssueAppend), or the gate cut it from
-//     the run its own call stored (gateAppend, "The batch" above). Nothing in Dispatch stores a
-//     failed room's dropped update later: its class has left the queue, so no flush takes it, and
-//     the room's next load reads the store. The reloaded room holds it only if a transaction
-//     stored it - its writer's, as a published live write's and a committed repair's are; another
-//     process's, as a catch-up's is; or a batch's before the failure - or if a browser's client
-//     that holds it sends it to the reloaded room when it syncs. A call that returns an error has
-//     failed the room (failRoom). So ygo's flush ack, true when every call the flush made returned
-//     nil, does not mean each update it covers is durable, and it says nothing of a call made
-//     before it.
+//     (RoomFlush.markStored) - or once it has dropped the update: its room failed, or the store
+//     refused it for a closed issue, with its whole run or cut from the run whose prefix its own
+//     call stored (gateAppend, "The batch" above), and the call closed the room for its issue
+//     (refuseClosedIssueAppend). Nothing in Dispatch stores a failed room's dropped update later:
+//     its class has left the queue, so no flush takes it, and the room's next load reads the
+//     store. The reloaded room holds it only if a transaction stored it - its writer's, as a
+//     published live write's and a committed repair's are; another process's, as a catch-up's is;
+//     or a batch's before the failure - or if a browser's client that holds it sends it to the
+//     reloaded room when it syncs. A call that returns an error has failed the room (failRoom).
+//     So ygo's flush ack, true when every call the flush made returned nil, does not mean each
+//     update it covers is durable, and it says nothing of a call made before it.
 //   - Stored once. No class is stored by two transactions. A class queued unstored - a browser's
 //     update's, or a commit's with no writer of its own - is stored only by a transaction that
 //     holds the document's advisory lock and finds it, under the room's state lock, still queued
@@ -428,10 +430,14 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		}
 	}
 	// A closed issue admits only the updates the room took in time (gateAppend): the rest stay
-	// queued, and each meets the gate again on its own call - but for this call's own update when
-	// it is among them, whose class leaves the queue as this call ends, so nothing stores it later.
+	// queued, and each meets the gate again on its own call - but for the calling update when it
+	// is among them, whose class leaves the queue as its call ends, so the flush records the
+	// classes cut (RoomFlush.cut) and that call refuses its own once this has committed.
 	updates = updates[:admitted]
-	taking = taking[:min(admitted, len(taking))]
+	var cut []*queuedClass
+	if flush != nil {
+		taking, cut = taking[:admitted], taking[admitted:]
+	}
 	first = persistence.Version(head + 1)
 	// No transaction: this batch commits on its own connection, not in a caller's transaction,
 	// so the helpers that queue the author statements record no ledger overlay for it
@@ -480,6 +486,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 		return first, nil
 	}
 	flush.appendedRun(taking, updates, persistence.Version(head+1))
+	flush.cut = cut
 	advanceRoomCursorThrough(flush.cursor, flush.appended(nil))
 	for _, unlanded := range flush.markStored(nil) {
 		unlanded.landed()

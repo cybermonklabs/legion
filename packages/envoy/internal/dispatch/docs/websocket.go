@@ -282,8 +282,9 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // which is the close-and-reload a replaced history needs (plan D3.3). Nothing in Dispatch stores
 // the update later: the reloaded room holds it only if a transaction stored it, or if a browser
 // client that holds it sends it when it syncs (room_appends.go, "What a nil return means").
-// A refused update on a closed issue is dropped and closes the room
-// for its issue (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
+// A refused update on a closed issue - refused with its whole run, or cut from the run whose
+// prefix this call stored (RoomFlush.cut) - is dropped and closes the room for its issue
+// (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
 // under the document's advisory lock, so it is never this process's own write in flight, and
 // needs no room-sync lane to run.
 //
@@ -381,6 +382,12 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	}
 	if class.cursor.takeReplaced() {
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
+	}
+	// When the gate cut this call's own update from the run it stored (RoomFlush.cut), its class
+	// leaves the queue as this call ends, so no later call meets the gate for it: it is refused
+	// here, as it is when the gate refuses the whole run.
+	if slices.Contains(flush.cut, class) {
+		a.service.refuseClosedIssueAppend(room, class.instance)
 	}
 	return nil
 }
