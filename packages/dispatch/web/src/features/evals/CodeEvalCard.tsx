@@ -58,8 +58,9 @@ function figure(series: EvalSeriesValues | undefined, name: string): number | nu
 /** Why a code card's window reads no number, each said on a line of its own: no code group
  *  (spec R10); a window that starts before the eval's first day; a day a force-push marked
  *  (R8); a commit GitHub did not give whole (R9); a default repository the App cannot read, or
- *  none (R11); and days that all still wait (R7), those of a window that holds no day row. The
- *  absent rows name the commit and the repository (`AbsentReasons`). */
+ *  none where the eval holds no day row (R11); and days that all still wait (R7), those of a
+ *  window that holds no day row. The absent rows name the commit and the repository
+ *  (`AbsentReasons`). */
 type Reason =
   | { readonly kind: "no-group" }
   | { readonly kind: "before"; readonly day: string }
@@ -69,13 +70,16 @@ type Reason =
   | { readonly kind: "no-default-repo" }
   | { readonly kind: "waiting"; readonly days: number };
 
+/** The causes (`cols.cause`) of the eval's absent rows that the card reads. */
+type AbsentCause = "blocked" | "no_default_repo" | "repo_unreadable";
+
 /** The one statement of where the card reads each reason: null for a reason the settings or the
  *  status series state in full, drawn as its line; else the cause (`cols.cause`) of the eval's
  *  absent rows that name what it is of. The status names a repository the App cannot read only
  *  through the window's day rows, so a window that holds none reads its days as still waiting
  *  only where its absent rows name no such repository; where they name one, its line takes the
  *  place of the days' (R11). */
-const CAUSES: Readonly<Record<Reason["kind"], string | null>> = {
+const CAUSES: Readonly<Record<Reason["kind"], AbsentCause | null>> = {
   before: null,
   blocked: "blocked",
   marked: null,
@@ -88,17 +92,21 @@ const CAUSES: Readonly<Record<Reason["kind"], string | null>> = {
 /** What a code eval's window reads, from its `status` series (`fold.FoldStatus`): each reason it
  *  reads no number, none where it reads one; and how many of its days still wait, those after
  *  the newest day with a row (every day, where the eval holds none), null where the window
- *  states none or names a default repository the App cannot read, or none, since no run then
- *  measures them for the project (R7, R11). */
+ *  states none or names a default repository the App cannot read, or where the eval holds no day
+ *  row of a project with no default repository, since no run then measures them for the project
+ *  (R7, R11). */
 interface CodeWindow {
   readonly reasons: readonly Reason[];
   readonly waiting: number | null;
 }
 
 /** What `item`'s window reads (CodeWindow), for a project of `groups` code groups whose default
- *  repository is `defaultRepo`. A window starting before the status series' first day reads
- *  "no data before" that day, and the server states no figure of it; a window with no day row at
- *  all waits every day, unless its absent rows name a repository the App cannot read (CAUSES). */
+ *  repository is `defaultRepo`. A project with no default repository takes its days from each
+ *  repository holding a change of its issues, so only an eval that holds no day row of it reads
+ *  "no default repository"; one that holds day rows reads its window as any other (R11). A window
+ *  starting before the status series' first day reads "no data before" that day, and the server
+ *  states no figure of it; a window with no day row at all waits every day, unless its absent
+ *  rows name a repository the App cannot read (CAUSES). */
 function codeWindowOf(
   item: EvalListItem,
   window: EvalRange,
@@ -108,6 +116,9 @@ function codeWindowOf(
   if (groups === 0) return { reasons: [{ kind: "no-group" }], waiting: null };
   const status = seriesOf(item, "status");
   const since = status?.data_since ?? null;
+  if (since === null && defaultRepo === null) {
+    return { reasons: [{ kind: "no-default-repo" }], waiting: null };
+  }
   if (since !== null && utcDate(window.from) < since) {
     return { reasons: [{ day: since, kind: "before" }], waiting: null };
   }
@@ -121,9 +132,8 @@ function codeWindowOf(
     });
   }
   if ((figure(status, "blocked_days") ?? 0) > 0) reasons.push({ kind: "blocked" });
-  if ((figure(status, "repo_unreadable") ?? 0) > 0) reasons.push({ kind: "unreadable" });
-  if (measured === 0 && defaultRepo === null) reasons.push({ kind: "no-default-repo" });
-  if (reasons.some((reason) => reason.kind === "unreadable" || reason.kind === "no-default-repo")) {
+  if ((figure(status, "repo_unreadable") ?? 0) > 0) {
+    reasons.push({ kind: "unreadable" });
     return { reasons, waiting: null };
   }
   const waiting = since === null ? window.days : (figure(status, "waiting_days") ?? 0);
@@ -183,47 +193,61 @@ function reasonLine(reason: Reason, project: string): ReactNode {
   }
 }
 
+/** What a blocking commit's absent row says of its files (R9): how many GitHub listed with no
+ *  patch (`cols.files`); where its listing left out files whose number no answer names
+ *  (`cols.unlisted`), at least that many, or, where it listed none with no patch, that GitHub did
+ *  not list them; nothing where the row states no count. */
+function blockedFiles(row: EvalItemRow): string {
+  const files = row.cols?.files;
+  if (row.cols?.unlisted !== true) {
+    return typeof files === "number" ? ` (${plural(files, "file")})` : "";
+  }
+  return typeof files === "number" && files > 0
+    ? ` (at least ${plural(files, "file")})`
+    : " (files GitHub did not list)";
+}
+
+/** The line of an absent row, of its own `cause`: the commit that blocks days of the window,
+ *  linked to it, with what the row says of its files (`blockedFiles`); the repository the App
+ *  cannot read; the missing default repository, linked to the settings. */
+function absentLine(row: EvalItemRow, cause: AbsentCause, project: string): ReactNode {
+  switch (cause) {
+    case "blocked":
+      return (
+        <>
+          No data: GitHub did not give the whole patch of commit{" "}
+          <a
+            className={`hover:underline ${linkText}`}
+            href={row.href}
+            rel="noreferrer noopener"
+            target="_blank"
+          >
+            {textOf(row, "sha").slice(0, 7)}
+          </a>
+          {blockedFiles(row)}
+        </>
+      );
+    case "repo_unreadable":
+      return `No data: Dispatch's GitHub App cannot read ${textOf(row, "repo")}`;
+    case "no_default_repo":
+      return reasonLine({ kind: "no-default-repo" }, project);
+  }
+}
+
 /** The lines the absent rows of `reason`'s cause say (dispatch://INFRA-3206, the items route's
- *  `absent` rows), each keyed by its row: each commit that blocks days of the window with its
- *  count of files, linked to it; the repository the App cannot read, of an unreadable reason or
- *  of days still waiting; the missing default repository. None where the rows hold no row of
- *  that cause. */
+ *  `absent` rows), each keyed by its row and drawn from the row's own cause (`absentLine`): the
+ *  reason only selects the rows. None where the rows hold no row of that cause. */
 function absentLines(
   rows: readonly EvalItemRow[],
   reason: Reason,
   project: string
 ): { key: string; line: ReactNode }[] {
-  return rows
-    .filter((row) => textOf(row, "cause") === CAUSES[reason.kind])
-    .map((row) => {
-      if (reason.kind !== "blocked") {
-        return {
-          key: row.row_key,
-          line:
-            reason.kind === "no-default-repo"
-              ? reasonLine(reason, project)
-              : `No data: Dispatch's GitHub App cannot read ${textOf(row, "repo")}`,
-        };
-      }
-      const files = row.cols?.files;
-      return {
-        key: row.row_key,
-        line: (
-          <>
-            No data: GitHub did not give the whole patch of commit{" "}
-            <a
-              className={`hover:underline ${linkText}`}
-              href={row.href}
-              rel="noreferrer noopener"
-              target="_blank"
-            >
-              {textOf(row, "sha").slice(0, 7)}
-            </a>
-            {typeof files === "number" ? ` (${plural(files, "file")})` : ""}
-          </>
-        ),
-      };
-    });
+  return rows.flatMap((row) => {
+    const cause = textOf(row, "cause");
+    return cause === CAUSES[reason.kind]
+      ? [{ key: row.row_key, line: absentLine(row, cause, project) }]
+      : [];
+  });
 }
 
 /**
@@ -444,8 +468,9 @@ function CardBody({
  * eval's first day; a marked day; every day still waiting, where the eval's absent rows name no
  * repository the App cannot read; a blocked commit or a repository the App cannot read, read from
  * the eval's absent rows only while the window is in that state (`AbsentReasons`); and no default
- * repository. A window that names a repository the App cannot read, or none, counts no day as
- * waiting (R7). It draws nothing until the view holds its eval.
+ * repository, where the eval holds no day row. A window that names a repository the App cannot
+ * read, or an eval that holds no day row of a project with no default repository, counts no day
+ * as waiting (R7). It draws nothing until the view holds its eval.
  */
 export function CodeEvalCard({
   project,
