@@ -119,7 +119,7 @@ func serveRealHelper(t *testing.T, brokerURL, operator string) (*helper.Server, 
 	t.Helper()
 	client := &http.Client{Transport: &http.Transport{}}
 	t.Cleanup(client.CloseIdleConnections)
-	return serveRealHelperWith(t, brokerURL, operator, client)
+	return serveRealHelperWith(t, brokerURL, operator, client, nil)
 }
 
 func helperSessions(t *testing.T, sock string) []helper.SessionInfo {

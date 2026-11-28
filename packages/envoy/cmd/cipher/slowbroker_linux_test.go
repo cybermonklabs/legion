@@ -2,11 +2,11 @@
 //go:build linux
 
 // `agent-secrets enroll --helper` against a real helper and a real broker (ciphertest.NewRig)
-// that is slow to answer. This file uses nothing a release before the helper's broker-call bound
-// lacks, so the same row also runs against such a release, where it fails: that helper gave itself
-// 5 s to write its answer, so when the broker answered after those 5 s (8 s here) it could not
-// write the answer and closed the connection without one, while the broker made the enrollment
-// the client was never told about. Linux-only for the real helper's pidfd pinning.
+// that is slow to answer. The row holds the defect of a helper from before the broker-call bound:
+// that helper gave itself 5 s to write its answer, so when the broker answered after those 5 s
+// (8 s here) it could not write the answer and closed the connection without one, while the
+// broker made the enrollment the client was never told about. Linux-only for the real helper's
+// pidfd pinning.
 package main
 
 import (
@@ -28,16 +28,18 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // serveRealHelperWith serves a real helper.Server against the broker at brokerURL, sending its
 // broker calls through client, with an operator file naming operator (an email, as Dispatch
-// names the person who approves) so a test can log it in (Broker.Login). It waits for every
+// names the person who approves) so a test can log it in (Broker.Login). configure, when not nil,
+// sets what the test needs on the server (its clocks) before it serves. It waits for every
 // session to be retired and the server to stop, then closes the registry, which lets a save still
 // finishing a registration, a retire or an enrollment complete and makes any later one write
 // nothing, and the broker, which does the same for its machine file, before the test's temporary
 // directories go.
-func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.Client) (*helper.Server, string) {
+func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.Client, configure func(*helper.Server)) (*helper.Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	operatorFile := filepath.Join(dir, "operator")
@@ -52,6 +54,9 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MinRenew: 50 * time.Millisecond,
 	}
+	if configure != nil {
+		configure(srv)
+	}
 	sock := filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
@@ -61,12 +66,12 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 	served := make(chan struct{})
 	go func() { defer close(served); _ = srv.Serve(ctx, ln) }()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(10 * time.Second)
-		for len(srv.Registry.List()) > 0 && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Until(t, "the helper's registry to hold no session", func() (string, bool) {
+			n := len(srv.Registry.List())
+			return fmt.Sprintf("it holds %d", n), n == 0
+		})
 		cancel()
-		<-served
+		testwait.Receive(t, "the helper's Serve to return", served)
 		srv.Registry.Close()
 		srv.Broker.Close()
 	})
@@ -158,7 +163,7 @@ func TestEnrollThroughTheHelperAnswersTheBrokersOutcomeWhenTheBrokerIsSlow(t *te
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	slow := &slowEnrollments{base: http.DefaultTransport, hold: 8 * time.Second}
-	_, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
+	_, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow}, nil)
 	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
 		t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
 	}

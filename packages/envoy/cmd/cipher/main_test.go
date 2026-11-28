@@ -542,7 +542,9 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 // stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
 // fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
 // leak into (or shadow) a granted secret. The binary runs in a world of its own (hostIsolation),
-// so a person's sign-in or settings file on the machine running the tests is not a source.
+// so a person's sign-in or settings file on the machine running the tests is not a source. Its
+// exit is taken through testwait, so a binary that never exits fails the test naming the command,
+// and a cleanup kills one still running when the test ends.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
@@ -550,15 +552,22 @@ func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []str
 	var out, errOut strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut
-	err := cmd.Run()
-	if err == nil {
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("run agent-secrets %v: %v", args, err)
+	}
+	var waitErr error
+	exited := make(chan struct{})
+	go func() { waitErr = cmd.Wait(); close(exited) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); testwait.Receive(t, "the killed agent-secrets to exit", exited) })
+	testwait.Receive(t, "agent-secrets "+strings.Join(args, " ")+" to exit", exited)
+	if waitErr == nil {
 		return out.String(), errOut.String(), 0
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if errors.As(waitErr, &exitErr) {
 		return out.String(), errOut.String(), exitErr.ExitCode()
 	}
-	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, out.String(), errOut.String())
+	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, waitErr, out.String(), errOut.String())
 	return "", "", -1
 }
 
@@ -1742,7 +1751,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1745).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1755).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -2029,7 +2038,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2048); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2053).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2058); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2063).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -2061,7 +2070,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2077).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2087).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string

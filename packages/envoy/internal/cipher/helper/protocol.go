@@ -9,6 +9,7 @@ package helper
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -419,14 +420,33 @@ func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
 // error after the whole request was written (no reply line within the timeout, or a reply that
 // is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
 // request. A failed dial, marshal or write does not: the helper did not get the whole request.
+// It is CallContext under a context that ends at timeout, with the dial's 2 s of its own.
 func Call(sock string, req Request, timeout time.Duration) (Response, error) {
-	deadline := time.Now().Add(timeout)
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return callWith(ctx, &net.Dialer{Timeout: 2 * time.Second}, sock, req)
+}
+
+// CallContext is Call bounded by ctx in place of a timeout: the dial, the write and the read each
+// end once ctx ends, and a write or a read that ctx ended fails as a passed deadline does ("i/o
+// timeout"). It reads no deadline from ctx, so a context that ends without reporting one, as a
+// clocktest.Fake's deadline context does, ends the call the same way. The dial has no bound of its
+// own. ErrNoReply is in its errors as it is in Call's.
+func CallContext(ctx context.Context, sock string, req Request) (Response, error) {
+	return callWith(ctx, &net.Dialer{}, sock, req)
+}
+
+// callWith is CallContext through dialer.
+func callWith(ctx context.Context, dialer *net.Dialer, sock string, req Request) (Response, error) {
+	conn, err := dialer.DialContext(ctx, "unix", sock)
 	if err != nil {
 		return Response{}, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(deadline)
+	// ctx's end sets a deadline already passed, which ends the write or the read in progress, and
+	// any later one, with os.ErrDeadlineExceeded, as a deadline at that moment would.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
 	data, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, err

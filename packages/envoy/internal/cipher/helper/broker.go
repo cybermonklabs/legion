@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -184,6 +185,11 @@ type Broker struct {
 	// was signed with (its login_hint) and the broker's refusal code, which are identifiers,
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
+	// Clock is the clock loginWait waits each poll's interval on (clk), where testLoginWait is
+	// nil. Production leaves it nil, which is the wall clock (clock.Real): cmd/cipher-helper sets
+	// nothing here. A test sets a clocktest.Fake, reads the wait pollLogin arms on it, and moves
+	// it there, so the row checks the device authorization's interval without waiting it out.
+	Clock clock.Clock
 
 	cred            atomic.Pointer[machineCredential]
 	identityStopped atomic.Bool
@@ -898,19 +904,29 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 	}
 }
 
-// loginWait waits d before pollLogin's next poll, or until ctx ends (the code's lifetime passing),
-// or, in a test, hands d and the device authorization to testLoginWait and returns at once.
+// loginWait waits d on the Broker's clock (clk) before pollLogin's next poll, or until ctx ends
+// (the code's lifetime passing), or, in a test, hands d and the device authorization to
+// testLoginWait and returns at once.
 func (b *Broker) loginWait(ctx context.Context, d time.Duration, da *oauth2.DeviceAuthResponse) {
 	if b.testLoginWait != nil {
 		b.testLoginWait(d, da)
 		return
 	}
-	timer := time.NewTimer(d)
+	timer := b.clk().NewTimer(d)
 	defer timer.Stop()
 	select {
-	case <-timer.C:
+	case <-timer.C():
 	case <-ctx.Done():
 	}
+}
+
+// clk is the clock loginWait waits on: Clock, and clock.Real when it is nil, which every
+// production Broker is.
+func (b *Broker) clk() clock.Clock {
+	if b.Clock == nil {
+		return clock.Real()
+	}
+	return b.Clock
 }
 
 // devicePoll is one poll of da's device code (RFC 8628 section 3.4) through client, under ctx,
