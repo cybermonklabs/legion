@@ -638,9 +638,6 @@ func (e *Engine) closeCheck(ctx context.Context, tx pgx.Tx, check *record.Produc
 		if err := e.closeWaitNoResult(ctx, tx, issue, *check); err != nil {
 			return err
 		}
-		if err := e.askCloseRead(ctx, tx, issue); err != nil {
-			return err
-		}
 	} else if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun()}); err != nil {
 		return err
 	}
