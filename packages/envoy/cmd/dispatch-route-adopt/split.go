@@ -694,7 +694,7 @@ func renderRoute(route *oldRoute, imports map[string]string) ([]byte, error) {
 	for name := range packages {
 		importPath, known := imports[name]
 		if !known {
-			return nil, fmt.Errorf("the package %s is imported by neither %s nor %s", name, tableFile, shapesFile)
+			return nil, fmt.Errorf("the package %s is imported by none of %s", name, spokenList(oldLayoutFiles))
 		}
 		spec := strconv.Quote(importPath)
 		if path.Base(importPath) != name {

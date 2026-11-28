@@ -978,6 +978,11 @@ func TestReadClassesWhereASideHoldsNone(t *testing.T) {
 		if !named {
 			t.Fatalf("the report does not name %s's readClasses as stale:\n%s", readClassesPath, run.out)
 		}
+		for _, carried := range run.report.carry {
+			if strings.Contains(carried, readClassesPath) {
+				t.Fatalf("the report carries an edit to %s, which the merge adds as the branch wrote it:\n%s", readClassesPath, run.out)
+			}
+		}
 	})
 }
 
@@ -1189,6 +1194,34 @@ func TestTheSplitterReadsTheApproveList(t *testing.T) {
 		if strings.Contains(string(content), "ApproveOnly") {
 			t.Errorf("%s states ApproveOnly though the table holds no approve list:\n%s", name, content)
 		}
+	}
+}
+
+// A route whose expressions name a package no old-layout file imports is refused, and the refusal
+// names that package and every file of oldLayoutFiles, since the imports are read from each of
+// them: read_classes.go too, not the table and the shapes alone. The control is the same route
+// with the package imported, which renders.
+func TestAPackageNoOldLayoutFileImportsIsRefusedNamingEveryFile(t *testing.T) {
+	t.Parallel()
+	const unimported = "unimportedpkg"
+	route := &oldRoute{
+		methodExpr: "http.MethodGet", patternExpr: `"/api/v1/adopt-test-unimported"`, authExpr: "authAny",
+		descriptionExpr: unimported + ".Description", handler: "getUnimported",
+		packages: map[string]bool{unimported: true},
+	}
+	imports := map[string]string{"http": "net/http"}
+	_, err := renderRoute(route, imports)
+	if err == nil {
+		t.Fatalf("a route naming %s, which no old-layout file imports, rendered", unimported)
+	}
+	for _, want := range append([]string{unimported}, oldLayoutFiles...) {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not name %s", err.Error(), want)
+		}
+	}
+	imports[unimported] = "example.com/" + unimported
+	if _, err := renderRoute(route, imports); err != nil {
+		t.Fatalf("the control failed: the same route with %s imported does not render: %v", unimported, err)
 	}
 }
 
