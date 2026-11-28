@@ -126,3 +126,6 @@ variables:
   SPEC_CHECK_PRINT_SEEDS:
     class: opt-out
     why: A person sets it to run the spec printer's invariant on more seeds than its default 460; no job sets it, and envoy-go-build runs the default.
+  STE_LINT_RERUN:
+    class: opt-out
+    why: A person sets it to run the pinned Python ste-lint against the golden findings on a machine of their own; on GitHub Actions the test runs that program whatever the variable says (rerunsSteLint reads GITHUB_ACTIONS), and envoy-go runs the test there with python3 on PATH.
