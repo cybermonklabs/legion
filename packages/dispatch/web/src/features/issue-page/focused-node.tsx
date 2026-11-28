@@ -1,4 +1,4 @@
-import { createContext, type ReactNode, useContext, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
 
 import type { Actor, DisplayTree } from "../../api/types";
 import type { TextSource } from "../refs/text-references";
@@ -45,16 +45,29 @@ const FocusedNodeContext = createContext<FocusedNode | undefined>(undefined);
 
 const SetFocusedNodeContext = createContext<(node: FocusedNode | undefined) => void>(() => {});
 
+const LastFocusedIdContext = createContext<string | undefined>(undefined);
+
 /**
  * Holds the focused node for one issue page, above the page itself: the tree sets it, and the
  * page reads it and hands it to the panel, whose facts are that node's, and to the preset row,
- * which draws the toolbar of the document holding it.
+ * which draws the toolbar of the document holding it. Beside it, it holds the id of the node the
+ * focus was last on, which the focus going back to the issue itself does not clear
+ * (`useLastFocusedNodeId`).
  */
 export function FocusedNodeProvider({ children }: { children: ReactNode }): ReactNode {
   const [focused, setFocused] = useState<FocusedNode | undefined>(undefined);
+  const [lastId, setLastId] = useState<string | undefined>(undefined);
+  // One setter sets both, so the node the focus is on is the last one in the same render, and
+  // `undefined` leaves the last one as it was.
+  const setFocusedNode = useCallback((node: FocusedNode | undefined) => {
+    setFocused(node);
+    if (node !== undefined) setLastId(node.id);
+  }, []);
   return (
-    <SetFocusedNodeContext.Provider value={setFocused}>
-      <FocusedNodeContext.Provider value={focused}>{children}</FocusedNodeContext.Provider>
+    <SetFocusedNodeContext.Provider value={setFocusedNode}>
+      <FocusedNodeContext.Provider value={focused}>
+        <LastFocusedIdContext.Provider value={lastId}>{children}</LastFocusedIdContext.Provider>
+      </FocusedNodeContext.Provider>
     </SetFocusedNodeContext.Provider>
   );
 }
@@ -63,6 +76,16 @@ export function FocusedNodeProvider({ children }: { children: ReactNode }): Reac
  *  issue's own facts, because a reader who is on no node is reading the issue. */
 export function useFocusedNode(): FocusedNode | undefined {
   return useContext(FocusedNodeContext);
+}
+
+/** The id of the node the focus was last on, kept once the focus goes back to the issue itself,
+ *  where `useFocusedNode` answers `undefined`, until it takes another node; `undefined` while no
+ *  node has taken it. The provider is drawn anew for each issue (`slots/providers.tsx`), so it
+ *  never names another issue's node. The Contents list reads it: the Outline sheet draws a new
+ *  list each time it opens, after the focus left the outline for the Outline control, and that
+ *  list saw no focus of its own (`IssueContents.tsx`). */
+export function useLastFocusedNodeId(): string | undefined {
+  return useContext(LastFocusedIdContext);
 }
 
 /** Moves the focus to `node`, or back to the issue itself with `undefined`. */
