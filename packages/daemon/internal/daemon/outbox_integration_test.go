@@ -668,7 +668,7 @@ func TestAPersonsHandoverIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing.T
 			var logs bytes.Buffer
 			runner := &outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission},
 				log: slog.New(slog.NewJSONHandler(&logs, nil))}
-			row := mustOutboxRow(t, tc.key, record.PersonHandoverStatusWrite("todo", tc.observed), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.PersonHandoverStatusWrite("todo", tc.observed), time.Now()))
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute the person's handover: %v", err)
@@ -735,10 +735,14 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 			client := &refusedOnceDispatch{outboxDispatch: outboxDispatch{issue: shown}, reread: reread}
 			runner := &outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission},
 				log: quietLogger()}
-			row := mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", tc.wrote, shown.LastSeq), time.Now()))
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute the re-assert: %v", err)
+			}
+			// The lane deletes a row it finished, so only rows the run queued are left below.
+			if _, err := pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
+				t.Fatalf("finish the re-assert row %d: %v", row.ID, err)
 			}
 
 			if client.refusals != 1 {

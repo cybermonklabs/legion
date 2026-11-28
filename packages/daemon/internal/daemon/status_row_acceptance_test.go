@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -41,7 +41,7 @@ func TestAStatusRowWritesNothingOverAnAcceptanceTheRecordHolds(t *testing.T) {
 				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: tc.at, Generation: 1, Status: "retro", DispatchStatus: "retro"})
 			client := &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "retro", LastSeq: 9}}
 			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
-			if err := runner.execute(context.Background(), mustOutboxRow(t, tc.key, record.OrdinaryStatusWrite("needs_review", "retro", ""), time.Now())); err != nil {
+			if err := runner.execute(context.Background(), leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.OrdinaryStatusWrite("needs_review", "retro", ""), time.Now()))); err != nil {
 				t.Fatalf("execute the row: %v", err)
 			}
 			if !slices.Equal(client.statuses, tc.writes) {
@@ -97,7 +97,7 @@ func TestASetBackSettlesItsRequestFromDispatchAlone(t *testing.T) {
 				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
 			client := &lateLanding{outboxDispatch: &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: tc.shows, LastSeq: tc.seq}}, landed: tc.landed}
 			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
-			if err := runner.execute(context.Background(), mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now())); err != nil {
+			if err := runner.execute(context.Background(), leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now()))); err != nil {
 				t.Fatalf("execute the row: %v", err)
 			}
 			if len(client.messages) != tc.fences || tc.fences > 0 && !strings.Contains(client.messages[0], "ends any chance that it lands later") {
@@ -110,12 +110,9 @@ func TestASetBackSettlesItsRequestFromDispatchAlone(t *testing.T) {
 	}
 }
 
-// A set-back the lane claimed while the act held the issue's lock, and that the act's taken close
-// then deleted, runs on its in-memory payload once the lock is free. It reads its own lease first,
-// and where the row is gone it finishes with no Dispatch read or write, so the close's done stays.
-// A set-back left standing over a close the record holds writes nothing either (overAcceptance).
-// The control is a set-back left standing over a close the record does not hold (a refused close
-// whose write back failed), which writes the old status back.
+// A set-back left standing over a close the record holds writes nothing (overAcceptance). The
+// control is a set-back left standing over a close the record does not hold (a refused close whose
+// write back failed), which writes the old status back.
 func TestASetBackClaimedBeforeTheCloseWritesNothingOverIt(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
@@ -123,45 +120,98 @@ func TestASetBackClaimedBeforeTheCloseWritesNothingOverIt(t *testing.T) {
 	for _, tc := range []struct {
 		name, key, recorded string
 		at                  phase.Phase
-		dropped             bool
 		writes              []string
 	}{
-		{name: "claimed, then dropped by the taken close", key: "LEGION-801", recorded: "in_progress", at: phase.Admitted, dropped: true},
 		{name: "standing over a close the record holds", key: "LEGION-802", recorded: "done", at: phase.Done},
 		{name: "control: standing over a close the record does not hold", key: "LEGION-803", recorded: "in_progress", at: phase.Admitted, writes: []string{"in_progress"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
 			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: tc.at, Generation: 1, Status: tc.recorded, DispatchStatus: "done"})
-			var leased record.OutboxRow
-			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-				id, err := records.EnqueueID(ctx, tx, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now().Add(-time.Second)))
-				if err != nil {
-					return err
-				}
-				var ok bool
-				if leased, ok, err = records.ClaimRow(ctx, tx, id, time.Now(), time.Minute); err == nil && !ok {
-					err = fmt.Errorf("row %d not claimed", id)
-				}
-				return err
-			}); err != nil {
-				t.Fatalf("queue and claim the set-back: %v", err)
-			}
-			if tc.dropped {
-				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-					return records.DropStatusWrites(ctx, tx, tc.key)
-				}); err != nil {
-					t.Fatalf("drop the status writes as the taken close does: %v", err)
-				}
-			}
+			leased := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now()))
 			client := &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "done", LastSeq: 10}}
 			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
-			if err := runner.execute(ctx, leased); err != nil {
-				t.Fatalf("execute the claimed set-back: %v", err)
+			if err := runner.execute(context.Background(), leased); err != nil {
+				t.Fatalf("execute the set-back: %v", err)
 			}
 			if !slices.Equal(client.statuses, tc.writes) || len(client.messages) != 0 {
 				t.Fatalf("Dispatch writes %q and messages %q, want %q and none", client.statuses, client.messages, tc.writes)
+			}
+		})
+	}
+}
+
+// unreadable is outboxDispatch whose issue read fails, and counts each attempt: a row that reads
+// Dispatch at all is seen doing so, whatever it then does.
+type unreadable struct {
+	*outboxDispatch
+	reads int
+}
+
+func (d *unreadable) GetIssue(context.Context, string) (dispatch.Issue, error) {
+	d.reads++
+	return dispatch.Issue{}, errors.New("Dispatch is unreachable")
+}
+
+// A set-back the lane leased, and that waits on its issue's lock while the act holds it, is
+// dropped meanwhile: by the act's taken close (DropStatusWrites), or by the route on Dispatch's
+// refusal of the request (DropOutboxRows). Once the lock is free, the row reads its own lease and
+// finishes with no Dispatch read, no write and no fence message, and answers no error. Dispatch is
+// left at the request's sequence and status, where a run on the in-memory payload would post the
+// fence, and its issue read fails, so any read is seen. The case fails with no lease check, and
+// with the check read before the lock, which sees the lease the drop has not yet ended.
+func TestASetBackDroppedWhileItWaitsOnTheLockRunsNothing(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, tc := range []struct {
+		name, key string
+		drop      func(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error
+	}{
+		{name: "the taken close drops it", key: "LEGION-804", drop: func(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+			return records.DropStatusWrites(ctx, tx, row.Issue)
+		}},
+		{name: "the route deletes it on Dispatch's refusal", key: "LEGION-805", drop: func(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+			return records.DropOutboxRows(ctx, tx, []int64{row.ID})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+			leased := leasedOutboxRow(t, pool, records, mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now()))
+			client := &unreadable{outboxDispatch: &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "in_progress", LastSeq: 9}}}
+			waiting := make(chan string, 1)
+			locks := &issuelock.Locks{Waiting: func(issue string) { waiting <- issue }}
+			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: locks}
+			release := locks.Accept(tc.key)
+			done := make(chan error, 1)
+			go func() { done <- runner.execute(context.Background(), leased) }()
+			select {
+			case err := <-done:
+				release()
+				t.Fatalf("the set-back ran while the act held its issue's lock: %v", err)
+			case <-waiting:
+			case <-time.After(time.Minute):
+				release()
+				t.Fatal("the set-back neither ran nor waited on its issue's lock within a minute")
+			}
+			if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+				return tc.drop(ctx, tx, leased)
+			}); err != nil {
+				release()
+				t.Fatalf("drop the set-back while it waits: %v", err)
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("the dropped set-back answered %v, want no error", err)
+				}
+			case <-time.After(time.Minute):
+				t.Fatal("the set-back did not finish within a minute of the lock's release")
+			}
+			if client.reads != 0 || len(client.statuses) != 0 || len(client.messages) != 0 {
+				t.Fatalf("the dropped set-back read Dispatch %d times, wrote %q and posted %q, want nothing", client.reads, client.statuses, client.messages)
 			}
 		})
 	}
@@ -187,7 +237,7 @@ func TestAStatusRowWaitsForAnAcceptanceOfItsIssue(t *testing.T) {
 	accepted := locks.Accept(key)
 	done := make(chan error, 1)
 	go func() {
-		done <- runner.execute(context.Background(), mustOutboxRow(t, key, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now()))
+		done <- runner.execute(context.Background(), leasedOutboxRow(t, pool, records, mustOutboxRow(t, key, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now())))
 	}()
 	select {
 	case err := <-done:

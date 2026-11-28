@@ -1847,7 +1847,6 @@ func (s *server) sendAcceptance(ctx context.Context, a acceptAct, shown dispatch
 	written, read, err := s.writeAtRead(ctx, shown, func(ctx context.Context, read dispatch.Issue) (dispatch.Issue, error) {
 		write := dispatch.AcceptanceWrite{Key: acceptanceKey(a), Issue: a.issue, Status: a.status, Sequence: read.LastSeq}
 		// Dispatch naming no status, or showing the act's status already, leaves nothing to set back.
-		pending = 0
 		if shown.Status != "" && shown.Status != a.status {
 			id, err := s.queueSetBack(ctx, write, shown.Status)
 			if err != nil {
@@ -1984,7 +1983,7 @@ func (s *server) retireSetBack(ctx context.Context, a acceptAct, row int64) {
 		return
 	}
 	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.DropQueuedChanges(ctx, tx, []int64{row})
+		return s.records.DropOutboxRows(ctx, tx, []int64{row})
 	}); err != nil {
 		s.log.Warn("could not delete the set-back of a settled request; the outbox runs it, finds Dispatch at its status or past the request, and writes nothing",
 			"issue", a.issue, "act", a.act, "row", row, "error", err)

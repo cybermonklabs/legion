@@ -71,8 +71,8 @@ body: |-
   The daemon's Dispatch client gains `SetAcceptanceStatus`, which needs a Dispatch that holds the
   refusal `FOREIGN_CHILD_OPEN` (an older Dispatch writes the status with no check) and that names
   a keyed request's `Idempotency-Key` back on its answer: a Dispatch that does not reads every
-  acceptance as unsettled, so each `sign_off` and `close_root` answers 502 and the outbox sets
-  the status back.
+  acceptance as unsettled, so each `sign_off` that accepts the issue, and each `close_root`,
+  answers 502 and the outbox sets the status back.
 time: 2026-11-21T19:22:37.000000000Z
 custom:
     Issue: parent-across-projects

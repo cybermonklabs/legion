@@ -48,7 +48,7 @@ var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 // errNoticeRowGone is a notice row, or a controller notice row, deleted while the runner held its
 // lease: a catch-up a newer ready dropped (record.Store.DropCatchUps), or a changes request, or
 // its relay to the controller, the person's approval followed that a clear of its generation
-// dropped (record.Store.DropQueuedChanges).
+// dropped (record.Store.DropOutboxRows).
 var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 
 // changesSuperseded is a changes request the person's approval followed: the gates stillOwed read

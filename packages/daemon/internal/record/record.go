@@ -2923,7 +2923,7 @@ type Store interface {
 	// person's word again. A person who requested changes and then approved the latest version as
 	// their hand-over would send the new architect, or the controller, to revise the spec they
 	// approved. Which rows forget deletes, and which it leaves, is the forget's own rule
-	// (workflow.ForgetSuperseded, ForgetKeptDecisions, DropQueuedChanges). forget is required, so
+	// (workflow.ForgetSuperseded, ForgetKeptDecisions, DropOutboxRows). forget is required, so
 	// no clear can skip it: a nil forget is refused before anything is written. The workflow
 	// passes a forget that asks what every start, catch-up and delivery asks, through
 	// workflow.Engine.ClearGeneration, the only caller, so the clear asks its one rule.
@@ -3407,14 +3407,10 @@ type Store interface {
 	// lock and finds the acceptance recorded, so it writes nothing back (the outbox's
 	// overAcceptance).
 	DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error
-	// DropQueuedChanges deletes each outbox row of rows by id, a row a runner has leased included:
-	// the changes requests a clear's forget found that the person's approval followed (KeptForget,
-	// QueuedChanges), whose gates the clear then deletes; and the set-back of an acceptance's
-	// request that the request's refusal, or a landed write back, leaves nothing to undo (the API's
-	// retireSetBack). A runner mid-attempt reads its lease (the outbox's leaseHolds, or OutboxLeased
-	// in the snapshot it asks the gates in), so it finishes such a row with nothing written, and its
-	// finish then finds nothing to delete.
-	DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error
+	// DropOutboxRows deletes each outbox row of rows by id, a row a runner has leased included. A
+	// runner mid-attempt reads its lease (OutboxLeased) before it acts, so it finishes such a row
+	// with nothing done, and its finish then finds nothing to delete.
+	DropOutboxRows(ctx context.Context, tx pgx.Tx, rows []int64) error
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,
 	// which checkWakeDue cannot fence by the wake the check records. The workflow drops them where it
@@ -3422,7 +3418,7 @@ type Store interface {
 	// is dropped too; its fact is the one applying, and its finish then finds nothing to delete.
 	DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error
 	// OutboxLeased reports whether row id is still in the outbox under leaseToken: false once
-	// another transaction deleted it while the runner held it (DropCatchUps, DropQueuedChanges).
+	// another transaction deleted it while the runner held it (DropCatchUps, DropOutboxRows).
 	OutboxLeased(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) (bool, error)
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)

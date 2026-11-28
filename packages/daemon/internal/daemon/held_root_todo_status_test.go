@@ -95,8 +95,8 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 					t.Fatalf("apply %s = %+v, %v; want it taken", id, result.Refusal, err)
 				}
 			}
-			// writeRootStatuses runs each status row of the root the outbox holds, oldest first, and
-			// finishes it, as the outbox's status lane does.
+			// writeRootStatuses runs each status row of the root the outbox holds, oldest first, under
+			// a lease, and finishes it, as the outbox's status lane does.
 			writeRootStatuses := func() {
 				t.Helper()
 				var rows []record.OutboxRow
@@ -111,6 +111,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 					if row.Issue != rootKey {
 						continue
 					}
+					row.LeaseToken = leaseOutboxRow(t, pool, row.ID)
 					if err := runner.execute(ctx, row); err != nil {
 						t.Fatalf("run the status row %d of %s: %v", row.ID, rootKey, err)
 					}

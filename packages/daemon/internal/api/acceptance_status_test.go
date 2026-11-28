@@ -307,6 +307,25 @@ func TestAnAcceptanceKeyFitsDispatchsBound(t *testing.T) {
 	}
 }
 
+// A refusal that names no key back is no verdict of Dispatch's keyed layer on the request, so its
+// code must not decide the act: an unechoed 409 FOREIGN_CHILD_OPEN is answered 502
+// DISPATCH_FAILED, not SIGNOFF_CHILD_OPEN "nothing was written", and the request's set-back stays
+// queued, since the write may still land.
+func TestAnUnechoedRefusalIsNoVerdictOnTheRequest(t *testing.T) {
+	h, facts, statuses := newAcceptanceHarness(t, nil, nil)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.beforeAcceptance = func(dispatch.AcceptanceWrite, int) (dispatch.Issue, error, bool) {
+		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen, Message: "LEGION-208 has an open child of another project",
+			Issues: []dispatch.ForeignChild{{Key: "OTHR-5", Project: "OTHR", Status: "triage"}}}, true
+	}
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusBadGateway, "DISPATCH_FAILED")
+	if len(facts.recorded()) != 0 {
+		t.Fatalf("facts = %#v, want none applied", facts.recorded())
+	}
+	setBackQueued(t, h, "LEGION-208", "retro", "needs_review", 7)
+}
+
 // KEY_COMMITTED says a transaction of the key's request committed, which a close's settlement of
 // its documents does before its status. Where the issue's event log after the request's sequence
 // shows no status change of the daemon's, the status may still commit, so the request is answered

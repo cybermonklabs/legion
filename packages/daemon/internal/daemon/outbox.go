@@ -1161,24 +1161,32 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if r.beforeStatusWrite != nil {
 		r.beforeStatusWrite(row)
 	}
+	rule, err := ruleFor(payload.Kind)
+	if err != nil {
+		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	}
 	// The row reads and writes under its issue's lock, which an acceptance holds from its read of
 	// Dispatch until its fact commits: no row writes between the acceptance's write and its fact,
 	// and a row queued before it reads the record as that fact left it (overAcceptance).
 	defer r.issueLocks.Lock(row.Issue)()
 	// A row the lane claimed before it waited on the lock may have been deleted meanwhile: the
-	// set-back an acceptance queued before its write, which the act's fact drops once taken
-	// (workflow's closeRoot, signOff). Its in-memory payload would still run, so a leased row reads
-	// its own lease first, and where the lease no longer holds it finishes with no Dispatch read or
-	// write: its finish fences on the lease token and deletes nothing. A row run with no lease has
-	// none to read.
-	if row.LeaseToken != "" {
-		if held, err := r.leaseHolds(ctx, row); err != nil || !held {
-			return err
-		}
+	// set-back an acceptance queued before its request, which the act's fact drops once taken
+	// (workflow's closeRoot, signOff), or which the route deletes on Dispatch's refusal of the
+	// request (the API's retireSetBack). Its in-memory payload would still run, so the row reads its
+	// own lease, without moving it, and where the lease no longer holds it finishes with no Dispatch
+	// read or write: its finish fences on the lease token and deletes nothing.
+	var held bool
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		held, err = r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the lease of outbox row %d after its issue's lock: %w", row.ID, err)
 	}
-	rule, err := ruleFor(payload.Kind)
-	if err != nil {
-		return fmt.Errorf("outbox row %d: %w", row.ID, err)
+	if !held {
+		r.log.Info("outbox status write finished without reading or writing Dispatch: its row was dropped, or another lane leased it, while it waited on its issue's lock",
+			"row", row.ID, "issue", row.Issue)
+		return nil
 	}
 	issue, err := r.dispatch.GetIssue(ctx, row.Issue)
 	if err != nil {
@@ -1398,15 +1406,25 @@ func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
 // read under the issue's lock (status), which an acceptance or a close holds until its fact
 // commits, so it is the record that fact left.
 func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, shown dispatch.Issue) (bool, error) {
-	accepted, closed := workflow.PhaseStatus(phase.Retro), record.DoneStatus
-	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted && shown.Status != closed || payload.Status == shown.Status {
+	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || payload.Status == shown.Status {
+		return false, nil
+	}
+	// holds says whether the record holds what Dispatch shows: retro, the status of the accepted
+	// phases, held as an acceptance (record.Accepted); done held as done.
+	var holds func(record.Issue) bool
+	switch shown.Status {
+	case workflow.PhaseStatus(phase.Retro):
+		holds = record.Accepted
+	case record.DoneStatus:
+		holds = func(recorded record.Issue) bool { return recorded.Status == record.DoneStatus }
+	default:
 		return false, nil
 	}
 	recorded, err := r.recordedIssue(ctx, row.Issue)
 	if err != nil {
 		return false, fmt.Errorf("judge the status write of %s against its acceptance or close: %w", row.Issue, err)
 	}
-	if recorded == nil || shown.Status == accepted && !record.Accepted(*recorded) || shown.Status == closed && recorded.Status != closed {
+	if recorded == nil || !holds(*recorded) {
 		return false, nil
 	}
 	r.log.Info("outbox status write finished without writing: the daemon records the acceptance or the close Dispatch shows",

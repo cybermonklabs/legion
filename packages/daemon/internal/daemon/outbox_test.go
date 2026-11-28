@@ -45,13 +45,11 @@ import (
 
 func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
 	t.Parallel()
-	row, err := record.NewOutboxRow("LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
-	if err != nil {
-		t.Fatalf("new outbox row: %v", err)
-	}
-	row.ID = 42
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now()))
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "backlog"}}
-	runner := &outbox{log: quietLogger(), dispatch: client}
+	runner := &outbox{pool: pool, records: records, log: quietLogger(), dispatch: client}
 
 	if err := runner.execute(context.Background(), row); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -83,10 +81,12 @@ func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.
 		{name: "label and status stand", shown: dispatch.Issue{Key: "LEGION-208", Status: "triage", Labels: []string{"legion"}, HandedOver: true}, statuses: []string{"todo"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := mustOutboxRow(t, "LEGION-208", record.PersonHandoverStatusWrite("todo", "triage"), time.Now())
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.PersonHandoverStatusWrite("todo", "triage"), time.Now()))
 			client := &outboxDispatch{issue: tc.shown}
 			var logs bytes.Buffer
-			runner := &outbox{log: slog.New(slog.NewJSONHandler(&logs, nil)), dispatch: client}
+			runner := &outbox{pool: pool, records: records, log: slog.New(slog.NewJSONHandler(&logs, nil)), dispatch: client}
 
 			if err := runner.execute(context.Background(), row); err != nil {
 				t.Fatalf("execute: %v", err)
@@ -266,10 +266,12 @@ func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	t.Parallel()
-	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now()))
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "todo"}}
 
-	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err != nil {
+	if err := (&outbox{pool: pool, records: records, dispatch: client}).execute(context.Background(), row); err != nil {
 		t.Fatalf("execute status write: %v", err)
 	}
 	if got := client.statuses; len(got) != 1 || got[0] != "in_progress" {
@@ -277,7 +279,7 @@ func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	}
 
 	client.getErr = errors.New("Dispatch unavailable")
-	if err := (&outbox{dispatch: client}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "Dispatch unavailable") {
+	if err := (&outbox{pool: pool, records: records, dispatch: client}).execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "Dispatch unavailable") {
 		t.Fatalf("status write failure = %v, want Dispatch read failure", err)
 	}
 }
@@ -332,7 +334,7 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 				t.Fatalf("seed the tree: %v", err)
 			}
 			client := &outboxDispatch{issue: tc.shown}
-			if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), row); err != nil {
+			if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), leasedOutboxRow(t, pool, records, row)); err != nil {
 				t.Fatalf("execute the hand-over: %v", err)
 			}
 			if !slices.Equal(client.statuses, tc.statuses) || !slices.Equal(client.handOvers, tc.handOvers) {
@@ -376,7 +378,7 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 		return err
 	}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "in_progress"}, handOverHook: reopen}
-	row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now()))
 	if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), row); err != nil {
 		t.Fatalf("write the hand-over: %v", err)
 	}
@@ -425,7 +427,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "todo", HandedOver: true, Labels: []string{"legion"}}}
-	row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now()))
 	if err := (&outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission}, log: quietLogger()}).execute(context.Background(), row); err != nil {
 		t.Fatalf("consume already-todo hand-over: %v", err)
 	}
@@ -482,7 +484,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 			client := &outboxDispatch{issue: tc.shown}
-			row := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
+			row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now()))
 			if err := (&outbox{pool: pool, records: records, dispatch: client, handlers: []intake.Handler{engine, admission}, log: quietLogger()}).execute(context.Background(), row); err != nil {
 				t.Fatalf("write the hand-over: %v", err)
 			}
@@ -632,7 +634,7 @@ func TestAStaleHandOverRowLeavesANewerLingersFence(t *testing.T) {
 				t.Fatalf("seed the newer linger's fence: %v", err)
 			}
 			client := &outboxDispatch{issue: tc.shown}
-			stale := mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now())
+			stale := leasedOutboxRow(t, pool, records, mustOutboxRow(t, child, record.HandOverStatusWrite("todo", "in_progress", root, 1), time.Now()))
 			if err := (&outbox{pool: pool, records: records, dispatch: client, log: quietLogger()}).execute(context.Background(), stale); err != nil {
 				t.Fatalf("execute the stale hand-over row: %v", err)
 			}
@@ -717,10 +719,11 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 // and posts none.
 func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	t.Parallel()
-	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("done", "in_progress", "Closed by its architect before its first phase: no change"), time.Now())
-	row.ID = 56
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("done", "in_progress", "Closed by its architect before its first phase: no change"), time.Now()))
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "in_progress"}, postErr: errors.New("Dispatch refused the message")}
-	runner := &outbox{dispatch: client}
+	runner := &outbox{pool: pool, records: records, dispatch: client}
 
 	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the message") {
 		t.Fatalf("first attempt = %v, want the message's failure", err)
@@ -733,7 +736,7 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the status") {
 		t.Fatalf("second attempt = %v, want the status write's failure", err)
 	}
-	posted := "Closed by its architect before its first phase: no change\n\n<!-- legion-outbox:56 -->"
+	posted := fmt.Sprintf("Closed by its architect before its first phase: no change\n\n<!-- legion-outbox:%d -->", row.ID)
 	if len(client.messages) != 2 || client.messages[1] != posted {
 		t.Fatalf("messages %q, want the reason under the row's marker", client.messages)
 	}
@@ -753,10 +756,11 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
 	t.Parallel()
 	reason := "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."
-	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
-	row.ID = 57
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now()))
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
-	runner := &outbox{dispatch: client}
+	runner := &outbox{pool: pool, records: records, dispatch: client}
 
 	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "refused the message") {
 		t.Fatalf("first attempt = %v, want the message's failure", err)
@@ -769,7 +773,7 @@ func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
 	if err := runner.execute(context.Background(), row); err != nil {
 		t.Fatalf("second attempt: %v", err)
 	}
-	if want := reason + "\n\n<!-- legion-outbox:57 -->"; len(client.messages) != 2 || client.messages[1] != want {
+	if want := fmt.Sprintf("%s\n\n<!-- legion-outbox:%d -->", reason, row.ID); len(client.messages) != 2 || client.messages[1] != want {
 		t.Fatalf("messages %q, want the reason posted again under the row's marker", client.messages)
 	}
 	if fmt.Sprint(client.statuses) != "[in_progress]" {

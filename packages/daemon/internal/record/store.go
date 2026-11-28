@@ -4421,9 +4421,9 @@ func (s *Postgres) DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, statu
 	return nil
 }
 
-func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
+func (s *Postgres) DropOutboxRows(ctx context.Context, tx pgx.Tx, rows []int64) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
-		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
+		return fmt.Errorf("delete the outbox rows %v: %w", rows, err)
 	}
 	return nil
 }

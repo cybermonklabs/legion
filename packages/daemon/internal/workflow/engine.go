@@ -2875,11 +2875,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	// which the acceptance now stands for, are dropped in this transaction (the API's queueSetBack),
 	// so no release, an earlier one after a rollback included, writes them. A sign-off its plan moves
 	// to a later step accepts nothing and keeps them: a session's retro is still set back.
-	accepts, err := e.signOffAccepts(ctx, tx, *issue, pr)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if accepts {
+	if signOffAccepts(*issue, w, pr) {
 		if err := e.store.DropSetBacksOver(ctx, tx, issue.Key, PhaseStatus(phase.Retro)); err != nil {
 			return intake.Result{}, err
 		}
@@ -2919,27 +2915,26 @@ func (e *Engine) SignOffRefusal(ctx context.Context, tx pgx.Tx, fact intake.Sign
 	if refusal, err := e.signOffRefusal(ctx, tx, *issue); err != nil || refusal != nil {
 		return refusal, false, err
 	}
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return nil, false, err
+	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return nil, false, err
 	}
-	accepts, err = e.signOffAccepts(ctx, tx, *issue, pr)
-	return nil, accepts, err
+	return nil, signOffAccepts(*issue, w, pr), nil
 }
 
 // signOffAccepts says whether the sign-off of issue moves it into a phase that shows retro, the
-// acceptance's status (PhaseStatus), by the row of its walk that transition takes, read with the
-// snapshot transition reads it with (transitionSnapshot) and pr, the issue's pull-request row the
-// caller read. A plan can put the owner's acceptance before a tester's or a reviewer's step
-// (plan's validate), and the sign-off then moves the issue to that step, which the daemon records
-// as no acceptance.
-func (e *Engine) signOffAccepts(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) (bool, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return false, err
-	}
+// acceptance's status (PhaseStatus), by the row of w, the issue's walk, that transition takes,
+// read with the snapshot transition reads it with (transitionSnapshot) and pr, the issue's
+// pull-request row the caller read. A plan can put the owner's acceptance before a tester's or a
+// reviewer's step (plan's validate), and the sign-off then moves the issue to that step, which the
+// daemon records as no acceptance.
+func signOffAccepts(issue record.Issue, w Walk, pr *record.PullRequest) bool {
 	row, ok := w.row(issue.Phase, TriggerSignOff, "", transitionSnapshot(issue, pr))
-	return ok && PhaseStatus(row.To) == PhaseStatus(phase.Retro), nil
+	return ok && PhaseStatus(row.To) == PhaseStatus(phase.Retro)
 }
 
 // transitionSnapshot is the snapshot a transition of issue looks its walk's row up with, pr the
