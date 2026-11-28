@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"sync"
@@ -231,7 +232,14 @@ func backoffAttempts(t *testing.T, database *store.Store, document string) (vers
 // database's own when nil).
 func newExcerptService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	return newExcerptServiceTo(t, database, persistence, nil)
+}
+
+// newExcerptServiceTo is newExcerptService writing its lines to logger (Deps.Logger), its loop's
+// lease lines among them; nil writes them where the default logger points as each is written.
+func newExcerptServiceTo(t *testing.T, database *store.Store, persistence VersionedStore, logger *slog.Logger) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }

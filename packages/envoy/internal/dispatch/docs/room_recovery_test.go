@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -347,9 +348,9 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 // failRoom logs a room's failure once, as it happens, with the room and the cause: a failure no
 // later write met otherwise left no line naming it (failRoomLocked).
 func TestARoomFailureIsLoggedWithItsCause(t *testing.T) {
-	// Not parallel: it swaps the process's default logger (captureWarnings).
-	logs := captureWarnings(t)
-	service, artifactID := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	service, artifactID := newTestServiceTo(t, logger)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load live document: %v", err)
 	}

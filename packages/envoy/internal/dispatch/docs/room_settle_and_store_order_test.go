@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -161,10 +162,14 @@ type gatedAppends struct {
 	waiting atomic.Int32
 }
 
-func newGatedAppends(database *store.Store) *gatedAppends {
+// newGatedAppends is the gate over database's own store, which writes its lines to logger as a
+// store New builds does (PgVersioned.logger); nil writes them where the default logger points.
+func newGatedAppends(database *store.Store, logger *slog.Logger) *gatedAppends {
 	gate := make(chan struct{})
 	close(gate)
-	return &gatedAppends{VersionedStore: NewPgVersioned(database), gate: gate}
+	versioned := NewPgVersioned(database)
+	versioned.logger = logger
+	return &gatedAppends{VersionedStore: versioned, gate: gate}
 }
 
 // wait holds the caller at the gate, counted in waiting while it does.
@@ -208,7 +213,14 @@ func (g *gatedAppends) release() {
 // newGatedServiceInstance is newTestServiceInstance whose room appends pass a gate the test holds.
 func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *gatedAppends) {
 	t.Helper()
-	gated := newGatedAppends(database)
+	return newGatedServiceInstanceTo(t, database, nil)
+}
+
+// newGatedServiceInstanceTo is newGatedServiceInstance writing its lines, and its gated store's,
+// to logger (Deps.Logger); nil writes them where the default logger points as each is written.
+func newGatedServiceInstanceTo(t *testing.T, database *store.Store, logger *slog.Logger) (*Service, *gatedAppends) {
+	t.Helper()
+	gated := newGatedAppends(database, logger)
 	service := New(Deps{
 		Store:       database,
 		Persistence: gated,
@@ -216,6 +228,7 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		Identity:    headerIdentity(database),
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
+		Logger:      logger,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {

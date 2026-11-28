@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -644,11 +643,11 @@ func TestAWriteThatOpensBeforeTheCloseTakesItsLockLeavesTheRoomOpen(t *testing.T
 // and warns of nothing, since a browser joining the room is no fault. Once the caller has left,
 // the same close closes the room.
 func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	pair := newProcessPair(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	pair := newProcessPairTo(t, logger)
 	pair.replaceTaskAsHistory(t)
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	mark := logs.Len()
 	live := pair.taskA.srv.GetDoc(pair.artifactID)
 	inside, leave := make(chan struct{}), make(chan struct{})
 	applied := make(chan error, 1)
@@ -680,7 +679,7 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 	if reloading {
 		t.Fatal("the close held off by a caller inside the room left its reservation, which refuses every write")
 	}
-	if warned := logs.String(); warned != "" {
+	if warned := logs.String()[mark:]; warned != "" {
 		t.Errorf("the close held off by a caller inside the room warned:\n%s", warned)
 	}
 

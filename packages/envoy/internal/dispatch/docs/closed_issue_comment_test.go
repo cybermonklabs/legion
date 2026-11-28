@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -81,10 +80,9 @@ func closeIssueAgo(t *testing.T, database *store.Store, issueKey string, ago tim
 // recovered. The settlement is held as it starts until the test has read the row the comment's
 // write left, so the row's going is the settlement's doing.
 func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	service, artifactID := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
+	service, artifactID := newTestServiceTo(t, logger)
 	settle := 50 * time.Millisecond
 	service.settle = settle
 	var failed atomic.Bool

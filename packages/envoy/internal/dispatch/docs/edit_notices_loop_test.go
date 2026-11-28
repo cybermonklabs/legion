@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -17,10 +18,11 @@ import (
 
 // newEditNoticeSweeper is a second document service on database that only sweeps, as another
 // process's would: given a traced store, every statement its loop makes is counted apart from the
-// settlements the test drives through its own service.
-func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
+// settlements the test drives through its own service. Its lines, its loop's lease lines among
+// them, go to logger (Deps.Logger), or where the default logger points when logger is nil.
+func newEditNoticeSweeper(t *testing.T, database *store.Store, logger *slog.Logger) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
@@ -90,7 +92,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	}
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	sweeper := newEditNoticeSweeper(t, counted)
+	sweeper := newEditNoticeSweeper(t, counted, nil)
 	leases := excerptLeases(t, counted)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
@@ -127,7 +129,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	wake := startEditNoticeHub(t, service.store)
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, service.store.Pool, counter, nil)}
-	sweeper := newEditNoticeSweeper(t, counted)
+	sweeper := newEditNoticeSweeper(t, counted, nil)
 	leases := excerptLeases(t, counted)
 	schedule := editNoticeSchedule{minGap: 200 * time.Millisecond}
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.runEditNotices(ctx, leases, wake, schedule) })
@@ -177,16 +179,16 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 // keeps trying, every gap plus up to a tenth, until a sweep of its own runs, and that sweep sends
 // the due notice: the other process's pass may have read before it was due.
 func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
+	t.Parallel()
 	database := storetest.Open(t)
 	document := createIssueDocument(t, database, 1, "First.")
 	addPersonsVersion(t, database, document, 2, "Second.\n", model.Actor{Kind: "user", ID: "alice@example.com"})
-	logs := captureLogs(t)
+	logs, logger := testLogger(slog.LevelInfo)
 	leases := excerptLeases(t, database)
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
 	go func() {
-		held <- duty.Exclusive(context.Background(), nil, leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
+		held <- duty.Exclusive(context.Background(), logger, leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
@@ -197,12 +199,12 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 		t.Fatal("the other caller never took the edit-notices lease")
 	}
 
-	sweeper := newEditNoticeSweeper(t, database)
+	sweeper := newEditNoticeSweeper(t, database, logger)
 	runEditNoticeLoop(t, func(ctx context.Context) {
 		sweeper.runEditNotices(ctx, leases, nil, editNoticeSchedule{minGap: 100 * time.Millisecond})
 	})
 	waitFor(t, 20*time.Second, "the sweep to find the lease held twice", func() bool {
-		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", editNoticeLease) >= 2
+		return countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass skipped", editNoticeLease) >= 2
 	})
 	if edits := humanEdits(t, database, document); len(edits) != 0 {
 		t.Fatalf("the sweep sent %d notices while the lease was held elsewhere; want none", len(edits))

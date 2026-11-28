@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -19,10 +20,10 @@ func excerptLeases(t *testing.T, database *store.Store) *pgxpool.Pool {
 	return storetest.Leases(t, database.Pool)
 }
 
-// countExcerptLeaseLines counts the lease lines carrying message for lease.
-func countExcerptLeaseLines(logs *storetest.LockedLog, message, lease string) int {
+// countExcerptLeaseLines counts the lease lines of logged carrying message for lease.
+func countExcerptLeaseLines(logged, message, lease string) int {
 	count := 0
-	for line := range strings.Lines(logs.String()) {
+	for line := range strings.Lines(logged) {
 		if strings.Contains(line, `msg="`+message+`"`) && strings.Contains(line, "lease="+lease) {
 			count++
 		}
@@ -39,7 +40,7 @@ func countExcerptLeaseLines(logs *storetest.LockedLog, message, lease string) in
 // it runs a pass of its own: the first may have read before whatever woke the second, so a woken
 // loop never gives its pass up to another process's.
 func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureLogs).
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -49,8 +50,8 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 		`insert into refs (from_kind, from_id, to_kind, to_id) values ('artifact', $1, 'issue', 'CORE-1')`, document); err != nil {
 		t.Fatalf("index the document's mention: %v", err)
 	}
-	logs := captureLogs(t)
-	first, other := newExcerptService(t, database, nil), newExcerptService(t, second, nil)
+	logs, logger := testLogger(slog.LevelInfo)
+	first, other := newExcerptServiceTo(t, database, nil, logger), newExcerptServiceTo(t, second, nil, logger)
 
 	gate, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -66,9 +67,9 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
 	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {
-		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", referenceExcerptLease) >= 2
+		return countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass skipped", referenceExcerptLease) >= 2
 	})
-	if ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease); ran != 0 {
+	if ran := countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", referenceExcerptLease); ran != 0 {
 		t.Fatalf("%d passes ran while the first one was held inside its pass; want none:\n%s", ran, logs.Lines("lease="))
 	}
 
@@ -76,7 +77,7 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 		t.Fatalf("release refs: %v", err)
 	}
 	waitFor(t, 30*time.Second, "both runners to run a pass of their own", func() bool {
-		return countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease) == 2
+		return countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", referenceExcerptLease) == 2
 	})
 	if isOwed(t, database, document) {
 		t.Fatal("the document's mention is still owed after both passes")

@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -380,9 +379,8 @@ func TestACompactionReadsTheCursorASettlementMovedInsideIt(t *testing.T) {
 // Rows that do not fold are left as stored and logged once. A second compaction of the same rows
 // skips them without folding again or logging, and a compaction after they changed folds again.
 func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelWarn)
 
 	// Each later row leans on an insert no row holds ("x"), so the fold parks more than its
 	// pending queue holds; the writer writes the update that changes the log below.
@@ -390,6 +388,7 @@ func TestACompactionSkipsAnUnfoldableLogUntilItChanges(t *testing.T) {
 	text := writer.GetText("t")
 	database := storetest.Open(t)
 	versioned := NewPgVersioned(database)
+	versioned.logger = logger
 	shrinkPendingItems(t, nil, versioned)
 	artifactID := createDocument(t, database, "unfoldable")
 	for index, row := range rows {

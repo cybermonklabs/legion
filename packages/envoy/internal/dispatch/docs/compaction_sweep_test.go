@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -53,16 +52,15 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	waitOutTheSweepHour(t, database)
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	logs, logger := testLogger(slog.LevelInfo)
+	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = first.Shutdown(context.Background()) })
-	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
+	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = other.Shutdown(context.Background()) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -76,8 +74,8 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	other.compactionSweepTick(ctx, excerptLeases(t, second))
 	requireRowsAsStored(t, database, due, rows)
 
-	ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", compactionSweepLease)
-	skipped := countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", compactionSweepLease)
+	ran := countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", compactionSweepLease)
+	skipped := countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass skipped", compactionSweepLease)
 	if ran != 1 || skipped != 1 {
 		t.Fatalf("the two ticks ran %d passes and skipped %d, want one of each:\n%s", ran, skipped, logs.Lines("lease="))
 	}
@@ -402,7 +400,8 @@ func waitOutTheSweepHour(t *testing.T, database *store.Store) {
 }
 
 // compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
-// the pass, when this process takes the lease and no process has swept this hour.
+// the pass, when this process takes the lease and no process has swept this hour. Its lease lines
+// go to the service's logger, as the ticker's do.
 func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, nil, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+	duty.Exclusive(ctx, s.logger, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
 }

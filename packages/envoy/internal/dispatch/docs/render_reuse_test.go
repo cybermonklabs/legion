@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"maps"
 	"runtime"
 	"runtime/debug"
@@ -742,7 +743,14 @@ func sortedIDs(ids map[string]struct{}) []string {
 // with renderReuseDocument. No room holds the document yet.
 func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
-	service, artifactID := newTestService(t)
+	return newRenderReuseServiceTo(t, nil)
+}
+
+// newRenderReuseServiceTo is newRenderReuseService writing its lines to logger
+// (newTestServiceTo).
+func newRenderReuseServiceTo(t *testing.T, logger *slog.Logger) (*Service, string, *renderShadow) {
+	t.Helper()
+	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	holdRoomsResident(t, service)
 	sh := watchRenders(t, service, artifactID)
@@ -755,7 +763,14 @@ func newRenderReuseService(t *testing.T) (*Service, string, *renderShadow) {
 // foreign update consumed.
 func newWarmRenderReuseRoom(t *testing.T) (*Service, string, *renderShadow) {
 	t.Helper()
-	service, artifactID, sh := newRenderReuseService(t)
+	return newWarmRenderReuseRoomTo(t, nil)
+}
+
+// newWarmRenderReuseRoomTo is newWarmRenderReuseRoom writing its lines to logger
+// (newTestServiceTo).
+func newWarmRenderReuseRoomTo(t *testing.T, logger *slog.Logger) (*Service, string, *renderShadow) {
+	t.Helper()
+	service, artifactID, sh := newRenderReuseServiceTo(t, logger)
 	editAsConnectedPeer(t, service, artifactID, 1, model.Actor{Kind: "user", ID: "carol"}, replaceRun("Paragraph 0 opens", "Paragraph 0 first opens"))
 	waitForLandedAppends(t, service, artifactID)
 	replica := service.replicaOf(service.srv.GetDoc(artifactID))
@@ -1275,7 +1290,7 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 // document pushed outside the schema after the fork read renders, and WARNs, as before; a cold
 // repair is already in the room that loads after it committed, so nothing of it is classified.
 func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault in captureWarnings).
+	t.Parallel()
 	const updatedOutside = "updated document outside Proof schema"
 	// Every write below repairs a tree outside the Proof schema, which renders no markdown and
 	// has no token for any caller to name (ReplaceText's one exception).
@@ -1286,8 +1301,9 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		}
 	}
 	t.Run("warm repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureWarnings(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger)
+		mark := logs.Len()
 		writeSchemaInvalidElement(t, service, artifactID)
 		m := sh.measure()
 		write := sh.write(t, replaceWhole(service, artifactID))
@@ -1296,13 +1312,14 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		if stored := sh.versions(t, write); len(stored) != 1 || !stored[0] {
 			t.Errorf("content_changed = %v, want [true]", stored)
 		}
-		if warned := strings.Count(logs.String(), updatedOutside); warned != 1 {
-			t.Errorf("%d %q WARNs, want 1, the crafted element's:\n%s", warned, updatedOutside, logs.String())
+		if warned := strings.Count(logs.String()[mark:], updatedOutside); warned != 1 {
+			t.Errorf("%d %q WARNs, want 1, the crafted element's:\n%s", warned, updatedOutside, logs.String()[mark:])
 		}
 	})
 	t.Run("pushed outside after the fork read", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
-		logs := captureWarnings(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger)
+		mark := logs.Len()
 		pushed := false
 		sh.onForkRead = func() {
 			if !pushed {
@@ -1319,15 +1336,16 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		sh.check(t)
 		m.expect(t, renderPaths{beforeFromReplica: 1, observerRendered: 2}, 0)
 		sh.versions(t, write)
-		if warned := strings.Count(logs.String(), updatedOutside); warned != 2 {
-			t.Errorf("%d %q WARNs, want 2:\n%s", warned, updatedOutside, logs.String())
+		if warned := strings.Count(logs.String()[mark:], updatedOutside); warned != 2 {
+			t.Errorf("%d %q WARNs, want 2:\n%s", warned, updatedOutside, logs.String()[mark:])
 		}
 	})
 	t.Run("cold repair", func(t *testing.T) {
-		service, artifactID, sh := newWarmRenderReuseRoom(t)
+		logs, logger := testLogger(slog.LevelWarn)
+		service, artifactID, sh := newWarmRenderReuseRoomTo(t, logger)
 		writeSchemaInvalidElement(t, service, artifactID)
 		closeDocumentRoom(t, service, artifactID)
-		logs := captureWarnings(t)
+		mark := logs.Len()
 		m := sh.measure()
 		write := sh.writeThenLoad(t, replaceWhole(service, artifactID))
 		sh.check(t)
@@ -1335,8 +1353,8 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 		if stored := sh.versions(t, write); len(stored) != 1 || !stored[0] {
 			t.Errorf("content_changed = %v, want [true]", stored)
 		}
-		if warned := strings.Count(logs.String(), "outside Proof schema"); warned != 0 {
-			t.Errorf("%d schema WARNs during the cold repair, want none:\n%s", warned, logs.String())
+		if warned := strings.Count(logs.String()[mark:], "outside Proof schema"); warned != 0 {
+			t.Errorf("%d schema WARNs during the cold repair, want none:\n%s", warned, logs.String()[mark:])
 		}
 	})
 }
