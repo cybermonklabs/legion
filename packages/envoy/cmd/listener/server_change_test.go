@@ -469,6 +469,8 @@ func (s *serverChangeSoak) onReconnect(at time.Time, server string) {
 // the stream stored for it was relayed and acknowledged, so the assertions read every copy the
 // relay had to send. It waits serverChangeRecovery and not the tail, because a relay the last
 // outage paused sends again only after its backoff (relayPauseFirst, doubling to relayPauseMax).
+// It reads past a reading of the consumer's default state, which shows nothing waiting while
+// messages can still wait (consumerDrained).
 // A consumer that does not drain is logged, not fatal: the assertions then name the messages that
 // are actually missing.
 func (s *serverChangeSoak) awaitConsumerDrained(t *testing.T) {
@@ -481,7 +483,7 @@ func (s *serverChangeSoak) awaitConsumerDrained(t *testing.T) {
 	for {
 		info, err := s.js.ConsumerInfo(bus.Stream, consumer)
 		switch {
-		case err == nil && info.NumPending == 0 && info.NumAckPending == 0:
+		case err == nil && consumerDrained(info):
 			return
 		case time.Now().After(deadline):
 			t.Logf("the stand-in's consumer still held messages %s after the last send: %+v, %v",
