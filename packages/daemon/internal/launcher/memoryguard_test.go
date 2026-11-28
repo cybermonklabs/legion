@@ -715,6 +715,7 @@ func podTree(t *testing.T) (*guardPod, *podClassifier) {
 // bridge, no command or what a command runs, no orphan the role-init adopted, and none of the
 // launcher's own processes or the test database's.
 func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
+	t.Parallel()
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
@@ -773,6 +774,7 @@ func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheT
 // the eval kernel wherever it runs, and a copy of a helper's name under the agent's command stay
 // endable.
 func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
+	t.Parallel()
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const omp = "/opt/omp/bin/omp"
@@ -820,6 +822,7 @@ func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
 // agent's argument that only names the CodeGraph plugin. It stays the role's, and a session
 // process like every direct child of the shim, for the naming of a kill.
 func TestMemoryGuardMayEndTheCodeGraphWarmUp(t *testing.T) {
+	t.Parallel()
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const omp = "/opt/omp/bin/omp"
@@ -868,6 +871,7 @@ func TestMemoryGuardMayEndTheCodeGraphWarmUp(t *testing.T) {
 // a role-init is that role's by its ancestor, and one reparented out of the role-init's subtree is
 // the role's by its namespace.
 func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.T) {
+	t.Parallel()
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
@@ -901,6 +905,8 @@ func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.
 // the pod's guard ends the role's process its classifier lets it end, and gives the kill to that
 // role's manager. Without the rule that spares the shim's children, the guard would end the agent.
 func TestMemoryGuardSparesTheAgentAndEndsItsCommand(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const roleInit, shim, agent, command, test = 300, 301, 302, 303, 304
@@ -976,6 +982,8 @@ func guardLines(log *lockedBuffer, what string) []string {
 // hands it the daemon's settings through the wire's own encoder and decoder, and the newest one
 // is what it runs by, changed in place: one line for each change and no second start line.
 func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleetDialedOf), which parallel
+	// tests read.
 	const early, held = 400, 401
 	pod := newGuardPod(t)
 	pod.add(
@@ -1031,6 +1039,8 @@ func TestMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.
 // line saying so and builds no guard, and its managers hold none, so an acknowledgement's settings
 // reach no guard and no report is queued.
 func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	previous := newMemoryGuard
 	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
@@ -1071,6 +1081,8 @@ func TestMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
 // removes before it serves any role (TestTheLauncherTakesTheWorkspaceFromItsWorkingDirectory),
 // stays where it is. Its managers hold no sweep, so a role start learns nothing.
 func TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	previous := newMemoryGuard
 	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
@@ -1156,6 +1168,8 @@ func (g *roleConn) noMemoryKill(what string) {
 // saw and the process named by its executable's base name alone; another role's connection
 // carries none of it, and a kill of a process in no role is reported nowhere.
 func TestMemoryGuardReportsAKillOnTheConnectionOfTheProcesssRoleAlone(t *testing.T) {
+	// Not parallel: it writes the package variable roleHome (newFleetDialedOf), which parallel
+	// tests read.
 	const none, testers, reviewers = 700, 701, 702
 	pod := newGuardPod(t)
 	pod.add(
@@ -1217,6 +1231,8 @@ func (f *fleet) dropConnection(role string) {
 // acknowledgement without settings arrives is dropped with a line, since the daemon behind it may
 // not know the report and would close the connection on it.
 func TestMemoryGuardHoldsAReportWhileTheConnectionIsDown(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const sent, dropped = 800, 801
 	pod := newGuardPod(t)
 	pod.add(
@@ -1253,6 +1269,8 @@ func TestMemoryGuardHoldsAReportWhileTheConnectionIsDown(t *testing.T) {
 // A role keeps at most 32 reports while its connection is down: the 33rd drops the oldest, with a
 // line, and the next connection carries the 32 newest in the order the guard made them.
 func TestMemoryGuardKeepsThirtyTwoWaitingReportsAndDropsTheOldest(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const first = 900
 	kills := maxWaitingMemoryKills + 1
 	roles := map[int]string{}
@@ -1306,6 +1324,7 @@ func (c *heldConn) Write(p []byte) (int, error) {
 // and never the one being written: that write goes on to succeed, so a line saying it was dropped
 // would be false. The connection carries the oldest and then the 31 newest, in order.
 func TestMemoryGuardDropsTheNextOldestWhileTheOldestIsBeingWritten(t *testing.T) {
+	t.Parallel()
 	const first = 900
 	report := func(sequence int) shimwire.LauncherMemoryKill {
 		return shimwire.LauncherMemoryKill{Guard: "0123456789abcdef", Sequence: uint64(sequence), PID: first + sequence - 1,
@@ -1392,6 +1411,10 @@ const (
 // controllerOmp is the Oh My Pi executable of controllerTree's agent.
 const controllerOmp = "/opt/omp/bin/omp"
 
+// controllerSecrets is the agent-secrets executable of controllerTree's renewer and keygen, which
+// its shim names with --agent-secrets-bin.
+const controllerSecrets = "/usr/local/bin/agent-secrets"
+
 // controllerEndable are the processes of controllerTree the guard may end: Oh My Pi's JavaScript
 // eval kernel, its Python kernel and its shell command, an orphan under PID 1, a `kubectl exec`
 // shell, and each impostor.
@@ -1401,7 +1424,9 @@ var controllerEndable = []int{ctlEval, ctlKernel, ctlCommand, ctlCommandHelper, 
 // sizes gives it, none where it names none. The launcher is the test process, which stands for PID
 // 1 of the controller's container: the guard and the classifier know the launcher by their own
 // pid. Its pid guard may hold a jj, which runs a git (ctlHeld). Its generation is the shim, its own
-// child, which runs Oh My Pi, the secrets renewer and a keygen. Oh My Pi runs its daemon broker,
+// child, started by the argv the launcher gives it (reapingShim, so the shim reaps orphans and the
+// classifier reads its own children by shimOwnChildren's rule), which runs Oh My Pi, the secrets
+// renewer and a keygen. Oh My Pi runs its daemon broker,
 // which runs the LSP multiplexer, both of them helpers; its JavaScript eval kernel, the same
 // executable; a Python kernel; and a shell command, under which Oh My Pi's executable runs with a
 // helper's argument. Under PID 1 are an orphan a command left behind and a worker-shim of this
@@ -1417,10 +1442,10 @@ func controllerTree(t *testing.T, sizes map[int]uint64) *guardPod {
 	for _, gp := range []guardProcess{
 		{pid: ctlHeld, ppid: launcher, exe: "/usr/local/bin/jj", args: []string{"jj", "workspace", "update-stale"}},
 		{pid: ctlHeldChild, ppid: ctlHeld, exe: "/usr/bin/git", args: []string{"git", "gc", "--auto"}},
-		{pid: ctlShim, ppid: launcher, exe: exe, args: []string{"legion", shimArgument, "--connect", "tcp://daemon", "--", controllerOmp}},
+		{pid: ctlShim, ppid: launcher, exe: exe, args: reapingShim([]string{"legion", shimArgument, "--connect", "tcp://daemon", "--" + shimwire.AgentSecretsBinFlag, controllerSecrets, "--", controllerOmp})},
 		{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}},
-		{pid: ctlRenewer, ppid: ctlShim, exe: "/usr/local/bin/agent-secrets", args: []string{"agent-secrets", "renew"}},
-		{pid: ctlKeygen, ppid: ctlShim, exe: "/usr/local/bin/agent-secrets", args: []string{"agent-secrets", "keygen"}},
+		{pid: ctlRenewer, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsRenew}},
+		{pid: ctlKeygen, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsKeygen}},
 		{pid: ctlBroker, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_daemon_broker"}},
 		{pid: ctlMux, ppid: ctlBroker, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_lsp_mux"}},
 		{pid: ctlEval, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, ompEvalKernel}},
@@ -1587,6 +1612,7 @@ func (g *rig) dropConnection() {
 // binary run as worker-shim: with no generation, or with one whose pid now names another process,
 // the launcher and what its pid guard holds alone are spared.
 func TestControllerPodMemoryGuardSparesItsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
+	t.Parallel()
 	pod := controllerTree(t, nil)
 	pids := &pidGuard{pids: map[int]bool{ctlHeld: true}}
 	m, _ := controllerManager()
@@ -1654,6 +1680,8 @@ func TestControllerPodMemoryGuardSparesItsOwnProcessesByTheirPlaceInTheTree(t *t
 // processes left it ends nothing more and writes its stopped line. Every kill is the controller's:
 // each is reported to its one manager, and each ended line reads role=controller.
 func TestControllerPodMemoryGuardNeverEndsItsOwnProcessesEvenWhereOneIsTheLargest(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	sizes := map[int]uint64{
 		os.Getpid(): 2000 * guardMiB, ctlShim: 1950 * guardMiB, ctlOmp: 1900 * guardMiB, ctlRenewer: 1850 * guardMiB,
 		ctlKeygen: 1800 * guardMiB, ctlBroker: 1750 * guardMiB, ctlMux: 1700 * guardMiB, ctlHeld: 1650 * guardMiB,
@@ -1700,6 +1728,8 @@ func TestControllerPodMemoryGuardNeverEndsItsOwnProcessesEvenWhereOneIsTheLarges
 // few anonymous pages, it ends nothing more. The kill's report carries the counter it read beside
 // the reading it acted on.
 func TestControllerPodMemoryGuardReadsAnonPagesAndNotAMappedFile(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const reader = 1550
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB, ctlKernel: 600 * guardMiB})
 	pod.add(guardProcess{pid: reader, ppid: ctlCommand, exe: "/usr/bin/sqlite3", args: []string{"sqlite3", "/var/lib/legion/big.db"},
@@ -1743,6 +1773,8 @@ func TestControllerPodMemoryGuardReadsAnonPagesAndNotAMappedFile(t *testing.T) {
 // second has passed, with nothing it may end growing, stops it for the rise; and it acts on no new
 // rise, however high, until the reading has been below the mark.
 func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 700 * guardMiB, ctlCommand: 500 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
 	m, log := controllerManager()
@@ -1787,6 +1819,8 @@ func TestControllerPodMemoryGuardEndsTheLargestAtTheMarkAndTheNextAfterAFall(t *
 // the largest at the mark, its manager holds the guard, the guest watch is never built, and its
 // reports go where guard settings came and are dropped where kernelKills alone did.
 func TestTheControllersLauncherInAMicroVMRunsTheGuestWatch(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const off = "launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel stops one process"
 	t.Run("in a microVM", func(t *testing.T) {
 		pod := guestControllerTree(t)
@@ -1922,6 +1956,8 @@ func TestTheControllersLauncherInAMicroVMRunsTheGuestWatch(t *testing.T) {
 // rise up with reason nothing to end, ends no process, and its line ends with
 // unread_processes=1760,1761:524288000.
 func TestControllerPodMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadAndEndsNone(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const private, threads = 1760, 1761
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 3 * guardGiB, ctlEval: 100 * guardMiB, ctlKernel: 100 * guardMiB})
 	pod.add(
@@ -1955,6 +1991,8 @@ func TestControllerPodMemoryGuardNamesInItsStoppedLineEachProcessItCouldNotReadA
 // between them, and where it may end nothing at all. A stop writes its line at most once a minute,
 // so each rise here comes a minute after the one before.
 func TestControllerPodMemoryGuardStopsWhereNothingFallsOrNothingMayBeEnded(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlEval: 900 * guardMiB, ctlKernel: 300 * guardMiB, ctlCommand: 100 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
 	m, log := controllerManager()
@@ -2009,6 +2047,8 @@ func TestControllerPodMemoryGuardStopsWhereNothingFallsOrNothingMayBeEnded(t *te
 // each process ends none of them. Once the make is all there is left to end, under the floor, it
 // ends nothing more.
 func TestControllerPodMemoryGuardEndsTenProgramsUnderTheFloorOneAtATime(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const firstProgram, programs = 1600, 10
 	const program = 395 * guardMiB
 	if floor := guardLimit / 100 * uint64(memoryguard.ControllerDefaults().FloorPercent); program >= floor {
@@ -2051,6 +2091,8 @@ func TestControllerPodMemoryGuardEndsTenProgramsUnderTheFloorOneAtATime(t *testi
 // reading of the rise the guard ends nothing, and it writes one stopped line, which counts Oh My
 // Pi's memory as protected.
 func TestControllerPodMemoryGuardEndsNothingForARiseThatIsOhMyPisOwn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB, ctlEval: 120 * guardMiB, ctlKernel: 100 * guardMiB, ctlCommand: 80 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
 	m, log := controllerManager()
@@ -2085,6 +2127,8 @@ func TestControllerPodMemoryGuardEndsNothingForARiseThatIsOhMyPisOwn(t *testing.
 // the first reading at the mark on its reads in the band, at the 500 MiB the band's last reading
 // read of it.
 func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsSharedBlock(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block = 1700, 800 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
 	for i := range 4 {
@@ -2130,6 +2174,8 @@ func TestControllerPodMemoryGuardEndsTheGrowerBeforeForksThatReportTheirParentsS
 // was sent at), so at the next reading, which has not fallen, the command has grown 900 MiB since
 // the kill and the guard ends it there.
 func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughAReadThereWouldNameAnother(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB, ctlCommand: 400 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
 	m, log := controllerManager()
@@ -2184,6 +2230,8 @@ func TestControllerPodMemoryGuardEndsAtTheMarkTheProcessTheBandsReadsNameThoughA
 // before that 400 ms old, so the window at the mark shows no growth; or one that started at the
 // band's last reading, with that one band read.
 func TestControllerPodMemoryGuardReadsAgainAtTheMarkTheGrowersTheBandSawAndNotTheSleepingWorkers(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block, grower = 1700, 1536 * guardMiB, 1710
 	for _, tc := range []struct {
 		name string
@@ -2249,6 +2297,8 @@ func TestControllerPodMemoryGuardReadsAgainAtTheMarkTheGrowersTheBandSawAndNotTh
 // that a read there would name the worker. The guard ends the grower on its held reads, at the 764
 // MiB the band's last reading read.
 func TestControllerPodMemoryGuardOrdersByTheBandsLastWindowWhereItsReadingsCome200MillisecondsApart(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block, grower = 1700, 1536 * guardMiB, 1710
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
 	worker := func(i int, anon uint64) guardProcess {
@@ -2298,6 +2348,8 @@ func TestControllerPodMemoryGuardOrdersByTheBandsLastWindowWhereItsReadingsCome2
 // no held read, and nothing held grew: the guard finds it as started since the band's last reading,
 // and ends it at the first reading at the mark, at its 64 MiB, and not a worker.
 func TestControllerPodMemoryGuardEndsAGrowerStartedSinceTheBandsLastReadingBeforeTheSleepingWorkers(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block, grower = 1700, 1536 * guardMiB, 1710
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
 	for i := range 4 {
@@ -2427,6 +2479,8 @@ var (
 // step land before the first reading at the mark, 93.88%: the guard ends all six there. Each first
 // kill's line says what the reads at the mark read of the processes new to the stay (new_read).
 func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const parent = 1700
 	for _, run := range []guardLatepoolRun{
 		{
@@ -2801,6 +2855,8 @@ func replayGuardLatepool(t *testing.T, run guardLatepoolRun) {
 // (`rule=largest sizes=reread new_read=0:0`), which freed about 6 MB; the guard ends the grower,
 // by its growth since the stay's first kill.
 func TestControllerPodMemoryGuardEndsTheGrowerLeftAfterADipBelowTheMarkByItsGrowthSinceTheStaysFirstKill(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const limit = 8 * guardGiB
 	latepool := []guardEnded{
 		{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
@@ -2915,6 +2971,8 @@ func guardHeldBeside(t *testing.T, started ...guardProcess) (*guardRig, *lockedB
 // the guard reads all three and ends pid 1710. Each line says what the reads at the mark read
 // (new_read).
 func TestControllerPodMemoryGuardReadsAtTheMarkTheNewWithMemoryOfTheirOwnThenTheStartedSinceThenTheForks(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	withOwn := guardProcess{pid: 1710, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "worker.py"}, anon: 100 * guardMiB}
 	fork := guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB}
 	started := guardProcess{pid: 1730, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 50 * guardMiB}
@@ -2979,6 +3037,8 @@ func TestControllerPodMemoryGuardReadsAtTheMarkTheNewWithMemoryOfTheirOwnThenThe
 // mark nothing has grown, and of the three new to the stay the guard ends pid 1702, at its whole
 // size, before pid 1720 and before the fork, which ranks at 2 MiB, its line taking nothing off.
 func TestControllerPodMemoryGuardRanksANewProcessThatRunsAProgramOfItsOwnByItsWholeSize(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	for _, tc := range []struct {
 		name string
 		exe  string
@@ -3027,6 +3087,8 @@ func guardNewRead(log *lockedBuffer, pid int) string {
 // stay with memory of its own (new_read=1:1); a fork ranks at nothing, and the guard ends the
 // largest, pid 1700 (new_read=1:0).
 func TestControllerPodMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceTheBandReadItByItsWholeSize(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	for _, tc := range []struct {
 		name    string
 		args    []string
@@ -3076,6 +3138,8 @@ func TestControllerPodMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceT
 // to the stay beside an older, larger sleeper, the parent: the guard ends the largest grower, its
 // line naming the new tier and taking nothing off.
 func TestControllerPodMemoryGuardEndsAGrowerReadOnceAtTheBandsLastReadingBeforeAnOlderLargerSleeper(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const parent, block = 1700, 1536 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
 	pod.add(guardProcess{pid: parent, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: block})
@@ -3115,6 +3179,8 @@ func TestControllerPodMemoryGuardEndsAGrowerReadOnceAtTheBandsLastReadingBeforeA
 // where it takes no time, the guard reads both and ends pid 1710. The rig moves the clock on at the
 // reading (the guard's Observe), the one seam of the guard's loop a launcher test reaches.
 func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIntervalAndEndsTheLargestItRead(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block, older, newer = 1700, 1536 * guardMiB, 1710, 1711
 	for _, tc := range []struct {
 		name string
@@ -3180,6 +3246,8 @@ func TestControllerPodMemoryGuardReadsTheNewestStartedSinceTheBandWithinHalfAnIn
 // next reading comes 400 ms later with the grower 64 MiB larger and the reading not fallen: over
 // the window nothing grew, but the grower grew since the kill, and the guard ends it, not a worker.
 func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWiderApartThanTheWindow(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const pool, block = 1700, 1536 * guardMiB
 	pod := controllerTree(t, map[int]uint64{ctlOmp: guardGiB})
 	for i := range 4 {
@@ -3236,6 +3304,8 @@ func TestControllerPodMemoryGuardEndsTheGrowerNextAfterAKillWhereReadingsComeWid
 // at the next reading, 3528 MiB and not fallen, each has grown 64 MiB since the kill, and the guard
 // ends pid 1711 there, where a guard that kept the read after the kill waited.
 func TestControllerPodMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizesTheDecisionRead(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
 	sizes := map[int]uint64{1710: 200 * guardMiB, 1711: 210 * guardMiB, 1712: 220 * guardMiB}
 	// put writes each grower at its size.
@@ -3304,6 +3374,8 @@ func TestControllerPodMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizes
 // A guard that dropped its size as of the kill at the reading that did not read it took 364 MiB as
 // that size, saw nothing grown, and gave the rise up once the wait had passed.
 func TestControllerPodMemoryGuardGoesOnForAGrowerItCouldNotReadAtAReadingAfterTheKill(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
 	command := func(pid int, program string, anon uint64) guardProcess {
 		return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", program}, anon: anon}
@@ -3351,6 +3423,8 @@ func TestControllerPodMemoryGuardGoesOnForAGrowerItCouldNotReadAtAReadingAfterTh
 // before pid 1701, the largest; at the one after, fallen again, it ends pid 1701. Each ended line
 // names its rule.
 func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALargerIdleOneOrAGrowerAndTheLargestWhereNoneApplies(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const first, idle, grower, newer, newest = 1700, 1701, 1710, 1720, 1721
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
 	command := func(pid int, anon uint64) guardProcess {
@@ -3401,6 +3475,8 @@ func TestControllerPodMemoryGuardEndsTheLargestNewProcessAfterAKillBeforeALarger
 // with no fall and no kernel growing, the guard writes its stopped line with reason not fallen
 // and never ends the Python kernel, however far Oh My Pi grows.
 func TestControllerPodMemoryGuardEndsOneKernelForARiseThatIsOhMyPisOwn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	pod := controllerTree(t, map[int]uint64{ctlOmp: 2000 * guardMiB, ctlEval: 600 * guardMiB, ctlKernel: 500 * guardMiB})
 	rig := useGuardPod(t, pod, nil)
 	m, log := controllerManager()
@@ -3446,6 +3522,8 @@ func TestControllerPodMemoryGuardEndsOneKernelForARiseThatIsOhMyPisOwn(t *testin
 // readable AnonPages, no readable limit, or a limit that reads as no limit, though the pod is at the
 // mark with a process the guard may end above the floor.
 func TestControllerPodMemoryGuardTurnsOffWhereItCannotReadThePod(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	for _, tc := range []struct {
 		name   string
 		spoil  func(pod *guardPod) error
@@ -3489,6 +3567,8 @@ func TestControllerPodMemoryGuardTurnsOffWhereItCannotReadThePod(t *testing.T) {
 // settings reach no guard, a stop is answered, and Run returns at its context's end with no panic.
 // serveMemoryGuard's single-role form answers at once and leaves the manager holding no guard.
 func TestControllerPodMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	useContainerInit(t, false)
 	previous := newMemoryGuard
 	newMemoryGuard = func(memoryguard.Config) *memoryguard.Guard {
@@ -3529,6 +3609,8 @@ func TestControllerPodMemoryGuardRunsOnlyInTheContainersFirstProcess(t *testing.
 // acknowledgement's other numbers are taken in place too, with no second start line, and the
 // hour's window keeps the start it took at the guard's first reading.
 func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const first, second, third = 1650, 1651, 1652
 	pod := newGuardPod(t)
 	pod.add(
@@ -3598,6 +3680,8 @@ func TestControllerPodMemoryGuardRunsAtTheDefaultsUntilAnAcknowledgementsSetting
 // deployment's that turned it off, turns the controller pod's guard off with its line, and the
 // guard ends nothing at the mark.
 func TestControllerPodMemoryGuardTurnsOffOnAnAcknowledgementWithNoSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const grower = 1660
 	pod := newGuardPod(t)
 	pod.add(guardProcess{pid: grower, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 900 * guardMiB})
@@ -3639,6 +3723,8 @@ const (
 // ends nothing more and writes its stopped line. Each kill is the controller's: its ended line
 // reads role=controller, and its report goes on the controller's connection, in the guard's order.
 func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSettings(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	pod := newGuardPod(t)
@@ -3742,6 +3828,8 @@ func TestControllerPodMemoryGuardRunsInTheRolesDirFormAtTheControllerPodsSetting
 // settings reach no guard, and Run returns at its context's end (runControllerLauncher). A panic
 // that left the guard's goroutine would end this test's process, as it ends a pod's PID 1.
 func TestControllerPodMemoryGuardTurnsOffOnAPanicInItsLoopAndTheLauncherServesOn(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const grower = 1670
 	pod := newGuardPod(t)
 	pod.add(guardProcess{pid: grower, ppid: os.Getpid(), exe: "/usr/bin/python3.13", args: []string{"python3", "grow.py"}, anon: 900 * guardMiB})
@@ -3855,6 +3943,7 @@ func servedKillReport(t *testing.T, token string, cfg Config, report shimwire.La
 // acknowledgements: it sends its report where guard settings came and drops it where only
 // kernelKills did, with the line it always wrote.
 func TestAMicroVMLauncherSendsItsKillReportsOnKernelKillsAndAGVisorLauncherOnGuardSettings(t *testing.T) {
+	t.Parallel()
 	const noKernelKills = "reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report"
 	const noSettings = "reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report"
 	both := defaultsAck()
@@ -3915,6 +4004,8 @@ func noGuard(t *testing.T, why string) {
 // helpers keep the container's starting score. The launcher builds no guard, and its manager holds
 // none.
 func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStartingScore(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	exe := launcherExe(t)
 	launcher := os.Getpid()
 	const omp = "/opt/omp/bin/omp"
@@ -3986,6 +4077,8 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 // same rise, which the watch hands the launcher's sink with no role, has its line and reaches no
 // connection.
 func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
+	// Not parallel: it writes the package variable containerInit (useContainerInit), which every
+	// launcher reads to tell whether it is the container's first process.
 	const testers, reviewers, outside = 750, 751, 752
 	pod := newGuardPod(t)
 	pod.add(

@@ -75,6 +75,7 @@ func googleAnswer(r *http.Request, status int, body string) *http.Response {
 // keeps, not a transport error's own words. A userinfo answer that names a person still makes
 // that person the owner (the control: the stand-in is the endpoint the form reached).
 func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:88); it signals the test process or changes its signal handling (var main.gcpMetadataToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it replaces a value of the whole process (main.useGoogleAPIsStandIn, http.DefaultTransport set at secret_gcp_printed_test.go:51); it sets a package variable the package's other tests read (gcpMetadataToken set at secret_gcp_printed_test.go:99).
 	const secret = "hunter2pw-userinfo-4b7e19"
 	real := gcpUserinfo
 	for _, row := range []struct {
@@ -164,6 +165,7 @@ func TestGCPUserinfoPrintsItsStatusAndCodeNeverItsBody(t *testing.T) {
 // is refused the same way, by its own name. A file that holds a key still signs every call in,
 // and the line naming the sign-in names the variable, not the path.
 func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:187); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const secret = "hunter2pw-credfile-91c3d7"
 	writeIn := func(t *testing.T, data string) string {
 		t.Helper()
@@ -248,6 +250,7 @@ func TestGCPCredentialsFilePrintsItsVariableNeverItsPathOrContent(t *testing.T) 
 // (the metadata server) the commands carry no prefix, and under a gcloud login they carry the
 // login (the controls).
 func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:273); it changes the whole process's working directory (t.Chdir at secret_gcp_printed_test.go:272); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
 	const secret = "hunter2pw-cmdtoken-27d0ae"
 	for _, mode := range []struct {
 		name string
@@ -351,6 +354,7 @@ func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
 // for the well-known credentials file, through the test's dial and through one shaped as the real
 // one. A token endpoint that answers still signs the call in (the control).
 func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:392); it sets a package variable the package's other tests read (main.useProductionShapedDial, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const secret = "hunter2pw-refresh-5d82c1"
 	refusing := func(t *testing.T) string {
 		t.Helper()
@@ -422,6 +426,7 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 // who pasted a credential in the wrong place puts it. A login and a configuration gcloud holds
 // still sign in (the controls).
 func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:436); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
 	const secret = "hunter2pw-selector-5f21a8"
 	t.Run("CLOUDSDK_CORE_ACCOUNT", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -488,6 +493,7 @@ func TestARefusedGcloudSelectorIsNotPrinted(t *testing.T) {
 // error_description there, which the server writes what it likes in. It holds for the login list
 // and for the token. A gcloud that answers still signs the form in (the control).
 func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:527); it signals the test process or changes its signal handling (main.useNoADC, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useNoADC, gcpMetadataToken set at secret_gcp_test.go:536).
 	const secret = "hunter2pw-gcloudstderr-7c40b2"
 	refused := `echo "ERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: echo of ` + secret + `', {'error': 'invalid_grant', 'error_description': 'echo of ` + secret + `'})" >&2; exit 1`
 	for _, row := range []struct {
@@ -540,6 +546,7 @@ func TestGcloudsStandardErrorIsNotPrinted(t *testing.T) {
 // setting and the system's reason, never the path. A directory that holds a key file still signs
 // in, and the line naming the sign-in names the setting, not the path (the control).
 func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:579); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	secret := "hunter2pw-" + "wellknown-" + strings.Repeat("a1b2c3d4", 40)
 	const named = "the well-known credentials file (application_default_credentials.json in the directory CLOUDSDK_CONFIG names)"
 	for _, row := range []struct {
@@ -587,6 +594,7 @@ func TestTheWellKnownCredentialsFileIsNamedByItsSettingNeverItsPath(t *testing.T
 // fixed words. Control: a service account's email still prints in both places, so the check sees
 // the answer.
 func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_printed_test.go:618); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (gcpUserinfo set at secret_gcp_printed_test.go:616).
 	planted := "hunter2pw-" + "accountanswer-" + "c71d"
 	for _, row := range []struct {
 		name, email, want string
@@ -629,6 +637,7 @@ func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testi
 // store refusal name it only where it has a service account's shape. Control: a service account's
 // email in either field still prints.
 func TestACredentialsFilesAccountPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
+	t.Parallel()
 	planted := "hunter2pw-" + "fileaccount-" + "9e1d"
 	const robot = "deploy-bot@example-project.iam.gserviceaccount.com"
 	impersonating := func(account string) string {

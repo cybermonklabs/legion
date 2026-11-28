@@ -50,6 +50,7 @@ const (
 // edit to either side alone fails here: a claim added to the guide and not to the copy would
 // otherwise never reach the exchange's own check, which reads the copy and not the guide.
 func TestTheClaimExtractIsTheGuidesClaimList(t *testing.T) {
+	t.Parallel()
 	doc, err := os.ReadFile(filepath.FromSlash(kubernetesGuide))
 	if err != nil {
 		// A skip here would be an absence that reads exactly like a pass, and a silent absence is
@@ -185,6 +186,7 @@ func claimListNames(doc string) ([]string, error) {
 // onto an indented line is still one item; and the list ends at the prose under it, so a later
 // list in the same section is never read as the claims.
 func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
+	t.Parallel()
 	const intro = claimsDocHeading + "\n\nAn issued token carries these claims and no others:\n\n"
 	const after = "\nThe subject token's own kind decides those claims.\n\n- `other` — a later list, not a claim.\n"
 	want := []string{"session", "person", "project_scope", "project"}
@@ -224,6 +226,7 @@ func TestClaimListNamesReadsTightAndBlankSeparatedLists(t *testing.T) {
 // after the list, where both readings have ended it, change nothing it reads; a guide with no list
 // fails in both readings alike, with the written reading's refusal.
 func TestTheClaimListIsReadWhereAReaderSeesIt(t *testing.T) {
+	t.Parallel()
 	const (
 		prose = "An issued token carries these claims and no others:\n\n"
 		intro = claimsDocHeading + "\n\n" + prose

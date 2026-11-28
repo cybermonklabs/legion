@@ -75,6 +75,7 @@ func insertScopeBlockAsk(t *testing.T, tx pgx.Tx, issueKey any, artifactID, bloc
 // each document lists exactly the sources ScopeOf puts in it, and a direct message, like a reply
 // whose thread loops back on itself before naming a document, belongs to none.
 func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -197,6 +198,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 // order changed on one side, a field the pending shape stops carrying - the edges a new ask,
 // comment, reply or message stores would stop matching the ones its stored row says it should.
 func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -335,6 +337,7 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 // its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
 // address, which for a question of a project document is that document's and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -407,6 +410,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 // parse does: the same parser reads both spellings (pmdoc.ParseTypedDirectiveOpen), so a
 // question written either way is in the map its `#id`s resolve against.
 func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

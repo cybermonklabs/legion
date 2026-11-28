@@ -87,7 +87,7 @@ func TestTakingTheDurableAgainUnderOneHoldLeavesNoLossWatcherPerAttempt(t *testi
 			waitFor(t, 60*time.Second, func() bool { return creates.Load() >= attempts }, func() string {
 				return fmt.Sprintf("control: the holder tried %d creates, want %d", creates.Load(), attempts)
 			})
-			if subscribedDelivery(holder.intake).hold != hold || !holdLive(t, pool) {
+			if subscribedDelivery(holder.intake).hold != hold || !holdLive(t, pool, holder.intake.holder) {
 				t.Fatal("control: the holder's take-overs did not all run under the one hold it took first, still live")
 			}
 			waitFor(t, 10*time.Second, func() bool { return lossWatchers()-before <= 1 }, func() string {
@@ -125,7 +125,7 @@ type unconfirmedHandBack struct {
 func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) unconfirmedHandBack {
 	t.Helper()
 	var row unconfirmedHandBack
-	row.logs = captureLogs(t)
+	row.logs = captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	tuning := tuningFor(t)
 	tuning.stopBudget = stopBudget
@@ -148,7 +148,9 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 		return "the holder never started on the first message: " + consumerState(row.publisher)
 	})
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, row.publisher, inFlight))
-	awaitAckPending(t, row.publisher, 2)
+	waitFor(t, 20*time.Second, func() bool { return queuedBehindKeys(subscribedDelivery(holder.intake)) == 1 }, func() string {
+		return fmt.Sprintf("control: %d message(s) wait behind the holder's handler, want the second message: %s", queuedBehindKeys(subscribedDelivery(holder.intake)), consumerState(row.publisher))
+	})
 
 	// The stop's hand-backs go out only once its drain has answered; the row gives the stop's calls
 	// a 30 s guard, and puts the wait back as the hand-back's publish begins (stopWithAHeldHandBack).
@@ -273,7 +275,7 @@ func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable
 	case <-time.After(30 * time.Second):
 		t.Fatal("the holder's Run did not return within 30 s of its stop's deadline")
 	}
-	if !loggedMessage(row.logs(), intakeHoldFinalizing) || !holdLive(t, row.pool) {
+	if !loggedMessage(row.logs(), intakeHoldFinalizing) || !holdLive(t, row.pool, row.holder.intake.holder) {
 		t.Fatalf("control: the stop released its hold although no flush could confirm its hand-back; logged %q", loggedMessages(row.logs()))
 	}
 	requireHandBackStillOnTheHolder(t, row.relay)
@@ -288,7 +290,7 @@ func TestAHandBackUnconfirmedInTheSocketAtShutdownNeverReachesTheStandbysDurable
 	case <-time.After(30 * time.Second):
 		t.Fatal("StartIntakes' stop did not return within 30 s")
 	}
-	if holdLive(t, row.pool) {
+	if holdLive(t, row.pool, row.holder.intake.holder) {
 		t.Fatal("control: StartIntakes' stop returned with the hold still live")
 	}
 	moveAndRequireNoLateHandBack(t, row)
@@ -317,9 +319,9 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 		t.Fatal("the holder's Run did not return within 30 s of its stop's deadline")
 	}
 	requireHandBackStillOnTheHolder(t, row.relay)
-	waitFor(t, 30*time.Second, func() bool { return row.relay.Accepted() >= 2 && !holdLive(t, row.pool) }, func() string {
+	waitFor(t, 30*time.Second, func() bool { return row.relay.Accepted() >= 2 && !holdLive(t, row.pool, row.holder.intake.holder) }, func() string {
 		return fmt.Sprintf("control: the holder did not reconnect on a new socket and release its hold: %d connection(s) through the relay, hold live=%t; logged %q",
-			row.relay.Accepted(), holdLive(t, row.pool), loggedMessages(row.logs()))
+			row.relay.Accepted(), holdLive(t, row.pool, row.holder.intake.holder), loggedMessages(row.logs()))
 	})
 	moveAndRequireNoLateHandBack(t, row)
 }
@@ -342,7 +344,8 @@ func TestAHandBackOnAConnectionGivenUpAsStaleNeverReachesTheStandbysDurable(t *t
 // the hold at once, leaving the -NAK to go out whenever the link moved, after a standby could have
 // recreated the durable; that is the negative control, which fails the hold's check.
 func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -434,7 +437,7 @@ func TestAHandBackAnEarlierDeliveryLeftUnconfirmedKeepsTheHoldAtTheStop(t *testi
 	case <-time.After(30 * time.Second):
 		t.Fatal("the holder's stop did not return within 30 s")
 	}
-	if !holdLive(t, pool) {
+	if !holdLive(t, pool, durable.holder) {
 		t.Fatalf("the stop released its hold while the earlier delivery's hand-back was unconfirmed in the socket's send queue, so a standby can recreate the durable before the link moves and sends it; events %q", recorded.since(from))
 	}
 	relay.Move()
@@ -469,7 +472,10 @@ func delivering(durable *heldDurable) *intakeDelivery {
 // (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
 // this hook between the two: the stop releases the hold, and the row fails at the hold's check.
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
-	logs := captureLogs(t)
+	// Serial: the stop's drain and its connected read must each answer within the intake's
+	// callWait (100 ms) for the hand-back to be admitted at all, which eight tests on four CPUs can
+	// miss without a defect.
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -574,7 +580,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 	case <-time.After(30 * time.Second):
 		t.Fatal("the holder's stop did not return within 30 s")
 	}
-	if !holdLive(t, pool) {
+	if !holdLive(t, pool, durable.holder) {
 		t.Fatalf("the stop released its hold while the earlier delivery's admitted hand-back had not been published, so its -NAK goes out after a standby can recreate the durable; events %q", recorded.since(from))
 	}
 	releasePublish()
@@ -605,7 +611,7 @@ func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop
 // that none severed the connection. The negative control is the settlement of the latest delivery
 // alone: the first delivery's watcher severs, and the row fails naming the severed connection.
 func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHandBack(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -695,7 +701,7 @@ func TestAReleaseAtTheStopSeversNothingForAnEarlierDeliveryStillConfirmingItsHan
 	case <-time.After(30 * time.Second):
 		t.Fatal("the holder's stop did not return within 30 s")
 	}
-	if holdLive(t, pool) {
+	if holdLive(t, pool, durable.holder) {
 		t.Fatalf("control: the stop did not release its hold, with nothing unconfirmed on the connection; logged %q", loggedMessages(logs()))
 	}
 	waitFor(t, 30*time.Second, func() bool { return lossWatchers()-before <= 0 }, func() string {

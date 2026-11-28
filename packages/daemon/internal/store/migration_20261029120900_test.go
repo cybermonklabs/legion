@@ -10,6 +10,7 @@ import (
 // adds the column, leaving every row an older daemon wrote with no parent told, which the daemon
 // reads as the empty string; a second telling under another parent is one update of the same row.
 func TestTheToldParentIsAddedAt20261029120900(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261029120800)

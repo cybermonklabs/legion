@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"maps"
 	"net/http"
@@ -45,6 +46,13 @@ type rowDrive struct {
 	// stored, for a GET that writes, counts the rows its write stores: none before the drive and
 	// one after it. Its $names are filled as the target's are.
 	stored string
+	// sendAfter, for a GET that writes, names the drives of its registry that must be sent before
+	// it: each whose run this drive's read reaches, so that sent first this read would make that
+	// drive's write itself (firstToWarn writes each run's warning once) and leave the drive
+	// nothing to write. TestEveryGETThatWritesMakesItsWrite sends every drive after each one it
+	// names (sendOrder), whatever order the routes are declared in. The order is stated here
+	// because where the routes are declared, by pattern, says nothing of what a read reaches.
+	sendAfter []string
 }
 
 // statementOf is a statement a drive must see: pattern matched case-insensitively across lines.
@@ -77,12 +85,13 @@ const searchTook = "how long the search ran, which each read times on its own cl
 const postHistoryStatement = `\bleft\s+join\s+lateral\s*\(\s*select\s+body,\s*edited_by,\s*edited_at\s+from\s+post_body_history\b`
 
 // readRowDrives is the drive of every read row of the table (readWritesNothing), keyed
-// "GET <pattern>" as readClasses is: the request that shows the row writes nothing a read may
+// "GET <pattern>", as a route names itself: the request that shows the row writes nothing a read may
 // not write and answers a read-only token as it answers that token's writer.
 var readRowDrives = map[string]rowDrive{
 	"GET /api/v1":               {target: "/api/v1", fromMemory: "the route index is built in memory when the table is registered"},
 	"GET /api/v1/schema/blocks": {target: "/api/v1/schema/blocks", fromMemory: "the block schema is a constant of the document package"},
 	"GET /api/v1/limits":        {target: "/api/v1/limits", fromMemory: "the limits are constants"},
+	"GET /api/v1/deploys":       {target: "/api/v1/deploys?repo=acme/widgets", statement: statementOf(`\bfrom\s+deploys\b`)},
 	"GET /api/v1/projects":      {target: "/api/v1/projects", statement: statementOf(`\bcoalesce\(open_asks\.total\b`)},
 	"GET /api/v1/projects/{key}/artifacts": {target: "/api/v1/projects/$project/artifacts",
 		statement: statementOf(`\bfrom\s+artifacts\s+where\s+project_key\s*=\s*\$1\s+and\s+not\s+is_primary\b`)},
@@ -100,6 +109,9 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture-source":  {target: "/api/v1/projects/$project/architecture-source", statement: statementOf(`\bfrom\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
+	// A project's spec check results at one commit, which only a CI run's results token writes.
+	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=0123456789abcdef0123456789abcdef01234567",
+		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
@@ -128,7 +140,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/dashboard/builds":        {target: "/api/v1/dashboard/builds", statement: statementOf(`\bfrom\s+dashboard_builds\b`)},
 	"GET /api/v1/priorities":              {target: "/api/v1/priorities", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+state\b`)},
 	"GET /api/v1/priorities/{id}/history": {target: "/api/v1/priorities/$priority/history", statement: statementOf(`\bfrom\s+priority_nodes\s+where\s+kind\s*=\s*'priority'\s+and\s+id\b`)},
-	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_stated\s+as\b`)},
+	"GET /api/v1/issues":                  {target: "/api/v1/issues?project=$project", statement: statementOf(`\bwith\s+recursive\s+advances_relations\s+as\b`)},
 	"GET /api/v1/issues/resolve":          {target: "/api/v1/issues/resolve?ref=$issue", statement: statementOf(`\bselect\s+key\s+from\s+issues\s+where\s+key\s*=\s*\$1\b`)},
 	"GET /api/v1/issues/{key}":            {target: "/api/v1/issues/$issue", statement: statementOf(`\bfrom\s+design_gates\s+where\s+issue\b`)},
 	"GET /api/v1/issues/{key}/summary":    {target: "/api/v1/issues/$issue/summary", statement: statementOf(`\bselect\s+key,\s*project_key,\s*title,\s*status\s+from\s+issues\b`)},
@@ -149,6 +161,7 @@ var readRowDrives = map[string]rowDrive{
 		volatile: []volatileMember{
 			{"checks.*.compared_with.*.learned_at.at", "the moment the read learned a pull request's head from GitHub, its own clock: the read-only read stores nothing and keeps nothing after its request, so its writer's read asks GitHub again"},
 			{"checks.*.results.*.commit_stands.basis.learned_at.at", "the same moment, on the basis each result stands at"},
+			{"checks.*.pass_stands.subjects.*.basis.learned_at.at", "the same moment, on the basis each subject's pass stands at"},
 		}},
 	"GET /api/v1/issues/{key}/coverage":      {target: "/api/v1/issues/$issue/coverage", statement: statementOf(`\bt\.type\s*=\s*'requirement'`)},
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
@@ -182,8 +195,10 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/near-copy-checks/{id}":                {target: "/api/v1/near-copy-checks/$nearCopy", statement: statementOf(`\bfrom\s+near_copy_checks\b`)},
 	"GET /api/v1/going/capability":                     {target: "/api/v1/going/capability", fromMemory: "it answers whether the deployment configured a model"},
 	"GET /api/v1/agents":                               {target: "/api/v1/agents", statement: statementOf(`\ba\.author->>'kind'\s*=\s*'session'`)},
-	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached\s+as\b`)},
+	"GET /api/v1/agents/known":                         {target: "/api/v1/agents/known?id=$session", statement: statementOf(`\bfrom\s+unnest\(\$1::text\[\]\)\s+with\s+ordinality\s+as\s+asked\b`)},
+	"GET /api/v1/agents/{session_id}/answers":          {target: "/api/v1/agents/$session/answers?since=$answersSince", statement: statementOf(`\bwith\s+reached_by_destination\s+as\b`)},
 	"GET /api/v1/agents/{session_id}/messages":         {target: "/api/v1/agents/$session/messages", statement: statementOf(`\bwith\s+recursive\s+direct_roots\s+as\b`)},
+	"GET /api/v1/agents/{session_id}/artifacts":        {target: "/api/v1/agents/$session/artifacts", statement: statementOf(`\bfrom\s+artifacts\s+where\s+session_id\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {target: "/api/v1/agents/$session/artifacts/$fileSlug", statement: statementOf(`\bfrom\s+artifacts\s+where\s+ref_key\s*=\s*\$1\b`)},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {target: "/api/v1/agents/$session/artifacts/$fileSlug/versions/1",
 		statement: statementOf(`\bselect\s+content,\s*mime,\s*sha256,\s*size\s+from\s+artifact_versions\b`)},
@@ -252,11 +267,13 @@ var readRowDrives = map[string]rowDrive{
 // getWriteDrives is the drive of every GET row of the table that writes (readWritesState), keyed
 // as readRowDrives is: the request that makes the write the row's WriteNote names, on the seeded
 // store. Each delivery read is sent at a window holding a deploy run with no production job of
-// its own, the newest run the timeline's and the oldest the pipeline's, and they are sent in the
-// table's order, the pipeline last: the timeline and the measures each read only the window
-// around their own run, and the pipeline reads seven days, which hold all three, and firstToWarn
-// writes once per process for each run (delivery.go), so a pipeline read sent first would warn
-// of the other two rows' runs before their own reads.
+// its own, the newest run the timeline's and the oldest the pipeline's, and firstToWarn writes
+// once per process for each run (delivery.go). The timeline reads only the window around its own
+// run; the measures' read reaches the timeline's run too, ten hours after its own, and the
+// pipeline reads seven days, which hold all three. So each is sent after the drives whose runs
+// it reaches (sendAfter): timeline, then measures, then pipeline. Sent in the order the routes
+// are declared, by pattern, the measures went first and its read wrote the timeline's warning
+// (envoy-go-race-api job 139500583275).
 var getWriteDrives = map[string]rowDrive{
 	"GET /api/v1/delivery/timeline": {
 		target:    "/api/v1/delivery/timeline?from=$timelineFrom&to=$timelineTo",
@@ -267,11 +284,13 @@ var getWriteDrives = map[string]rowDrive{
 		target:    "/api/v1/delivery/measures?from=$measuresFrom&to=$measuresTo",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $measuresRun",
+		sendAfter: []string{"GET /api/v1/delivery/timeline"},
 	},
 	"GET /api/v1/delivery/pipeline": {
 		target:    "/api/v1/delivery/pipeline?at=$pipelineAt",
 		statement: statementOf(`\binsert\s+into\s+delivery_run_warnings\b`),
 		stored:    "select count(*) from delivery_run_warnings where run_id = $pipelineRun",
+		sendAfter: []string{"GET /api/v1/delivery/timeline", "GET /api/v1/delivery/measures"},
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
 		target:    "/api/v1/going/requests/$going/stream",
@@ -290,10 +309,17 @@ func holdsReadAndNotApprove(answer map[string]any) string {
 	return ""
 }
 
+// declared is the declaration of one route by "<method> <pattern>", the zero value for a name no
+// route declares, which the walk around it reads as a route the table does not mount.
+func declared(name string) routeDecl {
+	route, _ := declaredRoute(name)
+	return route
+}
+
 // TestEveryGETRowHasADrive holds the two registries of drives to the read class: every GET row of
 // the table with its test hooks in (readOnlyTable), read off the table, so a GET row added later
 // fails here until it is driven. It fails for each read row with no drive in readRowDrives, each
-// GET that writes with no drive in getWriteDrives, each GET row readClasses has not classed that
+// GET that writes with no drive in getWriteDrives, each GET route stating no read class that
 // has a drive in neither, each drive that names no GET row of its class or whose target its
 // row's pattern does not match, each read's drive that names neither a statement its handler runs
 // nor why it reads from memory, or names both, and each drive of a GET that writes that names no
@@ -311,7 +337,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 		patterns[name] = route.Pattern
 		_, read := readRowDrives[name]
 		_, write := getWriteDrives[name]
-		switch readClasses[name].Writes {
+		switch route.Read.Writes {
 		case readWritesNothing:
 			if !read {
 				problems = append(problems, name+": a read (readWritesNothing) with no drive in readRowDrives")
@@ -322,7 +348,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 			}
 		default:
 			if !read && !write {
-				problems = append(problems, name+": a GET row readClasses has not classed, with no drive in readRowDrives or getWriteDrives")
+				problems = append(problems, name+": a GET route whose declaration states no read class, with no drive in readRowDrives or getWriteDrives")
 			}
 		}
 	}
@@ -341,7 +367,7 @@ func TestEveryGETRowHasADrive(t *testing.T) {
 		for name, drive := range registry.drives {
 			pattern, mounted := patterns[name]
 			switch {
-			case !mounted || readClasses[name].Writes != registry.class:
+			case !mounted || declared(name).Read.Writes != registry.class:
 				problems = append(problems, name+": "+registry.name+" drives it, and it is no "+registry.rows+" of the table")
 			case !sendsItsRow(pattern, drive.target):
 				problems = append(problems, name+": "+registry.name+" drives it at "+drive.target+", which its pattern does not match")
@@ -385,7 +411,7 @@ func sendsItsRow(pattern, target string) bool {
 }
 
 // driveRowsVariable names the read rows a run of the read drive sends, for a run that needs only
-// some of them: the rows' names ("GET <pattern>", as readClasses keys them), separated by commas.
+// some of them: the routes' names ("GET <pattern>"), separated by commas.
 // Unset or empty, every read row runs.
 const driveRowsVariable = "DISPATCH_READ_DRIVE_ROWS"
 
@@ -409,7 +435,7 @@ func drivenRows(t *testing.T, class readWrites) ([]string, map[string]rowDrive) 
 	drives := map[string]rowDrive{}
 	for _, route := range readOnlyTable() {
 		name := route.Method + " " + route.Pattern
-		if route.Method != http.MethodGet || readClasses[name].Writes != class {
+		if route.Method != http.MethodGet || route.Read.Writes != class {
 			continue
 		}
 		if len(only) > 0 && !only[name] {
@@ -482,7 +508,7 @@ func (w *driveWorld) pairs() [][2]driveSend {
 	}
 }
 
-// driveTally counts what the read drive saw, for its log line.
+// driveTally counts what one world of the read drive saw, for its log line.
 type driveTally struct {
 	rows, windows, statements int
 	writes                    map[string]int
@@ -493,7 +519,7 @@ type driveTally struct {
 var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 
 // TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter: every read row of the table
-// (readWritesNothing), sent on one seeded store (newDriveWorld) by two pairs of credentials, each
+// (readWritesNothing), sent on a seeded store (newDriveWorld) by two pairs of credentials, each
 // a read-only credential and its writer: the golden file's answer of a machine login's narrowed
 // token (read-person, P, session S) and the same answer with the project scope person and no
 // read; and P's personal token holding read and person, and P's holding person. In each pair the
@@ -504,59 +530,91 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
 // statement on any context (poolStatements), and each read-only request is sent in a window: it
-// opens before the request and closes no sooner than 2 s after the answer and once the pool has
-// run no write for 500 ms, and a window still open at 20 s fails the row. The window must hold no
-// write a read may not make (readMayWrite), wherever it ran; it must hold the request's own
-// credential check, the insert that spends the broker token's proof or the lookup of the personal
-// token; and it must hold the statement the row's drive names, unless the drive says why the
-// handler reads from memory. Each read-only answer must equal its writer's, status and body, but
-// for the members the row's drive lists as volatile, each with its reason, and but for a row
-// whose answer describes the credential (whoami), whose credential's members are held to the
-// read-only credential's own answer.
+// opens before the request and closes only after its read stages, statistics refreshes, roster
+// fetches, startup marker and detached writes have completed. Work still running at 20 s fails
+// the row. The window must hold no write a read may not make (readMayWrite), wherever it ran; it
+// must hold the request's own credential check, the insert that spends the broker token's proof
+// or the lookup of the personal token; and it must hold the statement the row's drive names,
+// unless the drive says why the handler reads from memory. Each read-only answer must equal its
+// writer's, status and body, but for the members the row's drive lists as volatile, each with
+// its reason, and but for a row whose answer describes the credential (whoami), whose credential's
+// members are held to the read-only credential's own answer.
 //
-// Before the first row a calibration window, GET /api/v1/limits under the deployment's shared
-// token, which writes nothing, must hold no write at all: no duty of the rig writes while a row
-// is driven. Then the pre-check must see, each in its own window, one insert into text_trees
-// (the first read of a version no other test has shown), one upsert of route_roster on the
-// server's own context (a read of a stale roster), and the term statistics refresh a related
-// read starts on the server's own context, so a tracer that sees nothing, or sees the request's
-// own context alone, fails before any row.
+// The rows are dealt, in the table's order, to as many worlds as go test runs tests at once
+// (driveWorldsFor), each a seeded store, a server and a tracer of its own (newDriveWorld). The
+// worlds run at once and each sends its rows one after another, so a window reads its own world's
+// pool alone and holds no statement of a row another world sends beside it.
+// Statements between windows are checked too. Each world finishes with a two-second observation
+// after its last row, so an unregistered worker cannot escape by writing between requests or
+// after the last response. Such a failure may name the following row or the end of the world,
+// rather than the row that started the worker.
+// The writing-token oracle's own context and its descendants are exempt from gap policy, as in
+// the base test: a writing results read may persist metadata. Unmarked work is never exempt,
+// including an unregistered worker that writes while the oracle is serving.
+//
+// In each world, before its first row, a calibration window, GET /api/v1/limits under the
+// deployment's shared token, joins known workers and observes two more seconds for an unknown
+// background writer. It must hold no write. Then the pre-check must see, in its own windows, an insert
+// into text_trees (the first read of a version no other test or world has shown), one upsert of
+// route_roster on the server's own context (a read of a stale roster), and the term statistics
+// refresh a related read starts on the server's own context, so a tracer that sees nothing, or
+// sees the request's own context alone, fails before any row.
 //
 // DISPATCH_READ_DRIVE_ROWS narrows the run to the rows it names, separated by commas (each
-// "GET <pattern>", as readClasses keys it); unset, every read row runs, which takes minutes,
-// about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
-// and the pre-check run either way.
+// "GET <pattern>"); unset, every read row runs. The calibration and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	// Not parallel: it holds every window and every personal pair to a wall-clock bound
-	// (driveWindowLimit, agentTokenUse's minute) for minutes, and run among this package's parallel
-	// tests on CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
-	// missed its 3 s beside it (envoy-go-race-api job 137929719893).
+	// Not parallel: it holds every request and all its workers to driveWindowLimit and every
+	// personal pair to agentTokenUse's minute. Each isolated world's rows run one after another
+	// while the package's parallel tests wait for the serial tests to end.
 	rows, drives := drivenRows(t, readWritesNothing)
-	world := newDriveWorld(t)
-	world.calibrate(t)
-	world.precheck(t)
-	tally := driveTally{writes: map[string]int{}}
-	for _, name := range rows {
-		t.Run(name, func(t *testing.T) {
-			world.driveRead(t, name, drives[name], &tally)
-		})
-	}
-	writes := make([]string, 0, len(tally.writes))
-	for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
-		writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
-	}
-	t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
-		tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
+	worlds := driveWorldsFor(len(rows))
+	// The worlds run inside one subtest, which ends only once every world has: go test stops a
+	// test's clock when its function returns, before its parallel subtests start, so worlds run
+	// straight under the test would leave its time (go test -json's Elapsed, which CI's legs are
+	// dealt by) near zero.
+	t.Run("worlds", func(t *testing.T) {
+		for first := range worlds {
+			t.Run(fmt.Sprintf("world %d of %d", first+1, worlds), func(t *testing.T) {
+				t.Parallel()
+				world := newDriveWorld(t)
+				world.calibrate(t)
+				world.precheck(t)
+				tally := driveTally{writes: map[string]int{}}
+				for at := first; at < len(rows); at += worlds {
+					name := rows[at]
+					t.Run(name, func(t *testing.T) {
+						world.driveRead(t, name, drives[name], &tally)
+					})
+				}
+				tail := world.tracer.window(t, "after the world's last row", driveCalibrationWindow, func() {})
+				requireReadsWrites(t, "after the world's last row", nonOracleStatements(tail))
+				writes := make([]string, 0, len(tally.writes))
+				for _, write := range slices.Sorted(maps.Keys(tally.writes)) {
+					writes = append(writes, fmt.Sprintf("%s ×%d", write, tally.writes[write]))
+				}
+				t.Logf("drove %d read rows in %d read-only windows holding %d statements; their writes: %s; the rows whose read-only request stored a tree: %v",
+					tally.rows, tally.windows, tally.statements, strings.Join(writes, ", "), tally.treesStored)
+			})
+		}
+	})
 }
 
-// calibrate is the calibration row: GET /api/v1/limits under the deployment's shared token, whose
-// request writes nothing, in a window that must hold no write. A write in it is a duty of the rig
-// writing while nothing asked it to, which would land in any row's window.
+// driveWorldsFor is how many worlds the read drive deals its rows to: one for each test go test
+// runs at once (-parallel), and never more than there are rows. Each world has its own store,
+// server and completion barriers.
+func driveWorldsFor(rows int) int {
+	parallel, _ := flag.Lookup("test.parallel").Value.(flag.Getter).Get().(int)
+	return max(1, min(rows, parallel))
+}
+
+// calibrate joins the known workers of GET /api/v1/limits under the shared token, then observes
+// the whole pool for driveCalibrationWindow. A write in that interval catches a background
+// source the completion barriers do not name, even though this request itself writes nothing.
 func (w *driveWorld) calibrate(t *testing.T) {
 	t.Helper()
-	w.tracer.quiet(t, "before the calibration row")
+	w.tracer.settle(t, "before the calibration row")
 	var response *httptest.ResponseRecorder
-	statements := w.tracer.window(t, "the calibration row", func() {
+	statements := w.tracer.window(t, "the calibration row", driveCalibrationWindow, func() {
 		request := drivenRequest(httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil))
 		request.Header.Set("Authorization", "Bearer agent-token")
 		response = w.rig.serve(request)
@@ -577,9 +635,9 @@ func (w *driveWorld) precheck(t *testing.T) {
 	readOnly := w.brokerSend("the machine login's narrowed token", w.readOnly)
 	send := func(what, target string) []drivenStatement {
 		t.Helper()
-		w.tracer.quiet(t, "before "+what)
+		w.tracer.settle(t, "before "+what)
 		var response *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
+		statements := w.tracer.window(t, what, 0, func() { response = w.rig.serve(readOnly.request(t, w.fill(t, target))) })
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: GET %s answered %d %s", what, target, response.Code, response.Body.String())
 		}
@@ -638,12 +696,12 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 	for _, pair := range w.pairs() {
 		readOnly, writer := pair[0], pair[1]
 		what := readOnly.who + " on " + target
-		w.tracer.quiet(t, "before "+what)
+		w.tracer.settle(t, "before "+what)
 		if readOnly.personal {
 			w.startPersonalPair(t)
 		}
 		var answer *httptest.ResponseRecorder
-		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
+		statements := w.tracer.window(t, what, 0, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++
 		tally.statements += len(statements)
 		for _, write := range requireReadsWrites(t, what, statements) {
@@ -664,8 +722,10 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 			t.Errorf("%s: the window holds no statement matching %s among %d: the tracer did not see the handler's read:\n%s",
 				what, drive.statement, len(statements), statementList(statements))
 		}
-		answered := w.rig.serve(writer.request(t, target))
-		w.tracer.quiet(t, "after "+writer.who+" on "+target)
+		oracle := writer.request(t, target)
+		oracle = oracle.WithContext(context.WithValue(oracle.Context(), writingOracle{}, true))
+		answered := w.rig.serve(oracle)
+		w.tracer.settle(t, "after "+writer.who+" on "+target)
 		if answer.Code != status {
 			t.Errorf("%s: answered %d %s, want %d", what, answer.Code, cutBody(answer.Body.String()), status)
 		}
@@ -699,11 +759,12 @@ func statementList(statements []drivenStatement) string {
 // deploy run with no production job that is its own. It runs on the drive rig (newDriveRig) with
 // only the state those writes read (driveWorld.seedWrites), not the whole seeded store. Each is
 // sent in a window as the reads are, which must hold that write, and the store must hold none of
-// the row's rows before it and one after. The rows run in the table's order, which is the order
-// getWriteDrives's runs need.
+// the row's rows before it and one after. Each row runs after the rows its drive's sendAfter
+// names, the order getWriteDrives's runs need (sendOrder), and otherwise in the table's order.
 func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 	t.Parallel()
 	rows, drives := drivenRows(t, readWritesState)
+	rows = sendOrder(t, rows, drives)
 	world := newDriveRig(t)
 	world.seedWrites(t)
 	writer := world.brokerSend("the writing token", world.writer)
@@ -722,9 +783,9 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			if before := stored(t, drive); before != 0 {
 				t.Fatalf("before the drive the store holds %d of what %s writes, want none", before, name)
 			}
-			world.tracer.quiet(t, "before "+target)
+			world.tracer.settle(t, "before "+target)
 			var answer *httptest.ResponseRecorder
-			statements := world.tracer.window(t, target, func() { answer = world.rig.serve(writer.request(t, target)) })
+			statements := world.tracer.window(t, target, 0, func() { answer = world.rig.serve(writer.request(t, target)) })
 			if answer.Code != http.StatusOK {
 				t.Fatalf("GET %s answered %d %s", target, answer.Code, cutBody(answer.Body.String()))
 			}
@@ -738,4 +799,36 @@ func TestEveryGETThatWritesMakesItsWrite(t *testing.T) {
 			t.Logf("GET %s made its write %s, the window's writes %v", target, drive.statement, writesIn(statements))
 		})
 	}
+}
+
+// sendOrder is rows with each sent after every row its drive's sendAfter names, and otherwise in
+// the order rows gives. It fails for a name that is no row of the class, and for names that order
+// no row first.
+func sendOrder(t *testing.T, rows []string, drives map[string]rowDrive) []string {
+	t.Helper()
+	sent := map[string]bool{}
+	order := make([]string, 0, len(rows))
+	for len(order) < len(rows) {
+		placed := false
+		for _, name := range rows {
+			if sent[name] {
+				continue
+			}
+			ready := true
+			for _, before := range drives[name].sendAfter {
+				if _, row := drives[before]; !row {
+					t.Fatalf("%s is to be sent after %s, which is no row of its class", name, before)
+				}
+				ready = ready && sent[before]
+			}
+			if ready {
+				sent[name], placed = true, true
+				order = append(order, name)
+			}
+		}
+		if !placed {
+			t.Fatalf("the drives' sendAfter orders none of %v first", rows)
+		}
+	}
+	return order
 }

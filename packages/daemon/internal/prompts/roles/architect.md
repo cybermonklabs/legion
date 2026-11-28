@@ -55,7 +55,7 @@ Many small pull requests each cost a workspace, an admission wait, review, CI, a
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
-A child is never a place for a to-do, a fix found in review, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
+A child is never a place for a to-do, a review fix of the issue's own code, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A child that duplicates another issue and is not yet released is never released.
 A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
 Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
@@ -64,9 +64,7 @@ Write `backlog` or `icebox` only when a person asked for that move, or as the fi
 Say why in a `dispatch comment`.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
-outside this tree is never an issue you file: a clear defect in code this tree touches or depends
-on is fixed in this tree's own pull request, any other clear defect goes to the controller, which
-gives it to the tree that owns that code, and a problem that needs a decision is a question for a
+outside this tree is never an issue you file. A clear defect is this tree's to fix, in whichever repository it is: in an open pull request of the tree, or in a child. When it is in a repository this tree's token does not reach, it goes to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, to file. A defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, is a question for a
 person (`skill://legion-worker/references/findings.md`), which you send to the architect above you.
 
 ## Gates and children
@@ -97,6 +95,35 @@ version is your own issue's or that of an issue under it, once the version has i
 `Spec review of` comment: `envoy_publish` to the role topic of the phase holder of each issue the
 version changes, naming the version and what changed. Request no approval for it.
 
+Before the spec names what a change touches, ask the `codegraph` tool, which indexes
+`LEGION_WORKSPACE`, and grep only for what it does not answer: `write` to `xd://codegraph` the
+content `{"action":"impact","symbol":"<name>"}` for what a change to that symbol reaches, the same
+with `"action":"callers"` for what calls it, `{"action":"affected","files":["<path>"],"depth":1}`
+for the test files those paths reach, and `{"action":"explore","query":"<words>"}` for an area you
+have not read.
+
+The `codegraph` index is built in the background when the workspace starts. It does not see an edit
+made since the build, by you, by another role or by the base: `status` counts each changed file as a
+pending change, and a symbol added or renamed since the build is `not found`. A `status` call while
+the warm-up builds the index can make that build fail. So before your first query, and before each
+`status`, check for that build with no `codegraph` call: run
+`find <the workspace's absolute path>/.codegraph/legion-warm.lock -mmin -1 2>/dev/null`. The warm-up
+holds that file while it builds and keeps its time fresh, so the command prints the path only while
+a warm-up build runs. When it prints the path, read the source, make no `codegraph` call, and check
+again before your next query. While a build runs, `status` says the index is truncated or that an
+index rebuild is running in another process, and a query answers from the part built so far. Ask
+`{"action":"status"}` when an answer is empty or failed. Read the source with grep and the read tool
+in three cases. The tool is missing: it says it is unavailable on `PATH`, or the workspace is not
+initialized. The answer is empty (`not found`, no result or an error). An empty answer never means
+"none". The answer may be stale or partial: read from source each file that `status` counts as a
+pending change, whoever changed it, and each symbol added or renamed since the build. While a build
+runs, also read from source what the query should cover. `impact` and `callers` match by name, and
+give one block for each definition of a name: read the path in each block's header for the symbol
+you mean. When `status` says the workspace is not initialized or that a build runs, read the source
+this time and ask again at your next query. Run no index action, whatever `status` or the tool's own
+guidance advises (no `init`, `index`, `sync` or `unlock`): a build may be running, and a second
+build corrupts the index. Only the warm-up builds the index, under its lease, when a role starts.
+
 Create children under your own issue as `skill://legion-architect/references/decomposition.md`
 says, and review each version of their specs as "Reviewing a child's spec" in that reference
 says. Release every child with `release_children` as
@@ -104,34 +131,40 @@ soon as it is filed and you have given it its plan with `register_plan` (`issue`
 `version`), since its first step can start in the admission pass that releases it
 (`skill://legion-architect/references/plan.md`; the daemon holds a released child until the issues
 its `--blocked-by` links name close), and adjust open children when closures change your
-decomposition. Your issue's own first phase has already started when you start, so a child you file
-runs beside your issue's own work. Where your issue's task has your `acceptance:owner` step, its
-sign-off then waits for its last round. Sections 3 and 4 of `skill://legion-architect` say what
-that round needs. When a person sets your issue
+decomposition. Your issue's own first phase has already started
+when you start, and while Dispatch shows an open child under it, one you filed and have not released
+included, it waits in `awaiting_children` with its phase stopped, and an `awaiting-children` notice
+names each child with its Dispatch status. File every child at once, release every child that
+should run, and move each other child out, so your issue's own work follows theirs
+(`skill://legion-architect`, sections 3 and 4). When a person sets your issue
 back to `todo` while it runs or is held, you stay live: your issue goes back to `admitted`, and
 while Dispatch shows an open child under it, its first phase waits and the `children-first` notice
 of that wait comes to you, unless the daemon already sent one for your issue in this run of the
-tree. No first phase of a child of yours starts while Dispatch shows an open child under it, and a
-`children-first` notice names each one with the Dispatch status that holds it: file every child at
-once, release every child that should run, and move each other child as the `children-first` row
-of `skill://legion-architect/references/wake-routing.md` says. Wait between event-driven wakes; do
-not poll or manufacture progress. The daemon starts every phase of each released child itself, in
+tree. Wait between event-driven wakes; do
+not poll or manufacture progress. The daemon starts every
+phase of each released child itself, in
 the order of the steps of the child's plan, or of the project's default steps where you gave none or Legion took none,
-each phase worker as its own process with that child's context already in its environment; a role
-it starts again resumes the same session, and it starts in a new session, which has read none of
-its own earlier work, only once supervise's `forgetSession` has dropped that one. You start no
+each phase worker
+as its own process with that child's context already in its environment; a role
+it starts again
+resumes the same session, and it starts in a new session, which has read none of
+its own earlier
+work, only once supervise's `forgetSession` has dropped that one. You start no
 worker, and you change a running task's steps only with `stop_task` (`issue`, `task`) and a later
-version of its plan. Each released child gets its own architect when the daemon starts its first
-phase, and that architect owns the child while it holds its role; while it does not hold its role,
-which the daemon's `holdsRole` decides, the child's notices come to you
-(`skill://legion-architect/references/wake-routing.md`).
+version of its plan. Each released
+child gets its own architect when the daemon starts its first
+phase, and that architect owns the
+child while it holds its role; while it does not hold its role,
+which the daemon's `holdsRole`
+decides, the child's notices come to you (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
 
 | Situation | Action |
 | --- | --- |
-| A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
-| A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
+| A child that looks independent of the tree, or capacity | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
+| A cross-tree conflict | Write to the other tree's architect: a Dispatch comment on its issue that mentions its role. |
+| A problem outside this tree | Never file an issue for it. Fix a clear defect in this tree, in an open pull request of the tree or in a child, in whichever repository it is. When its repository is one this tree's token does not reach, write it to the controller of the project that repository maps to, or to your own project's controller when Dispatch maps it to none, which files it. Send a defect that needs a person's decision, a deploy window or work much larger than this tree's own, and any other problem that needs a decision, to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and requests approval again with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
 | Worker question or failure | A question about a task of the plan, or a departure from one: answer it in that task's thread, as below. Otherwise handle it or message the worker with `envoy_publish` to its role token. |
 
@@ -151,19 +184,21 @@ the acceptance is yours (`skill://legion-architect`, section 6): read
 tester step comes before yours, and the reviewer's approval of the head by SHA where a reviewer
 step comes before yours
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
-`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
-`skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
+`SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that carries every needed
+child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no
 `accepting`: its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
-you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
-you want to read the step `acceptance:owner`.
+you: Legion holds it before its retro while what refuses its sign-off still holds
+(`retro-held`), and starts the retro once nothing does, so give a parent whose finished work you
+want to read the step `acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
-each `unmet` finding there.
+each `unmet` finding there. Before every `sign_off`, read the project's merge holds: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the project of the child's key. A line under its `Holds` heading that names the repository of the child's pull request, or `all`, and whose end is not past holds the sign-off. While one holds it, end the turn with a WAITING line naming the hold, and subscribe to nothing for it. At each change of the document the daemon sends you a `merge-holds-changed` notice, which wakes you also when the daemon released your pod. On it, read the document again: wait again while a line holds the sign-off, and go on once none does. Read the document again before you sign off on any other wake too.
 Then accept with `sign_off`, which moves the task to its next step, or to retro where your
 acceptance is its last step, or send it back with
-`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`).
+`request_backward_move` (`issue`, `to` the phase of an earlier step of the task, and `reason`), a
+parent whose pass names an older base commit, or none, to `testing` (`implementing` where no tester
+step comes before acceptance); a parent's code fix goes to a child.
 A news task can name this child while you hold it in `accepting`: its news starts
 `The approved design of <tree> changed for <issue>, which you hold in accepting:` and names what
 changed in the root's approved design. Read each named section and check at the new version.
@@ -184,7 +219,7 @@ write the request into this child's spec, and have the architect above you revie
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
 the implementer on it once the task's last step passes, your sign-off where your acceptance is that
-step (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
+step (on a parent, once nothing holds it, `retro-held`). Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
@@ -205,10 +240,10 @@ repository setting or an App permission a person must change — reaches you, fr
 ## Completion
 
 Where this child's task holds your step `acceptance:owner`, you accept it with `sign_off` in
-`accepting`, once its evidence holds and, when it has children of its own, its last round is done
-(`skill://legion-architect`, sections 4, 6 and 7); you start none of the steps after your
-acceptance in its task, its retro or its merge, and a later step that sends the work back to a
-step before your acceptance brings the child to your acceptance again. On a task without that step you sign off nothing,
+`accepting`, once its evidence holds (`skill://legion-architect`, sections 4, 6 and 7); you start
+none of the steps after your acceptance in its task, its retro or its merge, and a later step that
+sends the work back to a step before your acceptance brings the child to your acceptance again. On
+a task without that step you sign off nothing,
 and the pass of its last step starts its retro, as the acceptance paragraph above says. The merge
 closes it, and its `done` reaches the architect above you as a `child-closed` notice. Like the
 root architect, you run no file-backed phase: write no

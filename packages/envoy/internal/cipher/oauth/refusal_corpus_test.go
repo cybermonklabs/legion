@@ -40,6 +40,8 @@ const (
 var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidGrant, "%s revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "%s's sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it. Sign in again with `agent-secrets login`.", []any{corpusPerson}, "exchange.go"},
+	{oauth2.ErrInvalidGrant, "The Google account this token was minted for no longer holds %s: another account holds that address now, and the broker takes no sign-in of the account it replaced.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login the subject token belongs to has ended.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The machine login has ended.", nil, "provider.go"},
 	{oauth2.ErrInvalidGrant, "Another live machine login holds the key this proof was signed with. A machine makes a key of its own.", nil, "exchange.go"},
@@ -47,11 +49,11 @@ var corpusRefusals = []corpusRefusal{
 	// The two trades that write a launcher credential refuse a key a live read token is bound to
 	// with one hint (exchange.go's keyBindsReadTokenHint).
 	{oauth2.ErrInvalidGrant, "A live read token is bound to the key this proof was signed with. Make a new key.", nil, "exchange.go"},
-	{oauth2.ErrInvalidRequest, "%s is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The token names a project its person cannot see: %s.", []any{corpusProject}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names the project %s, which its person %s cannot see.", []any{corpusProject, corpusPerson}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The subject token was refused: its entry names no project, and its person %s is a restricted member, who sees only the projects that name them.", []any{corpusPerson}, "exchange.go"},
 	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked whether the token's person sees the projects it names; try again.", nil, "exchange.go"},
+	{oauth2.ErrTemporarilyUnavailable, "Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.", nil, "exchange.go"},
 	{oauth2.ErrInvalidGrant, "The session name '%s' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last %d days. Ask under a name of your own.", []any{corpusSession, 30}, "exchange.go"},
 	// The broker writes this one's description as oauthwire.PodSessionNotRegistered and a colon in
 	// place of the library's invalid_grant sentence (registeredPodSession).
@@ -63,8 +65,15 @@ var corpusRefusals = []corpusRefusal{
 	// another daemon holds, the second for a name bound to none.
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
 	{oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":"), "The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", []any{corpusSession}, "exchange.go"},
+	// A trade for the approve capability's proxy placeholder that no person's sign-in made, or that a
+	// broker serving no approve capability was asked (grantApprove), and one that asks for the scope
+	// read (exchangeGrant).
+	{oauth2.ErrInvalidRequest, "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it.", nil, "approve.go"},
+	{oauth2.ErrInvalidRequest, "A trade for the approve capability's proxy placeholder asks for the scope %s, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read trade's refusals (exchange.go): its holder proof, the credential a person's read trade
-	// names, the launcher credential it may not ask for, and its cut.
+	// names, the launcher credential it may not ask for, its cut, and a job entry's read trade,
+	// refused since a job's token is minted whole, and a Dispatch sign-in's read trade, refused since
+	// its token is minted whole with the scopes its person approved.
 	{oauth2.ErrInvalidRequest, "A person's read trade sends a DPoP-Holder proof: the box key proves the sign-in and is bound to no read token, so the token is bound to a key made for its holder.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder header binds a read token to its holder's key, and this trade does not ask for the scope read. Ask for it, or send no DPoP-Holder header.", nil, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The DPoP-Holder proof was refused: a trade sends one, a DPoP proof of this request signed with the key it embeds, spent nowhere before.", nil, "exchange.go"},
@@ -76,6 +85,8 @@ var corpusRefusals = []corpusRefusal{
 	{oauth2.ErrInvalidRequest, "The '%s' parameter is not an RFC 3339 time with at most six fractional digits.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names the zero time, which is no cut: a trade that reads the present names no cut.", []any{oauthwire.FormAsOf}, "exchange.go"},
 	{oauth2.ErrInvalidRequest, "The '%s' parameter names a time later than this trade, and a cut is a time that has passed.", []any{oauthwire.FormAsOf}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "The scope '%s' narrows a token to reading, and a job entry's token is minted whole, with no scope: ask for it without that scope.", []any{oauthwire.ScopeRead}, "exchange.go"},
+	{oauth2.ErrInvalidRequest, "A Dispatch sign-in is minted whole with its approved scopes and cannot trade for '%s'.", []any{oauthwire.ScopeRead}, "exchange.go"},
 	// A read token refused a key a live launcher credential is bound to, as the store refuses it
 	// (oauthstore.Store.CreateAccessTokenSession): a trade that asked for read, and the read
 	// entry's trade that asked for no scope.
@@ -113,7 +124,7 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
-	{"%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", []any{exchange.ErrClaimMissing, corpusRepository}, policySource},
+	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
@@ -139,6 +150,11 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
+	{"%w: %s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on", []any{exchange.ErrRestrictedOneProject, corpusPerson, 2}, policySource},
+	// A Dispatch sign-in's trade whose person is a restricted member (exchange.Set.Machine).
+	{"%w: %s is a restricted member, whose machine's token is held to one project, and a Dispatch sign-in acts in every project its person may reach; sign in to Dispatch in a browser instead", []any{exchange.ErrRestrictedSignIn, corpusPerson}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
@@ -222,6 +238,23 @@ func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T)
 // The broker's own refusal, as its token endpoint writes its rate limit.
 const corpusRateLimit = "too many token requests; try again later"
 
+// The broker's own refusals of a device login, its grants and its trade, written as WriteRefusal
+// writes each ("<Code>: <Message>"): a Dispatch sign-in on a broker that serves none, at every
+// step (oauth.DispatchSignInOff); a device scope that is not exactly one of machine and dispatch;
+// a sign-in asking for a scope no sign-in may hold, filled with a word of the shape the client's
+// slot takes; and an actions member on a machine login's detail. Each message's format must stand
+// in its source.
+var brokerRefusals = []struct {
+	code, format string
+	args         []any
+	source       string
+}{
+	{"DISPATCH_SIGNIN_OFF", "this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off", nil, "provider.go"},
+	{"SCOPE_INVALID", "a device login names exactly one scope, machine or dispatch", nil, "../machine/dispatch_signin.go"},
+	{"SCOPE_NOT_CONSENTABLE", "the scope %q is not consentable; a Dispatch sign-in may approve only %s", []any{oauthwire.ScopeApprove, strings.Join(oauthwire.ConsentableScopes, ", ")}, "../machine/dispatch_signin.go"},
+	{"ACTIONS_ON_MACHINE_LOGIN", "a machine login's launcher_credential detail carries no actions member, not even an empty list", nil, "../machine/machine.go"},
+}
+
 func corpusDescriptions(t *testing.T) []string {
 	t.Helper()
 	var out []string
@@ -240,13 +273,38 @@ func corpusDescriptions(t *testing.T) []string {
 	}
 	recorder := httptest.NewRecorder()
 	oauth.WriteRefusal(recorder, &oauth.Refusal{Status: 429, Code: "RATE_LIMITED", Message: corpusRateLimit})
+	out = append(out, writtenDescription(t, recorder))
+	for _, refusal := range brokerRefusals {
+		message := refusal.format
+		if len(refusal.args) > 0 {
+			message = fmt.Sprintf(refusal.format, refusal.args...)
+		}
+		recorder := httptest.NewRecorder()
+		oauth.WriteRefusal(recorder, &oauth.Refusal{Status: 400, Code: refusal.code, Message: message})
+		out = append(out, writtenDescription(t, recorder))
+	}
+	return out
+}
+
+// writtenDescription is the error_description of the refusal recorder holds.
+func writtenDescription(t *testing.T, recorder *httptest.ResponseRecorder) string {
+	t.Helper()
 	var body struct {
 		Description string `json:"error_description"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatalf("the rate limit's answer is not JSON: %v", err)
+		t.Fatalf("a refusal's answer is not JSON: %v", err)
 	}
-	return append(out, body.Description)
+	return body.Description
+}
+
+// TestDispatchSignInOffIsTheCorpusRefusal: the one refusal every step of a Dispatch sign-in answers
+// on a broker that serves none is the corpus's, code and words, and is invalid_scope.
+func TestDispatchSignInOffIsTheCorpusRefusal(t *testing.T) {
+	refusal := oauth.DispatchSignInOff()
+	if refusal.Code != brokerRefusals[0].code || refusal.Message != brokerRefusals[0].format || refusal.OAuthError != "invalid_scope" || refusal.Status != 400 {
+		t.Fatalf("oauth.DispatchSignInOff() = %+v, want 400 invalid_scope %s %q", refusal, brokerRefusals[0].code, brokerRefusals[0].format)
+	}
 }
 
 func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
@@ -308,5 +366,13 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), corpusRateLimit) {
 		t.Errorf("api/handlers_oauth.go holds no rate-limit message %q", corpusRateLimit)
+	}
+	for _, refusal := range brokerRefusals {
+		if !strings.Contains(read(refusal.source), strconv.Quote(refusal.format)) {
+			t.Errorf("%s holds no refusal %q: the broker's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
+		}
+		if !strings.Contains(read(refusal.source), strconv.Quote(refusal.code)) {
+			t.Errorf("%s holds no refusal code %q", refusal.source, refusal.code)
+		}
 	}
 }

@@ -1,10 +1,12 @@
 /**
  * The Dispatch API's closed lists, caps and wire constants: the values the server enforces, the
  * clients refuse on, and `scripts/gen-go.ts` emits into Go, so each is one literal rather than a
- * server string and a client pattern that can drift apart. It imports nothing, so every other
- * module of the contract - and `dispatch-tools.ts`, whose tool schemas take the same caps - can
- * read it.
+ * server string and a client pattern that can drift apart. It imports only `http-status.ts`, which
+ * imports nothing, so every other module of the contract - and `dispatch-tools.ts`, whose tool
+ * schemas take the same caps - can read it.
  */
+
+import { outage } from "./http-status";
 
 /** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
 export const MAX_ISSUE_BLOCKERS = 20;
@@ -58,6 +60,18 @@ export const MAX_ISSUE_COMPONENTS = 50;
 export const ISSUE_TITLE_MAX = 1000;
 
 /**
+ * The longest priority id, in characters: an id is ASCII, so in bytes too. Two readers take it,
+ * so they hold one number. `POST /api/v1/priorities` refuses an `id` the caller names that is
+ * longer, as `400 PRIORITY_INPUT` naming this bound. The same route cuts the id it derives from
+ * the title, when the body names none, to fit it. The cut keeps a slug of at most this many
+ * characters whole; it cuts a longer one to its longest start that fits and ends at the end of a
+ * word, or to its first this many characters when its first word is longer.
+ * `fixtures/priority-ids.json` holds the cases of that rule, and its `description` names the
+ * tests that read them. Generated into Go as `contracts.PriorityIDMax`.
+ */
+export const PRIORITY_ID_MAX = 200;
+
+/**
  * The longest project name, in UTF-16 units, counted after the trim `POST /api/v1/projects`
  * applies; a longer one is `400 CAP_EXCEEDED`. A name shows beside its key in the sidebar's
  * 20rem rail and in every project picker's `KEY · Name` option, any bearer may write one, and no
@@ -66,6 +80,42 @@ export const ISSUE_TITLE_MAX = 1000;
  * server enforces, and the Settings name field and `dispatch project` take it as their maximum.
  */
 export const PROJECT_NAME_MAX = 80;
+
+/**
+ * The most bytes of markdown one document may hold, counted in UTF-8 as the server counts a body:
+ * what one upload of a markdown document may send, and what a write may grow a stored document's
+ * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE, up to the
+ * server's 25 MiB file cap; past that cap the server answers `artifact blob exceeds 25 MB` instead.
+ * Generated into Go as `contracts.MarkdownDocumentMaxBytes`, which is the server's
+ * `pmdoc.MaxDocumentBytes`. `dispatch artifact` and its dry run refuse a text past it, given
+ * inline, in `--content-file`, on stdin or in a Markdown `--path` file, before they ask the round
+ * trip or upload, and the call before it reads whether the owner holds the name.
+ */
+export const MARKDOWN_DOCUMENT_MAX_BYTES = 1 << 20;
+
+/**
+ * What the `413 CAP_EXCEEDED` of an upload whose markdown is past MARKDOWN_DOCUMENT_MAX_BYTES says.
+ * Generated into Go as `contracts.MarkdownDocumentTooLarge`, which the upload route answers, and
+ * `dispatch artifact` prints it after `CAP_EXCEEDED: ` for a text past that bound, however it is
+ * given, so its own refusal and the server's are one text for an upload within the server's 25 MiB
+ * file cap.
+ */
+export const MARKDOWN_DOCUMENT_TOO_LARGE = `a markdown document is at most ${MARKDOWN_DOCUMENT_MAX_BYTES / (1 << 20)} MiB; a larger file is stored as a binary artifact under another content type`;
+
+/**
+ * The response header that the markdown round trips (`POST /api/v1/markdown/round-trip`, `POST
+ * /api/v1/markdown/file-round-trip`) put on their refusal of a text for the text alone, whatever
+ * the refusal's status: a mark, with one value, that says the answer is Dispatch's refusal of the
+ * text, so a client reads only that the header is there. The routes make the checks an upload
+ * makes of the text alone, in the order, status, code and words of that upload, and make a new
+ * document's only for a request that asks for them (`new_document`). Generated into Go as
+ * `contracts.TextRefusalHeader`. `dispatch artifact` asks for a new document's refusals only where
+ * the call makes a new document, so it reads an answer carrying the header as the call's own
+ * refusal, and any other failure of the round trip as no answer at all, so a check of the text
+ * Dispatch adds to that upload, at any status, reaches the call and its dry run with no change to
+ * the client.
+ */
+export const TEXT_REFUSAL_HEADER = "Dispatch-Text-Refusal";
 
 /**
  * The most issues one page of `GET /api/v1/issues` holds: `limit` is 1 to this. Generated into Go
@@ -79,6 +129,21 @@ export const MAX_ISSUE_PAGE_LIMIT = 250;
  * `dispatch_issues` when it names no `limit`. Generated into Go as `contracts.DefaultIssuePageLimit`.
  */
 export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
+
+/**
+ * The most threads one page of an issue's threads holds: `limit` is 1 to this on
+ * `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity`. Generated into Go as
+ * `contracts.MaxThreadPageLimit`, which the server enforces.
+ */
+export const MAX_THREAD_PAGE_LIMIT = 100;
+
+/**
+ * The page size of `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity` when a caller names no `limit`.
+ * Generated into Go as `contracts.DefaultThreadPageLimit`.
+ */
+export const DEFAULT_THREAD_PAGE_LIMIT = 20;
 
 /**
  * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
@@ -150,6 +215,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
  * the server's are one number.
  */
 export const MAX_BROADCAST_RECIPIENTS = 100;
+
+/**
+ * The most session ids one `GET /api/v1/agents/known` names (`id`, repeated). A page asks
+ * once for every agent reference it holds that the live registry does not list, so the bound is a
+ * page's worth with room to spare, and a page holding more asks in batches of this size. Generated
+ * into Go as `contracts.KnownSessionsMax`, which the server enforces with `400 INVALID_QUERY`, so
+ * the dashboard's batches and the server's refusal are one number.
+ */
+export const KNOWN_SESSIONS_MAX = 100;
 
 /**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
@@ -255,13 +329,14 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
 
 /**
  * The code of the `403` for a write by an access token the secrets broker issued that names a
- * session and a service but no person under the project scope `person`: the machine holding it
- * has signed nobody in, so Dispatch has nobody to record the write under. Its reads are
- * unaffected. The message names `agent-secrets login`, the one command that makes the write
- * possible, because whoever reads the refusal is whoever must run it. A token that names a
- * service and no person under the project scope `named` is no such token: an exchange account
- * entry naming no person minted it, its service is that account, and its writes are recorded
- * under the account.
+ * session and a service but no person under the project scope `person`: a machine's token, and
+ * the machine holding it has signed nobody in, so Dispatch has nobody to record the write under.
+ * Its reads are unaffected. A job's token names a service and no person too, but under the
+ * project scope `named` or `public`, and Dispatch takes its writes as that service rather than
+ * refusing them; so does a token an exchange account entry naming no person minted, under the
+ * project scope `named`, whose service is that account. The message names `agent-secrets
+ * login`, the one command that makes the write possible, because whoever reads the refusal is
+ * whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 
@@ -278,13 +353,51 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route whose declaration does not state `ApproveOnly`, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
+
+/**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
- * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
- * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
- * handler runs, and names the cut, rather than answer it with the present. On a route outside
- * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
+ * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
+ * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
+ * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
+ * runs, and names the cut, rather than answer it with the present. On a route outside the read
+ * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
+
+/**
+ * The most characters (Unicode code points, Go's runes) of what a CI job observed that a result
+ * of a spec check keeps (`POST /api/v1/projects/{key}/results`, `observed`). A text of this many
+ * characters or fewer is kept whole. A longer text is kept as its first
+ * `SPEC_CHECK_OBSERVED_START` characters, then `SPEC_CHECK_OBSERVED_CUT_NOTE`, then its last
+ * `SPEC_CHECK_OBSERVED_END` characters, this many characters in all, so the stored text says
+ * where it was cut. Dispatch cuts a longer text so, and `dispatch result --project` cuts it so
+ * before it sends it, since a test's log can be larger than any request Dispatch takes.
+ * Generated into Go as `contracts.SpecCheckObservedMax`.
+ */
+export const SPEC_CHECK_OBSERVED_MAX = 2000;
+
+/** The line between the start and the end of an observed text cut to `SPEC_CHECK_OBSERVED_MAX`,
+ *  which says that the middle was cut. Generated into Go as `contracts.SpecCheckObservedCutNote`. */
+export const SPEC_CHECK_OBSERVED_CUT_NOTE = `\n[The middle of the text is cut here. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of what the job observed: its start and its end.]\n`;
+
+/** How many characters of its start a cut observed text keeps: the start names the test that
+ *  ran. Generated into Go as `contracts.SpecCheckObservedStart`. */
+export const SPEC_CHECK_OBSERVED_START = 500;
+
+/** How many characters of its end a cut observed text keeps, the larger share, because a test's
+ *  output says why it failed at its end (the message and the `--- FAIL` line): what
+ *  `SPEC_CHECK_OBSERVED_MAX` leaves after the start and the note. Generated into Go as
+ *  `contracts.SpecCheckObservedEnd`. */
+export const SPEC_CHECK_OBSERVED_END =
+  SPEC_CHECK_OBSERVED_MAX - SPEC_CHECK_OBSERVED_START - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
 
 /** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
  *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as
@@ -295,19 +408,15 @@ export type IdempotencyLandedCode =
 
 /**
  * Whether an attempt Dispatch answered with `status` (and `code`, its error body's) ended without
- * Dispatch's verdict on the key, so a client asks again under the same key: a 5xx, a 408 or a 429
- * (none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or `409 IDEMPOTENCY_KEY_IN_FLIGHT`
- * (the first request under the key is still running). Any other answer is Dispatch's verdict, and
+ * Dispatch's verdict on the key, so a client asks again under the same key: an outage (`outage`: a
+ * 5xx, a 408 or a 429, none of which Dispatch stores, `IDEMPOTENCY_KEY_HEADER`), or
+ * `409 IDEMPOTENCY_KEY_IN_FLIGHT` (the first request under the key is still running), which is
+ * Dispatch's keyed-write layer rather than an outage. Any other answer is Dispatch's verdict, and
  * the same key would be answered with it again. The page and the `dispatch` command both retry by
  * this one rule.
  */
 export function retriesUnderKey(status: number, code: string | undefined): boolean {
-  return (
-    status >= 500 ||
-    status === 408 ||
-    status === 429 ||
-    (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT)
-  );
+  return outage(status) || (status === 409 && code === IDEMPOTENCY_KEY_IN_FLIGHT);
 }
 
 /**
@@ -506,6 +615,68 @@ export type SessionAnswerRelation = (typeof SESSION_ANSWER_RELATIONS)[number];
  *  something in front of Dispatch, an authenticating proxy among them, and says nothing about
  *  the session: a sign-out answered that way did not go through. */
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
+
+/**
+ * The code of the `400` for an `as_of` that a route cannot answer. A route that holds no history
+ * answers only the present, and it refuses every `as_of` with this code. A route that answers
+ * `as_of` refuses with this code a filter parameter that it cannot evaluate at that time. The
+ * message names that parameter.
+ */
+export const DISPATCH_AS_OF_NOT_SERVED = "AS_OF_NOT_SERVED";
+
+/**
+ * The code of the `400` for an `as_of` that Dispatch cannot read: a value that is not an RFC 3339
+ * time, a time later than the server's present time, or an `as_of` that the request sends more
+ * than once.
+ */
+export const DISPATCH_INVALID_AS_OF = "INVALID_AS_OF";
+
+/**
+ * The code of the `409` for a search at a past time that the fill of the keyword table has not
+ * reached. That table holds each past version of the text of issues, comments, messages and asks.
+ * Where the fill has reached a time, the message and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER` name
+ * that time. Where the fill has reached no time yet, the message says so and the answer has no
+ * such header.
+ */
+export const DISPATCH_AS_OF_SEARCH_NOT_FILLED = "AS_OF_SEARCH_NOT_FILLED";
+
+/**
+ * The response header on every answer that Dispatch gives as of a past time (the cut). Dispatch
+ * gives such an answer for an `as_of` in the request and for a token that carries a cut. The
+ * value is the cut in RFC 3339, with six fractional digits, in UTC: `2026-11-19T22:06:00.000000Z`.
+ * A server older than `as_of` ignores the parameter and sends no such header. So when a request
+ * sends `as_of` and its answer has no such header, the answer is not an answer as of that time.
+ */
+export const DISPATCH_AS_OF_HEADER = "Dispatch-As-Of";
+
+/**
+ * The response header that names each member that a past-time answer omits because the records
+ * at the cut (`DISPATCH_AS_OF_HEADER`) cannot give it. The value is a comma-separated list of
+ * RFC 6901 JSON Pointers into the answer's body, such as `/route_status`. A pointer segment `*`
+ * stands for every member of an array. Dispatch omits such a member and never writes it as
+ * `null`, because `null` already means "none". `parseAsOfAbsent` reads the value.
+ */
+export const DISPATCH_AS_OF_ABSENT_HEADER = "Dispatch-As-Of-Absent";
+
+/**
+ * The response header on a `409 AS_OF_SEARCH_NOT_FILLED` (`DISPATCH_AS_OF_SEARCH_NOT_FILLED`) when
+ * the fill of the keyword table has reached a time. The value is that time, in RFC 3339. A search
+ * at that time or at an earlier time does not get that refusal. When the fill has reached no time
+ * yet, the refusal has no such header.
+ */
+export const DISPATCH_AS_OF_FILLED_THROUGH_HEADER = "Dispatch-As-Of-Filled-Through";
+
+/**
+ * The JSON Pointers that a `DISPATCH_AS_OF_ABSENT_HEADER` value names, in the order of the header.
+ * It splits the value at each comma, trims each part and removes each empty part. A missing or
+ * empty header names no pointer.
+ */
+export function parseAsOfAbsent(header: string | null | undefined): string[] {
+  return (header ?? "")
+    .split(",")
+    .map((pointer) => pointer.trim())
+    .filter((pointer) => pointer !== "");
+}
 
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it

@@ -77,9 +77,10 @@ type signerSource struct {
 // signerChain is the chain for a process whose key directory is dir, in R4's order. passOver is
 // whether its sign-in source passes over a sign-in this machine cannot renew (signInPassedOver):
 // every walk but renew's, whose contract is to report the enrollment the broker no longer holds
-// (exit 76) and never to act as another session in its place.
-func signerChain(dir string, passOver bool) []signerSource {
-	return []signerSource{keyDirSource(dir), signInSource(passOver), helperSource(), machineChainSource()}
+// (exit 76) and never to act as another session in its place. The same walks keep a sign-in they
+// sign as renewed (keepSignIn), saying on stderr, unless it is nil, where they cannot.
+func signerChain(dir string, passOver bool, stderr io.Writer) []signerSource {
+	return []signerSource{keyDirSource(dir), signInSource(passOver, stderr), helperSource(), machineChainSource()}
 }
 
 // selectSigner is this process's signer: the first source of the chain that has one, after a
@@ -93,7 +94,7 @@ func selectSigner(dir string, stderr io.Writer, passOver bool) (string, Signer, 
 		id     string
 		signer Signer
 	}
-	_, got, err := walkChain(signerChain(dir, passOver), stderr, func(source signerSource) (built, error) {
+	_, got, err := walkChain(signerChain(dir, passOver, stderr), stderr, func(source signerSource) (built, error) {
 		id, signer, err := source.build(context.Background())
 		return built{id, signer}, err
 	})
@@ -107,7 +108,7 @@ func describeSource(dir string, stderr io.Writer) (name, detail string, err erro
 	if err := migrateKeyDirMachineSession(dir); err != nil {
 		return "", "", err
 	}
-	return walkChain(signerChain(dir, true), stderr, func(source signerSource) (string, error) {
+	return walkChain(signerChain(dir, true, stderr), stderr, func(source signerSource) (string, error) {
 		return source.describe(context.Background())
 	})
 }
@@ -126,14 +127,15 @@ func describeSource(dir string, stderr io.Writer) (name, detail string, err erro
 // why.
 //
 // A person's sign-in is the one held signer that may register again: its lease lapses after
-// BROKER_LEASE_SECONDS and nothing renews it, so its signer keeps signInSigner's register, and the
-// reread's call (doProofBuilt) registers the session again once when the broker says the
-// enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
-// identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
+// BROKER_LEASE_SECONDS once nothing keeps it renewed (signin_renewer.go), so its signer keeps
+// signInSigner's register, and the reread's call (doProofBuilt) registers the session again once
+// when the broker says the enrollment is not live. That costs one trade of the person's own
+// sign-in, with this machine's identity as its actor, and one enrollment; it waits on nothing and
+// registers no machine session.
 // A sign-in this machine cannot renew is passed over as the chain passes it over
 // (signInPassedOver), and says nothing on stderr: the reread signs only to read more.
 func heldSigner() (proofSigner, error) {
-	name, signer, err := walkChain(signerChain(keyDir(), true), nil, func(source signerSource) (proofSigner, error) {
+	name, signer, err := walkChain(signerChain(keyDir(), true, nil), nil, func(source signerSource) (proofSigner, error) {
 		return source.held()
 	})
 	if err != nil && !errors.Is(err, errNoBrokerIdentity) {
@@ -245,8 +247,18 @@ func readEnrollment(path, file string) (string, error) {
 // signInSource is the sign-in of the person this process acts for (signInSigner). A box with
 // sign-ins but no way to say which one this session is refuses here, naming them: a command must
 // never read one colleague's secrets under another's name. A sign-in this machine cannot renew
-// that holds no live enrollment has nothing for the caller (signInPassedOver).
-func signInSource(passOver bool) signerSource {
+// that holds no live enrollment has nothing for the caller (signInPassedOver). Where passOver is
+// set, the signer it builds keeps the sign-in renewed, and a renewal it cannot keep is said on
+// stderr where stderr is not nil (notKept); describe builds nothing and keeps nothing.
+func signInSource(passOver bool, stderr io.Writer) signerSource {
+	var keep func(person string)
+	if passOver {
+		keep = func(person string) {
+			if err := keepSignIn(person); err != nil && stderr != nil {
+				fmt.Fprintf(stderr, "agent-secrets: %s\n", notKept(person, err))
+			}
+		}
+	}
 	find := func(ctx context.Context) (cipherclient.SignInRecord, *ecdsa.PrivateKey, error) {
 		store := cipherclient.SignIns(homeGetenv)
 		records, err := store.List()
@@ -274,7 +286,7 @@ func signInSource(passOver bool) signerSource {
 		if err != nil {
 			return "", nil, err
 		}
-		signer, err := signInSigner(record, key)
+		signer, err := signInSigner(record, key, keep)
 		if err != nil {
 			return "", nil, err
 		}
@@ -416,6 +428,13 @@ func machineChainSource() signerSource {
 	}
 }
 
+// noLauncherCredential names each identity kind machineSource refuses, as its refusal names it:
+// the kinds whose trade the broker mints no launcher credential for.
+var noLauncherCredential = map[string]string{
+	cipherclient.IdentityKubernetes:    "a Kubernetes identity",
+	cipherclient.IdentityGitHubActions: "a GitHub Actions run",
+}
+
 // machineSource is the identity this machine proves at the broker's token exchange: the one
 // AGENT_SECRETS_MACHINE_IDENTITY names, from the environment or the settings file, whose error
 // stops the caller; else the one cipherclient.DetectMachineIdentity finds for the Google exchange
@@ -424,10 +443,12 @@ func machineChainSource() signerSource {
 // accepts no machine identity, and nothing is asked of the machine then. The use command, `agent-
 // secrets login` and a sign-in's renewal all take the machine from here.
 //
-// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes is a usage error here, before anything is traded: the
-// exchange mints a launcher credential for a Google subject and a person alone, so a pod's token
-// registers no session and acts as no sign-in's machine. The helper and the Legion controller,
-// which read the same setting through cipherclient.MachineIdentity, are unchanged.
+// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes or github-actions is a usage error here, before
+// anything is traded: the exchange mints a launcher credential for a Google subject and a person
+// alone, so a pod's token or a workflow run's registers no session and acts as no sign-in's
+// machine. The Legion controller and natsprobe, which read the same setting through
+// cipherclient.MachineIdentity and decline the launcher credential, take both; the helper reads it
+// too, and gets no launcher credential with either.
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
@@ -439,9 +460,9 @@ func machineChainSource() signerSource {
 // and keeps nothing.
 func machineSource(ctx context.Context, keep bool) (cipherclient.Source, []cipherclient.Skipped, error) {
 	if kind := strings.TrimSpace(clientGetenv(cipherclient.IdentityVar)); kind != "" {
-		if kind == cipherclient.IdentityKubernetes {
-			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for a Kubernetes identity, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
-				cipherclient.IdentityVar, kind, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
+		if what, refused := noLauncherCredential[kind]; refused {
+			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for %s, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
+				cipherclient.IdentityVar, kind, what, cipherclient.IdentityMetadata, cipherclient.IdentityPool)}
 		}
 		identity, err := cipherclient.MachineIdentity(clientGetenv)
 		return identity, nil, err

@@ -713,6 +713,7 @@ func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 // job's name alone. The run on main with neither configured name is the warning's case, a renamed
 // or misconfigured job, and shows the capture sees the WARN when one is written.
 func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	handler, database := newTestHandlerWithStore(t)
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
@@ -792,6 +793,7 @@ func TestDeliveryReadsWarnOnceForAMainRunWithNoProductionJob(t *testing.T) {
 // record a warning still has it logged: a lost warning hides a misconfiguration that counts no
 // deploy, where a repeated one costs a log line.
 func TestAConfigurationWarningIsLoggedOnceAcrossServers(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	first, database, deps := newTestServer(t, testServerOptions{})
 	second := http.NewServeMux()
 	second.HandleFunc("GET /api/v1/delivery/timeline", directServer(deps).getDeliveryTimeline)

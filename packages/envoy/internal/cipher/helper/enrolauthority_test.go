@@ -100,7 +100,10 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 		}
 		w.WriteHeader(204)
 	})
-	b.srv = httptest.NewServer(mux)
+	// The handlers read b.srv on the server's goroutines, so it is set before the server serves:
+	// built unstarted, assigned, then started.
+	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
 }
@@ -183,7 +186,12 @@ type stubSignIns struct {
 	mu        sync.Mutex
 	authority *cipherclient.Authority
 	err       error
-	refused   []string
+	// onBox, when set, is the sign-in the store holds, which SignedIn names whatever Current
+	// answers, as for a broker that is not serving; nil names authority's. onBoxErr, when set,
+	// is SignedIn's answer, as for a store with two people signed in and none named.
+	onBox    *cipherclient.Authority
+	onBoxErr error
+	refused  []string
 	// onRefused, when set, runs inside Refused, so a test makes the box's answer change
 	// exactly when the broker rejects the credential.
 	onRefused func()
@@ -205,6 +213,26 @@ func (s *stubSignIns) Refused(_ context.Context, credentialID string) error {
 		s.onRefused()
 	}
 	return nil
+}
+
+// SignedIn names the person and the box key's thumbprint of the sign-in on the box, onBox or else
+// the authority the stub answers, as the record on the box would, and nobody where there is none.
+// It neither counts as an ask nor fails with err: it reads the box, not the broker.
+func (s *stubSignIns) SignedIn() (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.onBoxErr != nil {
+		return "", "", s.onBoxErr
+	}
+	record := s.onBox
+	if record == nil {
+		record = s.authority
+	}
+	if record == nil {
+		return "", "", nil
+	}
+	thumbprint, err := proof.Thumbprint(&record.Key.PublicKey)
+	return record.Operator, thumbprint, err
 }
 
 // signedIn is the authority of a person signed in on this box: a box key of their own and the

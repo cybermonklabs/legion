@@ -1,0 +1,49 @@
+{
+  "id": 135039,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 49,
+  "type": "message.answered",
+  "actor": {
+    "kind": "session",
+    "id": "01a19344-4776-77f2-bf12-55b551a99b68",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit amet ",
+      "cwd": "lorem ipsum dolor sit amet lo",
+      "tmux": "lorem ipsum ",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit "
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-31T19:17:15.38559Z",
+  "payload": {
+    "id": "8772debb-0af8-48b4-ae01-041d80460719",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor si",
+    "author": {
+      "id": "01a19344-4776-77f2-bf12-55b551a99b68",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lo",
+        "host": "lor",
+        "pane": "lo",
+        "tmux": "lorem ipsum ",
+        "machine": "lorem ipsum dolor sit amet ",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit "
+      }
+    },
+    "target": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-31T19:17:15.38559Z",
+    "deliveries": [],
+    "reply_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+    "in_reply_to": "77ba5b8b-c0e3-446f-9772-ff1733fc6d74",
+    "reply_block": null,
+    "broadcast_id": null,
+    "thread_logins": []
+  }
+}

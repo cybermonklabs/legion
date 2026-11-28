@@ -12,9 +12,11 @@ import (
 	"go/token"
 	"go/types"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -32,29 +34,33 @@ import (
 // kind the list does not name as unknown.
 const calloutPublishersFile = "../../../scripts/lib/legacy-subjects-gate-callout-publishers.json"
 
-// configPackage is the package that declares the kinds.
-const configPackage = "github.com/sjawhar/envoy/internal/cipher/config"
-
 // kindConversion is the one place config makes a NATSServiceKind from a string at run time: the
 // parser's reading of an entry's first field, which its switch then holds to the constants.
 const kindConversion = "parseNATSService: NATSServiceKind(parts[0])"
 
-// serviceKinds is every NATSServiceKind value config's source holds as a constant, in any of its
-// files and in any spelling: a typed constant, a conversion of a literal, or an untyped constant a
-// switch case or a composite literal gives the type. It type-checks config from its source and its
-// imports from their export data, so a kind added there is read here with no list of this test's
-// own. A NATSServiceKind made from a string at run time anywhere but kindConversion fails the
-// test, since the kind it holds cannot be read.
-func serviceKinds(t *testing.T) []config.NATSServiceKind {
+// noConversion says a package makes no value of a type from a string at run time. natsgrant makes
+// no OperatorPhase so: the hold row's reader makes one (HoldView.verified), and its switch holds it
+// to natsgrant's constants.
+const noConversion = ""
+
+// declaredValues is every value of T, a named string type, that the source of T's package holds as
+// a constant, in any of its files and in any spelling: a typed constant, a conversion of a literal,
+// or an untyped constant a switch case or a composite literal gives the type. It type-checks the
+// package from its source and its imports from their export data, so a value added there is read
+// here with no list of this test's own. A T made from a string at run time anywhere in the package
+// but conversion fails the test, since the value it holds cannot be read.
+func declaredValues[T ~string](t *testing.T, conversion string) []T {
 	t.Helper()
+	named := reflect.TypeFor[T]()
+	path, typeName := named.PkgPath(), named.Name()
 	module, err := filepath.Abs("../../..")
 	require.NoError(t, err)
-	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Dir,GoFiles,Export", "./internal/cipher/config")
+	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Dir,GoFiles,Export", path)
 	list.Dir = module
 	var stderr strings.Builder
 	list.Stderr = &stderr
 	output, err := list.Output()
-	require.NoError(t, err, "go list config's packages: %s", stderr.String())
+	require.NoError(t, err, "go list %s's packages: %s", path, stderr.String())
 	type listedPackage struct {
 		ImportPath, Dir, Export string
 		GoFiles                 []string
@@ -70,8 +76,8 @@ func serviceKinds(t *testing.T) []config.NATSServiceKind {
 		require.NoError(t, err)
 		listed[pkg.ImportPath] = pkg
 	}
-	source, ok := listed[configPackage]
-	require.True(t, ok, "go list named no %s", configPackage)
+	source, ok := listed[path]
+	require.True(t, ok, "go list named no %s", path)
 
 	fset := token.NewFileSet()
 	var files []*ast.File
@@ -88,58 +94,63 @@ func serviceKinds(t *testing.T) []config.NATSServiceKind {
 		}
 		return os.Open(pkg.Export)
 	})}
-	checked, err := check.Check(configPackage, fset, files, info)
+	checked, err := check.Check(path, fset, files, info)
 	require.NoError(t, err)
-	kindName := checked.Scope().Lookup("NATSServiceKind")
-	require.NotNil(t, kindName, "config declares no NATSServiceKind")
-	kindType := kindName.Type()
+	typeObject := checked.Scope().Lookup(typeName)
+	require.NotNil(t, typeObject, "%s declares no %s", path, typeName)
+	valueType := typeObject.Type()
 
-	seen := map[config.NATSServiceKind]bool{}
+	seen := map[T]bool{}
 	for expr, value := range info.Types {
-		if value.Value == nil || !types.Identical(value.Type, kindType) {
+		if value.Value == nil || !types.Identical(value.Type, valueType) {
 			continue
 		}
-		require.Equal(t, constant.String, value.Value.Kind(), "a NATSServiceKind constant of config is no string: %s", types.ExprString(expr))
-		seen[config.NATSServiceKind(constant.StringVal(value.Value))] = true
+		require.Equal(t, constant.String, value.Value.Kind(), "a constant of %s's type %s is no string: %s", path, typeName, types.ExprString(expr))
+		seen[T(constant.StringVal(value.Value))] = true
 	}
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			ast.Inspect(decl, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
-				if !ok || len(call.Args) != 1 || !info.Types[call.Fun].IsType() || !types.Identical(info.Types[call.Fun].Type, kindType) || info.Types[call.Args[0]].Value != nil {
+				if !ok || len(call.Args) != 1 || !info.Types[call.Fun].IsType() || !types.Identical(info.Types[call.Fun].Type, valueType) || info.Types[call.Args[0]].Value != nil {
 					return true
 				}
 				site := "a declaration outside any function: " + types.ExprString(call)
 				if function, ok := decl.(*ast.FuncDecl); ok {
 					site = function.Name.Name + ": " + types.ExprString(call)
 				}
-				require.Equal(t, kindConversion, site, "config makes a NATSServiceKind from a string at run time at %s, so the kinds it admits cannot be read from its source", fset.Position(call.Pos()))
+				require.Equal(t, conversion, site, "%s makes a value of its type %s from a string at run time at %s, so the values it holds cannot be read from its source", path, typeName, fset.Position(call.Pos()))
 				return true
 			})
 		}
 	}
-	kinds := make([]config.NATSServiceKind, 0, len(seen))
-	for kind := range seen {
-		kinds = append(kinds, kind)
-	}
-	slices.Sort(kinds)
-	return kinds
+	return slices.Sorted(maps.Keys(seen))
 }
 
-// admittedServiceGrant is the grant this service answers a connection of an entry of kind with,
-// as decideService builds it for the widest entry of that kind (every project, or, for an edge
-// listener, one project it lists), and whether it admits one at all: scopeGrant and guard refuse
-// the others.
-func admittedServiceGrant(kind config.NATSServiceKind) (natsgrant.Permissions, bool) {
+// admittedServiceGrants are the grants this service answers a connection of an entry of kind with,
+// as decideService builds them for the widest entry of that kind (every project, or, for an edge
+// listener, one project it lists), less those scopeGrant and guard refuse: the kind's one grant
+// (serviceGrant), or, for the operator, natsgrant.Operator of each of phases (decideOperator),
+// since one operator entry is answered under whichever phase the hold row holds when it connects.
+func admittedServiceGrants(kind config.NATSServiceKind, phases []natsgrant.OperatorPhase) []natsgrant.Permissions {
 	entry := config.NATSService{Kind: kind, MachineID: "example-machine", AllProjects: true}
 	if kind == config.NATSEdgeListener {
 		entry.AllProjects, entry.Projects = false, []string{"PRIV"}
 	}
-	grant, err := scopeGrant(entry, serviceGrant(entry))
-	if err != nil || guard(grant) != nil {
-		return natsgrant.Permissions{}, false
+	grants := []natsgrant.Permissions{serviceGrant(entry)}
+	if kind == config.NATSOperator {
+		grants = nil
+		for _, phase := range phases {
+			grants = append(grants, natsgrant.Operator(phase))
+		}
 	}
-	return grant, true
+	var admitted []natsgrant.Permissions
+	for _, grant := range grants {
+		if scoped, err := scopeGrant(entry, grant); err == nil && guard(scoped) == nil {
+			admitted = append(admitted, scoped)
+		}
+	}
+	return admitted
 }
 
 // reachesNotifications and publishesNotifications are the gate's rule
@@ -175,18 +186,22 @@ type calloutPublishers struct {
 // TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject: the gate's list
 // classifies every kind config declares, and no other, by whether this service admits it with a
 // grant that may publish a notification subject, and a session's token the same way, each read
-// from the grants themselves (serviceGrant, scopeGrant, guard and natsgrant.Session). So a kind
-// config gains fails this test until the gate classifies it, and so does a kind whose grant gains
-// or loses such a publish.
+// from the grants themselves (serviceGrant, scopeGrant, guard and natsgrant.Session), the
+// operator's under every phase natsgrant declares for the hold row (natsgrant.Operator). So a kind
+// config gains fails this test until the gate classifies it, and so does a kind whose grant, in
+// any phase, gains or loses such a publish.
 func TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject(t *testing.T) {
-	kinds := serviceKinds(t)
-	for _, known := range []config.NATSServiceKind{config.NATSDispatch, config.NATSListener, config.NATSDaemon, config.NATSMeasure, config.NATSEdgeListener} {
+	kinds := declaredValues[config.NATSServiceKind](t, kindConversion)
+	for _, known := range []config.NATSServiceKind{config.NATSDispatch, config.NATSListener, config.NATSDaemon, config.NATSMeasure, config.NATSEdgeListener, config.NATSOperator, config.NATSProbe} {
 		require.Contains(t, kinds, known, "the read of config's source found the kinds %q, and not %s", kinds, known)
+	}
+	phases := declaredValues[natsgrant.OperatorPhase](t, noConversion)
+	for _, known := range []natsgrant.OperatorPhase{natsgrant.OperatorPhaseReleased, natsgrant.OperatorPhasePrepare, natsgrant.OperatorPhaseHeld} {
+		require.Contains(t, phases, known, "the read of natsgrant's source found the phases %q, and not %s", phases, known)
 	}
 	want := map[string]bool{}
 	for _, kind := range kinds {
-		grant, admitted := admittedServiceGrant(kind)
-		want[string(kind)] = admitted && publishesNotifications(grant)
+		want[string(kind)] = slices.ContainsFunc(admittedServiceGrants(kind, phases), publishesNotifications)
 	}
 	session, err := natsgrant.Session("ses_a")
 	require.NoError(t, err)

@@ -55,6 +55,7 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 // release walks. Plan rows of another run of the issue are not its run's. Once its run has rows,
 // the walk is theirs: the task, its steps, its line, and where the task stands.
 func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Implementing)
@@ -75,7 +76,7 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which
-// holds the derivation (issuePhaseOf) to the line as well as to itself.
+// holds the derivation (record.PhaseAt) to the line as well as to itself.
 func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place record.TaskPlace, state record.TaskState, want phase.Phase) error {
 	t.Helper()
 	var got string
@@ -89,7 +90,7 @@ func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 	if stood != place || stoodState != state {
 		return fmt.Errorf("the task of %s stands at %+v, %s; want %+v, %s", key, stood, stoodState, place, state)
 	}
-	derived := issuePhaseOf(walkOf(t, pool, engine, key), stood, stoodState)
+	derived := record.PhaseAt(walkOf(t, pool, engine, key).Line, stood, stoodState)
 	if phase.Phase(got) != derived || phase.Phase(got) != want {
 		return fmt.Errorf("issues.phase of %s = %s with its task at %+v, %s, which derives %s; want %s", key, got, stood, stoodState, derived, want)
 	}
@@ -117,6 +118,7 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 // an issue out of the workflow. The control writes issues.phase done and leaves the task's row
 // running at its merge, and the check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
+	t.Parallel()
 	moves := []struct {
 		trigger TriggerKind
 		place   record.TaskPlace
@@ -284,6 +286,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 // The same move to testing of an issue with no plan rows is served, as every pair of today's line
 // is (TestEveryBackwardEdgeAppliesThroughIntake).
 func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
@@ -326,6 +329,7 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 // The twin: an issue with no plan rows walks today's line, where testing comes before reviewing,
 // so the tester's same move back to reviewing is refused there and moves nothing.
 func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)

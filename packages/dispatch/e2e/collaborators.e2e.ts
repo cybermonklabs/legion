@@ -15,6 +15,7 @@ import {
   listComments,
   patchIssue,
 } from "./api";
+import { openRefPicker, pickerRows } from "./ref-picker";
 import { expect, type Locator, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
@@ -249,24 +250,26 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
     await page.goto(`/issues/${issueKey}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    await field.fill("@");
+    const list = await openRefPicker(field, "@");
 
-    // The roles no live agent holds, in workflow order: the implementer, then the reviewer, each
-    // drawn by the newest session of its token. The tester is live, so it is a live option alone.
-    const listbox = page.getByRole("listbox", { name: "Mention suggestions" });
-    const notRunning = listbox.getByRole("group", { name: "Not running" });
-    await expect(notRunning.getByRole("option")).toHaveCount(2);
-    await expect(notRunning.getByRole("option").nth(0)).toHaveAccessibleName(tokens.implementer);
-    const reviewer = notRunning.getByRole("option").nth(1);
-    await expect(reviewer).toHaveAccessibleName(tokens.reviewer);
+    // Every role is one group, the live one and the two nobody holds alike, each row its own
+    // token: the live tester first, then the issue's stopped roles in workflow order, the
+    // implementer before the reviewer. The two reviewer sessions of one token are one row.
+    await expect
+      .poll(async () => (await pickerRows(list)).filter((row) => row.startsWith("Roles: ")))
+      .toEqual([
+        `Roles: ${tokens.tester}`,
+        `Roles: ${tokens.implementer}`,
+        `Roles: ${tokens.reviewer}`,
+      ]);
+    // A role no live agent holds says so under its token, beside the session that held it last.
+    const reviewer = list.getByRole("option", { name: tokens.reviewer });
     await expect(reviewer).toContainText("reviewer · not running");
-    await expect(reviewer.locator(`[data-agent-name="${newReviewer}"]`)).toHaveCount(1);
-    await expect(listbox.getByRole("option", { exact: true, name: tokens.tester })).toHaveCount(1);
-    await expect(notRunning.getByRole("option", { name: tokens.tester })).toHaveCount(0);
+    await expect(reviewer).toContainText(`Legion reviewer · ${issueKey}`);
 
     // Choosing the reviewer addresses the comment to its role, not to a session that has ended.
-    await notRunning.getByRole("option", { exact: true, name: tokens.reviewer }).click();
-    await expect(field).toHaveValue(`@${tokens.reviewer}`);
+    await reviewer.click();
+    await expect(field).toHaveValue(`[@${tokens.reviewer}](dispatch://role/${tokens.reviewer})`);
     await field.press("End");
     await field.pressSequentially(" please review the fix");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
@@ -279,6 +282,61 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
           )?.mentions?.[0]?.target
       )
       .toBe(`role:${tokens.reviewer}`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// What a stopped role's mention does once it is sent, as main does it. The
+// reader links the role, because the issue's collaborators record it (`role-holders.ts`).
+// Delivery reads the holder alone (the Go API's `resolveDeliveryTarget`, through the Envoy
+// client's `Role`), and a stopped session holds no role, so the mention fails at once and is
+// kept for no later holder. The comment's card says so and offers Retry.
+test("a stopped role's mention is stored as a link to the role and fails at once, with Retry", async ({
+  browser,
+}) => {
+  const { issueKey, tokens } = await seed();
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issueKey}/conversation`);
+    const form = page.getByRole("form", { name: "Comment composer" });
+    const field = form.getByLabel("Comment");
+    const list = await openRefPicker(field, "@");
+    // The row says what a send to it does: nobody is told.
+    const implementer = list.getByRole("option", { name: tokens.implementer });
+    await expect(implementer).toContainText("implementer · not running, not told");
+    await implementer.click();
+    await expect(field).toHaveValue(
+      `[@${tokens.implementer}](dispatch://role/${tokens.implementer})`
+    );
+    await field.press("End");
+    await field.pressSequentially(" please take the fix");
+    await form.getByRole("button", { exact: true, name: "Send" }).click();
+    await expect(field).toHaveValue("");
+
+    // The stored comment draws the role as its token, linked to the role's page, and never as
+    // the words of a target that does not exist.
+    const card = page
+      .getByRole("list", { name: "Conversation turns" })
+      .locator(":scope > li")
+      .filter({ hasText: "please take the fix" });
+    const role = card.locator(`a[href="/agents?role=${tokens.implementer}"]`);
+    await expect(role).toHaveText(`@${tokens.implementer}`);
+    await expect(card.locator("[data-dispatch-missing]")).toHaveCount(0);
+
+    // The mention reached nobody: the role has no holder, and its card says so beside Retry.
+    const deliveries = card.getByRole("list", { name: "Mention deliveries" });
+    await expect(deliveries).toContainText(`role:${tokens.implementer} · failed`);
+    await expect(deliveries).toContainText(`no holder for role ${tokens.implementer}`);
+    await expect(deliveries.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    const stored = (await listComments(issueKey)).find((comment) =>
+      comment.body.endsWith("please take the fix")
+    );
+    expect(stored?.deliveries).toMatchObject([
+      { error: `no holder for role ${tokens.implementer}`, state: "failed" },
+    ]);
   } finally {
     await alice.close();
   }

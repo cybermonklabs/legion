@@ -58,8 +58,8 @@ func sweptStarts(t *testing.T, pool *store.Pool, issue string) []sweptStart {
 // The runtime's entry sweep is what converges a role behind its entry when nothing else does: on
 // its own period it applies an intake.EntrySweep, and admission sends the role the work the entry
 // its phases row names stands for. Nothing else happens here — no Dispatch event, no completion,
-// no boot — which is the whole point: an admission pass runs on a fact of the project, and this
-// project raises none.
+// no boot — which is the whole point: an admission pass runs on the facts the pass rule names
+// (admit's Admission.Apply), and this project raises none.
 //
 // The fixture is the difference the sweep exists to close: a tree whose member stands mid-phase
 // holding one of the cap's slots, its tester's phases row at the entry a transition raised with

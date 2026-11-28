@@ -44,6 +44,8 @@ func (c *passClock) times() []time.Time {
 // tick lands inside a period its own previous pass served. Each pass is handed the moment its timer
 // fired as its due time, the moment a leased pass buckets its period by (Exclusive).
 func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t *testing.T) {
+	// Not parallel: its rows fix duty.JitterN (fixJitter), the package variable every jittered
+	// wait reads.
 	const interval = 5 * time.Minute
 	period := duty.LeasePeriod(interval)
 	for _, tc := range []struct {
@@ -97,6 +99,7 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 
 // A caller with nothing to do never starts the loop.
 func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ran := false
 		duty.RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })
@@ -118,6 +121,9 @@ const runLeasedDeadline = 30 * time.Second
 // indexed. And no tick may come sooner than its wait after the pass before it ended, which is what
 // keeps two of a lone loop's ticks out of one period.
 func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *testing.T) {
+	// Not parallel: it holds each pass to beginning at least the 100 ms step after the one before
+	// it ended, and the parallel tests' load could delay a tick by that much, so a loop that
+	// ticked on a fixed cadence would go unseen.
 	leases := leasesOf(t, storetest.Open(t))
 	const interval, step = time.Hour, 100 * time.Millisecond
 	const passes = 4
@@ -167,6 +173,9 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 // first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
 // deploy.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
+	// Not parallel: it holds the first pass to coming at least the 300 ms interval after start,
+	// and the parallel tests' load could delay a pass made at start by that much, so a loop that
+	// passed at start would go unseen.
 	leases := leasesOf(t, storetest.Open(t))
 	const interval = 300 * time.Millisecond
 

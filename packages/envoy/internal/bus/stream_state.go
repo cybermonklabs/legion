@@ -1,5 +1,5 @@
-// What SessionConsumers reads of the notification stream itself: its identity and sequences, read
-// once for every call waiting on a read.
+// What SessionConsumers reads of the notification stream itself, its identity and sequences, read
+// once for every call waiting on a read, and the identity Client.StreamID reads for Dispatch's outbox.
 
 package bus
 
@@ -19,11 +19,23 @@ type sessionStreamState struct {
 	firstSeq, lastSeq uint64
 }
 
+// streamID is the stream's identity as s read it, and ErrNoStreamID for a stream that carries none:
+// the one answer of Client.StreamID and SessionConsumers.StreamID.
+func (s sessionStreamState) streamID() (string, error) {
+	if s.id == "" {
+		return "", ErrNoStreamID
+	}
+	return s.id, nil
+}
+
 // sessionStreamReadWait bounds one read of the stream's state (streamState).
 const sessionStreamReadWait = 5 * time.Second
 
 // streamRead is one read of the stream's state, which every streamState call waiting on it shares.
 type streamRead struct {
+	// client is the client the read is sent on, whose connection names a wait that ends first
+	// (wait).
+	client *Client
 	// done is closed once state and err are set.
 	done  chan struct{}
 	state sessionStreamState
@@ -34,7 +46,8 @@ type streamRead struct {
 // read: a call waits for the next read to begin, after the one in flight answers, and every call
 // waiting when it begins gets its answer. So no call gets a state read before it was made, and a
 // burst of calls, such as the restarts of every session at a listener's start, sends one stream
-// info per round trip rather than one per call. A call returns ctx's error if ctx ends first.
+// info per round trip rather than one per call. A call returns ctx's error if ctx ends first,
+// named ErrReconnecting while NATS is reconnecting (streamRead.wait).
 func (s *SessionConsumers) streamState(ctx context.Context) (sessionStreamState, error) {
 	return s.joinStreamRead().wait(ctx)
 }
@@ -45,7 +58,7 @@ func (s *SessionConsumers) joinStreamRead() *streamRead {
 	s.streamMu.Lock()
 	read := s.streamNext
 	if read == nil {
-		read = &streamRead{done: make(chan struct{})}
+		read = &streamRead{client: s.client, done: make(chan struct{})}
 		s.streamNext = read
 	}
 	start := !s.streamReading
@@ -57,13 +70,16 @@ func (s *SessionConsumers) joinStreamRead() *streamRead {
 	return read
 }
 
-// wait returns what the read read, once it has answered, or ctx's error if ctx ends first.
+// wait returns what the read read, once it has answered, or ctx's error if ctx ends first. While
+// nats.go connects or reconnects the client's connection, that error is ErrReconnecting (namedOn),
+// as the read's own error would be: the read is then waiting for the connection
+// (Client.requestConfirmed), and a caller whose ctx ends first is told why.
 func (r *streamRead) wait(ctx context.Context) (sessionStreamState, error) {
 	select {
 	case <-r.done:
 		return r.state, r.err
 	case <-ctx.Done():
-		return sessionStreamState{}, ctx.Err()
+		return sessionStreamState{}, namedOn(ctx, r.client.Connection(), ctx.Err())
 	}
 }
 
@@ -81,15 +97,15 @@ func (s *SessionConsumers) readStreamStates() {
 		}
 		s.streamMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), sessionStreamReadWait)
-		read.state, read.err = s.readStreamState(ctx)
+		read.state, read.err = s.client.readStreamState(ctx)
 		cancel()
 		close(read.done)
 	}
 }
 
 // readStreamState reads the stream's identity and sequences with one stream info.
-func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamState, error) {
-	reply, err := s.client.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
+func (c *Client) readStreamState(ctx context.Context) (sessionStreamState, error) {
+	reply, err := c.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
 	if err != nil {
 		return sessionStreamState{}, err
 	}
@@ -114,4 +130,20 @@ func (s *SessionConsumers) readStreamState(ctx context.Context) (sessionStreamSt
 		firstSeq: response.State.FirstSeq,
 		lastSeq:  response.State.LastSeq,
 	}, nil
+}
+
+// StreamID reads the stream's identity, its StreamIDMetadataKey metadata, with one stream info
+// within ctx's bound (storedMessageWait when ctx sets none), and answers ErrNoStreamID for a stream
+// that carries none, as SessionConsumers.StreamID does. Dispatch's outbox reads it to tell the
+// stream its expiry notices' cursor counts in from one created again since
+// (internal/dispatch/outbox, keptExpiryStart): a cursor's sequence names a message of the stream
+// it was read from and no other, and a stream with no identity cannot be told from another. The
+// read is the one SessionConsumers makes (streamState), over a subject the listener's and
+// Dispatch's grants both hold.
+func (c *Client) StreamID(ctx context.Context) (string, error) {
+	state, err := c.readStreamState(ctx)
+	if err != nil {
+		return "", err
+	}
+	return state.streamID()
 }

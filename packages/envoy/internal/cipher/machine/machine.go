@@ -9,6 +9,12 @@
 // enrolls) logs in with its own projected Kubernetes ServiceAccount token instead (TokenLogin),
 // and no person approves it. A machine holding a Google identity token logs in nowhere here: the
 // RFC 8693 token exchange mints its launcher credential when it trades that token.
+//
+// A Dispatch sign-in is a device login of its own scope, which its person approves for Dispatch
+// alone: this file holds the login, and dispatch_signin.go the scope rules it reads — what scope
+// a device login may name (DeviceScope), which of them this broker serves (servedScope), the
+// refusal of a word no sign-in may hold (scopeNotConsentable), and what a decision's scopes are
+// read against (decisionScopes).
 package machine
 
 import (
@@ -16,7 +22,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -31,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 var (
@@ -51,15 +60,112 @@ var (
 	// already holds a live launcher credential under another record: a machine signed two logins
 	// with one key and the first was approved. The record stays pending.
 	ErrKeyHoldsLiveCredential = errors.New("this machine login's key already holds a live launcher credential")
+	// ErrApproverReplaced is ApplyDecision's refusal to approve a login as an account that no
+	// longer holds the approver's address: a revoke named this account replaced and another one
+	// the holder (enroll.Service.RevokePersonSubject, the broker's half of POST
+	// /v1/person-subjects/revoke, which no caller in this tree sends). Nothing is minted and the
+	// record stays pending, for the account that holds the address now.
+	ErrApproverReplaced = errors.New("the account approving this machine login no longer holds its approver's address: another account holds it now")
+	// ErrApprovalNamesNoAccount is ApplyDecision's refusal to approve, naming no account and
+	// carrying no session generation, a login whose approver's address Dispatch has named an
+	// account replaced at within ApprovalInFlightWindow: the broker cannot tell such an approval is
+	// not the replaced account's. Only a Dispatch that records an address's account and sends the
+	// approver fields names one; Dispatch in this tree relays the approver and the code alone, and
+	// so does an older one. So an approval naming none may be one whose check passed before a
+	// replacement and lands after its revocation, which would otherwise mint a login recording none
+	// that the paid revocation no longer ends. An approve that carries the generation its check read
+	// is decided exactly by ErrApprovalCheckedBeforeReplacement instead. It is an
+	// ErrApproverReplaced, answered 403 APPROVER_REPLACED; nothing is minted and the record stays
+	// pending.
+	ErrApprovalNamesNoAccount = fmt.Errorf("%w: this approval names no account, and another account has held the address since, so approve it again from Dispatch, which names the account that holds it now", ErrApproverReplaced)
+	// ErrApprovalCheckedBeforeReplacement is ApplyDecision's refusal of an approval whose session
+	// generation, the one its caller's check of the approver read, is below the generation a
+	// revoke recorded a replacement of the approver's address at: that check passed before the
+	// address passed to another account, whichever account the approval names, and the revoke that
+	// ended what the replaced account and every credential recording no account held has already
+	// committed, so it would not end the login this approval mints. No caller in this tree sends a
+	// generation, so nothing here is refused this way; the field comes with the change that records
+	// accounts at Dispatch. It is an ErrApproverReplaced, answered 403 APPROVER_REPLACED; nothing
+	// is minted and the record stays pending, for an approval checked again at Dispatch.
+	ErrApprovalCheckedBeforeReplacement = fmt.Errorf("%w: Dispatch checked this approval before another account took the address, so approve it again from Dispatch", ErrApproverReplaced)
 	// ErrKeyBindsReadToken is ApplyDecision's and TokenLogin's refusal of a key a live read token
 	// is bound to (enroll.ErrKeyBindsReadToken): a read token's key signs no launcher proof, so
 	// the machine makes a new key and logs in with it. The record stays pending.
 	ErrKeyBindsReadToken = errors.New("a live read token is bound to this machine login's key, and a key that signs launcher proofs is bound to no read token: make a new key and log in with it")
+	// ErrScopesRequired refuses an approval of a Dispatch sign-in that did not state its approved
+	// scope set, including the empty set. The API answers it 400 SCOPES_REQUIRED.
+	ErrScopesRequired = errors.New("a Dispatch sign-in approval requires scopes")
+	// ErrScopeNotAsked refuses the approval of a Dispatch sign-in that names a scope the sign-in
+	// did not ask for. The API answers it 400 SCOPE_NOT_ASKED.
+	ErrScopeNotAsked = errors.New("the decision names a scope the sign-in did not ask for")
+	// ErrMachineLoginTakesNoScopes refuses the approval of a machine login that carries scopes,
+	// the empty list included. The API answers it 400 SCOPE_NOT_ASKED, as ErrScopeNotAsked.
+	ErrMachineLoginTakesNoScopes = errors.New("a machine login takes no scopes")
+	// ErrDenialTakesNoScopes refuses a denial that carries scopes, the empty list included, of a
+	// Dispatch sign-in or of a machine login: a denial grants nothing, so it names nothing to
+	// grant, and Dispatch forwards scopes on an approval alone. The API answers it 400
+	// SCOPES_ON_DENIAL. Nothing is decided, and the record stays pending.
+	ErrDenialTakesNoScopes = errors.New("a denial takes no scopes")
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
 	// oauth.ErrLoginEnded, so the token endpoint refuses it invalid_grant.
 	ErrNotLive = fmt.Errorf("%w: this machine login's credential is revoked or expired", oauth.ErrLoginEnded)
 )
+
+// ApprovalInFlightWindow is how long after a revoke records an account replaced at an address an
+// approval is refused when no session generation places it against that replacement: one that
+// carries no generation (every approve Dispatch in this tree relays, and an older Dispatch's) and
+// names no account (ErrApprovalNamesNoAccount). It applies only to that one: every revoke carries a
+// generation, so an approval carrying one is decided by the two generations alone.
+//
+// It is the relay's own bound, the longest an approve can be in flight from the read of its
+// approver to the broker's decision, so the fallback refuses every approve read before the
+// replacement. Two of its three parts are this tree's:
+//
+//   - the broker's client at Dispatch gives one call 5 s (internal/dispatch/cipher's
+//     defaultTimeout), so an approve reaches the broker within 5 s of that call or not at all;
+//   - the broker ends every request's context 45 s after it arrives (cmd/cipherd's
+//     requestDeadline, wire.RequestDeadline, which withRequestDeadline puts on the request), so the
+//     approval's transaction, whose now() the window is measured to, begins within 45 s of the
+//     approve's arrival or not at all.
+//
+// The third is the caller's: it must read its approver and make that call under one deadline, so
+// the read is no older than the call. Dispatch in this tree holds to no such deadline — its
+// approveCredentialRecord reads the acting person (actingPerson) and then the request's body for
+// the typed code (decisionFor), and its server sets no ReadTimeout — and it sends neither an
+// account nor a generation. Nor does anything here send the revoke that records a replacement:
+// Dispatch's broker client has no call for POST /v1/person-subjects/revoke, so only a caller of
+// that route writes a row this window reads. The change that records accounts at Dispatch brings
+// all three: the revoke, the approver fields, and the one deadline over the check and the relay.
+//
+// Under that deadline, such an approval's transaction begins less than 5 s + 45 s = 50 s after its
+// check. The revoke it is weighed against is sent only once the replacing sign-in has committed,
+// after that check, so its replaced_at (the revoke transaction's now()) is later than the check,
+// and the approval's now() is less than 50 s after it: the window refuses it. Both times the
+// window compares are the broker's own clock. The cost is that an approve naming no account is
+// refused for 50 s after a replacement at its address, and is approved again from Dispatch.
+//
+// For context only, the measured times are far inside that bound: on 2026-11-18, between 12:37Z
+// and 13:08Z, with go1.27.3, GOMAXPROCS=8 and -p 4 on a 288-core box at load averages from 207 to
+// 308, the longest time from Dispatch's handler being handed an approve to the test's broker
+// receiving its relay was 13.29 ms (internal/dispatch/api's tests, 20 relays; cmd/dispatch's
+// longest of 10 was 6.85 ms; `ENVOY_TIME_APPROVALS=1 go test -count=1 -v -timeout 40m` on each,
+// their APPROVE-RELAYED-IN lines), and the longest ApplyDecision of an approval, start to return,
+// lock waits included, was 43.08 ms (internal/cipher/machine's tests, 633 approvals, among them the
+// 600 of TestARevokeAndAnApprovalByTheReplacedAccountNeverLeaveItALiveLogin, timed by the tests'
+// applyDecision, their APPROVAL-DECIDED-IN lines).
+const ApprovalInFlightWindow = 50 * time.Second
+
+// NewApprovalsWithoutGeneration registers broker_machine_login_approvals_without_generation_total
+// on r and answers it, for Service.ApprovalsWithoutGeneration: each machine-login approve that
+// carries no approver_session_generation, which only ApprovalInFlightWindow decides against a
+// replacement. Dispatch in this tree sends no approver fields, so every approve it relays is
+// counted; once a Dispatch that sends them is deployed everywhere and the counter stays at zero,
+// the fallback can come out.
+func NewApprovalsWithoutGeneration(r *metrics.Registry) *metrics.Counter {
+	return r.NewCounter("broker_machine_login_approvals_without_generation_total",
+		"Machine-login approves that carried no approver_session_generation, from a Dispatch that sends no approver fields; the no-generation fallback (machine.ApprovalInFlightWindow) comes out once it stays at zero.")
+}
 
 type Service struct {
 	Store  *store.Store
@@ -84,6 +190,9 @@ type Service struct {
 
 	// OAuth is the device grant a person's machine logs in through; nil when the broker runs none.
 	// ApplyDecision records each decision on it, so the machine's token poll learns the outcome.
+	// Whether the broker serves a Dispatch sign-in (BROKER_DISPATCH_SIGNIN) is its word alone
+	// (oauth.Provider.ServesDispatchSignIn, servesDispatchSignIn), so the device route, the
+	// decision, the device code grant, the refresh, the trade and the metadata read one switch.
 	OAuth *oauth.Provider
 
 	// Replay records a request object's jti (the proof_jtis table), answering false when it was
@@ -94,6 +203,10 @@ type Service struct {
 	// and confirmation code — a confirmation-fatigue/notification-spam vector against the named
 	// operator.
 	Replay func(ctx context.Context, jti string, expires time.Time) (fresh bool, err error)
+
+	// ApprovalsWithoutGeneration counts each approve ApplyDecision is handed that carries no
+	// session generation (NewApprovalsWithoutGeneration); nil counts nothing.
+	ApprovalsWithoutGeneration *metrics.Counter
 }
 
 // jtiRetentionMargin is how long past a request object's expiry its jti is remembered, mirroring
@@ -180,8 +293,15 @@ func (s *Service) checkLauncherRequest(compact string, now time.Time, check func
 // seen before: every other refusal of verifyPersonLogin, the same way. It reads and writes
 // nothing, so a caller can judge a request before it spends anything on it (the edge's shared
 // device bucket).
-func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error {
-	_, err := s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT))
+// scope is the device login's scope parameter as it was sent, which it reads itself
+// (servedScope): one word, machine or dispatch, and dispatch only where the broker serves a
+// Dispatch sign-in.
+func (s *Service) CheckPersonLogin(compact, dpopJKT, scope string, now time.Time) error {
+	served, err := s.servedScope(scope)
+	if err != nil {
+		return err
+	}
+	_, err = s.checkLauncherRequest(compact, now, personLoginCheck(dpopJKT, served))
 	return err
 }
 
@@ -196,47 +316,69 @@ func (s *Service) CheckPersonLogin(compact, dpopJKT string, now time.Time) error
 // record's code is the user code; the machine polls with its device code. The record also carries
 // the request object, its approver, the credential lifetime an approval mints (CredentialLifetime),
 // the policy version, and an expiry PendingTTL after now.
+//
+// form's scope (DeviceScope, servedScope) decides what the record is, and the record keeps it in
+// its dispatch_scopes column (migration 0053), which credential_requests' append-only trigger
+// holds as it was written: null for a machine login, and for a Dispatch sign-in the scopes it
+// asks for, the actions of its launcher_credential detail, {} for one that asks none. Every later
+// reader of what the record is reads that column alone: its lookup (LookupByCode), the pending
+// list (requests.Machine.PendingForApprover) and its decision (ApplyDecision).
 func (s *Service) LoginDevice(ctx context.Context, form url.Values, userCode string) error {
 	tx, ok := oauthstore.TxFrom(ctx)
 	if !ok {
 		return errors.New("machine: LoginDevice runs in the provider's transaction")
 	}
-	now := time.Now()
-	compact := form.Get("request")
-	approver, err := s.verifyPersonLogin(ctx, compact, now, form.Get("dpop_jkt"))
+	scope, err := DeviceScope(form)
 	if err != nil {
 		return err
 	}
+	if scope, err = s.servedScope(scope); err != nil {
+		return err
+	}
+	now := time.Now()
+	compact := form.Get("request")
+	obj, err := s.verifyPersonLogin(ctx, compact, now, form.Get("dpop_jkt"), scope)
+	if err != nil {
+		return err
+	}
+	var asked *[]string
+	if scope == oauthwire.ScopeDispatch {
+		actions := slices.Clone(obj.Details[0].Actions)
+		if actions == nil {
+			actions = []string{}
+		}
+		asked = &actions
+	}
 	body := record.Body{
 		Request:         compact,
-		Approver:        approver,
+		Approver:        record.CanonicalLogin(obj.LoginHint),
 		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-", Operator: ""},
 		LifetimeSeconds: new(int(s.CredentialLifetime.Seconds())),
 		RulesVersion:    s.Policy.Get().Version,
 		ExpiresAt:       now.Add(s.PendingTTL).UTC().Truncate(time.Second),
 		Code:            userCode,
 	}
-	_, err = tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, code, expires_at) values ($1,$2,'launcher_credential',$3,$4,$5)`,
-		body.ID(), body.Canonical(), body.Approver, body.Code, body.ExpiresAt)
+	_, err = tx.Exec(ctx, `insert into credential_requests (id, body, kind, approver, code, expires_at, dispatch_scopes) values ($1,$2,'launcher_credential',$3,$4,$5,$6)`,
+		body.ID(), body.Canonical(), body.Approver, body.Code, body.ExpiresAt, asked)
 	return err
 }
 
 // verifyPersonLogin verifies a person's machine login request object at now (verifyLauncherRequest)
-// and answers the approver its login_hint names. A request naming a service is
+// and answers it; its login_hint names the approver. A request naming a service is
 // ErrServiceLogsInWithToken, and one naming no person, or record.AnyoneApprover, or whose key
-// thumbprint is not dpopJKT, is record.ErrRequestInvalid, each checked before the jti is recorded
-// (personLoginCheck).
-func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT string) (string, error) {
-	obj, err := s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT))
-	if err != nil {
-		return "", err
-	}
-	return record.CanonicalLogin(obj.LoginHint), nil
+// thumbprint is not dpopJKT, is record.ErrRequestInvalid, and one whose actions its scope does not
+// take is refused (personLoginCheck), each checked before the jti is recorded.
+func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now time.Time, dpopJKT, scope string) (record.RequestObject, error) {
+	return s.verifyLauncherRequest(ctx, compact, now, personLoginCheck(dpopJKT, scope))
 }
 
 // personLoginCheck is the check of a person's machine login request object: no service, a login_hint
-// naming a person other than record.AnyoneApprover, and a key thumbprint that is dpopJKT.
-func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
+// naming a person other than record.AnyoneApprover, and a key thumbprint that is dpopJKT. scope,
+// which servedScope has read, decides its launcher_credential detail's actions: a machine login's
+// detail carries no actions member at all, not even an empty list (ACTIONS_ON_MACHINE_LOGIN), and
+// each action of a Dispatch sign-in's is consentable (SCOPE_NOT_CONSENTABLE). Any other scope is
+// SCOPE_INVALID, never read as either.
+func personLoginCheck(dpopJKT, scope string) func(record.RequestObject) error {
 	return func(obj record.RequestObject) error {
 		if obj.Service() != "" {
 			return ErrServiceLogsInWithToken
@@ -250,7 +392,25 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 		if dpopJKT != obj.Thumbprint {
 			return fmt.Errorf("%w: dpop_jkt is not the request object's key thumbprint", record.ErrRequestInvalid)
 		}
-		return nil
+		// The detail's actions as its JSON held them: nil where it named no actions member (or
+		// null), and non-nil, also when empty, where it named a list.
+		actions := obj.Details[0].Actions
+		switch scope {
+		case oauthwire.Scope:
+			if actions != nil {
+				return &oauth.Refusal{Status: http.StatusBadRequest, Code: "ACTIONS_ON_MACHINE_LOGIN",
+					Message: "a machine login's launcher_credential detail carries no actions member, not even an empty list"}
+			}
+			return nil
+		case oauthwire.ScopeDispatch:
+			for _, action := range actions {
+				if !oauthwire.Consentable(action) {
+					return scopeNotConsentable(action)
+				}
+			}
+			return nil
+		}
+		return scopeInvalid()
 	}
 }
 
@@ -274,7 +434,44 @@ func personLoginCheck(dpopJKT string) func(record.RequestObject) error {
 // already holds a live credential under another record is ErrKeyHoldsLiveCredential, one that a
 // live read token is bound to (enroll.ErrKeyBindsReadToken) is ErrKeyBindsReadToken, and either
 // way the record stays pending.
-func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
+//
+// account is the identity provider's account the deciding human signed in to Dispatch as, which
+// the approve carries beside login, and the zero value for an approve that names none, which is
+// every approve Dispatch relays in this tree. An approval records it on the credential it mints,
+// and is ErrApproverReplaced, minting nothing, when that account no longer holds login's address,
+// which it reads after taking login's lock (store.LockPersonAs). The revoke of a replaced account
+// takes that lock too (enroll.Service.RevokePersonSubject): an approval that took it first has
+// committed its credential before the revoke reads login's machine logins, and the revoke ends it;
+// one that waited reads what the revoke recorded, and is refused.
+//
+// generation is the session generation of login's address at the caller, as that caller's check of
+// the approver read it (approver_session_generation), and nil for an approve carrying none, which
+// is every approve Dispatch relays in this tree. A caller that records accounts moves that
+// generation in the transaction that records each one, and the revoke records the generation its
+// replacement left. So an approval carrying a generation is ErrApprovalCheckedBeforeReplacement,
+// whatever account it names, when a replacement of login's address was recorded at a greater one
+// (store.SubjectReplacedAfter), read under the same lock: its check passed before the address
+// moved, and the revoke, having ended every credential of the address recording none, would no
+// longer end the login it mints. An approval carrying no generation that names no account is
+// ErrApprovalNamesNoAccount when a revoke named any account replaced at login's address within
+// ApprovalInFlightWindow (store.SubjectReplacedWithin), read under the same lock, since nothing
+// else places it before or after the move; one carrying no generation that names an account is
+// held to that account alone, as above. A denial mints nothing and takes away nothing anyone
+// holds, so it is decided whatever the account and the generation.
+//
+// scopes are the decision's Dispatch scopes, read against what the record asked for, its
+// dispatch_scopes column (LoginDevice), by decisionScopes: an approval of a Dispatch sign-in names
+// the scopes its person approved, a subset of those asked, each consentable; an approval of a
+// machine login and every denial name none. A Dispatch sign-in is approved only on a broker that
+// serves one (oauth.DispatchSignInOff, which the API answers 400 DISPATCH_SIGNIN_OFF), so a
+// sign-in pending when BROKER_DISPATCH_SIGNIN went off is never approved after: it expires
+// (PendingTTL). Its denial mints nothing, so it is decided either way. The approved scopes are
+// written once, on the credential (dispatch_scopes, migration 0053) and on the login's session
+// (decideDevice), and never change.
+func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string, account store.IssuerSubject, generation *int64, scopes *[]string) (state, credentialID string, err error) {
+	if approve && generation == nil {
+		s.ApprovalsWithoutGeneration.Inc()
+	}
 	var denier serviceDenier
 	if !approve {
 		denier = s.readServiceDenier(ctx, recordID, login)
@@ -299,8 +496,9 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	var canonical, storedCode string
 	var createdAt time.Time
 	var expired bool
-	err = tx.QueryRow(ctx, `select body, code, created_at, expires_at <= now() from credential_requests where id=$1 and kind='launcher_credential' for no key update`, recordID).
-		Scan(&canonical, &storedCode, &createdAt, &expired)
+	var asked *[]string
+	err = tx.QueryRow(ctx, `select body, code, created_at, expires_at <= now(), dispatch_scopes from credential_requests where id=$1 and kind='launcher_credential' for no key update`, recordID).
+		Scan(&canonical, &storedCode, &createdAt, &expired, &asked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
@@ -349,6 +547,18 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	case decided != "":
 		return "", "", ErrAlreadyDecided
 	}
+
+	// What the record is, its own column says (LoginDevice): null for a machine login, and the
+	// scopes a Dispatch sign-in asked for, so a sign-in reads as one whatever has become of its
+	// device code. A record an earlier broker opened, before the column, is a machine login.
+	if approve && asked != nil && !s.servesDispatchSignIn() {
+		return "", "", oauth.DispatchSignInOff()
+	}
+	approvedScopes, err := decisionScopes(asked, approve, scopes)
+	if err != nil {
+		return "", "", err
+	}
+
 	event := "denied"
 	if approve {
 		event = "approved"
@@ -367,8 +577,32 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		if body.LifetimeSeconds == nil {
 			return "", "", fmt.Errorf("machine login record has no credential lifetime")
 		}
+		switch err := store.LockPersonAs(ctx, tx, login, account); {
+		case errors.Is(err, store.ErrSubjectReplaced):
+			return "", "", ErrApproverReplaced
+		case err != nil:
+			return "", "", err
+		}
+		switch {
+		case generation != nil:
+			checkedBefore, err := store.SubjectReplacedAfter(ctx, tx, login, *generation)
+			if err != nil {
+				return "", "", err
+			}
+			if checkedBefore {
+				return "", "", ErrApprovalCheckedBeforeReplacement
+			}
+		case !account.Recorded():
+			recent, err := store.SubjectReplacedWithin(ctx, tx, login, ApprovalInFlightWindow)
+			if err != nil {
+				return "", "", err
+			}
+			if recent {
+				return "", "", ErrApprovalNamesNoAccount
+			}
+		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
-			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
+			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second), account, approvedScopes)
 		if enroll.KeyHeld(err) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}
@@ -389,7 +623,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 	} else if err != nil {
 		return "", "", err
 	}
-	if err := s.decideDevice(ctx, tx, body.Code, approve, recordID, credID, login, obj.Details[0].Identifier); err != nil {
+	if err := s.decideDevice(ctx, tx, body.Code, approve, recordID, credID, approvedScopes, login, obj.Details[0].Identifier); err != nil {
 		return "", "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -460,18 +694,24 @@ func (s *Service) readServiceDenier(ctx context.Context, recordID, login string)
 }
 
 // decideDevice records a decision on the device login whose user code is code, in tx: an
-// approval's session names the record, the minted credential, the operator and the host. A record
+// approval's session names the record, the minted credential, the operator and the host, and, for
+// a Dispatch sign-in, the scopes its person approved (scopes, non-nil; oauthwire.ExtraDispatchScopes),
+// which every token the login is issued then carries, so its refresh and its trade read them from
+// the token (oauth.SessionDispatchScopes). A record
 // with no device code (oauth2.ErrNotFound: one an earlier broker's POST /v1/launcher-credentials
 // opened, still pending at the deploy) has nothing to record; a device code past its lifetime
 // (oauth2.ErrInvalidGrant) is ErrLoginExpired, and the decision rolls back. A broker with no OAuth
 // provider records nothing.
-func (s *Service) decideDevice(ctx context.Context, tx pgx.Tx, code string, approve bool, recordID string, credID *string, login, host string) error {
+func (s *Service) decideDevice(ctx context.Context, tx pgx.Tx, code string, approve bool, recordID string, credID *string, scopes *[]string, login, host string) error {
 	if s.OAuth == nil {
 		return nil
 	}
 	extra := map[string]any{"record_id": recordID, "operator": login, "host": host}
 	if credID != nil {
 		extra[oauthwire.ExtraCredentialID] = *credID
+	}
+	if scopes != nil {
+		extra[oauthwire.ExtraDispatchScopes] = *scopes
 	}
 	err := s.OAuth.ApproveDevice(oauthstore.WithTx(ctx, tx), code, approve, extra)
 	switch {
@@ -544,13 +784,22 @@ func tokenTx(ctx context.Context) (pgx.Tx, error) {
 // credential's row as it is (Live), and either is refused when the credential has ended; every
 // answer carries credential_id and credential_expires_at (RFC 3339) as the credential's row holds
 // it in that transaction: the minted expiry on the device code grant, the one Refreshed moved it
-// to on a refresh.
+// to on a refresh. Either grant of a Dispatch sign-in, a login whose session names its approved
+// scopes (oauth.SessionDispatchScopes), is refused oauth.DispatchSignInOff before anything else
+// on a broker that serves no Dispatch sign-in.
 func (s *Service) TokenHooks() oauth.TokenHooks {
 	var hooks oauth.TokenHooks
 	hooks.Before = func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) error {
 		id, err := credentialOf(extra)
 		if err != nil {
 			return err
+		}
+		consented, err := oauth.SessionDispatchScopes(extra)
+		if err != nil {
+			return err
+		}
+		if consented != nil && !s.servesDispatchSignIn() {
+			return oauth.DispatchSignInOff()
 		}
 		switch grant {
 		case oauth2.GrantTypeRefreshToken:
@@ -572,10 +821,15 @@ func (s *Service) TokenHooks() oauth.TokenHooks {
 			return nil, err
 		}
 		var expires time.Time
-		if err := tx.QueryRow(ctx, `select expires_at from launcher_credentials where id=$1`, id).Scan(&expires); err != nil {
+		var dispatchScopes *[]string
+		if err := tx.QueryRow(ctx, `select expires_at, dispatch_scopes from launcher_credentials where id=$1`, id).Scan(&expires, &dispatchScopes); err != nil {
 			return nil, err
 		}
-		return map[string]any{oauthwire.ExtraCredentialID: id, oauthwire.ExtraCredentialExpiresAt: expires.UTC().Format(time.RFC3339)}, nil
+		fields := map[string]any{oauthwire.ExtraCredentialID: id, oauthwire.ExtraCredentialExpiresAt: expires.UTC().Format(time.RFC3339)}
+		if dispatchScopes != nil {
+			fields[oauthwire.ExtraDispatchScopes] = *dispatchScopes
+		}
+		return fields, nil
 	}
 	return hooks
 }
@@ -611,15 +865,20 @@ func (s *Service) recordState(ctx context.Context, recordID string) (state, cred
 
 // RecordView is a machine login record as the operator's UI sees it, resolved by its
 // human-readable confirmation code: enough to show what is being decided.
+// DispatchScopes is what the record's own dispatch_scopes column holds (LoginDevice): nil for a
+// machine login, and for a Dispatch sign-in the scopes it asked for, in every state, also once its
+// device code is gone; the scopes its person approved are its credential's
+// (enroll.LiveCredential.DispatchScopes).
 type RecordView struct {
-	RecordID     string
-	Host         string
-	Service      string // "" for a personal (non-service) login
-	Approver     string
-	State        string
-	CredentialID string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
+	RecordID       string
+	Host           string
+	Service        string // "" for a personal (non-service) login
+	Approver       string
+	State          string
+	CredentialID   string
+	DispatchScopes *[]string
+	CreatedAt      time.Time
+	ExpiresAt      time.Time
 }
 
 // LookupByCode resolves a pending machine login by its confirmation code, for the operator's own
@@ -627,9 +886,10 @@ type RecordView struct {
 func (s *Service) LookupByCode(ctx context.Context, code string) (RecordView, error) {
 	var id, canonical, approver string
 	var createdAt, expiresAt time.Time
-	err := s.Store.Pool.QueryRow(ctx, `select id, body, approver, created_at, expires_at from credential_requests
+	var asked *[]string
+	err := s.Store.Pool.QueryRow(ctx, `select id, body, approver, created_at, expires_at, dispatch_scopes from credential_requests
 		where code=$1 and kind='launcher_credential' order by created_at desc limit 1`, oauth.NormalizeUserCode(code)).
-		Scan(&id, &canonical, &approver, &createdAt, &expiresAt)
+		Scan(&id, &canonical, &approver, &createdAt, &expiresAt, &asked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RecordView{}, ErrNotFound
 	}
@@ -651,7 +911,7 @@ func (s *Service) LookupByCode(ctx context.Context, code string) (RecordView, er
 	}
 	return RecordView{
 		RecordID: id, Host: detail.Identifier, Service: detail.Service, Approver: approver,
-		State: state, CredentialID: credentialID, CreatedAt: createdAt, ExpiresAt: expiresAt,
+		State: state, CredentialID: credentialID, DispatchScopes: asked, CreatedAt: createdAt, ExpiresAt: expiresAt,
 	}, nil
 }
 

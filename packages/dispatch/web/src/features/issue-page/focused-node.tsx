@@ -1,6 +1,7 @@
-import { createContext, type ReactNode, useContext, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
 
-import type { Actor } from "../../api/types";
+import type { Actor, DisplayTree } from "../../api/types";
+import type { TextSource } from "../refs/text-references";
 import type { NodeType } from "./page-words";
 
 /**
@@ -24,10 +25,19 @@ export interface FocusedNode {
    *  what references it is read under that address, in Details
    *  (`node-references/NodeReferences.tsx`). */
   readonly reference?: string;
+  /** The record the node's words are, whose issue reads each role in them (`TreeNode.source`). */
+  readonly source?: TextSource;
   /** How it stands, as the page's own word for that state, where its type has one. */
   readonly state?: string;
-  /** The node's own first line, or an issue's title: the author's words. */
-  readonly title: string;
+  /** The node's own words as the tree holds them (`TreeNode.text`), or an issue's title: the
+   *  author's words, which the panel names the node by as every place that names a node by its
+   *  one line does - projected by the shared plain-text projection, each reference in them read
+   *  as its target's current name (R8), and the page's word for the node's kind where they hold
+   *  none (`node-line.tsx`'s `useNodeLine`, `lineOrKindWord`). They are handed whole rather than
+   *  as a line cut from them, since only a draw can read a reference's name. */
+  readonly text: string;
+  /** The server's reading of `text` (`TreeNode.tree`), where the node has one. */
+  readonly tree?: DisplayTree;
   readonly type: NodeType;
 }
 
@@ -35,16 +45,29 @@ const FocusedNodeContext = createContext<FocusedNode | undefined>(undefined);
 
 const SetFocusedNodeContext = createContext<(node: FocusedNode | undefined) => void>(() => {});
 
+const LastFocusedIdContext = createContext<string | undefined>(undefined);
+
 /**
  * Holds the focused node for one issue page, above the page itself: the tree sets it, and the
  * page reads it and hands it to the panel, whose facts are that node's, and to the preset row,
- * which draws the toolbar of the document holding it.
+ * which draws the toolbar of the document holding it. Beside it, it holds the id of the node the
+ * focus was last on, which the focus going back to the issue itself does not clear
+ * (`useLastFocusedNodeId`).
  */
 export function FocusedNodeProvider({ children }: { children: ReactNode }): ReactNode {
   const [focused, setFocused] = useState<FocusedNode | undefined>(undefined);
+  const [lastId, setLastId] = useState<string | undefined>(undefined);
+  // One setter sets both, so the node the focus is on is the last one in the same render, and
+  // `undefined` leaves the last one as it was.
+  const setFocusedNode = useCallback((node: FocusedNode | undefined) => {
+    setFocused(node);
+    if (node !== undefined) setLastId(node.id);
+  }, []);
   return (
-    <SetFocusedNodeContext.Provider value={setFocused}>
-      <FocusedNodeContext.Provider value={focused}>{children}</FocusedNodeContext.Provider>
+    <SetFocusedNodeContext.Provider value={setFocusedNode}>
+      <FocusedNodeContext.Provider value={focused}>
+        <LastFocusedIdContext.Provider value={lastId}>{children}</LastFocusedIdContext.Provider>
+      </FocusedNodeContext.Provider>
     </SetFocusedNodeContext.Provider>
   );
 }
@@ -53,6 +76,16 @@ export function FocusedNodeProvider({ children }: { children: ReactNode }): Reac
  *  issue's own facts, because a reader who is on no node is reading the issue. */
 export function useFocusedNode(): FocusedNode | undefined {
   return useContext(FocusedNodeContext);
+}
+
+/** The id of the node the focus was last on, kept once the focus goes back to the issue itself,
+ *  where `useFocusedNode` answers `undefined`, until it takes another node; `undefined` while no
+ *  node has taken it. The provider is drawn anew for each issue (`slots/providers.tsx`), so it
+ *  never names another issue's node. The Contents list reads it: the Outline sheet draws a new
+ *  list each time it opens, after the focus left the outline for the Outline control, and that
+ *  list saw no focus of its own (`IssueContents.tsx`). */
+export function useLastFocusedNodeId(): string | undefined {
+  return useContext(LastFocusedIdContext);
 }
 
 /** Moves the focus to `node`, or back to the issue itself with `undefined`. */

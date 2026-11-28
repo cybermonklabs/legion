@@ -24,11 +24,16 @@ import {
   writeSignIn,
 } from "@legion/cipher-client/test/sign-ins";
 import {
+  FORM_REQUESTED_TOKEN_TYPE,
+  PLACEHOLDER_PREFIX,
+  PROXY_APPROVE_NAME,
   SUBJECT_TOKEN_TYPE_KUBERNETES,
   SUBJECT_TOKEN_TYPE_PERSON,
+  TOKEN_TYPE_PROXY_PLACEHOLDER,
 } from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
+import { span } from "@legion/test-fixtures/wait";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
 import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
@@ -422,7 +427,7 @@ test("a write whose person signs out between two attempts ends unsettled, presen
     [SUBJECT_TOKEN_TYPE_KUBERNETES, broker.trades[2]?.thumbprint],
   ]);
   expect(asked[0]?.authorization).toBe(`DPoP ${broker.trades[1]?.token}`);
-}, 30_000);
+});
 
 test("a new sign-in closes the client it replaces, so a client whose trades were failing trades no more", async () => {
   // A client's retry loop trades again for as long as the process runs. The credential replaces
@@ -450,10 +455,15 @@ test("a new sign-in closes the client it replaces, so a client whose trades were
     broker.trades.filter((trade) => trade.thumbprint === thumbprint);
   expect(tradesOf(working.thumbprint)).toHaveLength(1);
   expect(tradesOf(failing.thumbprint)).toHaveLength(1);
-  // Past the failing client's next slot, 15 s at its longest: it trades no more.
-  await Bun.sleep(16_000);
+  // Past the failing client's next slot, 15 s at its longest: it trades no more. The client the
+  // credential closed leaves no state to read, its slot is a timer of its own over a real socket,
+  // and no later action's effect is ordered after a trade it would make: a span it is.
+  await span(
+    16_000,
+    "a closed client leaves no state to read, and its next trade is its own timer's: one slot of 15 s at its longest runs in it"
+  );
   expect(tradesOf(failing.thumbprint)).toHaveLength(1);
-}, 40_000);
+});
 
 test("a sign-in the issuer has ended is remembered too: no trade at the broker, and no second refresh", async () => {
   const broker = signInBroker();
@@ -512,4 +522,98 @@ test("a process that turns the person trade off writes Dispatch as the machine w
     `DPoP ${broker.trades[0]?.token}`,
     `DPoP ${broker.trades[1]?.token}`,
   ]);
+});
+
+/** A broker that answers a trade asking for the proxy placeholder with one for Dispatch's host,
+ *  and every other trade with an access token, keeping each trade and its proof's thumbprint. */
+function placeholderBroker(): { url: string; trades: ProvedTrade[] } {
+  const trades: ProvedTrade[] = [];
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      const header = (request.headers.get("DPoP") ?? "").split(".")[0] ?? "";
+      const { jwk } = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
+      const form = new URLSearchParams(await request.text());
+      const placeholder = `${PLACEHOLDER_PREFIX}approve-${"C".repeat(32)}`;
+      if (form.get(FORM_REQUESTED_TOKEN_TYPE) === TOKEN_TYPE_PROXY_PLACEHOLDER) {
+        trades.push({ form, thumbprint: await thumbprintOf(jwk), token: placeholder });
+        return Response.json({
+          access_token: placeholder,
+          issued_token_type: TOKEN_TYPE_PROXY_PLACEHOLDER,
+          token_type: "N_A",
+          expires_in: 900,
+          grant_id: "approve:5f070414-1a7c-43a3-8818-cf76eded9806",
+          proxy: {
+            proxy_url: "http://proxy.example:3128",
+            ca_certificate: "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n",
+            proxy_password: placeholder,
+            names: {
+              [PROXY_APPROVE_NAME]: {
+                value: placeholder,
+                slots: { value: placeholder },
+                hosts: ["dispatch.example"],
+              },
+            },
+          },
+        });
+      }
+      const token = fixtureSecret("broker");
+      trades.push({ form, thumbprint: await thumbprintOf(jwk), token });
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 600,
+      });
+    },
+  });
+  servers.push(server);
+  return { url: `http://127.0.0.1:${server.port}`, trades };
+}
+
+test("a person's approve route is a proxy placeholder their sign-in trades for, proved with its box key", async () => {
+  const broker = placeholderBroker();
+  const dispatch = stubDispatch();
+  const issuer = await issuerFor();
+  const record = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const { env } = await signedInPod(broker.url, dispatch.url, issuer.url, [record]);
+  const resolution = await dispatchSettings(env, await noFile(env), {});
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+
+  const route = await resolution.credential.approveRoute?.();
+  expect(route?.placeholder.startsWith(PLACEHOLDER_PREFIX)).toBe(true);
+  expect(route?.proxyUrl).toBe("http://proxy.example:3128");
+  expect(route?.hosts).toEqual(["dispatch.example"]);
+  expect(
+    broker.trades.map((trade) => [
+      trade.form.get(FORM_REQUESTED_TOKEN_TYPE),
+      trade.form.get("subject_token_type"),
+      trade.form.get("session"),
+      trade.thumbprint,
+    ])
+  ).toEqual([
+    [
+      TOKEN_TYPE_PROXY_PLACEHOLDER,
+      SUBJECT_TOKEN_TYPE_PERSON,
+      signInSessionName(record),
+      record.thumbprint,
+    ],
+  ]);
+  expect(dispatch.asked).toHaveLength(0);
+});
+
+test("with nobody signed in there is no approve route, and nothing is traded for one", async () => {
+  const broker = placeholderBroker();
+  const dispatch = stubDispatch();
+  const env = {
+    ...podEnvironment(broker.url, dispatch.url),
+    AGENT_SECRETS_SESSION: MACHINE_SESSION,
+  };
+  const resolution = await dispatchSettings(env, await noFile(env), {});
+  if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
+  expect(await resolution.credential.approveRoute?.()).toBeUndefined();
+  expect(
+    broker.trades.filter((trade) => trade.form.get(FORM_REQUESTED_TOKEN_TYPE) !== null)
+  ).toHaveLength(0);
 });

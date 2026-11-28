@@ -9,6 +9,7 @@ import (
 // A GitHub tree entry is a note only when it is a blob of mode 100644 or
 // 100755 named *.md directly inside the directory.
 func TestGitKindAndIsNote(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		objectType, mode, path string
 		kind                   Kind
@@ -39,6 +40,7 @@ func TestGitKindAndIsNote(t *testing.T) {
 // A checkout entry is a note only when it is a regular file, whatever its
 // permission bits, named *.md.
 func TestFileKindAndIsNote(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		mode fs.FileMode
 		kind Kind
@@ -63,6 +65,7 @@ func TestFileKindAndIsNote(t *testing.T) {
 }
 
 func TestKindString(t *testing.T) {
+	t.Parallel()
 	for kind, want := range map[Kind]string{
 		KindFile:      "file",
 		KindSymlink:   "symbolic link",
@@ -79,6 +82,7 @@ func TestKindString(t *testing.T) {
 // A note of exactly MaxFileSize bytes passes; one byte more is
 // ErrFileTooLarge naming the path, the size and the limit.
 func TestCheckSize(t *testing.T) {
+	t.Parallel()
 	const path = ".dispatch/architecture/big.md"
 	if err := CheckSize(path, MaxFileSize); err != nil {
 		t.Fatalf("CheckSize at MaxFileSize: %v, want nil", err)
@@ -90,5 +94,29 @@ func TestCheckSize(t *testing.T) {
 	const want = "file too large: .dispatch/architecture/big.md is 1048577 bytes (limit 1048576)"
 	if err.Error() != want {
 		t.Errorf("CheckSize over MaxFileSize: message %q, want %q", err, want)
+	}
+}
+
+// A set of exactly MaxFiles notes, or of notes summing exactly MaxSetSize bytes, passes; one note
+// or one byte more is ErrSetTooLarge naming the directory, the count or the sum, and the limit.
+// A set over both bounds names the count.
+func TestCheckSet(t *testing.T) {
+	const dir = ".dispatch/spec"
+	if err := CheckSet(dir, MaxFiles, MaxSetSize); err != nil {
+		t.Fatalf("CheckSet at both bounds: %v, want nil", err)
+	}
+	for _, row := range []struct {
+		files int
+		size  int64
+		want  string
+	}{
+		{MaxFiles + 1, 1, "set too large: .dispatch/spec holds 1001 files (limit 1000)"},
+		{1, MaxSetSize + 1, "set too large: .dispatch/spec holds 16777217 bytes in its files (limit 16777216)"},
+		{MaxFiles + 1, MaxSetSize + 1, "set too large: .dispatch/spec holds 1001 files (limit 1000)"},
+	} {
+		err := CheckSet(dir, row.files, row.size)
+		if !errors.Is(err, ErrSetTooLarge) || err.Error() != row.want {
+			t.Errorf("CheckSet(%d files, %d bytes) = %v, want ErrSetTooLarge %q", row.files, row.size, err, row.want)
+		}
 	}
 }

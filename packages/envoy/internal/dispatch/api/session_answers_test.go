@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -499,6 +501,148 @@ func TestSessionAnswersListsACommentOnAnIssueRoutedToTheSession(t *testing.T) {
 	f.issuePlace(t, item, "comment")
 }
 
+// The outbox can reach the session after the cut without appending any event. The route then
+// cannot distinguish that delivery from one reached before the cut and settled after it.
+func TestSessionAnswersAtACutRequiresPublicationByTheCut(t *testing.T) {
+	t.Parallel()
+	rig := newAsOfRig(t)
+	issue := createInteractionIssue(t, rig.handler, "ANS", "Publication at a cut", "The issue's spec.")
+	f := &answersFixture{handler: rig.handler, database: rig.database, issue: issue.Key}
+	f.route(t, "session:"+answersSession)
+	confirmed := f.comment(t, map[string]any{"body": "Delivered before the cut."}, "alice")
+	f.publishOutbox(t)
+	settledCut := databaseCut(t, f.database)
+
+	const lateWords = "Written before the cut, delivered after."
+	late := f.comment(t, map[string]any{"body": lateWords}, "alice")
+	rig.settle(t)
+	cut := databaseCut(t, f.database)
+	ctx := t.Context()
+	topic := contracts.LegacyAgentSubject(answersSession)
+	publication := func(id string) (created time.Time, published *time.Time, topics []string) {
+		t.Helper()
+		if err := f.database.Pool.QueryRow(ctx, `
+			select created_at, published_at, published_destinations from events
+			where issue_key = $1 and type = 'comment.created' and payload->>'id' = $2
+		`, f.issue, id).Scan(&created, &published, &topics); err != nil {
+			t.Fatalf("read the comment %s event: %v", id, err)
+		}
+		return
+	}
+	_, confirmedAt, topics := publication(confirmed)
+	if confirmedAt == nil || confirmedAt.After(settledCut.Time()) || !slices.Contains(topics, topic) {
+		t.Fatalf("control publication = %v on %v, want publication to %s by %s", confirmedAt, topics, topic, settledCut)
+	}
+	created, published, topics := publication(late)
+	if !created.After(settledCut.Time()) || created.After(cut.Time()) || published != nil || slices.Contains(topics, topic) {
+		t.Fatalf("late event created %s, published %v on %v, want an unpublished event written between %s and %s",
+			created, published, topics, settledCut, cut)
+	}
+	eventCount := func() int {
+		t.Helper()
+		var count int
+		if err := f.database.Pool.QueryRow(ctx, `select count(*) from events where issue_key = $1`, f.issue).Scan(&count); err != nil {
+			t.Fatalf("count issue events: %v", err)
+		}
+		return count
+	}
+	eventsBefore := eventCount()
+	target := "/api/v1/agents/" + answersSession + "/answers"
+	sinceQuery := func(since time.Time) string {
+		return "?" + url.Values{"since": {since.Format(time.RFC3339Nano)}}.Encode()
+	}
+	read := func(target string, at asof.Cut) *httptest.ResponseRecorder {
+		t.Helper()
+		response := dispatchRequest(t, f.handler, http.MethodGet, withAsOf(t, target, at), nil, "alice")
+		if response.Code != http.StatusOK || response.Header().Get(contracts.DispatchAsOfHeader) != at.String() {
+			t.Fatalf("GET %s at %s = %d %v %s", target, at, response.Code, response.Header(), response.Body)
+		}
+		return response
+	}
+	expectItems := func(response *httptest.ResponseRecorder, want ...string) {
+		t.Helper()
+		list := decodeBody[model.SessionAnswersResponse](t, response)
+		var ids []string
+		for _, item := range list.Items {
+			ids = append(ids, item.ID)
+		}
+		if absent := response.Header().Get(contracts.DispatchAsOfAbsentHeader); absent != "" ||
+			list.Items == nil || list.Total != len(want) || !slices.Equal(ids, want) {
+			t.Fatalf("items = %v (total %d, absent %q), want %v as an array and nothing absent: %s",
+				ids, list.Total, absent, want, response.Body)
+		}
+		if len(want) == 0 && string(decodeBody[map[string]json.RawMessage](t, response)["total"]) != "0" {
+			t.Fatalf("empty list must give total: %s", response.Body)
+		}
+	}
+	expectOmitted := func(header http.Header, body []byte, wantSince time.Time) {
+		t.Helper()
+		var got map[string]json.RawMessage
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("decode omitted answer: %v", err)
+		}
+		var since time.Time
+		if err := json.Unmarshal(got["since"], &since); err != nil || !since.Equal(wantSince) {
+			t.Fatalf("the omitted answer should keep since %s: %s", wantSince, body)
+		}
+		if absent := header.Get(contracts.DispatchAsOfAbsentHeader); absent != "/items,/total" ||
+			len(got) != 2 || string(got["session_id"]) != `"`+answersSession+`"` {
+			t.Fatalf("expected only session_id and since, with exactly /items,/total absent: %v %s", header, body)
+		}
+	}
+
+	// Until the exact topic is recorded, an unsettled event is not a reason to omit the list.
+	expectItems(read(target, cut), confirmed)
+	f.publishOutbox(t)
+	_, published, topics = publication(late)
+	if published == nil || !published.After(cut.Time()) || !slices.Contains(topics, topic) {
+		t.Fatalf("late event publication = %v on %v, want publication to %s after %s", published, topics, topic, cut)
+	}
+	if count := eventCount(); count != eventsBefore {
+		t.Fatalf("outbox changed the issue event count from %d to %d", eventsBefore, count)
+	}
+	if got := f.list(t, answersSession, ""); got.Total != 2 || len(got.Items) != 2 || got.Items[0].ID != late || got.Items[0].Text != lateWords {
+		t.Fatalf("present list = %+v, want the late comment followed by the confirmed comment", got)
+	}
+	atPublication := asof.CutAt(*published)
+	expectItems(read(target, atPublication), late, confirmed) // published_at == cut counts.
+	expectItems(read(target, settledCut), confirmed)          // The late event did not exist yet.
+	expectItems(read(target+sinceQuery(created.Add(time.Microsecond)), cut))
+	expectItems(read(target+sinceQuery(cut.Time().Add(time.Microsecond)), cut))
+	expectItems(read("/api/v1/agents/"+answersOther+"/answers", cut))
+
+	// Test the inclusive lower bound, and a window also containing the confirmed item. The
+	// answer must never give a partial list, even when max_chars would stop it early.
+	targetSince := target + sinceQuery(created)
+	response := read(targetSince, cut)
+	expectOmitted(response.Header(), response.Body.Bytes(), created)
+	partial := read(target+"?max_chars=1", cut)
+	expectOmitted(partial.Header(), partial.Body.Bytes(), cut.Time().Add(-sessionAnswersWindow))
+	token := rig.cutCaller(t, cut)
+	answered := rig.read(t, token, withAsOf(t, targetSince, atPublication), false)
+	if answered.status != http.StatusOK || answered.header.Get(contracts.DispatchAsOfHeader) != cut.String() {
+		t.Fatalf("token should answer at %s, not %s: %d %v %s", cut, atPublication, answered.status, answered.header, answered.body)
+	}
+	expectOmitted(answered.header, answered.body, created)
+
+	// A partial outbox attempt can record the destination without settling the event. Keep
+	// the real destination and simulate that state by removing only the settlement stamp.
+	if tag, err := f.database.Pool.Exec(ctx, `
+		update events set published_at = null
+		where issue_key = $1 and type = 'comment.created' and payload->>'id' = $2
+	`, f.issue, late); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("clear the late comment's settlement: %s %v", tag, err)
+	}
+	response = read(targetSince, cut)
+	expectOmitted(response.Header(), response.Body.Bytes(), created)
+	expectItems(read("/api/v1/agents/"+answersOther+"/answers", cut))
+	// The older and newer servers can share these rows. The present feed still includes a
+	// reached destination even if the event has not settled.
+	if got := f.list(t, answersSession, ""); got.Total != 2 || len(got.Items) != 2 || got.Items[0].ID != late {
+		t.Fatalf("present list after recording only the destination = %+v, want both comments", got)
+	}
+}
+
 func TestSessionAnswersListsAMention(t *testing.T) {
 	t.Parallel()
 	f := newAnswersFixture(t)
@@ -876,16 +1020,31 @@ func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
 	}
 }
 
-// declineIndex is the partial index the answers list reads its window of human events through,
-// over the five event types the read names (20261111002444).
+// declineIndex is the partial btree index of a person's events of the five types by time
+// (20261111002444). The read of the release before this one finds a session's events in its window
+// through it, by time alone, and tests the session's topic with = any on each row. This release
+// keeps it for two reasons: its own read takes it where the window holds far fewer of a person's
+// events, reading them all by time and keeping the session's, and a pod of the release before
+// still serves through it while this release rolls out.
 const declineIndex = "events_person_words_with_declines"
+
+// destinationsIndex is the partial GIN index of the same events by (published_destinations,
+// created_at) (20261125131000), which this release's read finds a session's events in its window
+// through on a window that holds many of a person's events, as production's does and as
+// seedEvents makes this fixture's: its test of the topic is published_destinations @>
+// array[...], which GIN serves.
+const destinationsIndex = "events_person_words_destinations"
 
 // A person who declines an ask closes it with no answer, and every session the decline reached -
 // the asker and every follower - reads it on its own list: an item of its own kind, under a
 // relation of its own, at the resolution's own time, carrying the four sentences Dispatch wrote
-// and the person's note in parts of their own. No other resolution is listed at all, and the two
-// plans at the end are what lets this release drop the four-type index while a pod of the release
-// before it, whose read names four types, still serves requests through the five-type one.
+// and the person's note in parts of their own. No other resolution is listed at all. The plans at
+// the end hold the rolling update: this release's read, the five types by @>, reads
+// destinationsIndex over this fixture's window, which seedEvents fills with other sessions'
+// events, as a window of production's size and shape is filled, and the read of the release
+// before it, the five types by = any, still reads declineIndex, which this release keeps. The
+// read of the releases before 20261111002444, which names four types, reads declineIndex too,
+// since 20261111002445 dropped the four-type index.
 func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	t.Parallel()
 	f := newAnswersFixture(t)
@@ -1010,9 +1169,10 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 
 	f.seedEvents(t, 2000)
 	const personWords = `'ask.answered', 'comment.created', 'message.created', 'message.answered'`
-	for _, read := range []struct{ name, types string }{
-		{"the five types this release reads", personWords + `, 'ask.resolved'`},
-		{"the four types the release before it reads", personWords},
+	for _, read := range []struct{ name, types, topic, index string }{
+		{"the five types by @>, which this release reads", personWords + `, 'ask.resolved'`, `e.published_destinations @> array[$2::text]`, destinationsIndex},
+		{"the five types by = any, which the release before it reads", personWords + `, 'ask.resolved'`, `$2 = any(e.published_destinations)`, declineIndex},
+		{"the four types by = any, which the releases before 20261111002444 read", personWords, `$2 = any(e.published_destinations)`, declineIndex},
 	} {
 		statement := `
 			select e.type, e.payload->>'id' as id
@@ -1020,24 +1180,27 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 			where e.actor->>'kind' = 'user'
 			  and e.type in (` + read.types + `)
 			  and e.created_at >= $1
-			  and $2 = any(e.published_destinations)`
+			  and ` + read.topic
 		plan := planWithoutSeqScans(t, f.database, statement,
 			time.Now().UTC().Add(-72*time.Hour), contracts.LegacyAgentSubject(answersSession))
 		if explaintest.SeqScansRelation(t, plan, "events") {
-			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, declineIndex, plan)
+			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, read.index, plan)
 		}
 		scans := explaintest.IndexScans(t, plan)
-		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == declineIndex }) {
-			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, declineIndex, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == read.index }) {
+			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, read.index, plan)
 		}
 	}
 }
 
-// seedEvents fills events with rows of a type no partial index of this read holds, so the plans
-// above are costed over a table worth an index rather than over the handful of rows this fixture
-// writes, and analyzes after, without which the planner costs every index off the same default
-// estimate. The seeded rows are published and notify nobody, so no outbox run of this test has
-// anything to do with them.
+// seedEvents fills events with rows no list of this test reads, so the plans above are costed over
+// a table worth an index rather than over the handful of rows this fixture writes: rows of a type
+// no partial index of this read holds, and as many events of the five types that a person wrote in
+// the window to the topics of 20 other sessions, which both partial indexes hold. Without the
+// second kind, the window holds this fixture's own events alone, and a read of them by time alone
+// costs less than a read by the session's topic, whatever the statement tests. It analyzes after,
+// without which the planner costs every index off the same default estimate. The seeded rows are
+// published and notify nobody, so no outbox run of this test has anything to do with them.
 func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 	t.Helper()
 	if _, err := f.database.Pool.Exec(context.Background(), `
@@ -1047,6 +1210,16 @@ func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 		from generate_series(1, $2::int) n
 	`, f.issue, rows); err != nil {
 		t.Fatalf("seed %d events: %v", rows, err)
+	}
+	if _, err := f.database.Pool.Exec(context.Background(), `
+		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at, published_destinations)
+		select $1::text, 100000 + $2::int + n,
+		       (array['ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved'])[1 + n % 5],
+		       '{"kind":"user","id":"alice"}'::jsonb, jsonb_build_object('id', gen_random_uuid()::text), false, now(),
+		       now() - make_interval(mins => n), array[$3::text || (n % 20)]
+		from generate_series(1, $2::int) n
+	`, f.issue, rows, contracts.LegacyAgentSubject("session-seed-")); err != nil {
+		t.Fatalf("seed %d events of other sessions: %v", rows, err)
 	}
 	if _, err := f.database.Pool.Exec(context.Background(), "analyze events"); err != nil {
 		t.Fatalf("analyze the seeded events: %v", err)

@@ -1,7 +1,8 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
+import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
@@ -22,6 +23,7 @@ import {
 } from "./node-caret";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
+import { abortOnReaderAct } from "./reader-acts";
 import { rowSelectorOf } from "./tree-focus";
 
 /** The editor the page draws for an edited row, as the row takes it: its ProseMirror view, which
@@ -56,28 +58,6 @@ export interface NodeEditing {
   readonly edit: (row: string, node: TreeNode) => void;
   /** Takes the caret out again and gives the row the focus back. */
   readonly stopEditing: () => void;
-}
-
-/** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
- *  (`IssueTree.tsx`), and the caret's in the row being edited below: a key, a press, a wheel and
- *  a touch. */
-export const READER_ACTS = ["keydown", "pointerdown", "wheel", "touchstart"] as const;
-
-/** A controller the reader's first act (`READER_ACTS`, read on the window in the capture phase)
- *  aborts, calling `then` after it. Aborted any other way, it calls nothing. */
-export function abortOnReaderAct(then?: () => void): AbortController {
-  const acts = new AbortController();
-  for (const type of READER_ACTS) {
-    window.addEventListener(
-      type,
-      () => {
-        acts.abort();
-        then?.();
-      },
-      { capture: true, signal: acts.signal }
-    );
-  }
-  return acts;
 }
 
 /**
@@ -185,6 +165,7 @@ export function useNodeEditing({
   artifacts,
   container,
   onEditing,
+  onOwnEdit,
   onReport,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
@@ -194,6 +175,12 @@ export function useNodeEditing({
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
+  /** Called at each edit of the row's editor's own that changes the document - the reader's
+   *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
+   *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
+   *  reader's (`IssueTree.tsx`'s `ownAct`). */
+  onOwnEdit: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -250,6 +237,10 @@ export function useNodeEditing({
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
+  // The row each edit of the editor's own is reported for, and what hears of it (`onOwnEdit`),
+  // read as each edit is made.
+  const ownEdit = useRef({ onOwnEdit, row: editingRow });
+  ownEdit.current = { onOwnEdit, row: editingRow };
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
@@ -265,6 +256,10 @@ export function useNodeEditing({
       () => {
         hold.current = "on";
         holdChanged.current?.();
+      },
+      (block) => {
+        const { onOwnEdit: heard, row } = ownEdit.current;
+        if (row !== undefined) heard(row, block);
       }
     );
   }, []);
@@ -888,14 +883,6 @@ export function useNodeEditing({
   }, [container, editingRow]);
 
   return { edit, editing, stopEditing };
-}
-
-/** Whether `event` is an input method's key, which acts on nothing of the page's: one pressed in
- *  a composition, or the one that ends it, which Safari sends after its compositionend with
- *  `isComposing` false and keyCode 229 (WebKit bug 165004), as the title's editor reads it
- *  (`IssueTitleRow.tsx`). */
-export function inputMethodKey(event: KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229;
 }
 
 /** Whether `node` is inside the box the editor of `row` is drawn in (`EDITOR_BOX_ATTRIBUTE`),

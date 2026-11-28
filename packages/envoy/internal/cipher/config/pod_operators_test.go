@@ -256,6 +256,22 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			names: []string{"BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service " + strconv.Quote("example-reader")},
 		},
 		{
+			name: "a BROKER_EXCHANGE_JOB_ACCOUNTS entry names it",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
+				e["BROKER_EXCHANGE_JOB_ACCOUNTS"] = adaAccount + "=EXAMPLE"
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				return "BROKER_EXCHANGE_JOB_ACCOUNTS names " + adaAccount + " as a job's account for the projects EXAMPLE",
+					len(cfg.ExchangeJobAccounts) == 1 && cfg.ExchangeJobAccounts[0].Account == adaAccount && cfg.ExchangeJobAccounts[0].Job.String() == "EXAMPLE" &&
+						cfg.ServiceLogins[adaAccount] == adaLoginService
+			},
+			names: []string{"BROKER_EXCHANGE_JOB_ACCOUNTS names it as a job's account for the projects EXAMPLE"},
+		},
+		{
 			name: "a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 			env: func() map[string]string {
 				e := withK8sIssuer()
@@ -299,8 +315,8 @@ func TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole(t *testing.T)
 				t.Fatalf("with BROKER_POD_OPERATORS unset, Load: %v; want it to load, so that the refusal of %s is the mapping's", err, adaAccount)
 			}
 			if state, holds := tc.reachable(unmapped); !holds {
-				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, VMServicesByAccount = %v, ExchangeAccounts = %+v, ExchangeReadAccounts = %+v, APIAccounts = %v, SessionAccountPairs = %v, PodRegistrars = %v, NATS = %+v",
-					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.VMServicesByAccount, unmapped.ExchangeAccounts, unmapped.ExchangeReadAccounts, unmapped.APIAccounts, unmapped.SessionAccountPairs, unmapped.PodRegistrars, unmapped.NATS)
+				t.Fatalf("with BROKER_POD_OPERATORS unset, want %s; ServiceLogins = %v, ServicesByAccount = %v, VMServicesByAccount = %v, ExchangeAccounts = %+v, ExchangeReadAccounts = %+v, ExchangeJobAccounts = %+v, APIAccounts = %v, SessionAccountPairs = %v, PodRegistrars = %v, NATS = %+v",
+					state, unmapped.ServiceLogins, unmapped.ServicesByAccount, unmapped.VMServicesByAccount, unmapped.ExchangeAccounts, unmapped.ExchangeReadAccounts, unmapped.ExchangeJobAccounts, unmapped.APIAccounts, unmapped.SessionAccountPairs, unmapped.PodRegistrars, unmapped.NATS)
 			}
 			e := tc.env()
 			e["BROKER_POD_OPERATORS"] = adaPodOperator

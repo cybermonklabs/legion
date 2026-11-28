@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
+import { useOpenedGroups } from "../../components/CappedGroup";
 import { Chip } from "../../components/Chip";
 import { DataTable, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -20,13 +21,20 @@ import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import {
+  type IssueTableColumnId,
+  type IssueTableWidths,
   issueTableLayout,
   listingColumns,
-  type ShownColumnId,
+  ROW_ACTIONS_WIDTH,
   useIssueTableColumns,
 } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
+import {
+  answeredWhole,
+  type IssueListing,
+  listsQueued,
+  useIssueTableItems,
+} from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import {
   clearPicked,
@@ -37,43 +45,89 @@ import {
   isEpic,
   matchesFilters,
   matchesSearch,
+  narrowsNothing,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
 import { useTableView } from "./issues-table-view";
+import { OpenedLabelsContext } from "./LabelsGroup";
 import { issueIsUnread } from "./UnreadDot";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
 /** Status offers Done before the closed issues it would count are read. */
 const DONE_UNLOADED: ReadonlyMap<string, readonly string[]> = new Map([["status", ["done"]]]);
-/** The one layout key of every table scoped to a priority: the work advancing a priority is
- *  one table, drawn under an opened row of the priorities page and on the priority's own page,
- *  so the columns a reader drags there are dragged once rather than once per priority. */
+/** The one layout key of every table scoped to a priority that names no layout of its own: the
+ *  work advancing a priority is one table wherever it is drawn, so the columns a reader drags
+ *  there are dragged once rather than once per priority. A priority's own page names its own
+ *  layout (`priorities/PriorityPage.tsx`). */
 const SCOPED_LAYOUT_KEY = "priority-work";
 
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
-const ACTION_WIDTH = 104;
-
+/**
+ * A table of issues: a project's, or the work advancing one priority. Its groups, in this order,
+ * each on a line of its own: Notices (a read that failed, the closed issues loading), Statuses
+ * (`IssueTableStatus`: the counts and the status bar), Narrowed (the chip of a table showing only
+ * some rows), Toolbar (`IssueTableToolbar`: search, filters, columns), Feedback (the line that
+ * says how a table action went; an interrupted action's Finish and Dismiss; the warning that an
+ * epic's creation got no answer, with Dismiss; and the warning that an epic of that title exists,
+ * with Create anyway and Cancel new epic), Table (the rows, in their own box that scrolls
+ * sideways with its key columns pinned at the left, the data-table exception of the Layout rule
+ * in `web/src/AGENTS.md`, then the pager) and, while rows are ticked, Selection
+ * (`IssueTableSelection`, over the page rather than in it). The action dialogs open over it.
+ * Each group lays out its own entries; which rows' labels the reader opened is the table's
+ * (`OpenedLabelsContext`), since a row the window stops drawing loses its own state.
+ */
 export function IssuesTable({
+  empty,
   label,
   layout: ownLayout,
   listing,
   priorityTitles,
   stateKey,
 }: {
+  /** What the table says when it lists no row and the reader narrowed it by nothing - no filter
+   *  but the statuses it opens with, no search, no issues picked (`narrowsNothing`), and neither
+   *  Needs you nor Unread: that its listing holds no issue, in its caller's words. Unset, or once
+   *  the reader narrowed it, it says no issues match these filters. */
+  empty?: string;
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
-  /** The layout this table keeps, under its own key, where it is not its listing's, and the
-   *  columns it opens with shown: each fault list of the priorities page shows its listing
-   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
+  /** The layout this table keeps, under its own key, where it is not its listing's: the whole
+   *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
+   *  other one opening hidden for the reader to show, the widths it gives any column in place
+   *  of its own, or the columns it makes as wide as what they hold (`widths`), and the columns it
+   *  pins at the left of a desktop's box in place of the registry's (`pins`,
+   *  `issueTableLayout`). Given one, Title fills a desktop box: it takes what the other shown
+   *  columns and the row's actions leave (`fills`). `rowActions: false` draws no row's actions
+   *  after the columns, no cell for a row's Start next, and keeps no width for them, as on a
+   *  listing that holds no issue in Legion's queue (`listsQueued`): Title takes that width too,
+   *  and the selection's bar keeps Start next. `wrapTitles: true` wraps each row's title onto as
+   *  many as eight lines, ending in '…' with the whole title in its tooltip where it runs
+   *  longer, where a project's table clamps it to two lines that end in '…': a table read by its
+   *  titles, as each fault list of the priorities page and a priority's work table are.
+   *  `statusLegend: true` draws each segment of the status bar as its count alone where the
+   *  segments with their names are wider than the bar, and the names in a legend under it
+   *  (`IssueTableStatus`), so no name is cut at the bar's edge: each of those tables stands in a
+   *  box narrower than a project's, whose bar keeps its names and scrolls sideways on a phone.
+   *  Each of those gives its own; unset, the table opens as a project's table does. */
+  layout?: {
+    readonly key: string;
+    readonly opens: readonly IssueTableColumnId[];
+    readonly widths?: IssueTableWidths;
+    readonly rowActions?: boolean;
+    readonly pins?: readonly IssueTableColumnId[];
+    readonly wrapTitles?: boolean;
+    readonly statusLegend?: boolean;
+  };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Each priority's title by its id. Given, the table has the Advances column, which names each
-   *  priority a row advances by its title; unset, it has none (`listingColumns`). */
+  /** Each priority's title by its id, in the one order the priorities read answers them in.
+   *  Given, the table has the Advances column, which names each priority a row advances by its
+   *  place in that order and its title (`#3`, `PriorityChip`); unset, it has none
+   *  (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
@@ -89,23 +143,35 @@ export function IssuesTable({
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
+  // Whether the table draws a row's actions after its columns - the cell for its Start next -
+  // and the width it draws them at: where the listing can hold a row a reader starts next
+  // (`listsQueued`) and its layout does not leave them out (`rowActions`). A fault list of the
+  // priorities page holds no such row and a priority's work table leaves them out, so neither
+  // draws them.
+  const rowActions = listsQueued(listing) && ownLayout?.rowActions !== false;
+  const actions = rowActions ? ROW_ACTIONS_WIDTH : 0;
+  // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
+  // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
     listingColumns(listing, priorityTitles !== undefined),
-    ownLayout?.shown
+    ownLayout?.opens,
+    ownLayout?.widths,
+    actions,
+    ownLayout?.pins
   );
-  // One stored layout per project, and one for every scoped table: the work advancing a
-  // priority is one table drawn in two places, so a reader who drags a column there drags it
-  // for the priorities page and the priority's own page alike, and not once per priority.
+  // One stored layout per project, one per layout a caller names, and one for every other scoped
+  // table: the work advancing any priority is one table, so a reader who drags a column on it
+  // drags it for every priority, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
     columnsLayout
   );
-  const { attachAbove, boxWidth } = layout;
+  const { attachAbove, boxWidth, responsive } = layout;
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
+  const openedLabels = useOpenedGroups();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
   const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));
@@ -152,12 +218,10 @@ export function IssuesTable({
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
-  const columns = useIssueTableColumns(
-    userState.data,
-    boxWidth < 640,
-    columnsLayout,
-    priorityTitles
-  );
+  const columns = useIssueTableColumns(userState.data, responsive.compact, columnsLayout, {
+    priorityTitles,
+    wrapTitles: ownLayout?.wrapTitles,
+  });
 
   const model = useDataTable<Item>({
     rows: items,
@@ -283,7 +347,7 @@ export function IssuesTable({
       </p>
     );
 
-  const visibleColumns = table.getVisibleLeafColumns().length + 1;
+  const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
 
   return (
     <section aria-label={name} className="space-y-3 sm:pb-24">
@@ -315,7 +379,12 @@ export function IssuesTable({
           </p>
         ) : null}
         {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} />
+        <IssueTableStatus
+          epics={epics}
+          items={allItems}
+          legend={ownLayout?.statusLegend}
+          table={table}
+        />
         {picked === null ? null : (
           /* What the table is narrowed to, and the way back to every row: removing the chip
              clears `only=` and leaves every other control where the reader set it. */
@@ -348,6 +417,7 @@ export function IssuesTable({
           role={notice ? (notice.kind === "error" ? "alert" : "status") : undefined}
           className={`min-h-5 text-sm ${notice?.kind === "error" ? dangerText : textSecondaryOnCanvas}`}
         >
+          {/* The table's own notice of what a table action did. */}
           {notice?.text}
         </p>
         {interrupted ? (
@@ -401,48 +471,56 @@ export function IssuesTable({
         ) : null}
       </div>
 
-      <DataTable
-        empty="No issues match these filters."
-        filterCounts={openFacets}
-        filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
-        label={`${name} table`}
-        model={model}
-        noun={{ many: "issues", one: "issue" }}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupRow
-            columns={visibleColumns}
-            viewportWidth={boxWidth}
-            continued={entry.continued}
-            epics={epics}
-            grouping={grouping[0] ?? ""}
-            index={index}
-            measure={measure}
-            onMerge={mergeEpic}
-            shown={entry.shown}
-            onRename={renameEpic}
-            onStartAll={(key) =>
-              startNext(
-                allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
-              )
-            }
-            row={entry.row}
-          />
-        )}
-        renderRow={({ row, index, measure }) => (
-          <IssueRow
-            busy={busy}
-            index={index}
-            measure={measure}
-            moved={moved}
-            onStartNext={(key) => startNext([key])}
-            row={row}
-          />
-        )}
-        scrollTestId="issues-table-scroll"
-        trailingWidth={ACTION_WIDTH}
-      />
+      <OpenedLabelsContext.Provider value={openedLabels}>
+        <DataTable
+          empty={
+            empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+              ? empty
+              : "No issues match these filters."
+          }
+          filterCounts={openFacets}
+          filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+          label={`${name} table`}
+          model={model}
+          noun={{ many: "issues", one: "issue" }}
+          onOpenFilterChange={setOpenFilter}
+          openFilter={openFilter}
+          renderGroup={({ entry, index, measure }) => (
+            <GroupRow
+              columns={visibleColumns}
+              viewportWidth={boxWidth}
+              continued={entry.continued}
+              epics={epics}
+              grouping={grouping[0] ?? ""}
+              index={index}
+              measure={measure}
+              onMerge={mergeEpic}
+              shown={entry.shown}
+              onRename={renameEpic}
+              onStartAll={(key) =>
+                startNext(
+                  allItems.filter((item) => item.epicKey === key).map((item) => item.issue.key)
+                )
+              }
+              row={entry.row}
+            />
+          )}
+          renderRow={({ row, index, measure }) => (
+            <IssueRow
+              busy={busy}
+              index={index}
+              measure={measure}
+              moved={moved}
+              onStartNext={rowActions ? (key) => startNext([key]) : undefined}
+              row={row}
+            />
+          )}
+          scrollTestId="issues-table-scroll"
+          // A phone draws Title beside the key at its narrowest: its filter stands under its words.
+          stackedHeader="title"
+          trailingWidth={actions}
+        />
+      </OpenedLabelsContext.Provider>
 
       <IssueTableSelection
         table={table}

@@ -44,6 +44,7 @@ import (
 // edges with the ones it built from the text it read: the stored edge is the old text's, and each
 // assertion below names it.
 func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	source := resolverSource(2)
@@ -76,6 +77,7 @@ func TestARebuildBesideAnEditKeepsTheEditsReferences(t *testing.T) {
 // reads, and holds its owner's lock while it inserts the next one, the issue's here, the
 // artifact's for a project document.
 func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var document string
@@ -115,6 +117,7 @@ func TestARebuildBesideADocumentEditKeepsTheEditsReferences(t *testing.T) {
 // project document stands under no issue, so a writer of it takes the artifact's owner lock
 // (lockArtifactOwner's `issue_key is null` arm), and that is the lock this probe asks about.
 func TestARebuildBesideAProjectDocumentEditKeepsTheEditsReferences(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var document string
@@ -277,7 +280,7 @@ func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body 
 func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string, writer model.Actor) {
 	t.Helper()
 	located := NewReader(ctx, tx, writer, kind, id, resolverServer).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil, true); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}
 }

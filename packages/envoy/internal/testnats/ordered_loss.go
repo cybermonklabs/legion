@@ -1,7 +1,6 @@
 package testnats
 
 import (
-	"context"
 	"encoding/json"
 	"slices"
 	"strconv"
@@ -57,7 +56,7 @@ type ConsumerHold struct {
 // and the bucket must be idle: no write lands on it while the hold runs.
 func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) *ConsumerHold {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -86,7 +85,7 @@ func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) 
 	if err != nil {
 		t.Fatalf("follow the consumer creates on %s: %v", stream, err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("follow the consumer creates on %s: %v", stream, err)
 	}
 	heartbeat := &natsgo.Msg{
@@ -139,11 +138,11 @@ func (h *ConsumerHold) Release() {
 // the server sent before its call, so none is left unread.
 func (h *ConsumerHold) Replaced(t testing.TB) bool {
 	t.Helper()
-	// nats.go's flush takes only a context that carries a deadline; the minute is a guard on a
-	// server that never answers, and decides nothing a server that answers late would.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	if err := h.conn.FlushWithContext(ctx); err != nil {
+	// nats.go's flush takes only a context that carries a deadline. Context gives it testDeadline,
+	// and under -timeout 0, where there is none, shows it the farthest deadline, which bounds
+	// nothing a test reaches: the flush ends on the server's answer, or at testDeadline, and decides
+	// nothing a server that answers late would.
+	if err := h.conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("read the consumer creates on %s: %v", h.stream, err)
 	}
 	for {

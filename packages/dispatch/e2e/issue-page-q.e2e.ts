@@ -1,5 +1,5 @@
 import { isIdPrefix } from "@legion/contracts";
-import type { Locator, Page } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -8,12 +8,12 @@ import {
   DECISIONS_WORDS,
   NODE_STATE_WORDS,
 } from "../web/src/features/issue-page/page-words";
-import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
+import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
-import { gotoIssue, issuePage, phase } from "./issue-page";
+import { gotoIssue, phase } from "./issue-page";
 import {
   DESKTOP,
   drawnRows,
@@ -32,8 +32,11 @@ import {
   unfoldEveryBranch,
 } from "./issue-page-g";
 import {
+  expectFallbackLine,
+  FALLBACK_LINES,
   focusedNodeId,
   focusInside,
+  GONE_COMMENT,
   onScreen,
   openPreset,
   outlineRows,
@@ -57,6 +60,18 @@ import {
 import { openSettledView, verificationBody } from "./issue-page-v";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
+
+/** A stored text as the renderer draws its paragraphs and `drawnRows` reads them back: the blocks
+ *  between its blank lines, each with the up to three spaces of indentation its first line may
+ *  carry left out, which markdown reads as no part of the paragraph, and every other character
+ *  as stored; joined as `answerText` joins the drawn paragraphs. A word changed, a paragraph
+ *  dropped, two paragraphs run together or an inner double space collapsed each still differ. */
+function paragraphForm(stored: string): string {
+  return stored
+    .split(/\n[ \t]*\n/u)
+    .map((paragraph) => paragraph.replace(/^ {1,3}/u, ""))
+    .join("\n\n");
+}
 
 /**
  * The browser rows of the new issue page that read one of its views:
@@ -191,15 +206,20 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       });
 
       // The answered ask draws its question and options; with the focus on it, the person's
-      // answer character for character as the store holds it, by who answered, with no reading
-      // under it: the section of decisions.md that restates it is no row of the filter.
+      // answer as the store holds it, by who answered, with no reading under it: the section of
+      // decisions.md that restates it is no row of the filter. The answer is drawn by the
+      // renderer, a paragraph to each block of its words, so it is read paragraph by paragraph
+      // (`drawnRows`' `answerText`): each paragraph's words and inner spaces as stored, and only
+      // the indentation a paragraph's first line may carry, up to three spaces, which markdown
+      // reads as no part of it, left out, as the outline's answer row reads it (part Q's
+      // decision 416).
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect
         .poll(async () => rowOf(await drawnRows(page), seeded.optionedAskId)?.answerText ?? null, {
           message: `the answered ask does not draw the person's answer as the store holds it ${at}`,
         })
-        .toBe(stored?.text ?? "");
+        .toBe(paragraphForm(stored?.text ?? ""));
       await expect(asked.locator('[data-node-option="chosen"]')).toHaveCount(1);
       await expect(asked.locator('[data-node-option="chosen"]')).toContainText("Rail");
       await expect(asked.locator("[data-node-option]")).toHaveCount(2);
@@ -262,7 +282,7 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
     // folded where it lands, so the facts are read again, every branch unfolded first, until
     // the reads are in.
     await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(
@@ -354,7 +374,7 @@ test("only a decision that changed a statement waits for review @phone", async (
     // The other two are drawn in the outline under the issue, with no Keep or Change control,
     // the focus on them included.
     await page.setViewportSize(DESKTOP);
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     for (const block of [seeded.tiedToNote, seeded.untied]) {
@@ -475,7 +495,7 @@ test("a change sent on a decision is drawn on it, and the decision leaves the re
     // With no filter on, the decision says the same and the change hangs under it. The
     // decisions and the comments arrive after the tree is drawn, each maybe folded where it
     // lands, so the facts are read again, every branch unfolded first, until the reads are in.
-    await gotoIssue(page, `/issues/${seeded.key}`);
+    await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await expect
       .poll(
@@ -850,31 +870,12 @@ test("under Decisions a row draws the outline's layout, short names and the six-
   });
 });
 
-/** A comment id of the right shape, a whole uuid, that no comment of the seeded issue has: the
- *  comment's own read answers 404 for it. */
-const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
-
 /** The same id written short, its first eight hex digits, which name no comment either: the
  *  graph read that resolves an id written short finds nothing for it. */
 const SHORT_GONE_COMMENT = GONE_COMMENT.slice(0, 8);
 
 /** A block id no node of the seeded issue carries. */
 const NO_BLOCK = "no-such-block";
-
-/** The heading and the line part I's outline draws in its own place for an address that names
- *  nothing the issue holds (`slots/body.tsx`'s `ItemFallback` and `ABSENT_LINES`), for the
- *  issue `key`. That file keeps these words to itself, so they are written out here, as
- *  `deep-links.e2e.ts` writes the heading of a comment that is not found. */
-const FALLBACK_LINES = {
-  block: (key: string) => ({
-    heading: "No row for this block",
-    line: `That link names no row of ${key}'s outline.`,
-  }),
-  comment: (key: string) => ({
-    heading: "Comment not found",
-    line: `That link doesn't name a comment on ${key} — it may have been deleted.`,
-  }),
-} as const;
 
 // An address on a view that names a node beside it: the view tells the stage whether it draws a
 // row of the node, and where it draws none the stage draws part I's outline in the view's place,
@@ -1086,30 +1087,3 @@ test("an address the view draws no row for draws the outline's line for it in th
     ).toHaveCount(0);
   });
 });
-
-/** The page draws part I's line `words` in the place of the view whose body is `view` for the
- *  address it has just loaded, `what`: its heading and its line, with the focus on the heading,
- *  and none of the view beside it. */
-async function expectFallbackLine(
-  page: Page,
-  words: { readonly heading: string; readonly line: string },
-  view: Locator,
-  what: string
-): Promise<void> {
-  const named = { exact: true, name: words.heading } as const;
-  const heading = issuePage(page).getByRole("heading", named);
-  await expect(heading, `${what} draws no "${words.heading}" in the view's place`).toBeVisible();
-  // The inner locator of `has` is read inside each section, so it names no root of its own.
-  await expect(
-    issuePage(page)
-      .locator("section")
-      .filter({ has: page.getByRole("heading", named) })
-      .locator("p"),
-    `${what} draws another line under "${words.heading}"`
-  ).toHaveText(words.line);
-  await expect(
-    heading,
-    `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
-  ).toBeFocused();
-  await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
-}

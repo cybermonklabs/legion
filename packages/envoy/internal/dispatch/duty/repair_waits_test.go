@@ -25,6 +25,8 @@ import (
 // It names nothing but fixJitter, passClock, duty.RunJittered and the two constants, so the same
 // file runs against a build whose waits overran the interval and shows the overrun there.
 func TestTheFiveMinuteReadsWaitAtMostFiveMinutesBetweenPasses(t *testing.T) {
+	// Not parallel: its rows fix duty.JitterN (fixJitter), the package variable every jittered
+	// wait reads.
 	for _, loop := range []struct {
 		name     string
 		interval time.Duration

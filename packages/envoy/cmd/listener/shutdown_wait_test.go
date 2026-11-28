@@ -20,6 +20,7 @@ func endedContext() context.Context {
 // A shutdown wait whose context has ended answers from the work's own state: a done channel
 // already closed reads closed every time, where a select on the two took either half the time.
 func TestAShutdownWaitReadsWorkThatEndedAsEndedWhenItsContextHasEndedToo(t *testing.T) {
+	t.Parallel()
 	closed := make(chan struct{})
 	close(closed)
 	for attempt := range 1000 {
@@ -72,6 +73,7 @@ func TestAShutdownWaitReadsWorkThatEndedAsEndedWhenItsContextHasEndedToo(t *test
 // the wait read the ended context before the goroutine waiting on the deletes had closed its
 // channel, and said a delete was still running in nearly every such shutdown.
 func TestTheConsumerDeleteWaitSaysNothingWhenNoDeleteRan(t *testing.T) {
+	t.Parallel()
 	for attempt := range 200 {
 		logs := &logtest.Buffer{}
 		delivery := &sessionDelivery{logger: logging.NewWithWriter("delete-wait", logs)}

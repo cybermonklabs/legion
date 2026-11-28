@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for `find-pr-payload.sh`: the payload file ci.yaml's `pr-title` job hands to
+# Tests for `find-pr-payload.sh`: the payload file `.github/workflows/ci.yaml#pr-title` job hands to
 # check-pr-text.sh, which is the event's own payload at every event that carries a pull request
 # and, on a merge group, the queued pull request read from the queue branch the group runs on.
 #

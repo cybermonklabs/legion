@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
@@ -12,7 +12,14 @@ import { App } from "../app";
 // The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
 // for, so the module is loaded here, with the test file, and no wait measures that load.
 import "../features/settings/SettingsPage";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { keyedAttempt } from "./keyed-attempt";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 test("a human creates a project from Settings and it appears in the project pickers", async () => {
   const user = userEvent.setup();
@@ -22,6 +29,7 @@ test("a human creates a project from Settings and it appears in the project pick
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const listed: Project = {
     created_at: "2026-09-10T00:00:00Z",
@@ -29,6 +37,7 @@ test("a human creates a project from Settings and it appears in the project pick
     name: "Quality",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   // The create answers the project with its default; the project list carries none.
   const created: CreatedProject = { ...listed, default_assignee: "alice" };
@@ -42,6 +51,10 @@ test("a human creates a project from Settings and it appears in the project pick
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
+    machine_code_page: false,
+  });
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   // The defaults read is the one place a project's default comes from: the page's first read
@@ -105,6 +118,7 @@ test("a human creates a project from Settings and it appears in the project pick
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
+    getCredentialCapabilities.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
@@ -122,6 +136,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
@@ -133,6 +148,10 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
+    machine_code_page: false,
+  });
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
@@ -171,6 +190,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     getMyState.mockRestore();
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
+    getCredentialCapabilities.mockRestore();
     listArchitectureSources.mockRestore();
     getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
@@ -229,6 +249,10 @@ function renderSettings(projects: string[]): {
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
+    spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+      dispatch_sign_in: false,
+      machine_code_page: false,
+    }),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),
@@ -239,6 +263,7 @@ function renderSettings(projects: string[]): {
         name: key,
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       }))
     ),
   ];

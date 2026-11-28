@@ -22,8 +22,9 @@ import (
 // the notice and has answered nothing, the hook runs to completion, which is where a lane meets
 // the daemon — the publish is outside every transaction of the row's run. The publish is then
 // given answer, nil for the delivery; a kept publish (PublishKept) is answered the same way and
-// never kept.
+// never kept. Its role read is fakeRoleListener's.
 type hookPublisher struct {
+	fakeRoleListener
 	mu        sync.Mutex
 	hook      func() error
 	answer    error
@@ -31,8 +32,8 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
-	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) (string, error) {
+	return "", p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload})
 }
 
 func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
@@ -89,7 +90,7 @@ func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root stri
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
 	}); err != nil {
 		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
 	}
@@ -127,10 +128,13 @@ func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root str
 	return leased, notice
 }
 
-// catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
+// catchUpRows is every catch-up notice of root the outbox holds, oldest first, read through db: a
+// pool, or a transaction that reads its own writes.
+func catchUpRows(t *testing.T, db interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, root string) []record.OutboxRow {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
+	rows, err := db.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
 	if err != nil {
 		t.Fatalf("read the catch-ups of %s: %v", root, err)
@@ -224,7 +228,7 @@ func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now, time.Time{})
+			return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, 2, "", now)
 		})
 	}}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher,

@@ -2,7 +2,8 @@
 // --dry-run prints them: a `dispatch ask`; each ask block in the markdown a `dispatch doc-edit`
 // inserts or writes over a match, a `dispatch issue` spec holds, or a `dispatch artifact` upload
 // holds; and each block a `dispatch doc-edit` retypes into an ask. `dispatch edit-ask`, `comment`,
-// `message` and `request-approval` open no new ask.
+// `message`, `request-approval` and the four corrections, `edit-comment`, `delete-comment`,
+// `edit-message` and `delete-message`, open no new ask.
 //
 // A `replace`'s `with` is read with no front matter read in it: `newAsks` cannot know whether the
 // match sits at the document's start, which is what the server's front-matter reading needs, and
@@ -891,8 +892,40 @@ function setextUnderline(text: string): boolean {
   return /^(?:=+|-+)[ \t]*$/.test(text);
 }
 
-/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces. */
+/**
+ * How many characters `fenceColons` has read in this process, so a test holds the scan of a typed
+ * block's lines to their length rather than to the time it took. It is a loop and runs no regular
+ * expression: the end-anchored `/[ \t]+$/` it once trimmed with read, from every start in a run
+ * of spaces or tabs followed by any other character, the rest of the run (about the square of the
+ * run), and JavaScriptCore counts no step a regular expression takes.
+ */
+let fenceCharactersRead = 0;
+
+/** How many characters `fenceColons` has read in this process. */
+export function fenceColonsReads(): number {
+  return fenceCharactersRead;
+}
+
+/** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces
+ *  and tabs. Each loop stops at the first character it does not skip, and only the characters
+ *  the first two stop at are read again, so a line costs at most its length and two reads more. */
 function fenceColons(text: string): number {
-  const trimmed = text.replace(/^[ \t]+|[ \t]+$/g, "");
-  return /^:+$/.test(trimmed) ? trimmed.length : 0;
+  let read = 0;
+  let start = 0;
+  for (; start < text.length; start++) {
+    read++;
+    if (text[start] !== " " && text[start] !== "\t") break;
+  }
+  let end = text.length;
+  for (; end > start; end--) {
+    read++;
+    if (text[end - 1] !== " " && text[end - 1] !== "\t") break;
+  }
+  let colons = start;
+  for (; colons < end; colons++) {
+    read++;
+    if (text[colons] !== ":") break;
+  }
+  fenceCharactersRead += read;
+  return colons === end && end > start ? end - start : 0;
 }

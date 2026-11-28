@@ -18,6 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -108,6 +110,44 @@ func TestTheMachineLoginURLIsOptionalAndHeldToItsForm(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil || cfg.MachineLoginURL != "https://dispatch.internal.example/credentials/machine" {
 		t.Fatalf("Load = (%q, %v), want the machine login URL", cfg.MachineLoginURL, err)
+	}
+}
+
+// TestTheDispatchSignInSwitchIsOnOrOff: BROKER_DISPATCH_SIGNIN unset or blank is off and on is
+// on; any other value refuses the start naming the setting and the value, and on refuses beside
+// no BROKER_MACHINE_LOGIN_URL, since a Dispatch sign-in is a device login.
+func TestTheDispatchSignInSwitchIsOnOrOff(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		set   bool
+		want  bool
+	}{
+		{set: false, want: false},
+		{value: "", set: true, want: false},
+		{value: "  ", set: true, want: false},
+		{value: "on", set: true, want: true},
+	} {
+		e := validEnv()
+		if row.set {
+			e["BROKER_DISPATCH_SIGNIN"] = row.value
+		}
+		if cfg, err := Load(env(e)); err != nil || cfg.DispatchSignIn != row.want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q, set %t) = (%t, %v), want %t", row.value, row.set, cfg.DispatchSignIn, err, row.want)
+		}
+	}
+	for _, bad := range []string{"off", "ON", "true", "1", "yes"} {
+		e := validEnv()
+		e["BROKER_DISPATCH_SIGNIN"] = bad
+		want := "BROKER_DISPATCH_SIGNIN must be on or unset, got " + strconv.Quote(bad)
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_DISPATCH_SIGNIN=%q) = %v, want %q", bad, err, want)
+		}
+	}
+	e := validEnv()
+	e["BROKER_DISPATCH_SIGNIN"] = "on"
+	delete(e, "BROKER_MACHINE_LOGIN_URL")
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_DISPATCH_SIGNIN=on needs BROKER_MACHINE_LOGIN_URL") {
+		t.Errorf("Load(BROKER_DISPATCH_SIGNIN=on, no BROKER_MACHINE_LOGIN_URL) = %v, want a refusal naming both", err)
 	}
 }
 
@@ -440,7 +480,7 @@ func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
 }
 
 // airlockEnv is validEnv with the airlock in force: a profiles file and the three settings the
-// proxy of its proxy blocks cannot run without.
+// proxy of its kinds and dpop blocks cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
 	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
@@ -450,15 +490,38 @@ func airlockEnv() map[string]string {
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredForAProxyBlock: a broker whose profiles hold a proxy
-// block but that cannot proxy would hold back every name such a block names and release nothing
-// in its place, so each missing setting refuses the boot by name, beside the profiles whose proxy
-// blocks need it. A profiles file is not a proxy block: Load takes one with none of the settings,
-// and RequireAirlock of profiles with no proxy block - a deployment that serves GitHub Apps and
-// runs no airlock - asks for none of them. With no profiles file there is no proxy and the four
-// are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
-	proxied := []string{"DEEL_API_KEY", "STORED_TOKEN_READ"}
+// subjectsFile is a profiles file of two kinds, github and slack, a profile behind github by its
+// proxy string, and two dpop blocks, TEST_MINTED_TOKEN and then APPROVE_TOKEN, out of name order,
+// so a list of its subjects in the file's order is told from one in name order.
+const subjectsFile = `{"kinds": [` +
+	`{"name": "github", "hosts": ["api.github.com"], "ways": ["swap", "mint"]}, ` +
+	`{"name": "slack", "hosts": ["slack.com"], "ways": ["swap"]}], ` +
+	`"profiles": [` +
+	`{"name": "GITHUB_READ", "source": "GITHUB_PAT", "proxy": "github"}, ` +
+	`{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}, ` +
+	`{"name": "APPROVE_TOKEN", "proxy": {"hosts": ["approve.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/approve/"}]}}]}`
+
+// fileRules is the file's own part of the airlock's rules as the boot reads it: its kinds and its
+// dpop blocks (policy.Profiles.FileRules).
+func fileRules(t *testing.T, file string) proxyrules.Rules {
+	t.Helper()
+	profiles, err := policy.ParseProfiles([]byte(file))
+	if err != nil {
+		t.Fatalf("ParseProfiles: %v", err)
+	}
+	return profiles.FileRules()
+}
+
+// TestTheAirlocksProxySettingsAreRequiredForAKindOrADPoPBlock: a broker whose profiles file
+// declares a kind or holds a dpop block but that cannot proxy would hold back every name a proxy
+// tag puts behind such a kind, or the dpop block names, and release nothing in its place, so each
+// missing setting refuses the boot by name, beside each kind and dpop block that needs it
+// (AirlockSubjects). A profiles file is not a kind: Load takes one with none of the settings, and
+// RequireAirlock of a file of neither - a deployment that serves GitHub Apps and runs no airlock -
+// asks for none of them. With no profiles file there is no proxy and the four are ignored,
+// whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredForAKindOrADPoPBlock(t *testing.T) {
+	proxied := AirlockSubjects(fileRules(t, subjectsFile))
 	cfg, err := Load(env(airlockEnv()))
 	if err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
@@ -471,22 +534,24 @@ func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
 		delete(e, missing)
 		cfg, err := Load(env(e))
 		if err != nil {
-			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not hold a proxy block", missing, err)
+			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not declare a kind", missing, err)
 		}
 		err = cfg.RequireAirlock(proxied)
-		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "DEEL_API_KEY, STORED_TOKEN_READ") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("RequireAirlock without %s = %v; want a refusal naming the profiles file, the profiles with a proxy block and the missing setting", missing, err)
+		const declares = "BROKER_PROFILES_FILE declares kind github, kind slack, dpop block TEST_MINTED_TOKEN, dpop block APPROVE_TOKEN, so the broker runs the airlock's proxy for them"
+		if err == nil || !strings.Contains(err.Error(), declares) || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("RequireAirlock without %s = %v; want a refusal that says %q and names the missing setting", missing, err, declares)
 		}
 	}
 
-	// A profiles file whose profiles hold no proxy block, with none of the proxy's settings.
+	// A profiles file that declares no kind and holds no dpop block, with none of the proxy's
+	// settings.
 	e := validEnv()
 	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
 	if cfg, err = Load(env(e)); err != nil {
 		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
 	}
 	if err := cfg.RequireAirlock(nil); err != nil {
-		t.Fatalf("RequireAirlock of profiles with no proxy block and none of the proxy's settings: %v; want nil", err)
+		t.Fatalf("RequireAirlock of a file of no kind and no dpop block, with none of the proxy's settings: %v; want nil", err)
 	}
 
 	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
@@ -511,6 +576,64 @@ func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
 	}
 	if cfg.AirlockListenAddr != "127.0.0.1:13381" || cfg.AirlockIdleSeconds != 300 {
 		t.Errorf("default airlock listen addr = %q and idle = %d; want 127.0.0.1:13381 and 300", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
+	}
+}
+
+// TestAirlockSubjectsNamesEachKindAndEachDPoPBlock: what of a profiles file puts a credential
+// behind the proxy is each kind it declares, whether or not a secret is tagged with it yet, since
+// a proxy tag set at runtime puts a name behind it with no new boot, and each dpop block; a profile
+// behind a kind adds no subject of its own. Kinds come first, then dpop blocks, each in the file's
+// order. A file of either alone needs the proxy, so RequireAirlock refuses it with none of the
+// proxy's settings, and a file of neither answers nil, which needs none.
+func TestAirlockSubjectsNamesEachKindAndEachDPoPBlock(t *testing.T) {
+	e := validEnv()
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
+	bare, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
+	}
+	for _, c := range []struct {
+		name, file string
+		want       []string
+	}{
+		{"kinds, a profile behind one and dpop blocks", subjectsFile, []string{"kind github", "kind slack", "dpop block TEST_MINTED_TOKEN", "dpop block APPROVE_TOKEN"}},
+		{"a kind no profile names", `{"kinds": [{"name": "example", "hosts": ["api.example.com"], "ways": ["swap"]}], "profiles": []}`, []string{"kind example"}},
+		{"a dpop block alone", `{"profiles": [{"name": "APPROVE_TOKEN", "proxy": {"hosts": ["approve.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/approve/"}]}}]}`, []string{"dpop block APPROVE_TOKEN"}},
+		{"a GitHub App's profile alone", `{"profiles": [{"name": "APP_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}]}`, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := AirlockSubjects(fileRules(t, c.file))
+			if !slices.Equal(got, c.want) {
+				t.Fatalf("AirlockSubjects = %q; want %q", got, c.want)
+			}
+			err := bare.RequireAirlock(got)
+			if c.want == nil && err != nil {
+				t.Fatalf("RequireAirlock of a file of neither kinds nor dpop blocks, with none of the proxy's settings: %v; want nil", err)
+			}
+			if c.want != nil && (err == nil || !strings.Contains(err.Error(), "declares "+strings.Join(c.want, ", ")+",")) {
+				t.Fatalf("RequireAirlock with none of the proxy's settings = %v; want a refusal naming %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestMintedEntryRulesReadsTheFilesDPoPBlocksAndKinds: the boot's dpop block checks read the
+// profiles file's own rules (policy.Profiles.FileRules), where each dpop block is an inline
+// binding of way dpop: a file whose kinds bind other hosts passes, and one with a kind that binds
+// a dpop block's host, exactly or by a "*." name, is refused naming the kind, the host and the
+// block, since a request a proxy tag sends to that host would then go out of the minted grant's
+// allow list.
+func TestMintedEntryRulesReadsTheFilesDPoPBlocksAndKinds(t *testing.T) {
+	if err := MintedEntryRules(fileRules(t, subjectsFile)); err != nil {
+		t.Fatalf("MintedEntryRules of a file whose kinds bind no dpop block's host: %v", err)
+	}
+	const block = `{"name": "TEST_MINTED_TOKEN", "proxy": {"hosts": ["dispatch.test"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}`
+	for _, host := range []string{"dispatch.test", "*.test"} {
+		file := `{"kinds": [{"name": "dispatch", "hosts": ["api.example.com", "` + host + `"], "ways": ["swap"]}], "profiles": [` + block + `]}`
+		err := MintedEntryRules(fileRules(t, file))
+		if err == nil || !strings.Contains(err.Error(), "the kind dispatch") || !strings.Contains(err.Error(), "binds dispatch.test") || !strings.Contains(err.Error(), "TEST_MINTED_TOKEN") {
+			t.Errorf("MintedEntryRules of a file whose kind binds %s = %v; want a refusal naming the kind dispatch, the host dispatch.test and TEST_MINTED_TOKEN", host, err)
+		}
 	}
 }
 
@@ -630,11 +753,11 @@ func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
 }
 
 // TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
-// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles hold a proxy block
-// refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes
-// Service's ClusterIP, so a deployment that forgot the setting or gave the wrong range cannot pass
-// silently. Each refusal names both variables. Outside a cluster, and in a cluster with no proxy
-// block, whether or not there is a profiles file, the setting is optional.
+// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles file declares a kind
+// or holds a dpop block refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address,
+// the kubernetes Service's ClusterIP, so a deployment that forgot the setting or gave the wrong
+// range cannot pass silently. Each refusal names both variables. Outside a cluster, and in a
+// cluster with neither, whether or not there is a profiles file, the setting is optional.
 func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 	// requireAirlock loads e, which must load, and answers RequireAirlock of proxied over it.
 	requireAirlock := func(t *testing.T, e map[string]string, proxied []string) error {
@@ -645,7 +768,7 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 		}
 		return cfg.RequireAirlock(proxied)
 	}
-	proxied := []string{"DEEL_API_KEY"}
+	proxied := []string{"kind example"}
 	for _, row := range []struct{ name, host, ranges, want string }{
 		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
 		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
@@ -702,11 +825,11 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			t.Fatalf("RequireAirlock with no profiles file in a cluster: %v", err)
 		}
 	})
-	t.Run("starts in a cluster with a profiles file that holds no proxy block and no ranges", func(t *testing.T) {
+	t.Run("starts in a cluster with a profiles file of no kind and no dpop block, and no ranges", func(t *testing.T) {
 		e := airlockEnv()
 		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
 		if err := requireAirlock(t, e, nil); err != nil {
-			t.Fatalf("RequireAirlock of profiles with no proxy block in a cluster: %v", err)
+			t.Fatalf("RequireAirlock of a file of no kind and no dpop block in a cluster: %v", err)
 		}
 	})
 }
@@ -746,6 +869,259 @@ func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
 	e["BROKER_AIRLOCK_CLUSTER_RANGES"] = "2001:db8:5::%eth0/48"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "element 1 is not a CIDR prefix") {
 		t.Fatalf("Load(a zoned prefix) = %v; want the refusal naming element 1", err)
+	}
+}
+
+// TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne: each entry of BROKER_PROXY_PRIVATE_UPSTREAM
+// is one <host>=<url> entry, read as that host and that URL. An entry not of that form, a host
+// that is not one lower-case host name, and a URL that does not parse, is not http or https, names
+// no host or a port outside 1 to 65535, carries a user, a path, a query or a fragment, or names a
+// host every dial of the proxy refuses (localhost or a name under .localhost, with or without the
+// root's trailing dot; a loopback, link-local, unspecified, multicast or the IPv4 broadcast
+// address, or one of 0.0.0.0/8; a cloud metadata server's IPv6 address; an IPv6 address that
+// carries an IPv4 address, in each form, whatever it carries, and even inside the cluster ranges;
+// an address the proxy would tunnel to, public and outside BROKER_AIRLOCK_CLUSTER_RANGES) each
+// refuse the start, naming the setting and the fault. No refusal quotes the URL's user, path,
+// query or fragment, where a credential can sit, nor a URL written with no <host>= before it,
+// whose user and path then sit before the first =. A private address, one in 100.64.0.0/10, one
+// inside the cluster ranges though public, and a loopback URL that BROKER_AIRLOCK_TEST_DIAL_ALLOW
+// names with its port, the local stack's stand-in of Dispatch, are read: each is an address the
+// dial opens. (TestAPrivateUpstreamSettingIsRefusedUnlessEachEntryIsOne holds the list: entries
+// in order, and a host named twice.)
+func TestAPrivateUpstreamEntryIsRefusedUnlessItIsOne(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	if cfg, err := Load(env(airlockEnv())); err != nil || cfg.ProxyPrivateUpstreams != nil {
+		t.Fatalf("Load with %s unset = %+v, %v; want none", setting, cfg.ProxyPrivateUpstreams, err)
+	}
+	for _, row := range []struct{ value, dialAllow, ranges, wantURL string }{
+		{"dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766", "", "", "http://dispatch.dispatch.svc.cluster.local:8766"},
+		{" dispatch.test=https://10.0.0.5/ ", "", "", "https://10.0.0.5/"},
+		{"dispatch.test=http://10.0.0.5:8766", "", "", "http://10.0.0.5:8766"},
+		{"dispatch.test=http://[fd12:3456::5]:8766", "", "", "http://[fd12:3456::5]:8766"},
+		{"dispatch.test=http://100.64.1.1:8766", "", "", "http://100.64.1.1:8766"},
+		{"dispatch.test=http://34.118.224.10:8766", "", "34.118.224.0/20", "http://34.118.224.10:8766"},
+		{"dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8766", "", "http://127.0.0.1:8766"},
+		{"dispatch.test=http://localhost", "localhost:80", "", "http://localhost"},
+	} {
+		e := airlockEnv()
+		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
+		e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(%s=%q, BROKER_AIRLOCK_TEST_DIAL_ALLOW=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", setting, row.value, row.dialAllow, row.ranges, err)
+		}
+		if got := cfg.ProxyPrivateUpstreams; len(got) != 1 || got[0].Host != "dispatch.test" || got[0].URL == nil || got[0].URL.String() != row.wantURL {
+			t.Fatalf("Load(%s=%q) read %+v; want the host dispatch.test and the URL %s", setting, row.value, got, row.wantURL)
+		}
+	}
+	// The URL's user, path, query and fragment carry a word a refusal must not quote; each URL is
+	// put together here, so the word is one constant the check below reads too. A URL written with
+	// no <host>= before it puts its user, and its path up to a query's =, before the first =.
+	const userWord = "secret-word"
+	for _, row := range []struct{ name, value, dialAllow, want string }{
+		{"an entry with no =", "dispatch.test", "", "must be <host>=<url> entries"},
+		{"an entry with no URL", "dispatch.test=", "", "must be <host>=<url> entries"},
+		{"a host that is a pattern", "*.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a host with a capital letter", "Dispatch.test=http://10.0.0.5:8766", "", "in lower case, with no"},
+		{"a URL that does not parse", "dispatch.test=http://u:" + userWord + "@[10.0.0.5", "", "does not parse"},
+		{"an ftp URL", "dispatch.test=ftp://10.0.0.5:21/" + userWord, "", "must be http or https"},
+		{"a URL with no host", "dispatch.test=http://:8766/" + userWord, "", "names no host"},
+		{"a URL with port 0", "dispatch.test=http://10.0.0.5:0/" + userWord, "", "port outside 1 to 65535"},
+		{"a URL with port 65536", "dispatch.test=http://10.0.0.5:65536", "", "port outside 1 to 65535"},
+		{"a URL with a user", "dispatch.test=http://u:" + userWord + "@10.0.0.5:8766", "", "carries a user"},
+		{"a URL with a path", "dispatch.test=http://10.0.0.5:8766/" + userWord, "", "has a path"},
+		{"a loopback URL with a path", "dispatch.test=http://127.0.0.1:8766/" + userWord, "", "has a path"},
+		{"a URL with a query", "dispatch.test=http://10.0.0.5:8766?q=" + userWord, "", "has a query"},
+		{"a URL with a fragment", "dispatch.test=http://10.0.0.5:8766#" + userWord, "", "has a fragment"},
+		{"a URL with an empty fragment", "dispatch.test=http://10.0.0.5:8766#", "", "has a fragment"},
+		{"a URL with no <host>=, a user and a query", "http://u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>= and no scheme, a user and a query", "u:" + userWord + "@10.0.0.5:8766/?a=b", "", "holds a URL's scheme, user or path"},
+		{"a URL with no <host>=, a path and a query", "10.0.0.5:8766/" + userWord + "?a=b", "", "holds a URL's scheme, user or path"},
+		{"localhost", "dispatch.test=http://localhost:8766", "", "resolves to loopback"},
+		{"localhost with the root's trailing dot", "dispatch.test=http://localhost.:8766", "", "resolves to loopback"},
+		{"a name under .localhost", "dispatch.test=http://dispatch.localhost:8766", "", "resolves to loopback"},
+		{"a name under .localhost with the root's trailing dot", "dispatch.test=http://dispatch.localhost.:8766", "", "resolves to loopback"},
+		{"a public address", "dispatch.test=http://8.8.8.8:8766", "", "which this proxy would also tunnel to"},
+		{"a documentation address, which the proxy reads as public", "dispatch.test=http://203.0.113.5:8766", "", "which this proxy would also tunnel to"},
+		{"a public IPv6 address", "dispatch.test=http://[2001:4860:4860::8888]:8766", "", "which this proxy would also tunnel to"},
+		{"a loopback address", "dispatch.test=http://127.0.0.1:8766", "", "a loopback or link-local address"},
+		{"a loopback IPv6 address", "dispatch.test=http://[::1]:8766", "", "a loopback or link-local address"},
+		{"the IPv4 metadata server", "dispatch.test=http://169.254.169.254", "", "a loopback or link-local address"},
+		{"an unspecified address", "dispatch.test=http://0.0.0.0:8766", "", "an unspecified or multicast address"},
+		{"the IPv4 broadcast address", "dispatch.test=http://255.255.255.255:8766", "", "the IPv4 broadcast address"},
+		{"Google's IPv6 metadata server", "dispatch.test=http://[fd20:ce::254]", "", "a cloud metadata server's address"},
+		{"Amazon's IPv6 metadata server", "dispatch.test=http://[fd00:ec2::254]", "", "a cloud metadata server's address"},
+		{"an address of 0.0.0.0/8", "dispatch.test=http://0.0.0.1:8766", "", "an address of 0.0.0.0/8"},
+		{"the NAT64 form of the IPv4 metadata server", "dispatch.test=http://[64:ff9b::a9fe:a9fe]", "", "carries an IPv4 address"},
+		{"the NAT64 form of a loopback address", "dispatch.test=http://[64:ff9b::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"the NAT64 form of a private address", "dispatch.test=http://[64:ff9b::a00:5]:8766", "", "carries an IPv4 address"},
+		{"the 6to4 form of the IPv4 metadata server", "dispatch.test=http://[2002:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"the IPv4-compatible form of a loopback address", "dispatch.test=http://[::7f00:1]:8766", "", "carries an IPv4 address"},
+		{"a Teredo address whose server is the IPv4 metadata server", "dispatch.test=http://[2001:0:a9fe:a9fe::1]", "", "carries an IPv4 address"},
+		{"an address of the local-use translation prefix", "dispatch.test=http://[64:ff9b:1::a9fe:a9fe]", "", "a local-use translation IPv6 address"},
+		{"a loopback address the dial allow names on another port", "dispatch.test=http://127.0.0.1:8766", "127.0.0.1:8767", "a loopback or link-local address"},
+	} {
+		e := airlockEnv()
+		e[setting] = row.value
+		if row.dialAllow != "" {
+			e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = row.dialAllow
+		}
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), row.want) {
+			t.Errorf("%s: Load(%s=%q) = %v; want a refusal naming the setting and %q", row.name, setting, row.value, err, row.want)
+			continue
+		}
+		if strings.Contains(err.Error(), userWord) {
+			t.Errorf("%s: the refusal quotes a part of the URL a credential can sit in: %v", row.name, err)
+		}
+	}
+	e := validEnv()
+	e[setting] = "dispatch.test=http://10.0.0.5:8766"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "needs BROKER_PROFILES_FILE") {
+		t.Errorf("Load(%s with no profiles file) = %v; want a refusal naming the setting and BROKER_PROFILES_FILE", setting, err)
+	}
+	// The cluster ranges are the dial's: a public address the rows above take inside
+	// 34.118.224.0/20 is refused just outside it, naming both settings.
+	ranged := airlockEnv()
+	ranged["BROKER_AIRLOCK_CLUSTER_RANGES"] = "34.118.224.0/20"
+	ranged[setting] = "dispatch.test=http://34.118.240.1:8766"
+	if _, err := Load(env(ranged)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=34.118.224.0/20) = %v; want a refusal naming the setting and the address the proxy would tunnel to", setting, ranged[setting], err)
+	}
+	// The cluster ranges widen the private ranges and nothing else: a range that holds an IPv6
+	// form carrying the metadata server's address does not make that form a destination.
+	carried := airlockEnv()
+	carried["BROKER_AIRLOCK_CLUSTER_RANGES"] = "64:ff9b::/96"
+	carried[setting] = "dispatch.test=http://[64:ff9b::a9fe:a9fe]"
+	if _, err := Load(env(carried)); err == nil || !strings.Contains(err.Error(), setting) || !strings.Contains(err.Error(), "carries an IPv4 address") {
+		t.Errorf("Load(%s=%q, BROKER_AIRLOCK_CLUSTER_RANGES=64:ff9b::/96) = %v; want a refusal naming the setting and the form", setting, carried[setting], err)
+	}
+}
+
+// TestTheCheckOfADestinationsAddressIsTheStartsRule: the address checks `profiles check
+// --private-upstream` makes are the start's own. Given the cluster ranges (`--cluster-ranges`, read
+// by ParseAirlockClusterRanges), it calls PrivateUpstreamDialable with them, which answers what
+// Load answers for that destination and those ranges, in the same words, for each ranges below:
+// none, the Service range, an IPv6 range that holds the NAT64 forms, and every address. Without
+// them, PrivateUpstreamRefusedOnEveryBroker is the start's rule for every cluster ranges a broker
+// can have: where it refuses, the
+// start refuses in the same words with no ranges and with ranges that hold every address; where it
+// takes a destination and judges it, the start takes it with both; and where it answers the
+// address unjudged, the start refuses that address with no ranges and takes it with ranges that
+// hold it, so that answer is exactly the part that needs the ranges.
+func TestTheCheckOfADestinationsAddressIsTheStartsRule(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	everything := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	for _, url := range []string{
+		"http://127.0.0.1:8766", "http://[::1]:8766", "http://localhost:8766", "http://dispatch.localhost.:8766",
+		"http://169.254.169.254", "http://[fe80::1]", "http://[fd20:ce::254]", "http://[fd00:ec2::254]",
+		"http://255.255.255.255:8766", "http://0.0.0.0:8766", "http://0.0.0.1:8766", "http://224.0.0.1",
+		"http://[64:ff9b::a9fe:a9fe]", "http://[2002:a9fe:a9fe::1]", "http://[::7f00:1]:8766", "http://[2001:0:a9fe:a9fe::1]",
+		"http://[64:ff9b:1::a9fe:a9fe]", "http://[64:ff9b::a00:5]:8766",
+		"http://8.8.8.8:8766", "http://203.0.113.5:8766", "http://34.118.224.10:8766", "http://34.118.240.1:8766", "http://[2001:4860:4860::8888]",
+		"http://10.0.0.5:8766", "https://10.0.0.5", "http://100.64.1.1:8766", "http://[fd12:3456::5]:8766",
+		"http://dispatch.dispatch.svc.cluster.local:8766",
+	} {
+		upstreams, err := ParsePrivateUpstreams("dispatch.test=" + url)
+		if err != nil || len(upstreams) != 1 {
+			t.Fatalf("ParsePrivateUpstreams(%s) = %v, %v; want one entry", url, upstreams, err)
+		}
+		upstream := upstreams[0]
+		unjudged, checked := PrivateUpstreamRefusedOnEveryBroker(upstream)
+		bare, wide := PrivateUpstreamDialable(upstream, nil, nil), PrivateUpstreamDialable(upstream, nil, everything)
+		switch {
+		case checked != nil:
+			if unjudged.IsValid() || bare == nil || wide == nil || bare.Error() != checked.Error() || wide.Error() != checked.Error() {
+				t.Errorf("%s: the check refuses it (%v, unjudged %v); the start, with no ranges and with every address as a range, answers %v and %v; want the same refusal", url, checked, unjudged, bare, wide)
+			}
+		case unjudged.IsValid():
+			if bare == nil || !strings.Contains(bare.Error(), " names "+unjudged.String()+", ") || wide != nil {
+				t.Errorf("%s: the check answers %s unjudged; the start answers %v with no ranges and %v with every address as a range; want a refusal of that address and none", url, unjudged, bare, wide)
+			}
+		default:
+			if bare != nil || wide != nil {
+				t.Errorf("%s: the check takes it and judges it; the start answers %v and %v; want it taken with any ranges", url, bare, wide)
+			}
+		}
+		for _, text := range []string{"", "34.118.224.0/20", "64:ff9b::/96", "0.0.0.0/0, ::/0"} {
+			ranges, err := ParseAirlockClusterRanges(text)
+			if err != nil {
+				t.Fatalf("ParseAirlockClusterRanges(%q): %v", text, err)
+			}
+			checked := PrivateUpstreamDialable(upstream, nil, ranges)
+			e := airlockEnv()
+			e[setting] = "dispatch.test=" + url
+			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = text
+			_, started := Load(env(e))
+			if (checked == nil) != (started == nil) || checked != nil && checked.Error() != started.Error() {
+				t.Errorf("%s with the ranges %q: the check answers %v; Load answers %v; want Load's answer", url, text, checked, started)
+			}
+		}
+	}
+}
+
+// privateEntry is the proxy block the private destination's host is bound by: the profile
+// DISPATCH_RESULTS_TOKEN's (resultsEntry), bound to dispatch.test.
+func privateEntry() proxyrules.Binding {
+	entry := resultsEntry()
+	entry.Inline.Hosts = []string{"dispatch.test"}
+	return entry
+}
+
+// TestAPrivateUpstreamNeedsOneBindingEntry: the start check of the results capability
+// (resultsStart: ResultsEntryRules and ProxyMintedRules) takes the profiles' proxy blocks when the
+// block that binds the destination's host is the profile DISPATCH_RESULTS_TOKEN's, bound to that
+// host alone, of kind dpop, with a non-empty allow list, carried in Authorization alone (a block
+// naming no headers carries the default, Authorization). A profile bound to another host, a kind
+// over it (proxyrules.HostBound, so a "*." kind over the host binds it too, and the refusal names
+// that host), a profile of no kind, no allow list, an empty one and
+// another header are each refused, naming BROKER_PROFILES_FILE, the setting or the profile, and
+// what is wrong. With no destination, no result entries and no dpop block, any profiles are taken.
+func TestAPrivateUpstreamNeedsOneBindingEntry(t *testing.T) {
+	const setting = "BROKER_PROXY_PRIVATE_UPSTREAM"
+	e := airlockEnv()
+	e[setting] = "dispatch.test=http://dispatch.dispatch.svc.cluster.local:8766"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load(%s): %v", setting, err)
+	}
+	upstreams := cfg.ProxyPrivateUpstreams
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{privateEntry()}}, upstreams, false); err != nil {
+		t.Fatalf("the one entry: %v", err)
+	}
+	defaultHeader := privateEntry()
+	defaultHeader.Inline.Headers = nil
+	if err := resultsStart(proxyrules.Rules{Names: []proxyrules.Binding{defaultHeader}}, upstreams, false); err != nil {
+		t.Fatalf("the entry with the default header: %v", err)
+	}
+	if err := resultsStart(proxyrules.Rules{}, nil, false); err != nil {
+		t.Fatalf("no destination and no rules: %v", err)
+	}
+	pattern := proxyrules.Kind{Name: "wildcard", Hosts: []string{"*.test"}, Ways: []string{proxyrules.WaySwap}}
+	for _, c := range []struct {
+		name, says string
+		spoil      func(*proxyrules.Rules)
+	}{
+		{"a profile bound to another host", "binds other.test, which no entry of BROKER_PROXY_PRIVATE_UPSTREAM names", func(r *proxyrules.Rules) { r.Names[0].Inline.Hosts = []string{"other.test"} }},
+		{"a kind *.test", "the kind wildcard of BROKER_PROFILES_FILE binds dispatch.test", func(r *proxyrules.Rules) { r.Kinds = append(r.Kinds, pattern) }},
+		{"a profile of no kind", "kind dpop", func(r *proxyrules.Rules) { r.Names[0].Way = "" }},
+		{"no allow list", "allow list", func(r *proxyrules.Rules) { r.Names[0].Inline.Allow = nil }},
+		{"an empty allow list", "allow list", func(r *proxyrules.Rules) { r.Names[0].Inline.Allow = []proxyrules.Allow{} }},
+		{"a header X-Token", "Authorization header alone", func(r *proxyrules.Rules) { r.Names[0].Inline.Headers = []string{"X-Token"} }},
+	} {
+		rules := proxyrules.Rules{Names: []proxyrules.Binding{privateEntry()}}
+		c.spoil(&rules)
+		err := resultsStart(rules, upstreams, false)
+		if err == nil || !strings.Contains(err.Error(), c.says) || (!strings.Contains(err.Error(), setting) && !strings.Contains(err.Error(), "DISPATCH_RESULTS_TOKEN")) {
+			t.Errorf("%s: err = %v, want a refusal naming %s or DISPATCH_RESULTS_TOKEN and %q", c.name, err, setting, c.says)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Errorf("%s: err = %v, want a refusal naming BROKER_PROFILES_FILE, whose proxy blocks are the rules, and not the removed BROKER_AIRLOCK_RULES_FILE", c.name, err)
+		}
 	}
 }
 
@@ -1466,12 +1842,13 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 // malformed entry of the list — one without exactly one "=", an account that is no ServiceAccount
 // subject (a google: one included), a namespace's default account on either side — and a pair
 // given twice are refused naming the setting and the entry, and the list is refused with no
-// cluster issuer. The audience is refused naming it and the other setting when it equals the
-// broker's own audience, the token exchange's or the NATS auth service's, each set beside it, and
-// refused with no cluster issuer. A registrar with two pod accounts, a pod account with two
-// registrars and an account paired with itself load as exactly those pairs beside an audience of
-// its own, with no BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not
-// refused, since it can register nothing and the boot names it instead.
+// cluster issuer. The audience is refused naming it and the other setting when it equals an
+// audience the broker's own BROKER_K8S_OIDC_AUDIENCE lists, the first or a later one, the token
+// exchange's or the NATS auth service's, each set beside it, and refused with no cluster issuer.
+// A registrar with two pod accounts, a pod account with two registrars and an account paired
+// with itself load as exactly those pairs beside an audience of its own, with no
+// BROKER_SERVICE_LOGINS at all: a registrar the logins do not list is not refused, since it can
+// register nothing and the boot names it instead.
 func TestRegistrarSettings(t *testing.T) {
 	const (
 		daemonA = "system:serviceaccount:legion-system:legion-daemon-a"
@@ -1558,6 +1935,14 @@ func TestRegistrarSettings(t *testing.T) {
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
 		},
 		{
+			name: "the audience equal to the second listed audience",
+			env: withAudiences(map[string]string{
+				"BROKER_K8S_OIDC_AUDIENCE":         "agent-secrets example-pod-new",
+				"BROKER_POD_REGISTRATION_AUDIENCE": "example-pod-new",
+			}),
+			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
 			name: "the audience equal to the token exchange's", env: withAudiences(audience("dispatch-exchange")),
 			refused: []string{"BROKER_POD_REGISTRATION_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
 		},
@@ -1594,6 +1979,121 @@ func TestRegistrarSettings(t *testing.T) {
 			}
 			if !maps.Equal(cfg.PodRegistrars, row.registrars) || cfg.PodRegistrationAudience != row.audience {
 				t.Fatalf("Load read the pairs %v and the audience %q, want exactly %v and %q", cfg.PodRegistrars, cfg.PodRegistrationAudience, row.registrars, row.audience)
+			}
+		})
+	}
+}
+
+// TestThePodTokenAudienceSettingIsAList pins BROKER_K8S_OIDC_AUDIENCE as a list: one or more
+// audiences, separated by white space of any kind, read in the order given, one alone read as it
+// is today. With the issuer set, white space alone is refused naming the setting, and an
+// audience listed twice is refused naming the setting, the audience and the word "twice". With
+// neither setting the broker reads no issuer and no audience; the audience with no issuer is
+// refused naming the issuer. A listed audience equal to BROKER_EXCHANGE_K8S_AUDIENCE or
+// BROKER_NATS_K8S_AUDIENCE is refused naming both settings, the second listed one and one listed
+// alone alike. The exchange's, the registration route's and the NATS auth service's audiences,
+// each set and each different from every listed audience, load beside the list as one value each.
+func TestThePodTokenAudienceSettingIsAList(t *testing.T) {
+	user, account, curve, _ := natsSeeds(t)
+	// issuer is the cluster issuer withK8sIssuer sets, which pod's rows read.
+	issuer := withK8sIssuer()["BROKER_K8S_OIDC_ISSUER"]
+	// pod is withK8sIssuer with BROKER_K8S_OIDC_AUDIENCE as audiences, and set.
+	pod := func(audiences string, set map[string]string) map[string]string {
+		e := withK8sIssuer()
+		e["BROKER_K8S_OIDC_AUDIENCE"] = audiences
+		maps.Copy(e, set)
+		return e
+	}
+	// natsAudience is the NATS auth service on, as TestNATSCalloutSettings's full sets it, with
+	// its audience for the cluster's tokens.
+	natsAudience := map[string]string{
+		"BROKER_NATS_URLS":             "nats://hub-a:4222, nats://hub-b:4222",
+		"BROKER_NATS_SEED_FILE":        user,
+		"BROKER_NATS_ISSUER_SEED_FILE": account,
+		"BROKER_NATS_XKEY_SEED_FILE":   curve,
+		"BROKER_NATS_SERVICES":         "listener/dev-stack/*=system:serviceaccount:example-ns:example-listener",
+		"BROKER_NATS_K8S_AUDIENCE":     "example-envoy-nats",
+	}
+	everyOther := maps.Clone(natsAudience)
+	everyOther["BROKER_EXCHANGE_K8S_AUDIENCE"] = "example-exchange"
+	everyOther["BROKER_POD_REGISTRATION_AUDIENCE"] = "example-pod-registration"
+	withNeither := validEnv()
+	withoutIssuer := validEnv()
+	withoutIssuer["BROKER_K8S_OIDC_AUDIENCE"] = "example-pod-new example-pod-old"
+	for _, row := range []struct {
+		name string
+		env  map[string]string
+		// refused is every text the refusal must name; none for an environment that loads.
+		refused []string
+		// issuer and audiences are what an environment that loads reads for the pair, and
+		// exchange, registration and nats each other audience of the cluster's tokens.
+		issuer                       string
+		audiences                    []string
+		exchange, registration, nats string
+	}{
+		{
+			name: "C1 two audiences", env: pod("example-pod-new example-pod-old", nil),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+		},
+		{
+			name: "C2 three audiences between spaces, a tab and a line feed", env: pod(" example-a\texample-b\nexample-c ", nil),
+			issuer: issuer, audiences: []string{"example-a", "example-b", "example-c"},
+		},
+		{
+			name: "C3 one audience", env: pod("example-pod-new", nil),
+			issuer: issuer, audiences: []string{"example-pod-new"},
+		},
+		{
+			name: "C4 white space alone", env: pod(" \t\n ", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE"},
+		},
+		{
+			name: "C5 an audience listed twice", env: pod("example-pod-new example-pod-new", nil),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", strconv.Quote("example-pod-new"), "twice"},
+		},
+		{name: "C6 neither setting", env: withNeither},
+		{
+			name: "C7 the audience with no issuer", env: withoutIssuer,
+			refused: []string{"BROKER_K8S_OIDC_ISSUER"},
+		},
+		{
+			name: "C8 the second listed audience equal to the exchange's", env: pod("example-pod-new example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C9 one listed audience equal to the exchange's", env: pod("example-exchange", map[string]string{"BROKER_EXCHANGE_K8S_AUDIENCE": "example-exchange"}),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name: "C10 the second listed audience equal to the NATS auth service's", env: pod("example-pod-new example-envoy-nats", natsAudience),
+			refused: []string{"BROKER_K8S_OIDC_AUDIENCE", "BROKER_NATS_K8S_AUDIENCE"},
+		},
+		{
+			name: "C11 every other audience set and different from both listed", env: pod("example-pod-new example-pod-old", everyOther),
+			issuer: issuer, audiences: []string{"example-pod-new", "example-pod-old"},
+			exchange: "example-exchange", registration: "example-pod-registration", nats: "example-envoy-nats",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			cfg, err := Load(env(row.env))
+			for _, name := range row.refused {
+				if err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("Load = %v, want a refusal naming %s", err, strings.Join(row.refused, " and "))
+				}
+			}
+			if len(row.refused) > 0 {
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load = %v, want no refusal", err)
+			}
+			// reflect.DeepEqual tells a nil list from an empty one: with neither setting the
+			// broker holds no list at all.
+			if cfg.K8sOIDCIssuer != row.issuer || !reflect.DeepEqual(cfg.K8sOIDCAudiences, row.audiences) {
+				t.Fatalf("Load read the issuer %q and the audiences %#v, want exactly %q and %#v", cfg.K8sOIDCIssuer, cfg.K8sOIDCAudiences, row.issuer, row.audiences)
+			}
+			if cfg.ExchangeK8sAudience != row.exchange || cfg.PodRegistrationAudience != row.registration || cfg.NATS.K8sAudience != row.nats {
+				t.Fatalf("Load read the exchange audience %q, the registration audience %q and the NATS audience %q, want %q, %q and %q", cfg.ExchangeK8sAudience, cfg.PodRegistrationAudience, cfg.NATS.K8sAudience, row.exchange, row.registration, row.nats)
 			}
 		})
 	}
@@ -1800,6 +2300,90 @@ func TestLoadReadsTheSecretStore(t *testing.T) {
 	aws["BROKER_SECRETS_KMS_KEY_NAME"] = gcp()["BROKER_SECRETS_KMS_KEY_NAME"]
 	if _, err := Load(env(aws)); err == nil || !strings.HasPrefix(err.Error(), "BROKER_SECRETS_KMS_KEY_NAME is not read with BROKER_SECRETS_STORE=aws-secrets-manager; set BROKER_SECRETS_KMS_KEY_ARN instead") {
 		t.Fatalf("Load(aws with the key name set) = %v, want a refusal naming both", err)
+	}
+}
+
+// TestSecondPrefixSetting pins BROKER_SECRETS_SECOND_PREFIX, the prefix a store move leaves or
+// reaches. Unset or empty, Load reads none, on either store, and the broker is the one it was. A
+// Secret Manager prefix beside gcp-secret-manager, in another project or the same one, is read as
+// it is. Load refuses to start, naming the setting and the rule it breaks: any value under
+// aws-secrets-manager, saying that an AWS source is an ARN a move always changes; a value
+// secrets.ValidGCPPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
+// with BROKER_SECRETS_PREFIX, or that BROKER_SECRETS_PREFIX starts with, since a secret under the
+// longer of two such prefixes is under both.
+//
+// The named reverts: drop the store check, and the aws-secrets-manager row starts; drop the nesting
+// check, and the two nested rows start; check only that the two differ, and the nested rows start
+// too.
+func TestSecondPrefixSetting(t *testing.T) {
+	const (
+		prefix  = "projects/000000000000/secrets/agent-secrets-"
+		keyName = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
+	)
+	gcp := func() map[string]string {
+		e := validEnv()
+		e["BROKER_SECRETS_STORE"] = secrets.StoreGCP
+		e["BROKER_SECRETS_PREFIX"] = prefix
+		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
+		e["BROKER_SECRETS_KMS_KEY_NAME"] = keyName
+		return e
+	}
+	with := func(e map[string]string, second string) map[string]string {
+		e["BROKER_SECRETS_SECOND_PREFIX"] = second
+		return e
+	}
+
+	for name, e := range map[string]map[string]string{
+		"gcp, unset":  gcp(),
+		"gcp, empty":  with(gcp(), ""),
+		"aws, unset":  validEnv(),
+		"aws, empty":  with(validEnv(), ""),
+		"gcp, absent": func() map[string]string { e := gcp(); delete(e, "BROKER_SECRETS_SECOND_PREFIX"); return e }(),
+	} {
+		cfg, err := Load(env(e))
+		if err != nil || cfg.SecretsSecondPrefix != "" {
+			t.Fatalf("Load(%s) = second prefix %q, %v; want none, and the broker it was", name, cfg.SecretsSecondPrefix, err)
+		}
+	}
+	for _, second := range []string{
+		"projects/111111111111/secrets/cipher-",
+		"projects/000000000000/secrets/cipher-",
+	} {
+		cfg, err := Load(env(with(gcp(), second)))
+		if err != nil || cfg.SecretsSecondPrefix != second || cfg.SecretsPrefix != prefix {
+			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q, %v; want both read as given", second, cfg.SecretsSecondPrefix, cfg.SecretsPrefix, err)
+		}
+	}
+
+	for name, row := range map[string]struct {
+		env  map[string]string
+		says []string
+	}{
+		"under aws-secrets-manager": {with(validEnv(), "projects/111111111111/secrets/cipher-"),
+			[]string{"BROKER_SECRETS_STORE=gcp-secret-manager", "aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
+		"equal to BROKER_SECRETS_PREFIX": {with(gcp(), prefix),
+			[]string{"is BROKER_SECRETS_PREFIX itself", prefix}},
+		"starting with BROKER_SECRETS_PREFIX": {with(gcp(), prefix+"old-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", prefix + "old-"}},
+		"that BROKER_SECRETS_PREFIX starts with": {with(gcp(), "projects/000000000000/secrets/agent-"),
+			[]string{"BROKER_SECRETS_PREFIX", "one starts with the other", "projects/000000000000/secrets/agent-"}},
+		"that secrets.ValidGCPPrefix refuses": {with(gcp(), "projects/example-project/secrets/cipher-"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/", "projects/example-project/secrets/cipher-"}},
+		"with no trailing dash": {with(gcp(), "projects/111111111111/secrets/cipher"),
+			[]string{"a Google Secret Manager prefix is projects/<project number>/secrets/"}},
+	} {
+		cfg, err := Load(env(row.env))
+		if err == nil {
+			t.Fatalf("Load(a second prefix %s) accepted it as %q; want a refusal naming BROKER_SECRETS_SECOND_PREFIX", name, cfg.SecretsSecondPrefix)
+		}
+		if !strings.HasPrefix(err.Error(), "BROKER_SECRETS_SECOND_PREFIX") {
+			t.Fatalf("Load(a second prefix %s) = %v; want a refusal opening with BROKER_SECRETS_SECOND_PREFIX", name, err)
+		}
+		for _, said := range row.says {
+			if !strings.Contains(err.Error(), said) {
+				t.Fatalf("Load(a second prefix %s) = %v; want the refusal to say %q", name, err, said)
+			}
+		}
 	}
 }
 
@@ -2154,7 +2738,7 @@ func TestLoadReadsTheAccessTokenLifetime(t *testing.T) {
 // TestLoadReadsTheExchangeAccounts pins BROKER_EXCHANGE_ACCOUNTS: whitespace-separated
 // <account>=<project>=<person>[=<session>] entries in order, none when unset, a session that may
 // itself carry "=", an empty project (the shared public-session account's entry, whose named
-// tokens name no project), an empty project and person (a job's own account, whose tokens act as
+// tokens name no project), an empty project and person (an account whose tokens act as
 // the account itself), and refusals naming the entry for one that is not of that form, has a
 // blank account, names a project and no person, names a namespace's default account or lists an
 // account twice. It needs the cluster issuer and the exchange audience, whose tokens its pods
@@ -2350,6 +2934,397 @@ func TestLoadReadsTheExchangeWorkflows(t *testing.T) {
 	}
 }
 
+// TestLoadReadsTheExchangeResultWorkflows pins BROKER_EXCHANGE_RESULT_WORKFLOWS:
+// <repository>=<workflow>=<ref pattern>=<project>=<person> entries in order, none when unset,
+// one workflow under two patterns, and refusals naming the setting and the entry for one that is
+// not of that form, a ref pattern exchange.CheckRefPattern refuses, and one workflow under one
+// pattern twice. It needs GitHub's issuer and audience, whose tokens its runs present.
+func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExchangeResultWorkflows != nil {
+		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
+	}
+	withGitHub := func() map[string]string {
+		e := withResultsAirlock(validEnv())
+		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+		return e
+	}
+	const workflow = "example-org/example-repo=.github/workflows/ci-results.yaml"
+	e := withGitHub()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com\n " + workflow + "=refs/heads/*/*=EXAMPLE=ada@example.com "
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.ResultWorkflowEntry{
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*", Project: "EXAMPLE", Person: "ada@example.com"},
+		{Repository: "example-org/example-repo", Workflow: ".github/workflows/ci-results.yaml", RefPattern: "refs/heads/*/*", Project: "EXAMPLE", Person: "ada@example.com"},
+	}
+	if !slices.Equal(cfg.ExchangeResultWorkflows, want) {
+		t.Fatalf("ExchangeResultWorkflows = %v, want %v", cfg.ExchangeResultWorkflows, want)
+	}
+	for _, bad := range []string{
+		"example-org/example-repo", workflow + "=refs/heads/*=EXAMPLE",
+		workflow + "==EXAMPLE=ada@example.com", workflow + "=refs/heads/*=EXAMPLE=ada@example.com=a-session",
+		workflow + "=refs/*/main=EXAMPLE=ada@example.com", workflow + "=refs/heads/[x=EXAMPLE=ada@example.com",
+	} {
+		e := withGitHub()
+		e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+	e = withGitHub()
+	const again = workflow + "=refs/heads/*=OTHER=ada@example.com"
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com " + again
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), strconv.Quote(again)) {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS naming one workflow and pattern twice: err = %v, want a refusal naming the setting and the entry", err)
+	}
+	e = validEnv()
+	e["BROKER_EXCHANGE_RESULT_WORKFLOWS"] = workflow + "=refs/heads/*=EXAMPLE=ada@example.com"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_EXCHANGE_RESULT_WORKFLOWS") || !strings.Contains(err.Error(), "BROKER_EXCHANGE_GITHUB_ISSUER") {
+		t.Errorf("BROKER_EXCHANGE_RESULT_WORKFLOWS with no GitHub issuer: err = %v, want a refusal naming the setting and BROKER_EXCHANGE_GITHUB_ISSUER", err)
+	}
+}
+
+// The identities the job settings' tests list. This repository is public, so each is a
+// placeholder.
+const (
+	// jobAccount is a pod's account that BROKER_EXCHANGE_JOB_ACCOUNTS lists.
+	jobAccount = "system:serviceaccount:example-ns:example-job"
+	// jobWorkflow is the identity, <repository>=<workflow path>=<ref>, of the workflow
+	// BROKER_EXCHANGE_JOB_WORKFLOWS lists.
+	jobWorkflow = "example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main"
+	// secondFleet is a second Google service account, which jobFleetEnv lists as a VM service with
+	// no pins.
+	secondFleet = "second-fleet@example-project.iam.gserviceaccount.com"
+)
+
+// jobPodEnv is withK8sIssuer with the audience a pod's exchange token carries, which
+// BROKER_EXCHANGE_JOB_ACCOUNTS needs.
+func jobPodEnv() map[string]string {
+	e := withK8sIssuer()
+	e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
+// jobWorkflowEnv is validEnv with the GitHub issuer and audience a workflow run's token is
+// verified against, which BROKER_EXCHANGE_JOB_WORKFLOWS needs.
+func jobWorkflowEnv() map[string]string {
+	e := validEnv()
+	e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
+	e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
+	return e
+}
+
+// jobFleetEnv is validVMEnv with secondFleet listed too, as the service example-other, so that
+// BROKER_VM_EXCHANGE_JOB_ACCOUNTS has two listed accounts to name.
+func jobFleetEnv() map[string]string {
+	e := validVMEnv()
+	e["BROKER_VM_SERVICES"] += " example-other=" + secondFleet
+	return e
+}
+
+// jobList is the job list exchange.ParseJobProjects reads from text.
+func jobList(t *testing.T, text string) exchange.JobProjects {
+	t.Helper()
+	job, err := exchange.ParseJobProjects(text)
+	if err != nil {
+		t.Fatalf("exchange.ParseJobProjects(%q): %v", text, err)
+	}
+	return job
+}
+
+// TestLoadReadsTheJobSettings pins the three job settings, one row for each identity kind: each
+// entry is read, in order, into an exchange entry that holds its identity, its projects as Job and
+// the session it fixes, if any, everything after the last separator, and that names no person and
+// no project. A VM job entry lands in its account's machine entry, beside its service and its
+// pins.
+func TestLoadReadsTheJobSettings(t *testing.T) {
+	const sweeper = "system:serviceaccount:example-ns:example-sweeper"
+	for _, row := range []struct {
+		setting string
+		env     func() map[string]string
+		value   string
+		got     func(Config) any
+		want    func(t *testing.T) any
+	}{
+		{
+			setting: "BROKER_EXCHANGE_JOB_ACCOUNTS",
+			env:     jobPodEnv,
+			value:   jobAccount + "=EXAMPLE=example-job:EXAMPLE=1\n " + sweeper + "=public,PRIVB,PRIVA",
+			got:     func(cfg Config) any { return cfg.ExchangeJobAccounts },
+			want: func(t *testing.T) any {
+				return []exchange.AccountEntry{
+					{Account: jobAccount, Job: jobList(t, "EXAMPLE"), Session: "example-job:EXAMPLE=1"},
+					{Account: sweeper, Job: jobList(t, "public,PRIVA,PRIVB")},
+				}
+			},
+		},
+		{
+			setting: "BROKER_EXCHANGE_JOB_WORKFLOWS",
+			env:     jobWorkflowEnv,
+			value:   jobWorkflow + "=public=sweep=1\texample-org/example-repo=.github/workflows/triage.yaml=refs/heads/main=ACME",
+			got:     func(cfg Config) any { return cfg.ExchangeJobWorkflows },
+			want: func(t *testing.T) any {
+				return []exchange.WorkflowEntry{
+					{Repository: "example-org/example-repo", Workflow: ".github/workflows/sweep.yaml", Ref: "refs/heads/main", Job: jobList(t, "public"), Session: "sweep=1"},
+					{Repository: "example-org/example-repo", Workflow: ".github/workflows/triage.yaml", Ref: "refs/heads/main", Job: jobList(t, "ACME")},
+				}
+			},
+		},
+		{
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS",
+			env:     jobFleetEnv,
+			value:   exampleVMServiceAccount + "=EXAMPLE=example-fleet-job " + secondFleet + "=public,PRIVA",
+			got:     func(cfg Config) any { return cfg.ExchangeGoogleAccounts },
+			want: func(t *testing.T) any {
+				return []exchange.GoogleEntry{
+					{
+						Account: exampleVMServiceAccount, Service: "example-service",
+						CloudProject: "example-project", Instance: "example-vm-*",
+						Job: jobList(t, "EXAMPLE"), Session: "example-fleet-job",
+					},
+					{Account: secondFleet, Service: "example-other", Job: jobList(t, "public,PRIVA")},
+				}
+			},
+		},
+	} {
+		t.Run(row.setting, func(t *testing.T) {
+			e := row.env()
+			e[row.setting] = row.value
+			cfg, err := Load(env(e))
+			if err != nil {
+				t.Fatalf("Load(%s=%q): %v", row.setting, row.value, err)
+			}
+			if got, want := row.got(cfg), row.want(t); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Load(%s=%q) read %+v, want %+v", row.setting, row.value, got, want)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAJobEntryItCannotServe: each job setting refuses the start over an entry it
+// cannot read, and the refusal names the setting, quotes the entry and says which rule it breaks.
+// For each setting: a wrong number of fields, a blank identity, an identity no entry of its kind
+// may name, an identity named twice, and projects exchange.ParseJobProjects refuses.
+func TestLoadRefusesAJobEntryItCannotServe(t *testing.T) {
+	type refusal struct {
+		name, value string
+		// entry is the entry the refusal quotes, the value itself when empty.
+		entry string
+		// says is what the refusal says besides the setting and the entry: the words of the one
+		// refusal the row is for.
+		says string
+	}
+	seventeen := "public"
+	for i := range 17 {
+		seventeen += ",P" + strconv.Itoa(10+i)
+	}
+	// projectRefusals are the rows of projects ParseJobProjects refuses, each after prefix, the
+	// identity of an entry and its "=".
+	projectRefusals := func(prefix string) []refusal {
+		return []refusal{
+			{name: "seventeen private projects", value: prefix + seventeen, says: "17 private projects are named"},
+			{name: "a key that is no project key", value: prefix + "acme", says: strconv.Quote("acme") + " is not a project key"},
+			{name: "public after a key", value: prefix + "ACME,public", says: "public comes first"},
+			{name: "two keys without public", value: prefix + "ACME,OTHER", says: "2 projects are named without public first"},
+		}
+	}
+	for _, setting := range []struct {
+		name string
+		env  func() map[string]string
+		rows []refusal
+	}{
+		{
+			name: "BROKER_EXCHANGE_JOB_ACCOUNTS",
+			env:  jobPodEnv,
+			rows: append([]refusal{
+				{name: "an entry with no =", value: jobAccount, says: "must be <service account>=<projects>[=<session>] entries"},
+				{name: "a blank account", value: "=EXAMPLE", says: "must be <service account>=<projects>[=<session>] entries"},
+				{name: "an account that is no ServiceAccount subject", value: "example-job=EXAMPLE", says: "must name system:serviceaccount:<namespace>:<name> accounts"},
+				{name: "a namespace's default account", value: "system:serviceaccount:example-ns:default=EXAMPLE", says: "names a namespace's default service account"},
+				{name: "an account named twice", value: jobAccount + "=EXAMPLE " + jobAccount + "=public", entry: jobAccount + "=public", says: "names the service account " + jobAccount + " twice"},
+			}, projectRefusals(jobAccount+"=")...),
+		},
+		{
+			name: "BROKER_EXCHANGE_JOB_WORKFLOWS",
+			env:  jobWorkflowEnv,
+			rows: append([]refusal{
+				{name: "an entry of three fields", value: "example-org/example-repo=.github/workflows/sweep.yaml=EXAMPLE", says: "must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries"},
+				{name: "a blank ref", value: "example-org/example-repo=.github/workflows/sweep.yaml==EXAMPLE", says: "must be <repository>=<workflow path>=<ref>=<projects>[=<session>] entries"},
+				{name: "a workflow named twice", value: jobWorkflow + "=EXAMPLE " + jobWorkflow + "=public", entry: jobWorkflow + "=public", says: "names the workflow " + jobWorkflow + " twice"},
+			}, projectRefusals(jobWorkflow+"=")...),
+		},
+		{
+			name: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS",
+			env:  jobFleetEnv,
+			rows: append([]refusal{
+				{name: "an entry with no =", value: exampleVMServiceAccount, says: "must be <service account email>=<projects>[=<session>] entries"},
+				{name: "a blank account", value: "=EXAMPLE", says: "must be <service account email>=<projects>[=<session>] entries"},
+				{name: "a project's default account", value: "123456789-compute@developer.gserviceaccount.com=EXAMPLE", says: "names a project's default service account"},
+				{name: "an account named twice", value: exampleVMServiceAccount + "=EXAMPLE " + exampleVMServiceAccount + "=public", entry: exampleVMServiceAccount + "=public", says: "names the service account " + exampleVMServiceAccount + " twice"},
+			}, projectRefusals(exampleVMServiceAccount+"=")...),
+		},
+	} {
+		for _, row := range setting.rows {
+			t.Run(setting.name+"/"+row.name, func(t *testing.T) {
+				e := setting.env()
+				e[setting.name] = row.value
+				cfg, err := Load(env(e))
+				if err == nil {
+					t.Fatalf("Load(%s=%q) loaded, ExchangeJobAccounts = %+v, ExchangeJobWorkflows = %+v, ExchangeGoogleAccounts = %+v; want a refusal", setting.name, row.value, cfg.ExchangeJobAccounts, cfg.ExchangeJobWorkflows, cfg.ExchangeGoogleAccounts)
+				}
+				entry := row.entry
+				if entry == "" {
+					entry = row.value
+				}
+				for _, want := range []string{setting.name, strconv.Quote(entry), row.says} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("Load(%s=%q): refusal %q does not say %s", setting.name, row.value, err, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName: one identity has one answer, so
+// the start is refused when a job setting and a setting of the same kind that names a person, or
+// the read accounts, both list it, and when BROKER_EXCHANGE_JOB_ACCOUNTS and a
+// BROKER_EXCHANGE_ACCOUNTS entry naming neither a person nor a project (<account>==), whose token
+// writes as the account, both list one account. The refusal names both settings and the
+// identity, and where a row gives one, the reason a job's token cannot share it. Each setting
+// alone loads, so the refusal is the pair's.
+func TestLoadRefusesAnIdentityAJobSettingAndAPersonSettingBothName(t *testing.T) {
+	for _, row := range []struct {
+		name          string
+		env           func() map[string]string
+		other, value  string
+		job, jobValue string
+		identity      string
+		// says, when set, is the reason the refusal must give.
+		says string
+	}{
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "=EXAMPLE=ada@example.com",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
+			identity: jobAccount,
+		},
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_ACCOUNTS naming neither a person nor a project",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_ACCOUNTS", value: jobAccount + "==",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=EXAMPLE",
+			identity: jobAccount,
+			says:     "one account mints one kind of token, and only a job's names the account as its service and carries projects",
+		},
+		{
+			name:  "a pod's account in BROKER_EXCHANGE_READ_ACCOUNTS",
+			env:   jobPodEnv,
+			other: "BROKER_EXCHANGE_READ_ACCOUNTS", value: jobAccount + "=example-reader=example-reader-session",
+			job: "BROKER_EXCHANGE_JOB_ACCOUNTS", jobValue: jobAccount + "=public",
+			identity: jobAccount,
+		},
+		{
+			name:  "a workflow in BROKER_EXCHANGE_WORKFLOWS",
+			env:   jobWorkflowEnv,
+			other: "BROKER_EXCHANGE_WORKFLOWS", value: jobWorkflow + "=EXAMPLE=ada@example.com",
+			job: "BROKER_EXCHANGE_JOB_WORKFLOWS", jobValue: jobWorkflow + "=EXAMPLE",
+			identity: jobWorkflow,
+		},
+		{
+			name:  "a Google account in BROKER_VM_EXCHANGE_ACCOUNTS",
+			env:   jobFleetEnv,
+			other: "BROKER_VM_EXCHANGE_ACCOUNTS", value: exampleVMServiceAccount + "=EXAMPLE=ada@example.com",
+			job: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", jobValue: exampleVMServiceAccount + "=EXAMPLE",
+			identity: exampleVMServiceAccount,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, alone := range []struct{ setting, value string }{{row.other, row.value}, {row.job, row.jobValue}} {
+				e := row.env()
+				e[alone.setting] = alone.value
+				if _, err := Load(env(e)); err != nil {
+					t.Fatalf("Load(%s=%q) alone: %v; want it to load, so that the refusal below is the pair's", alone.setting, alone.value, err)
+				}
+			}
+			e := row.env()
+			e[row.other] = row.value
+			e[row.job] = row.jobValue
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(%s=%q, %s=%q) loaded; want a refusal naming both settings", row.other, row.value, row.job, row.jobValue)
+			}
+			for _, want := range []string{row.other, row.job, row.identity} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Load(%s, %s): refusal %q does not name %s", row.other, row.job, err, want)
+				}
+			}
+			if row.says != "" && !strings.Contains(err.Error(), row.says) {
+				t.Errorf("Load(%s, %s): refusal %q does not say %s", row.other, row.job, err, row.says)
+			}
+		})
+	}
+}
+
+// TestLoadRefusesAJobSettingWithoutItsIssuer: each job setting needs the issuer whose tokens its
+// identities present, and the start is refused without it, naming the setting and what it needs:
+// the pod setting the exchange audience of the cluster, the workflow setting GitHub's issuer and
+// audience, and the VM setting the Google audience and an account BROKER_VM_SERVICES lists.
+func TestLoadRefusesAJobSettingWithoutItsIssuer(t *testing.T) {
+	for _, row := range []struct {
+		name, setting, value string
+		env                  func() map[string]string
+		names                []string
+	}{
+		{
+			name:    "a pod's account without the exchange audience",
+			setting: "BROKER_EXCHANGE_JOB_ACCOUNTS", value: jobAccount + "=EXAMPLE",
+			env:   withK8sIssuer,
+			names: []string{"BROKER_EXCHANGE_K8S_AUDIENCE"},
+		},
+		{
+			name:    "a workflow without GitHub's issuer",
+			setting: "BROKER_EXCHANGE_JOB_WORKFLOWS", value: jobWorkflow + "=EXAMPLE",
+			env:   validEnv,
+			names: []string{"BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE"},
+		},
+		{
+			name:    "a Google account without the Google audience",
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", value: exampleVMServiceAccount + "=EXAMPLE",
+			env:   validEnv,
+			names: []string{"BROKER_GOOGLE_OIDC_AUDIENCE"},
+		},
+		{
+			name:    "a Google account BROKER_VM_SERVICES does not list",
+			setting: "BROKER_VM_EXCHANGE_JOB_ACCOUNTS", value: secondFleet + "=EXAMPLE",
+			env:   validVMEnv,
+			names: []string{"BROKER_VM_SERVICES", secondFleet},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := row.env()
+			e[row.setting] = row.value
+			_, err := Load(env(e))
+			if err == nil {
+				t.Fatalf("Load(%s=%q) loaded; want a refusal naming %v", row.setting, row.value, row.names)
+			}
+			for _, want := range append([]string{row.setting}, row.names...) {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Load(%s=%q): refusal %q does not name %s", row.setting, row.value, err, want)
+				}
+			}
+		})
+	}
+}
+
 // TestAPrivateProjectOnlyInItsPodsParsesTheSetting pins BROKER_PRIVATE_PROJECTS at load:
 // whitespace-separated project keys land in Config.PrivateProjects sorted, none when unset, and a
 // key that is no project key or a key named twice refuses the configuration, naming the setting
@@ -2514,13 +3489,48 @@ func TestLoadRefusesThePlainSignInSecret(t *testing.T) {
 
 // TestLoadRefusesASignInIssuerThatIsNotHTTPS pins that the issuer, which a sign-in's code
 // exchange sends the client secret to, is an absolute https URL, with http allowed only to a
-// loopback host.
+// loopback host. The refusal names the setting and never the value.
 func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 	for _, bad := range []string{"http://accounts.example.com", "http://10.0.0.1:5556", "http://127.0.0.1.example.com", "accounts.example.com", "ftp://accounts.example.com", "https://"} {
 		e := validEnv()
 		e["BROKER_SIGNIN_ISSUER"] = bad
-		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
-			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		_, err := Load(env(e))
+		if want := "BROKER_SIGNIN_ISSUER must be an absolute https URL, or http to a loopback host"; err == nil || err.Error() != want {
+			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}
+
+// Every issuer setting the broker reads refuses a value holding a credential, naming the setting
+// alone (oidc.IssuerRefusal): a made-up user name and password, a made-up token holding a "/"
+// written as the user, its "@" past the host, and a made-up token in the query or the fragment.
+// No issuer identifier holds any of them, and each is printed in the broker's boot lines,
+// discovery errors and sign-in page.
+func TestLoadRefusesAnIssuerHoldingACredential(t *testing.T) {
+	const user, secret = "madeUpIssuerUser0123", "madeUpIssuerSecret0123"
+	userinfo := user + ":" + secret + "@"
+	pairs := map[string]string{
+		"BROKER_K8S_OIDC_ISSUER":        "BROKER_K8S_OIDC_AUDIENCE",
+		"BROKER_EXCHANGE_GITHUB_ISSUER": "BROKER_EXCHANGE_GITHUB_AUDIENCE",
+	}
+	for _, setting := range []string{"BROKER_SIGNIN_ISSUER", "BROKER_GOOGLE_OIDC_ISSUER", "BROKER_K8S_OIDC_ISSUER", "BROKER_EXCHANGE_GITHUB_ISSUER"} {
+		for shape, value := range map[string]string{
+			"userinfo":                "https://" + userinfo + "issuer.example",
+			"an @ past the host":      "https://" + user + "/" + secret + "@issuer.example",
+			"a token in the query":    "https://issuer.example/?token=" + secret,
+			"a token in the fragment": "https://issuer.example/#" + secret,
+		} {
+			t.Run(setting+"/"+shape, func(t *testing.T) {
+				e := validEnv()
+				e[setting] = value
+				if audience, paired := pairs[setting]; paired {
+					e[audience] = "agent-secrets"
+				}
+				_, err := Load(env(e))
+				if err == nil || !strings.HasPrefix(err.Error(), setting+" cannot be read: ") || strings.Contains(err.Error(), user[:10]) || strings.Contains(err.Error(), secret[:10]) {
+					t.Fatalf("Load = %v, want a refusal naming %s and no part of the credential", err, setting)
+				}
+			})
 		}
 	}
 }
@@ -2677,19 +3687,21 @@ func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlocksTestOnlySettings pins each of the nine settings the broker's local
-// stack configures with: the airlock's eight — the two minter bases, the addresses the proxy
-// may dial although they are loopback, the extra upstream roots, where a name resolves to, the
-// token authority the azure exchange is held to, and its two negative-control switches — and
-// the judge's one, the switch that turns its checks before the model off. Each is read as it is
-// given and is empty or off when unset. The refusal of each on a production start is
-// cmd/cipherd's, which has its own rows.
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the eleven settings the broker's local
+// stack configures with: the airlock's ten — the four minter stand-ins (GitHub's and Google's
+// bases, Anthropic's token exchange and IAM's generateIdToken, where an anthropic-federation
+// secret's identity token is read), the addresses the proxy may dial although they are loopback,
+// the extra upstream roots, where a name resolves to, the token authority the azure exchange is
+// held to, and its two negative-control switches — and the judge's one, the switch that turns its
+// checks before the model off. Each is read as it is given and is empty or off when unset. The
+// refusal of each on a production start is cmd/cipherd's, which has its own rows.
 func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
+		cfg.AirlockTestAnthropicTokenURL != "" || cfg.AirlockTestIAMCredentialsURL != "" ||
 		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind ||
 		cfg.AirlockTestAzureAuthority != "" ||
 		cfg.JudgeTestSkipChecks {
@@ -2699,6 +3711,8 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	e := validEnv()
 	e["BROKER_AIRLOCK_TEST_GITHUB_API_BASE"] = "http://127.0.0.1:18080"
 	e["BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL"] = "http://127.0.0.1:18081/token"
+	e["BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL"] = " http://127.0.0.1:18082/v1/oauth/token "
+	e["BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL"] = "http://127.0.0.1:18083"
 	e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = "s.airlock.test:443 t.airlock.test:8443"
 	e["BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE"] = "/run/airlock/ca.crt"
 	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
@@ -2712,6 +3726,9 @@ func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
 	}
 	if cfg.AirlockTestGitHubAPIBase != "http://127.0.0.1:18080" || cfg.AirlockTestGoogleTokenURL != "http://127.0.0.1:18081/token" {
 		t.Errorf("the minter bases read %q and %q; want the two the environment named", cfg.AirlockTestGitHubAPIBase, cfg.AirlockTestGoogleTokenURL)
+	}
+	if cfg.AirlockTestAnthropicTokenURL != "http://127.0.0.1:18082/v1/oauth/token" || cfg.AirlockTestIAMCredentialsURL != "http://127.0.0.1:18083" {
+		t.Errorf("the anthropic-federation minter's stand-ins read %q and %q; want the two the environment named, trimmed", cfg.AirlockTestAnthropicTokenURL, cfg.AirlockTestIAMCredentialsURL)
 	}
 	if cfg.AirlockTestUpstreamCAFile != "/run/airlock/ca.crt" {
 		t.Errorf("the upstream roots file reads %q; want /run/airlock/ca.crt", cfg.AirlockTestUpstreamCAFile)
@@ -3015,6 +4032,54 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// TestHoldRequiresDeadlineIsAnOnOffSetting pins BROKER_HOLD_REQUIRES_DEADLINE, which an IAP
+// deployment's broker sets, read as the broker's other on/off settings are: unset, or blank, is
+// off, every spelling strconv.ParseBool reads is taken, and anything else refuses the start naming
+// the setting rather than being taken as off, which would serve an IAP deployment's people with no
+// deadline. It needs the hold it rules, which BROKER_PROJECT_ACCESS_URL builds: set true without
+// that URL, the start is refused naming both settings, since a broker that asks no Dispatch holds
+// nobody, deadline or not; set false without it, the start goes on.
+//
+// Controls: Load leaving HoldRequiresDeadline unread ("true" reads as off, and the test fails
+// naming it); Load taking it true with no BROKER_PROJECT_ACCESS_URL (the start goes on, and the
+// test fails naming the refusal it wanted).
+func TestHoldRequiresDeadlineIsAnOnOffSetting(t *testing.T) {
+	withHold := func() map[string]string {
+		e := validEnv()
+		e["BROKER_PROJECT_ACCESS_URL"] = "http://dispatch.internal.example:8766"
+		e["BROKER_PROJECT_ACCESS_TOKEN_FILE"] = "/var/run/secrets/dispatch-access/token"
+		return e
+	}
+	for _, c := range []struct {
+		value string
+		want  bool
+	}{{"", false}, {"  ", false}, {"false", false}, {"0", false}, {"true", true}, {" TRUE ", true}, {"1", true}} {
+		e := withHold()
+		if c.value != "" {
+			e["BROKER_HOLD_REQUIRES_DEADLINE"] = c.value
+		}
+		cfg, err := Load(env(e))
+		if err != nil || cfg.HoldRequiresDeadline != c.want {
+			t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = (%t, %v); want %t", c.value, cfg.HoldRequiresDeadline, err, c.want)
+		}
+	}
+	e := withHold()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "required"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "must be true or false") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=%q) = %v; want a refusal naming the setting", "required", err)
+	}
+
+	e = validEnv()
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "true"
+	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_HOLD_REQUIRES_DEADLINE") || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=true with no BROKER_PROJECT_ACCESS_URL) = %v; want a refusal naming both settings: that broker holds nobody", err)
+	}
+	e["BROKER_HOLD_REQUIRES_DEADLINE"] = "false"
+	if cfg, err := Load(env(e)); err != nil || cfg.HoldRequiresDeadline {
+		t.Errorf("Load(BROKER_HOLD_REQUIRES_DEADLINE=false with no BROKER_PROJECT_ACCESS_URL) = (%t, %v); want the start to go on with it off", cfg.HoldRequiresDeadline, err)
 	}
 }
 

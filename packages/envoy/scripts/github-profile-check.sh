@@ -8,8 +8,9 @@
 # the requests its proxy block allows; and p4, that a body still carrying the removed github_app
 # field is refused with a code of its own.
 #
-# It starts scripts/dev-broker.sh, whose profiles file names the stack's three github-app
-# secrets and the two proxied profiles of DEMO_GITHUB_APP, with two settings of that script's:
+# It starts scripts/dev-broker.sh, whose profiles file declares the kind github and names the
+# stack's github-app secrets and the two proxied profiles of DEMO_GITHUB_APP_PROXIED,
+# DEMO_GITHUB_APP's copy tagged proxy=github, with two settings of that script's:
 # DEV_BROKER_GITHUB_PERMISSIONS, so the App's installations hold less than the profiles ask for
 # (INSTALLATION_PERMISSIONS below), and DEV_BROKER_PROXIED_GITHUB_IP, so the stand-in GitHub is
 # served over TLS on port 443 of a loopback address, where the broker's proxy reaches it under the
@@ -33,7 +34,7 @@
 #     and is given back.
 #   - p3: DEMO_GITHUB_READ's child holds a placeholder, which GitHub refuses when the child sends
 #     it straight there, and its call through the proxy reaches GitHub with a token GitHub minted,
-#     asked for with the profile's permissions cut; a POST, which the proxy block does not allow,
+#     asked for with the profile's permissions cut; a POST, which the github kind's allow does not hold,
 #     is refused by the proxy and reaches GitHub not at all; and GitHub's three routes that read
 #     what a token holds answer by what the cut left in it: a deploy-key list is refused to
 #     DEMO_GITHUB_READ and served to DEMO_GITHUB_ADMIN_READ, an organization's installations are

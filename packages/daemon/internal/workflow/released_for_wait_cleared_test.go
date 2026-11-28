@@ -30,6 +30,7 @@ import (
 // mark three days old took that row, and the child of rank B beside it, which the line would
 // otherwise have been offered it, did not.
 func TestAnIssueLeavingTheWorkflowCarriesNoReleasedForWaitMark(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	ctx := context.Background()
 	now := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)

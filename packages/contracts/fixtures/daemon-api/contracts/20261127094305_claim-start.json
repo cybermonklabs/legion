@@ -1,0 +1,13 @@
+{
+  "answers": [
+    {
+      "answer": "agent-action",
+      "addKeyPaths": [
+        "phaseNotRestarted"
+      ]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

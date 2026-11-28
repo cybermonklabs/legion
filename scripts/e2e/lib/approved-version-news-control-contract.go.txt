@@ -1,0 +1,13 @@
+//go:build e2e
+
+// This file is scripts/e2e/approved-version-news.sh's: its negative control writes it into a
+// scratch copy of the base commit alone, whose package daemon defines no
+// versionNewsPluginContract, the seam the head's part-one driver registers its claims' contract
+// through. The base declares that contract as the constant api.DaemonAPIVersion, which the head
+// reads from the registry of dispatch://INFRA-1569 (api.DaemonAPIVersion()), so this one returns
+// the constant.
+package daemon
+
+import "github.com/sjawhar/legion/daemon/internal/api"
+
+func versionNewsPluginContract() int { return api.DaemonAPIVersion }

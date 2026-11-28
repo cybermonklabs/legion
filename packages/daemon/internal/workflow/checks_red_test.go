@@ -29,6 +29,7 @@ import (
 // accepting - is told once, and a phase no worker holds names none. Nothing else happens: no phase
 // moves, no architect hears checks-red, no worker is started, and no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from   phase.Phase
 		status string
@@ -82,6 +83,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 // each change - and moves nothing any of the three times, where the rule this replaced sent the
 // work back on the first red and could not take it back.
 func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -120,6 +122,7 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 // use up the run's bound of steps: the redelivery of a settlement whose check name holds a NUL is
 // the same settlement as the step the store kept of it, and adds none.
 func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *testing.T) {
+	t.Parallel()
 	const dev = "legion-implementer[bot]"
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -169,6 +172,7 @@ func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *t
 // failed; the message names it beside the checks that ran, and the worker holding the phase
 // decides what it means.
 func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -198,6 +202,7 @@ func TestACheckGitHubNeverRanIsToldLikeAnyOtherConclusion(t *testing.T) {
 // tree is suspended there, so a settlement that reaches a lingering tree's issue is recorded and
 // nobody is told - a message to a role nobody holds reaches nobody, and the tree is done.
 func TestASettlementOfALingeringTreeTellsNobody(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	until := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
@@ -220,6 +225,7 @@ func TestASettlementOfALingeringTreeTellsNobody(t *testing.T) {
 // stands for no head, so there is nothing to tell: the daemon knows nothing of the head's CI, and
 // a message naming another commit's checks would be read as the head's.
 func TestASettlementThatStandsForNoHeadTellsNobody(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -240,6 +246,7 @@ func TestASettlementThatStandsForNoHeadTellsNobody(t *testing.T) {
 // on standing for the code head it names. The rule this replaced sent the work back from whatever
 // phase the move completed in.
 func TestAPushThatCompletesItsMoveMovesNothingAndTellsNobody(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// head is the pull request's recorded head before the fact, and fact the one that
@@ -287,6 +294,7 @@ func TestAPushThatCompletesItsMoveMovesNothingAndTellsNobody(t *testing.T) {
 // nothing of the reopened head's CI until one arrives. The first settlement after the reopen is
 // therefore told, even when it says what the settlement before the close said.
 func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -317,6 +325,7 @@ func TestAReopenStartsTheCheckSettlementAfreshAndTellsItAgain(t *testing.T) {
 // what it said when it arrived. The rule this replaced read the settlement here and sent the work
 // straight back to implementing rather than through a tester round.
 func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		failing []string
@@ -362,6 +371,7 @@ func TestACompletionHandsOnASettledHeadWithoutReadingIt(t *testing.T) {
 // a CONFLICTING answer is a confirmed conflict, and every case's base requires a check that is not
 // green on the head, so that conflict needs the merge in every phase that acts on one.
 func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		at         phase.Phase
@@ -409,6 +419,7 @@ func TestNoMergeabilityReadMovesTheIssue(t *testing.T) {
 // merge forward it asked for that head (record.PullRequest.MergeForward), so the same read again
 // asks nothing and tells nobody a second time.
 func TestEveryConflictingReadDecidesAndTheAskItselfStopsTheRepeat(t *testing.T) {
+	t.Parallel()
 	pool := seedConflictIssue(t, phase.Merging, "retro", record.PullRequest{ConflictingHead: conflictHead})
 	applyRefusingNothing(t, pool, readsAfter(0), conflictingRead(&record.BaseRules{}))
 	if due := conflictConfirms(t, pool); len(due) != 0 {
@@ -593,6 +604,7 @@ func recordedPR(t *testing.T, pool *pgxpool.Pool, issue string) record.PullReque
 // A hold keeps the phase's work where it stood, so its worker still needs the CI result.
 // In merging that worker is the merger, and the implementer is not a substitute for it.
 func TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		from  phase.Phase
 		roles []claim.Role

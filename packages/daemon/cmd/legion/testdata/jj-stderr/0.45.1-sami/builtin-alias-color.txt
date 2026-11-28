@@ -1,0 +1,3 @@
+jj --ignore-working-copy --color=never config list -T '""'
+[1m[38;5;3mWarning: [39mCannot define an alias that overrides the built-in command 'log'.[0m
+--- exit 0

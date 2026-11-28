@@ -64,6 +64,19 @@ export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolea
   return row.state !== "expired";
 }
 
+/** The Dispatch scopes `row` names where it is a Dispatch sign-in: its `dispatch_scopes`, a list
+ *  even where it holds none. Null for a machine login and a secret request, whose
+ *  `dispatch_scopes` is null, and for a row from a broker older than sign-ins, which sends none.
+ *  Every surface that tells a sign-in from a machine login reads this rule, as both read
+ *  {@link awaitsDecision}: the Inbox page and the credential pages
+ *  (`CredentialRequestsSection.tsx`, `MachineLoginsSection.tsx`, `MachineLoginPage.tsx`,
+ *  `CredentialRecordFacts.tsx`) and `dispatch inbox` (`dispatch-commands/session.ts`). */
+export function signInScopes(row: {
+  readonly dispatch_scopes?: readonly string[] | null | undefined;
+}): readonly string[] | null {
+  return Array.isArray(row.dispatch_scopes) ? row.dispatch_scopes : null;
+}
+
 /** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the
  *  default and the Inbox count's own read, which answers the rows somebody else has written in
  *  since they read them; `inbox`, every row in their Inbox, read or not, less what they have

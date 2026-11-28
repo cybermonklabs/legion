@@ -189,7 +189,7 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
-	command := exec.Command(os.Args[0])
+	command := exec.Command(dispatchCopy(t))
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),

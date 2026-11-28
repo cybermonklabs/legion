@@ -146,16 +146,18 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	}
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
+	start := s.children.Starter()
 	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, stdin, args)
+		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
 	}
 	return openedWorkspace{dir: dir, jj: jj, run: run}, cancel, nil
 }
 
-// adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
-// worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
-// id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
-// of its reason (cutAnswerError): jj's standard error has no bound of its own.
+// adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
+// (runAdoption). A request the shim cannot act on is answered with the reason when it names an
+// id to answer. The answer goes out as one line, so a refusal carries at most
+// shimwire.MaxAnswerErrorBytes of its reason (shimwire.CutAnswerError): jj's standard error has no
+// bound of its own.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -163,17 +165,17 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			s.log.Printf("[worker-shim] refusing an adopt-working-copy frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	}
 	s.toDaemon(result)
 }
 
-// adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,
-// packages/workspace/src/workspace.ts): the working copy's author becomes the identity in
-// the command's environment, and only while it is undescribed — a described working copy is a
-// previous phase's work and keeps its author.
+// adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
+// daemon asks a role's shim to run before a phase task (runAdoption): its author becomes the
+// identity in the command's environment, and only while it is undescribed — a described working
+// copy is a previous phase's work and keeps its author.
 func adoptionArgs(jj, dir string) []string {
 	return []string{jj, "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}
 }
@@ -189,13 +191,15 @@ func describedArgs(jj, dir string) []string {
 // shares the workspace, so a working copy the previous role left described (its pushed commit) is
 // kept as it is, and the incoming role starts on a fresh one of its own (`jj new`): otherwise its
 // work would land in the previous role's commit, authored by the previous role's App. One read
-// decides which of the two changes the working copy needs, and only that one runs. Both commands
+// decides which of the two changes the working copy needs, and only that one runs: `jj metaedit
+// --update-author` on an undescribed @ (adoptionArgs), `jj new` on a described one. That read, like
+// any jj command run without --ignore-working-copy, first snapshots the working copy. Both commands
 // run in the workspace itself, never in the shim's own directory: jj reads the repository of the
 // directory it runs in, whatever -R names, and migrates that repository's legacy configuration
-// (workspace.RunCommand). A failure is reported the way the shipped runner does (commandFailure,
-// packages/workspace/src/workspace.ts): the daemon decides what a failed adoption means. A shim
-// without LEGION_WORKSPACE was not started by a runtime, and refuses (runWorkingCopyAdoption,
-// worker-shim.ts); a PATH without jj refuses naming jj and the PATH searched.
+// (workspace.RunCommand). A failure is answered in workspace.RunCommand's words, which name the
+// command and its exit or its timeout, with jj's standard error: the daemon decides what a failed
+// adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses; a
+// PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)

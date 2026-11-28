@@ -30,6 +30,7 @@ import { useLiveViewState } from "../agent-view/live-views";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
 import { useInboxCount } from "../inbox/useInboxCount";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { PRIORITIES_PATH } from "../priorities/priority-routes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import {
@@ -39,6 +40,7 @@ import {
   parseIssuePath,
   parseProjectPath,
   routeIsInbox,
+  unknownToShell,
 } from "../refs/routes";
 
 /** The rows the Agents heading folds, named so the heading's chevron can say what it controls. */
@@ -99,10 +101,16 @@ function PinnedAgentRow({
   );
 }
 
-/** One rail entry: a key, its title, and the open-ask count when there is one. */
+/** One rail entry. Its groups, in this order: Name (the label and its detail, one item) and Count
+ *  (the open-ask count, when there is one). A pinned issue or a project reads its key with its
+ *  title beside it, the title wrapping inside the Name item; a page of the app (`detailUnder`)
+ *  reads its name with the description on a line of its own under it, so a description never
+ *  stands as a second column that wraps into three lines beside a one-word name. Name shrinks and
+ *  wraps inside itself, so Count keeps its place beside it. */
 function RailRow({
   badge,
   detail,
+  detailUnder = false,
   label,
   onNavigate,
   selected,
@@ -110,6 +118,7 @@ function RailRow({
 }: {
   badge: number | undefined;
   detail: string;
+  detailUnder?: boolean;
   label: string;
   onNavigate: (() => void) | undefined;
   selected: boolean;
@@ -127,8 +136,27 @@ function RailRow({
         onClick={onNavigate}
         to={to}
       >
-        <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
-        <span className={`min-w-0 flex-1 ${railSecondaryText}`}>{detail}</span>
+        <span
+          className={
+            detailUnder
+              ? "flex min-w-0 flex-1 flex-col"
+              : "flex min-w-0 flex-1 items-baseline gap-2"
+          }
+        >
+          {detailUnder ? (
+            <>
+              <span className="font-medium">{label}</span>
+              <span className={`text-xs font-normal ${railSecondaryText}`}>{detail}</span>
+            </>
+          ) : (
+            <>
+              <span className="shrink-0 font-medium whitespace-nowrap">{label}</span>
+              <span className={`min-w-0 flex-1 [overflow-wrap:anywhere] ${railSecondaryText}`}>
+                {detail}
+              </span>
+            </>
+          )}
+        </span>
         {badge === undefined ? null : (
           <span
             className={`shrink-0 rounded-full px-1.5 py-0.5 text-xs ${railBadgeBg} ${railBadgeText}`}
@@ -141,6 +169,16 @@ function RailRow({
   );
 }
 
+/**
+ * The navigation, in the sidebar or the phone's drawer. Its groups, top to bottom, each a section
+ * of its own: the hide control; Inbox (the Inbox link with its count, then Peek, on one line);
+ * Agents (the Agents link with its new replies, then the fold beside it, on one line, and the
+ * pinned agents under them while the fold is open); Pages (Priorities, Delivery and Pipeline, each
+ * a `RailRow` with its description under its name); Pinned (one `RailRow` per pinned issue, while
+ * any is pinned); Projects (one `RailRow` per project); and Settings. Each line keeps its count
+ * and its control at its right; its name shrinks and wraps inside it, so nothing scrolls sideways
+ * at the sidebar's width.
+ */
 export function Sidebar({
   onHide,
   onNavigate,
@@ -185,7 +223,12 @@ export function Sidebar({
   // The live view the reader is in, which its row marks as the page and which makes a move to
   // another pinned agent a replacement rather than a step of its own.
   const currentLiveView = liveViewSessionOf(location.pathname);
-  const currentIssue = parseIssuePath(location.pathname)?.key;
+  // Where the reader draws today's page, an address of the new issue page alone is no issue's,
+  // so no row is the page there, as on `main` (`unknownToShell`).
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const currentIssue = unknownToShell(location.pathname, newPage)
+    ? undefined
+    : parseIssuePath(location.pathname)?.key;
   const currentProject = parseProjectPath(location.pathname)?.project;
 
   const hideControl =
@@ -308,7 +351,8 @@ export function Sidebar({
           <ul className="mt-1 space-y-0.5">
             <RailRow
               badge={priorityFaults}
-              detail="Every project's priorities, and the work on none"
+              detail="Priorities and the work under them"
+              detailUnder
               label="Priorities"
               onNavigate={onNavigate}
               // The entry stands for the whole of the priorities, so it stays lit on one
@@ -322,6 +366,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="Deploys, merges, and pipeline failures"
+              detailUnder
               label="Delivery"
               onNavigate={onNavigate}
               selected={location.pathname === "/delivery"}
@@ -330,6 +375,7 @@ export function Sidebar({
             <RailRow
               badge={undefined}
               detail="CI and deploy step timings"
+              detailUnder
               label="Pipeline"
               onNavigate={onNavigate}
               selected={location.pathname === "/pipeline"}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -138,12 +139,33 @@ type ownerLastSeqPayload interface {
 	WithOwnerLastSeq(seq int) any
 }
 
+// ownerClosedAtPayload is an issue.closed payload that carries its issue's row
+// (model.IssueEventPayload). A close stamps the row's closed_at again in its write phase, after it
+// read the row back and so after its payload was built (api/issue_patch.go). That stamp is the
+// database's clock when the statement runs, which no writer knows in Go before the batch has run.
+// So the insert takes closed_at from the row as the close's earlier statements left it
+// (ownerClosedAtJSON), as it takes last_seq, and the payload records the stamp that the row keeps.
+type ownerClosedAtPayload interface {
+	WithOwnerClosedAt(closedAt *time.Time) any
+}
+
+// ownerClosedAtJSON is the closed_at of the event's issue row, as the insert reads it, as a JSON
+// value: JSON null where the row holds none, and else the time as encoding/json writes a
+// time.Time in UTC (time.RFC3339Nano). That is the fraction without its trailing zeros, no
+// fraction for a whole second, and the zone as Z. A reader that compares the payload's text with
+// a time that Dispatch wrote in Go, as a client compares two stamps, so reads the same text.
+const ownerClosedAtJSON = `coalesce((
+				select to_jsonb(to_char(c.at, 'YYYY-MM-DD"T"HH24:MI:SS') || rtrim(rtrim(to_char(c.at, '.US'), '0'), '.') || 'Z')
+				from (select closed_at at time zone 'UTC' as at from issues where key = $1) c),
+				'null'::jsonb)`
+
 // QueueAppend queues e's append on a write phase's batch: its owner's lock and row
 // (lockEventOwner), which take the transaction's id, and the insert, which takes the next sequence
 // from the owner row as it stands when the insert runs and advances the row's last_seq (and an
 // issue's updated_at) to the row it inserted, in the same statement. An ask.opened event's payload
 // then records the event's own id (opened_event_id) through the id sequence's currval, the id the
-// insert just took. So no value of one statement is read in Go before the next one is sent.
+// insert just took, and an issue.closed's payload takes closed_at from its issue's row
+// (ownerClosedAtPayload). So no value of one statement is read in Go before the next one is sent.
 // appended receives the event as written - its id, sequence, time, the owner's project and the
 // payload as stored - once the batch has read those statements' results, before any statement
 // queued after them is read. A statement queued right after these may name the event's id as
@@ -199,7 +221,13 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	// snapshot, which holds every write the transaction made before it, and so is the last_seq a
 	// payload that carries the owner row names (ownerLastSeqPayload): it reads nextOwnerSeq, the
 	// expression the event's own seq reads, so the payload records the sequence the event took.
-	storedPayload, storedLogins := `$6`, `null::jsonb`
+	// An issue's update also writes the event's created_at and seq as the row's last_event_at and
+	// last_event_at_seq (20261125143901), in the same statement, so the pair names last_seq's own
+	// event wherever this release wrote last_seq, and the priorities read takes its newest event
+	// from the row (api's priorityReadQuery). It takes no statement and no lock of its own.
+	// An issue.closed that carries its issue's row takes closed_at from that row in the same
+	// snapshot too (ownerClosedAtPayload), and reads back the value its payload stores.
+	storedPayload, storedLogins, storedClosedAt := `$6`, `null::jsonb`, `null::timestamptz`
 	args := []any{e.IssueKey, e.ArtifactID, e.ProjectKey, e.Type, actor, payload, e.Notify}
 	if logins != nil {
 		loginsSQL, loginsArgs := logins.SQL(8)
@@ -210,23 +238,31 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	if _, carriesOwnerSeq := e.Payload.(ownerLastSeqPayload); carriesOwnerSeq {
 		storedPayload = `jsonb_set(` + storedPayload + `, '{last_seq}', to_jsonb(` + nextOwnerSeq + `))`
 	}
+	_, takesClosedAt := e.Payload.(ownerClosedAtPayload)
+	takesClosedAt = takesClosedAt && e.Type == "issue.closed"
+	if takesClosedAt {
+		storedPayload = `jsonb_set(` + storedPayload + `, '{closed_at}', ` + ownerClosedAtJSON + `)`
+		storedClosedAt = `(payload->>'closed_at')::timestamptz`
+	}
 	batch.Queue("", `
 		with appended as (
 			insert into events (issue_key, artifact_id, project_key, seq, type, actor, payload, notify)
 			values ($1, $2, $3, `+nextOwnerSeq+`, $4, $5, `+storedPayload+`, $7)
-			returning id, seq, created_at, `+storedLogins+` as thread_logins
+			returning id, seq, created_at, `+storedLogins+` as thread_logins, `+storedClosedAt+` as closed_at
 		), issue as (
-			update issues set last_seq = appended.seq, updated_at = greatest(issues.updated_at, appended.created_at)
+			update issues set last_seq = appended.seq, last_event_at = appended.created_at, last_event_at_seq = appended.seq,
+				updated_at = greatest(issues.updated_at, appended.created_at)
 			from appended where issues.key = $1
 		), artifact as (
 			update artifacts set last_seq = appended.seq from appended where artifacts.id = $2
 		), project as (
 			update projects set last_seq = appended.seq from appended where projects.key = $3
 		)
-		select id, seq, created_at, thread_logins from appended
+		select id, seq, created_at, thread_logins, closed_at from appended
 	`, args...).QueryRow(func(row pgx.Row) error {
 		var threadLogins []string
-		if err := row.Scan(&event.ID, &event.Seq, &event.CreatedAt, &threadLogins); err != nil {
+		var closedAt *time.Time
+		if err := row.Scan(&event.ID, &event.Seq, &event.CreatedAt, &threadLogins, &closedAt); err != nil {
 			return fmt.Errorf("insert event: %w", err)
 		}
 		if logins != nil {
@@ -242,6 +278,11 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 		// the payload's type, so it is read here after it.
 		if carrier, ok := event.Payload.(ownerLastSeqPayload); ok {
 			event.Payload = carrier.WithOwnerLastSeq(event.Seq)
+		}
+		// And an issue.closed carries the closed_at its stored payload records, read back from
+		// that payload (ownerClosedAtPayload), after the two swaps above, which keep its type.
+		if carrier, ok := event.Payload.(ownerClosedAtPayload); ok && takesClosedAt {
+			event.Payload = carrier.WithOwnerClosedAt(closedAt)
 		}
 		if event.Type != "ask.opened" {
 			appended(*event)
@@ -262,15 +303,33 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	return nil
 }
 
+// SessionAccessChannel is the Postgres channel each write of what the session content rule reads
+// (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
+// so every Dispatch process hears it once the write commits and none hears a write that did not:
+// the tie and the reached projects a broker-issued token is to record (access.TieSession,
+// access.RecordListedReach, which no code in this tree calls yet), and the writes later slices
+// add, of a session's tie to a person or a project it wrote in and of a stored listener answer. It
+// carries no payload. A later slice moves each process's document access epoch on it, so a
+// document socket asks its rule again before its next frame; a project's owner, visibility or
+// access list and a group announce on store.AccessChangedChannel instead.
+const SessionAccessChannel = "dispatch_session_access_changed"
+
+// AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the
+// select list of a statement over the rows it wrote: Postgres sends one notification however many
+// rows select it in a transaction, none when no row does, and none when the transaction does not
+// commit.
+const AnnounceSessionAccess = `pg_notify('` + SessionAccessChannel + `', '')`
+
 // eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
-// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
-// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
-// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
-// event is refused, so there is still no ownerless event for a plain configuration change: a
-// cross-project singleton settings table (no project, issue, or artifact of its own) has
-// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
-// a worked example of a route that checked this directly and deliberately skips appending an
-// event rather than inventing an owner.
+// of them is one of exactly three kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>"; a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>"; and a group's write
+// (model.AccessGroupEventPayload, `access_group.changed`), keyed "access_group:<name>", since a
+// group belongs to no project. Any other ownerless event is refused, so there is still no
+// ownerless event for a plain configuration change: a cross-project singleton settings table (no
+// project, issue, or artifact of its own) has nothing valid to pass here. See
+// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route that
+// checked this directly and deliberately skips appending an event rather than inventing an owner.
 //
 // The key of an ownerless event locks nothing: eventOwnerLock names no owner lock for it, so
 // LockOwners takes none and lockEventOwner takes only the transaction id, and QueueAppend's
@@ -291,11 +350,17 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
-		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+		switch payload := e.Payload.(type) {
+		case model.PriorityEventPayload:
 			if e.Type != "priority.updated" || payload.ID == "" {
 				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
 			}
 			return "priority:" + payload.ID, nil
+		case model.AccessGroupEventPayload:
+			if e.Type != "access_group.changed" || payload.Name == "" {
+				return "", fmt.Errorf("ownerless group event requires type access_group.changed and a group name")
+			}
+			return "access_group:" + payload.Name, nil
 		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
@@ -426,14 +491,19 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept", "priority.updated":
+		"user_thread_state.updated", "decision.kept", "priority.updated",
+		"project.access_changed", "access_group.changed", "issue.role_holders_changed":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by. This build writes no settings.repo_project.updated;
-		// the case stays for the events and outbox rows an earlier build wrote
-		// (outbox/publisher.go).
+		// and nobody is asked anything by. A change of a project's access list, owner or
+		// visibility, or of a group, is who may see what: every reader resolves its viewer again
+		// on it, and nobody is asked anything by it. A change of an issue's role holders is the
+		// Legion daemon's own record of which session it gave each role: a reader of the issue's
+		// log reads it to learn who held a role at a past time, and it asks nobody anything. This
+		// build writes no settings.repo_project.updated; the case stays for the events and outbox
+		// rows an earlier build wrote (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

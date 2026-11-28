@@ -32,7 +32,8 @@ func (c *reconnectErrClock) Advance(d time.Duration) {
 
 // TestAFailedReconnectAttemptLogsOneWarnAMinute holds that a broker that is down is never silent
 // and never floods: the first failed reconnect attempt of an outage logs one WARN at once, naming
-// the servers the client was configured with and the attempt's error, and the attempts that follow
+// how many servers the client was configured with and the attempt's error by its class, and the
+// attempts that follow
 // log one more per minute, not one per attempt (nats.go retries about once a second). It also
 // holds that a new outage reports itself at once rather than waiting out the previous outage's
 // minute, and that no line carries the client's seed. The regression it catches is the one this
@@ -49,7 +50,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	uri := gate.URL()
 	t.Setenv("NATS_NKEY_SEED", seed)
 
-	logs := captureBusLogs(t)
+	logs := captureBusLogs()
 	const reconnectFailed = "envoy nats reconnect attempt failed"
 
 	clock := &reconnectErrClock{now: time.Now()}
@@ -57,7 +58,8 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	client, err := bus.ConnectOwningStream([]string{uri},
 		bus.WithName(name),
 		bus.WithReconnectErrClock(clock.Now),
-		bus.WithReplicas(1))
+		bus.WithReplicas(1),
+		bus.WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -70,7 +72,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	awaitWarnings := func(want int) {
 		t.Helper()
-		waitFor(t, 30*time.Second, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
+		waitFor(t, fmt.Sprintf("%d reconnect failures of %s", want, name), func() bool {
 			return logs.count(name, reconnectFailed) >= want
 		})
 		if got := logs.count(name, reconnectFailed); got != want {
@@ -101,7 +103,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 		Level   string
 		Msg     string
 		Name    string
-		Servers string
+		Servers int
 		Error   string
 	}
 	var warnings []reconnectWarning
@@ -124,8 +126,8 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 		if record.Level != "WARN" {
 			t.Errorf("reconnect failure %d logged at %v, want WARN", i, record.Level)
 		}
-		if record.Servers != uri {
-			t.Errorf("reconnect failure %d names servers %q, want %q", i, record.Servers, uri)
+		if record.Servers != 1 {
+			t.Errorf("reconnect failure %d names %d servers, want 1", i, record.Servers)
 		}
 		if record.Error == "" {
 			t.Errorf("reconnect failure %d carries no error", i)
@@ -137,7 +139,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 
 	srv.Start(t)
 	gate.Open()
-	waitFor(t, 60*time.Second, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
+	waitFor(t, "the client to reconnect", func() bool { return client.Conn.IsConnected() })
 	if got := logs.count(name, reconnectFailed); got != 11 {
 		t.Fatalf("%d reconnect failures logged across a successful reconnect, want 11", got)
 	}

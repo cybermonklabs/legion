@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testpool"
 )
 
 const (
@@ -621,7 +622,7 @@ const grantLogPage = 1000
 func TestGrantLogPagesByPrimaryKey(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := storetest.URL(t)
-	plain, err := pgxpool.New(ctx, databaseURL)
+	plain, err := testpool.NewPool(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("open the plan pool: %v", err)
 	}

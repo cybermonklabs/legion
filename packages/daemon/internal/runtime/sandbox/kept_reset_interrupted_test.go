@@ -21,17 +21,18 @@ import (
 // can go on, as after ReplacePod or the release. R6: a fault on a kept volume that fails an init
 // container does not reach a second pod. So the next launch resets the volume.
 func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
+	t.Parallel()
 	name := SandboxName(workerToken)
-	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
 	old := g.spawn(workerSpec(t))
 	if err := g.r.Suspend(g.ctx, old); err != nil {
 		t.Fatal(err)
 	}
 	edit := func(p *corev1.Pod) {
-		p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{
-			{Name: fetchContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}},
-			{Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}},
-		}}
+		p.Status = corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
+			Name: initContainer, RestartCount: initRestartGrace + 1,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}},
+		}}}
 	}
 	g.editPod(name, "the pod store to see the failed workspace-init", edit)
 	before := g.sandbox(name)
@@ -128,7 +129,7 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 			t.Fatal(err)
 		}
 		first.editPod(name, "the pod store to see the failed workspace-init", edit)
-		g, copied := first.suspendedCopy(name, keptVolumes(SandboxMicroVM))
+		g, copied := first.suspendedCopy(name, withOptions(keptVolumes(SandboxMicroVM)), withTestBootTimeout())
 		g.eventually("the pod store to hold the failed pod", func() bool { return g.r.storedPod(name) != nil })
 		var deletes atomic.Int32
 		g.dyn.PrependReactor("patch", "sandboxes", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -157,7 +158,14 @@ func TestAKeptVolumeIsResetAfterALaunchThatStoppedBeforeTheReset(t *testing.T) {
 		spec.Generation = 3
 		// The rig runs no controller, so this launch fails after its reset, in a wait for an
 		// object that the controller makes. Its writes are what this case reads.
+		start := time.Now()
 		_, _ = g.r.Spawn(g.ctx, spec)
+		// Remove the two-second bound and this launch waits for the controller's object to the test
+		// deadline, passing vacuously after about 210 s. The guard fails it by name; one minute is far
+		// above the bounded wait and far below the deadline.
+		if elapsed := time.Since(start); elapsed > time.Minute {
+			t.Fatalf("the next launch took %s, want it bounded by the two-second boot timeout", elapsed)
+		}
 		if s := g.sandbox(name); s == nil || s.UID == copied.GetUID() {
 			t.Fatalf("the next launch kept the Sandbox %s, whose kept volume failed workspace-init in pod %s: the fault reaches a second pod (writes %v)",
 				copied.GetUID(), old.Sandbox.PodUID, sandboxRemakes(g, name))

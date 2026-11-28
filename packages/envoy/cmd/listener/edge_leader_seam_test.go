@@ -53,6 +53,7 @@ func requireLegionBusUnavailable(t *testing.T, recorder *httptest.ResponseRecord
 // The revert-control the slice owner named - sessionInProject dropping its error (return false, nil)
 // - turns each 503 into a silent 200 that this test then catches.
 func TestAnEdgeLegionAgentLeaderReadFaultAnswersBusUnavailable(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, agentSession, issue, roleToken = "ses_lr_outside", "ses_lr_agent", "PRIV-9", "legion-priv-priv-9-tester"
 	token := rig.personToken(outside, "PRIV")
@@ -128,6 +129,7 @@ func TestAnEdgeLegionAgentLeaderReadFaultAnswersBusUnavailable(t *testing.T) {
 // judging the cached entry (s.shows(entry)) rather than the leader's record (s.shows(stored)) - shows
 // the session on every route, which this test then catches.
 func TestAnEdgeFollowsTheLeaderRecordNotTheCachedEntry(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, peer = "ses_leader_outside", "ses_leader_peer"
 	token := rig.personToken(outside, "PRIV")

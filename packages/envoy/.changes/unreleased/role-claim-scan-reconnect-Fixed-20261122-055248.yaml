@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A listener's start no longer exits when NATS reconnects during its role claim scan
+  (`store.Open`). Before, a reconnect partway through the scan left it with no further entry,
+  and the scan's 10 s idle bound failed the start: on 2026-11-22 the webhook listener exited with
+  "role revisions: the bucket's watch delivered nothing for 10s after 4577 entries: the scan timed
+  out". Now a run of the scan during which the connection left its server or reconnected is made
+  again, from an empty result, whether it ended complete or not, and a run that ended while the
+  connection was not connected waits for it and then runs again. The scan notices a reconnect
+  within a second from the connection's own status notices, so a server that does not answer the
+  reconnect's handshake does not hide it. The scan makes at most four runs, and that path ends 70 s
+  after the first run started; a reconnect after that ends the run in progress at once. A run that
+  meets no reconnect keeps the 10 s idle bound and no other, as before, so a run that stalls on a
+  connected connection still fails the start, and a slow one still completes. Each failure's error
+  names the role claim scan (`role claim scan: ...`), a watch the server would not make included,
+  and a closed connection fails the start naming it. Each rerun logs one WARN line, `the role claim
+  scan runs again`, with the run and the reason.
+time: 2026-11-22T05:52:48Z
+custom:
+    Issue: role-claim-scan-reconnect

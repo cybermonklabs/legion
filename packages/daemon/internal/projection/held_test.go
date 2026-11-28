@@ -52,10 +52,11 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // stands in held and in one of the other two. The fixture carries one issue for each word of the
 // ladder (record.HeldReasons, which the test walks) — a member of a closed tree, a member of a
 // parked tree, a root whose label is off, a root whose Dispatch chain reaches another live root,
-// a member of a tree whose root waits on a person, a member under a shut design gate, a child an
-// unfinished Dispatch link holds, a parent whose own children are still open, an issue beneath an
-// accepted ancestor, a parent held before its retro for the issue beneath it, a task stopped in
-// its merge, an issue in accepting, retro or merging that nothing holds, which reads at_work
+// a member of a tree whose root waits on a person, a parent that holds a phase start while a child
+// of it is open (awaiting_children), a member under a shut design gate, a child an unfinished
+// Dispatch link holds, a parent whose own children are still open, an issue beneath an accepted
+// ancestor, a parent held before its retro for the issue beneath it, a task stopped in its merge,
+// an issue in accepting, retro or merging that nothing holds, which reads at_work
 // (record.HeldAtWork), and an issue none of the others is true of — and the rows are read from
 // the projected state, which is where a reader meets them.
 //
@@ -135,11 +136,16 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	childAtWork := treeMember("LEGION-196", "LEGION-195", "LEGION-195", "in_progress", phase.Implementing)
 	stoppedTask := treeRoot("LEGION-197", "needs_review", phase.Held)
 	stoppedTask.Hold = &record.Hold{From: phase.Merging, Reason: record.HoldTaskStopped}
+	// A running tree under an open gate whose sub-parent held a phase start because a child of it
+	// is still open: it stands in awaiting_children, holding no slot, and its held-by is that open
+	// child, LEGION-187, which Dispatch shows at todo under it (record.LineFacts.StartedParentWaits).
+	waitingRoot := treeRoot("LEGION-185", "todo", phase.Admitted)
+	waitingParent := treeMember("LEGION-186", "LEGION-185", "LEGION-185", "in_progress", phase.AwaitingChildren)
 
 	store := projectionStore{
 		issues: []record.Issue{closedRoot, closedMember, parkedRoot, parkedMember, unlabelled, queuedRoot, underQueued,
 			askingRoot, askingMember, gatedRoot, gatedMember, openRoot, blockedChild, merging, beneathMerging, unplaced,
-			slotHolder, linkedRoot, parentOfOpen, answeredRoot, heldParent, childAtWork, stoppedTask},
+			slotHolder, linkedRoot, parentOfOpen, answeredRoot, heldParent, childAtWork, stoppedTask, waitingRoot, waitingParent},
 		slots: []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
@@ -147,24 +153,27 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
 			{Issue: "LEGION-196", Index: 6, AdmittedAt: projectedAt},
 		},
-		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190", "LEGION-195", "LEGION-197"},
+		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-185", "LEGION-190", "LEGION-195", "LEGION-197"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-150": openGate("LEGION-150", opened),
 			"LEGION-160": shutGate("LEGION-160"),
 			"LEGION-170": openGate("LEGION-170", opened),
 			"LEGION-180": openGate("LEGION-180", opened),
+			"LEGION-185": openGate("LEGION-185", opened),
 			"LEGION-195": openGate("LEGION-195", opened),
 			"LEGION-197": openGate("LEGION-197", opened),
 		},
 		// The mirror names a Dispatch parent only where this fixture means the children-first
-		// rule to read one: the child a link holds, which is the open child of its tree's root,
-		// and the child nobody has released, which is the open child of its own parent. A row
+		// rule or a started parent's wait to read one: the child a link holds, which is the open
+		// child of its tree's root, the child nobody has released, which is the open child of its
+		// own parent, and the open child the parent in awaiting_children waits on. A row
 		// with no parent is Dispatch's own answer that the issue hangs under nothing.
 		mirror: []record.DispatchIssueRow{
 			{Key: "LEGION-130", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-903"}},
 			{Key: "LEGION-171", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: "LEGION-170"},
 			{Key: "LEGION-180", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-901"}},
 			{Key: "LEGION-182", Project: "LEGION", Status: "backlog", Parent: "LEGION-181"},
+			{Key: "LEGION-187", Project: "LEGION", Status: "todo", Parent: "LEGION-186"},
 			{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
 			{Key: "LEGION-901", Project: "LEGION", Status: "todo"},
 			{Key: "LEGION-903", Project: "LEGION", Status: "todo"},
@@ -188,6 +197,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-173", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-172"}},
 		{Issue: "LEGION-174", Reason: record.HeldUnclassified},
 		{Issue: "LEGION-181", Reason: record.HeldChildrenFirst, HeldBy: []string{"LEGION-182"}},
+		{Issue: "LEGION-186", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-187"}},
 		{Issue: "LEGION-195", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-196"}},
 		{Issue: "LEGION-197", Reason: record.HeldTaskStopped},
 	}
@@ -203,16 +213,18 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// LEGION-172, the accepted ancestor in merging, holds no slot row: merging keeps none
-	// (record.KeepsSlot), so it stands in held as at_work rather than in active.
+	// (record.KeepsSlot), so it stands in held as at_work rather than in active. LEGION-185, the
+	// root of the tree whose sub-parent waits on its open child, holds none either: it stands at
+	// admitted, waiting in the line for one.
 	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-175", "LEGION-190", "LEGION-196"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
 		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the roots a hold keeps out of the line among them, and neither root that gave its slot back for a wait",
 			got.Admission.Active, wantActive)
 	}
-	// The two roots that gave their slot back for a wait and the root a person answered are the
-	// work that came back, oldest first; the root waiting for its tree to be opened starts after
-	// them.
-	wantWaiting := []string{"LEGION-170", "LEGION-180", "LEGION-190", "LEGION-130"}
+	// The root at admitted waiting for its first slot comes first; then the two roots that gave
+	// their slot back for a wait and the root a person answered, the work that came back, oldest
+	// first; the root waiting for its tree to be opened starts after them.
+	wantWaiting := []string{"LEGION-185", "LEGION-170", "LEGION-180", "LEGION-190", "LEGION-130"}
 	if !reflect.DeepEqual(got.Admission.Waiting, wantWaiting) {
 		t.Fatalf("admission.waiting = %#v, want %#v", got.Admission.Waiting, wantWaiting)
 	}
@@ -262,13 +274,16 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 
 	// admission.blocked keeps its rows and its overlaps with the lists: the child a link holds
 	// stands in held, and the root whose own first phase waits for its open child and the root an
-	// unfinished link names stand in waiting, having given their slot back for that wait.
+	// unfinished link names stand in waiting, having given their slot back for that wait. The
+	// parent in awaiting_children stands in held and in blocked with its open child
+	// (blockers.ChildRows).
 	wantBlocked := []api.BlockedIssue{
 		{Issue: "LEGION-130", BlockedBy: []string{"LEGION-903"}},
 		{Issue: "LEGION-170", BlockedBy: []string{"LEGION-171"}},
 		{Issue: "LEGION-171", BlockedBy: []string{"LEGION-900"}},
 		{Issue: "LEGION-180", BlockedBy: []string{"LEGION-901"}},
 		{Issue: "LEGION-181", BlockedBy: []string{"LEGION-182"}},
+		{Issue: "LEGION-186", BlockedBy: []string{"LEGION-187"}},
 	}
 	if !reflect.DeepEqual(got.Admission.Blocked, wantBlocked) {
 		t.Fatalf("admission.blocked = %#v, want %#v", got.Admission.Blocked, wantBlocked)

@@ -53,7 +53,13 @@ func legacySessionTemplate(t *testing.T, g *rig, name string) {
 	})
 }
 
+// A replacement that would reap a volume whose claim still names a legacy session refuses, names
+// the session and the commands that clear it, and keeps the legacy Sandbox. The refusal comes only
+// after its launch has waited out the superseded pod, which the rig controller ends on a later
+// tick. newRig gives that event wait the test binary's deadline rather than its former two-second
+// default, so a loaded runner cannot turn this reap-guard assertion into a launcher timeout.
 func TestReplacementRefusesToReapAVolumeWithALegacySession(t *testing.T) {
+	t.Parallel()
 	store := &claimsForReap{
 		fakeStore: newFakeStore(),
 		claims: []supervise.Claim{{
@@ -83,6 +89,7 @@ func TestReplacementRefusesToReapAVolumeWithALegacySession(t *testing.T) {
 // volume reap. Importing it first preserves its contents in the session table;
 // the runtime needs only the cleared durable claim to proceed.
 func TestReplacementReapsAfterALegacySessionIsForgotten(t *testing.T) {
+	t.Parallel()
 	store := &claimsForReap{
 		fakeStore: newFakeStore(),
 		claims: []supervise.Claim{{
@@ -108,6 +115,7 @@ func TestReplacementReapsAfterALegacySessionIsForgotten(t *testing.T) {
 }
 
 func TestReplacementReapsOnlyDatabaseBackedOrEmptySessions(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		database  func(*sandbox)
@@ -182,6 +190,7 @@ func TestReplacementReapsOnlyDatabaseBackedOrEmptySessions(t *testing.T) {
 // cleanup removes the still-labelled legacy Sandbox. The claim's session still
 // belongs to that old Sandbox until the guard permits its reap.
 func TestTreeCleanupRefusesToReapARetreedLegacySession(t *testing.T) {
+	t.Parallel()
 	store := newFakeStore()
 	store.claims = []supervise.Claim{{
 		Token: childToken, Project: testProject, Tree: childIssue, Issue: childIssue,
@@ -203,6 +212,7 @@ func TestTreeCleanupRefusesToReapARetreedLegacySession(t *testing.T) {
 }
 
 func TestSessionVolumeReapGuardCoversEveryDeletionPath(t *testing.T) {
+	t.Parallel()
 	legacy := func(token claim.Token, tree, issue string) supervise.Claim {
 		return supervise.Claim{
 			Token: token, Project: testProject, Tree: tree, Issue: issue,
@@ -271,6 +281,7 @@ func TestSessionVolumeReapGuardCoversEveryDeletionPath(t *testing.T) {
 // A controller reaping refusal must leave its process running: the operator
 // can then suspend it, forget the lost session, and retry the release.
 func TestControllerReapRefusalLeavesTheControllerRecoverable(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	legacySessionTemplate(t, g, loc.Sandbox.Name)

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -17,6 +18,7 @@ import {
   checkResultRecordedBody,
   commentBody,
   coverageBody,
+  deployBody,
   handoffBody,
   ISSUE,
   issueBody,
@@ -26,6 +28,7 @@ import {
   planReviewBody,
   plansBody,
   prioritiesBody,
+  projectBody,
   reviewBody,
   SESSION,
   stepsBody,
@@ -35,7 +38,7 @@ import {
 import { fakeSearchResponse } from "./fake-search-response";
 
 /**
- * The surface every Dispatch command presents: for each command `dispatchToolSpecs` names, what
+ * The surface every spec command presents: for each command `dispatchToolSpecs` names, what
  * one valid call sends and prints, and what each refusal `argumentProblems` and
  * `ownerConflictProblems` can give it prints. The record is the golden file
  * `fixtures/command-surface.json`, so that the record taken before `executeDispatchTool` is split
@@ -141,6 +144,10 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
       return response({ kind: "agent", owner: "person@example.com", session: SESSION });
     case "GET /api/v1/agents":
       return response([]);
+    case "POST /api/v1/deploys":
+      return response({ deploy: deployBody() }, 201);
+    case "GET /api/v1/deploys":
+      return response({ repo: "acme/widgets", deploys: [deployBody()] });
     // The bounds the server's own `GET /api/v1/limits` answers (`api/limits.go`), fixed here so
     // the recorded lines are the server's numbers rather than this client's.
     case "GET /api/v1/limits":
@@ -275,6 +282,7 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest.startsWith("architecture-sources/")) return response(architectureSource());
     if (rest === "artifacts") return response([]);
     if (rest === "plans") return response(plansBody());
+    if (rest === "proven-sessions") return response(projectBody(method === "PUT"));
   }
   throw new Error(`unexpected request: ${route}`);
 }
@@ -345,11 +353,14 @@ function recordRequest(url: string, init: RequestInit | undefined): RecordedRequ
 
 async function runCommand(tool: string, call: string, args: Record<string, unknown>) {
   const requests: RecordedRequest[] = [];
-  const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const target = new URL(String(url));
-    requests.push(recordRequest(String(url), init));
-    return answerFor(init?.method ?? "GET", target.pathname, init?.body);
-  };
+  // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
+  const fetchImpl = keyedLayer(
+    async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(recordRequest(String(url), init));
+      return answerFor(init?.method ?? "GET", target.pathname, init?.body);
+    }
+  );
   const run = await executeDispatchTool({
     tool,
     args,
@@ -555,7 +566,7 @@ function compare(left: RecordedRun, right: RecordedRun): number {
 }
 
 describe("the Dispatch command surface", () => {
-  test("records every command and every refusal it can give", async () => {
+  test("records every spec command and every refusal it can give", async () => {
     const runs: RecordedRun[] = [];
     for (const spec of dispatchToolSpecs) {
       runs.push(await runCommand(spec.name, "valid", { ...spec.example }));
