@@ -345,16 +345,16 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 		if held.item.SourceSession != "" {
 			t.Fatalf("the kept copy names source session %q, want none", held.item.SourceSession)
 		}
-		rig.startSweeps()
-		rig.letSweepsRun()
+		rig.sweep()
 		if notices := rig.expiryNotices(role); len(notices) != 0 {
 			t.Fatalf("inside the copy's hour the stream holds expiry notices %+v, want none", notices)
 		}
 
 		rig.moveClock(time.Hour + time.Minute)
+		rig.sweep()
 		rig.waitPassed(role, held.sequence)
 		rig.waitReported(role, expiryNoticeLine, 1)
-		rig.letSweepsRun()
+		rig.sweep()
 
 		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if letters := rig.envoyLetters(); len(letters) != 0 {
@@ -383,11 +383,12 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 			t.Fatalf("take role %s's handover guard on the second listener", role)
 		}
 		defer release()
+		awaitKeptHandoversIdle(t, &rig.listeners[0].cfg, role)
 		rig.moveClock(3 * time.Hour)
-		rig.startSweeps()
+		rig.sweep()
 		rig.waitPassed(role, held.sequence)
 		rig.waitReported(role, expiryNoticeLine, 1)
-		rig.letSweepsRun()
+		rig.sweep()
 
 		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if letters := rig.envoyLetters(); len(letters) != 0 {
@@ -405,12 +406,12 @@ func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
 			holder = "ses_hour_delivery_mode_holder"
 		)
 		held := rig.keptForDispatch(rig.listeners[0], role, "steer")
-		rig.startSweeps()
+		rig.sweep()
 		rig.claim(rig.listeners[1], holder, role,
 			session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 		rig.waitPassed(role, held.sequence)
 		rig.waitReported(role, expiryNoticeLine, 1)
-		rig.letSweepsRun()
+		rig.sweep()
 
 		assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, false)
 		if lines := rig.lines(hourModeLine, map[string]any{"role": role, "event_id": held.item.EventID}); len(lines) != 1 {
@@ -506,14 +507,14 @@ func TestADeliverysNoticeKeepsWhatItsClaimSaidWhenAnotherWalkTakesTheClaimOver(t
 			} else {
 				rig.moveClock(time.Hour + time.Minute)
 			}
-			rig.startSweeps()
+			rig.sweep()
 			if tc.refused {
 				rig.claim(rig.listeners[1], holder, role,
 					session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
 			}
 			rig.waitPassed(role, held.sequence)
 			rig.waitReported(role, expiryNoticeLine, 1)
-			rig.letSweepsRun()
+			rig.sweep()
 
 			assertDeliveryNoticeOf(t, rig.expiryNotices(role), role, held, tc.forward)
 			for i, call := range seam.assertTakenOver(t, "expiry notice", held, 0) {

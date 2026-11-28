@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // TestAnInProcessResendThatWaitsOutAReconnectNamesIt drives publishPastInProcess with a send the
@@ -20,7 +21,7 @@ func TestAnInProcessResendThatWaitsOutAReconnectNamesIt(t *testing.T) {
 	defer cancel()
 	refusal := fmt.Errorf("publish notifications.team.x: %w", bus.ErrDuplicateInProcess)
 	sends := 0
-	_, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	_, err := publishPastInProcess(ctx, clock.Real(), func() (bus.StoredAck, error) {
 		sends++
 		if sends == 1 {
 			return bus.StoredAck{}, refusal

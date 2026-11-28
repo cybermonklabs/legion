@@ -8,7 +8,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -22,10 +21,12 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // driftRevision is the revision the two drift helpers write a role's entry at: past any revision a
@@ -86,9 +87,7 @@ func requireDrift(t *testing.T, registry *store.Registry, role, copyNames, store
 	guard.RLock()
 	inCopy, _ := roleCopy.Get(role)
 	guard.RUnlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	claim, err := registry.RoleClaim(ctx, role)
+	claim, err := registry.RoleClaim(testwait.Context(t), role)
 	if err != nil {
 		t.Fatalf("read role %s's claim record: %v", role, err)
 	}
@@ -122,16 +121,15 @@ func failRoleClaimReads(t *testing.T, registry *store.Registry) *atomic.Int64 {
 // keptLaneHeadReads counts, from here on, the stored-message reads of role's kept lane made over
 // client's connection: the read of the lane each pass of a handover opens with, and the one the
 // sweep makes before it starts a handover (readKeptLaneHead), so a count above zero is a lane
-// that a handover or the sweep read.
+// that a handover or the sweep read. The count is exact for every read made before the call: the
+// reads come on a channel subscription, which the connection's reader fills as it reads each one,
+// so once a flush of that connection has returned, every read published on it before the flush
+// is on the channel, with no callback left to run.
 func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int64 {
 	t.Helper()
-	var reads atomic.Int64
 	lane := fmt.Sprintf("%q", bus.KeptRoleSubject(role))
-	sub, err := client.Conn.Subscribe("$JS.API.STREAM.MSG.GET."+bus.Stream, func(message *natsgo.Msg) {
-		if strings.Contains(string(message.Data), lane) {
-			reads.Add(1)
-		}
-	})
+	requests := make(chan *natsgo.Msg, 1<<12)
+	sub, err := client.Conn.ChanSubscribe("$JS.API.STREAM.MSG.GET."+bus.Stream, requests)
 	if err != nil {
 		t.Fatalf("watch the stored-message reads: %v", err)
 	}
@@ -139,12 +137,22 @@ func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int
 	if err := client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the watch of the stored-message reads: %v", err)
 	}
+	var reads int64
 	return func() int64 {
 		t.Helper()
 		if err := client.Conn.Flush(); err != nil {
 			t.Fatalf("flush the stored-message reads: %v", err)
 		}
-		return reads.Load()
+		for {
+			select {
+			case request := <-requests:
+				if strings.Contains(string(request.Data), lane) {
+					reads++
+				}
+			default:
+				return reads
+			}
+		}
 	}
 }
 
@@ -153,9 +161,7 @@ func keptLaneHeadReads(t *testing.T, client *bus.Client, role string) func() int
 // happens next.
 func unreadableLaneHead(t *testing.T, client *bus.Client, role string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := client.PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), []byte("{"), 0); err != nil {
+	if _, err := client.PublishCursorAt(testwait.Context(t), bus.KeptRoleCursorSubject(role), []byte("{"), 0); err != nil {
 		t.Fatalf("write role %s's cursor no read can decode: %v", role, err)
 	}
 }
@@ -205,13 +211,15 @@ func (r *roleActRig) claim(t *testing.T, sessionID, role string) {
 	claimRoleWith(t, r.harness, sessionID, role, liveRoleActEntry)
 }
 
-// deliver hands the role lane a message to role, as a core message, waits for every forward it
-// made to settle and returns the message.
+// deliver hands the role lane a message to role, as a core message, waits through the shared wait
+// for every forward it made to be reported and returns the message.
 func (r *roleActRig) deliver(t *testing.T, role, key string) contracts.Envelope {
 	t.Helper()
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, key)
 	coreNATSDeliveryHandler(r.cfg)(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	r.cfg.roleForwards.settled(t)
+	if !r.cfg.roleForwards.wait(testwait.Context(t)) {
+		t.Fatalf("%d role forwards were still outstanding when the test's waits gave up", r.cfg.roleForwards.outstanding())
+	}
 	return item
 }
 
@@ -230,8 +238,7 @@ func (r *roleActRig) keep(t *testing.T, role, key string) contracts.Envelope {
 // pass that resolved holder does: the drain hold is read before each copy of that walk.
 func (r *roleActRig) walk(t *testing.T, role, holder string) (roleKeepDrainResult, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	head, err := readKeptLaneHead(ctx, r.harness.client, role)
 	if err != nil || !head.left {
 		t.Fatalf("read role %s's kept lane head: %+v, %v; want a copy left on it", role, head, err)
@@ -239,48 +246,50 @@ func (r *roleActRig) walk(t *testing.T, role, holder string) (roleKeepDrainResul
 	return walkKeptRole(ctx, r.cfg, role, holder, liveRoleActEntry, head, time.Now)
 }
 
-// handOver hands role's kept lane over (drainKeptRole) within three of the first pause a failed
-// read earns, and returns how long it took and what it reported: a handover that retries a read
-// takes that pause at least, and one that does not ends at once.
-func (r *roleActRig) handOver(t *testing.T, role string) (time.Duration, error) {
+// handOver starts a handover of role's kept lane (drainKeptRole) on a copy of the rig's
+// configuration whose clock is clk, a fake the case moves: the handover's pauses and its reads'
+// bounds run on it (cfg.clock). Its window runs on clk too, and is two of the first pause a failed
+// read earns (roleKeepDrainRetryPause): it holds a first read, the pause after it and the read
+// behind that pause, and ends before anything that second read arms on clk, its claim read's
+// bound and the pause after it. handOver returns what the handover did first (endedOrPaused) - it
+// returned, having armed no pause, or it armed that first pause and waits in it - and the channel
+// its error comes on once a handover found paused has returned.
+func (r *roleActRig) handOver(t *testing.T, role string, clk *clocktest.Fake) (handoverEnd, <-chan error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*roleKeepDrainRetryPause)
-	defer cancel()
-	started := time.Now()
-	err := drainKeptRole(ctx, r.cfg, role, time.Now)
-	return time.Since(started), err
+	cfg := r.cfg
+	cfg.clock = clk
+	ctx, cancel := clk.WithTimeout(testwait.Context(t), 2*roleKeepDrainRetryPause)
+	t.Cleanup(cancel)
+	ended := make(chan error, 1)
+	go func() { ended <- drainKeptRole(ctx, cfg, role, time.Now) }()
+	return endedOrPaused(t, clk, roleKeepDrainRetryPause, ended), ended
 }
 
-// awaitForward waits up to window for the next forward and fails unless it is item's, to holder.
-func (r *roleActRig) awaitForward(t *testing.T, holder string, item contracts.Envelope, window time.Duration) {
+// awaitForward waits through the shared wait for the next forward and fails unless it is item's,
+// to holder.
+func (r *roleActRig) awaitForward(t *testing.T, holder string, item contracts.Envelope) {
 	t.Helper()
-	select {
-	case forwarded := <-r.forwards:
-		if forwarded.holder != holder || forwarded.key != roleForwardDedupePrefix+item.DedupeKey {
-			t.Fatalf("the forward reached %s under %s, want event %s's to %s:\n%s",
-				forwarded.holder, forwarded.key, item.EventID, holder, r.harness.logs.String())
-		}
-	case <-time.After(window):
-		t.Fatalf("event %s reached %s in no %s:\n%s", item.EventID, holder, window, r.harness.logs.String())
+	forwarded := testwait.Receive(t, fmt.Sprintf("event %s's forward to %s", item.EventID, holder), r.forwards)
+	if forwarded.holder != holder || forwarded.key != roleForwardDedupePrefix+item.DedupeKey {
+		t.Fatalf("the forward reached %s under %s, want event %s's to %s:\n%s",
+			forwarded.holder, forwarded.key, item.EventID, holder, r.harness.logs.String())
 	}
 }
 
-// requireNoForward fails when any forward is made within window, or has been made already: a
-// forward already made is read whatever window is, 0 included.
-func (r *roleActRig) requireNoForward(t *testing.T, window time.Duration) {
+// requireNoForward fails when any forward has been made, or is still to come from a handover of
+// role under way. Every forward the rig records is made by the role lane, whose forwards deliver
+// has waited for; by an act the case called and that has returned (a walk, a handover, a sweep
+// pass, which waits for the handovers it started); or by a handover a keep started in a goroutine
+// of its own (keepForNextHolder, startHandover), counted on the listener's guards before the
+// keep's caller returned. So once no handover of role is under way on the listener
+// (awaitKeptHandoversIdle), every forward that will come has come, and the forwards are read with
+// no window.
+func (r *roleActRig) requireNoForward(t *testing.T, role string) {
 	t.Helper()
-	fail := func(forwarded keptHandover) {
-		t.Helper()
+	awaitKeptHandoversIdle(t, &r.cfg, role)
+	select {
+	case forwarded := <-r.forwards:
 		t.Fatalf("a forward reached %s under %s, want none:\n%s", forwarded.holder, forwarded.key, r.harness.logs.String())
-	}
-	select {
-	case forwarded := <-r.forwards:
-		fail(forwarded)
-	case <-time.After(window):
-	}
-	select {
-	case forwarded := <-r.forwards:
-		fail(forwarded)
 	default:
 	}
 }
@@ -289,29 +298,45 @@ func (r *roleActRig) requireNoForward(t *testing.T, window time.Duration) {
 // copy can be wrong in: a surplus copy names a session the record does not (the record names
 // another session or none), and a lost copy lacks a claim the record gives a session. Each act is
 // required to do what the record says: the role message, the kept-role sweep, the drain hold and
-// the handover's retry. The test logs the cases it ran and their count.
+// the handover's retry. The handover's pauses run on a fake clock the case moves (handOver), so a
+// handover that retries is one that armed its pause there. The test logs the cases it ran and
+// their count.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
-	// Not parallel: its handover retry surplus case requires the handover (drainKeptRole), which
-	// ends at its first lane read, to end inside roleKeepDrainRetryPause (1 s).
+	t.Parallel()
 	const (
 		holder = "ses_act_holder"
 		other  = "ses_act_other"
 	)
-	var cases []string
+	var (
+		casesMu sync.Mutex
+		cases   []string
+	)
+	// The cases run beside each other once this function has returned, so the line the test ends
+	// with is written once every one of them has ended.
+	t.Cleanup(func() {
+		casesMu.Lock()
+		defer casesMu.Unlock()
+		t.Logf("%d cases, each act run on a copy that disagrees with the claim record: %s", len(cases), strings.Join(cases, "; "))
+	})
 	// leaf records the case it is called from, for the line the test ends with.
 	leaf := func(t *testing.T) {
 		name := strings.TrimPrefix(t.Name(), "TestEachActReadsTheRecordInBothDirections/")
+		casesMu.Lock()
 		cases = append(cases, name)
+		casesMu.Unlock()
 		t.Logf("case: %s", name)
 	}
 
 	t.Run("role message", func(t *testing.T) {
+		t.Parallel()
 		// The copy names the session for a role whose record names another session, or none:
 		// the message goes where the record says - to that other session, or onto the kept lane
 		// for the role's next holder - and never to the session the copy names.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			for name, storeHolder := range map[string]string{"another session": other, "no claim": ""} {
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					leaf(t)
 					const role = "act-message-surplus"
 					rig := newRoleActRig(t)
@@ -325,17 +350,18 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					item := rig.deliver(t, role, "act-message-surplus")
 
 					if storeHolder != "" {
-						rig.awaitForward(t, storeHolder, item, 10*time.Second)
+						rig.awaitForward(t, storeHolder, item)
 					} else {
 						waitForKeptRoleMessage(t, rig.harness.client, role, item.EventID)
 					}
-					rig.requireNoForward(t, time.Second)
+					rig.requireNoForward(t, role)
 				})
 			}
 		})
 		// The record gives the session the role and the copy lost it: the session gets the
 		// message, and nothing is kept for a next holder.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-message-lost"
 			rig := newRoleActRig(t)
@@ -345,18 +371,20 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 
 			item := rig.deliver(t, role, "act-message-lost")
 
-			rig.awaitForward(t, holder, item, 10*time.Second)
+			rig.awaitForward(t, holder, item)
 			assertNothingKept(t, rig.harness.client, role)
 		})
 	})
 
 	t.Run("kept-role sweep", func(t *testing.T) {
+		t.Parallel()
 		// The copy names a live session for a role whose lane holds a copy and which no record
 		// claims: the sweep hands the lane over, as it hands over every lane, and the handover's
 		// resolution reads the record, finds no claim, and forwards nothing. The role's wake
 		// report, which the sweep raises again only after a handover that resolved no live
 		// holder, says which the resolution read.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-sweep-surplus"
 			rig := newRoleActRig(t)
@@ -365,12 +393,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			holdRoleInCopy(t, rig.harness.registry, role, holder)
 			requireDrift(t, rig.harness.registry, role, holder, "")
 			reads := keptLaneHeadReads(t, rig.harness.client, role)
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
 
-			sweepOnce(ctx, rig.cfg)
+			sweepOnce(testwait.Context(t), rig.cfg)
 
-			rig.requireNoForward(t, 0)
+			rig.requireNoForward(t, role)
 			if got := reads(); got == 0 {
 				t.Fatalf("the sweep read role %s's kept lane %d times; want it read and handed over, as every lane is", role, got)
 			}
@@ -382,6 +408,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// The record gives a live session the role and the copy lost it: the sweep hands the
 		// lane over, and the copy on it reaches that session.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-sweep-lost"
 			rig := newRoleActRig(t)
@@ -390,23 +417,25 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			dropRoleFromCopy(t, rig.harness.registry, role)
 			requireDrift(t, rig.harness.registry, role, "", holder)
 			reads := keptLaneHeadReads(t, rig.harness.client, role)
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
 
-			sweepOnce(ctx, rig.cfg)
+			sweepOnce(testwait.Context(t), rig.cfg)
 
-			rig.awaitForward(t, holder, item, 30*time.Second)
-			// The same counter the surplus case reads none on counts this handover's read, so
-			// that none is a handover that never started rather than a counter that counts
-			// nothing.
-			waitFor(t, "the handover's read of the kept lane to be counted", func() bool { return reads() > 0 })
+			rig.awaitForward(t, holder, item)
+			// The same counter the surplus case requires a read on counts the reads this sweep,
+			// which handed the lane over, made of it: the pass is over (sweepOnce), so its reads
+			// are all counted, and none is a counter that counts nothing.
+			if got := reads(); got == 0 {
+				t.Fatalf("the sweep that handed role %s's copy over read its kept lane %d times, as the counter counts it; want its reads counted", role, got)
+			}
 		})
 	})
 
 	t.Run("drain hold", func(t *testing.T) {
+		t.Parallel()
 		// The copy names the walk's holder for a role no record claims: the walk ends before its
 		// first copy, as a walk whose holder moved, and forwards nothing.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-drain-surplus"
 			rig := newRoleActRig(t)
@@ -421,11 +450,12 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 				t.Fatalf("the walk for %s ended %d having forwarded %d, error %v; want it ended as a moved holder with nothing forwarded: no claim record names %s",
 					holder, result.end, result.forwarded, err, holder)
 			}
-			rig.requireNoForward(t, 0)
+			rig.requireNoForward(t, role)
 		})
 		// The record names the walk's holder and the copy names another session: the walk goes
 		// on and forwards the copy to its holder.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-drain-lost"
 			rig := newRoleActRig(t)
@@ -441,14 +471,17 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 				t.Fatalf("the walk for %s ended %d having forwarded %d, error %v; want the lane drained with its one copy forwarded: the claim record names %s",
 					holder, result.end, result.forwarded, err, holder)
 			}
-			rig.awaitForward(t, holder, item, time.Second)
+			rig.awaitForward(t, holder, item)
 		})
 	})
 
 	t.Run("handover retry", func(t *testing.T) {
+		t.Parallel()
 		// The lane-head read fails and the copy names a session for a role no record claims: the
-		// handover ends at its first read, reporting nothing, as it does for a role nobody holds.
+		// handover ends at its first read, reporting nothing and arming no pause, as it does for a
+		// role nobody holds.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-retry-surplus"
 			rig := newRoleActRig(t)
@@ -458,17 +491,20 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			holdRoleInCopy(t, rig.harness.registry, role, holder)
 			requireDrift(t, rig.harness.registry, role, holder, "")
 
-			elapsed, err := rig.handOver(t, role)
+			end, _ := rig.handOver(t, role, clocktest.New(time.Now()))
 
-			if err != nil || elapsed >= roleKeepDrainRetryPause {
-				t.Fatalf("the handover of role %s ended %s in, reporting %v; want it ended at its first lane read with nothing reported, inside the first pause of %s: no claim record names a holder waiting",
-					role, elapsed, err, roleKeepDrainRetryPause)
+			if end.paused || end.err != nil {
+				t.Fatalf("the handover of role %s armed its first pause of %s to read the lane again: %v, and reported %v (its clock held %v); want it ended at its first lane read with nothing reported and no pause armed: no claim record names a holder waiting",
+					role, roleKeepDrainRetryPause, end.paused, end.err, end.armed)
 			}
-			rig.requireNoForward(t, 0)
+			rig.requireNoForward(t, role)
 		})
 		// The lane-head read fails and the record names the session the copy lost: the handover
-		// waits the read out and reads the lane again, and reports the read it was retrying.
+		// waits the read out and reads the lane again, and reports the read it was retrying. It
+		// waits on its own clock, which the case moves past the pause once the handover has armed
+		// it, and its window, on that clock too, ends inside what follows the second read.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			leaf(t)
 			const role = "act-retry-lost"
 			rig := newRoleActRig(t)
@@ -477,17 +513,25 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			rig.claim(t, holder, role)
 			dropRoleFromCopy(t, rig.harness.registry, role)
 			requireDrift(t, rig.harness.registry, role, "", holder)
+			reads := keptLaneHeadReads(t, rig.harness.client, role)
+			clk := clocktest.New(time.Now())
 
-			elapsed, err := rig.handOver(t, role)
+			end, ended := rig.handOver(t, role, clk)
 
-			if err == nil || elapsed < roleKeepDrainRetryPause {
-				t.Fatalf("the handover of role %s ended %s in, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
-					role, elapsed, err, roleKeepDrainRetryPause, holder)
+			if !end.paused {
+				t.Fatalf("the handover of role %s ended reporting %v with no pause armed on its clock (it held %v); want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
+					role, end.err, end.armed, roleKeepDrainRetryPause, holder)
+			}
+			read := reads()
+			clk.Advance(roleKeepDrainRetryPause)
+			testwait.Eventually(t, "the handover's read of role "+role+"'s kept lane after its pause", func() bool { return reads() > read })
+			clk.Advance(roleKeepDrainRetryPause)
+			if err := testwait.Receive(t, "the handover to end with its window", ended); err == nil {
+				t.Fatalf("the handover of role %s waited out its pause of %s and read the lane again, and reported nothing; want it to report the read that failed: the claim record names %s",
+					role, roleKeepDrainRetryPause, holder)
 			}
 		})
 	})
-
-	t.Logf("%d cases, each act run on a copy that disagrees with the claim record: %s", len(cases), strings.Join(cases, "; "))
 }
 
 // No act forwards on a claim record it could not read. Every read of the role bucket's records
@@ -496,10 +540,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 // through the drain hold, the handover or the sweep. A registration whose renewal cannot read the
 // claim is answered 200 all the same, and its WARN names the role. The control runs the same
 // drives with the reads answering: the message and each kept copy reach the holder, and the
-// registration renews the claim with no WARN.
+// registration renews the claim with no WARN. The handover's pauses run on a fake clock
+// (handOver), so a handover that would read again is one that armed its pause there.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
-	// Not parallel: its failed-read handover case requires the handover (drainKeptRole), which
-	// ends at its first claim read that fails, to end inside roleKeepDrainRetryPause (1 s).
+	t.Parallel()
 	const holder = "ses_act_held"
 	for _, reads := range []struct {
 		name string
@@ -509,7 +553,9 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 		{name: "control: the claim read answers"},
 	} {
 		t.Run(reads.name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("role message", func(t *testing.T) {
+				t.Parallel()
 				const role = "act-held-message"
 				rig := newRoleActRig(t)
 				rig.claim(t, holder, role)
@@ -529,7 +575,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				item := rig.deliver(t, role, "act-held-message")
 
 				if !reads.fail {
-					rig.awaitForward(t, holder, item, 10*time.Second)
+					rig.awaitForward(t, holder, item)
 					assertNothingKept(t, rig.harness.client, role)
 					noException(t, probe)
 					return
@@ -538,7 +584,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					t.Fatalf("the role message read no claim record, so no read of it failed")
 				}
 				waitForKeptRoleMessage(t, rig.harness.client, role, item.EventID)
-				rig.requireNoForward(t, time.Second)
+				rig.requireNoForward(t, role)
 				noException(t, probe)
 				logs := rig.harness.logs.String()
 				kept := logRecordsNamed(logs, "listener kept role message for the role's next holder", role)
@@ -551,7 +597,9 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 			})
 
 			t.Run("kept copy", func(t *testing.T) {
+				t.Parallel()
 				t.Run("drain hold", func(t *testing.T) {
+					t.Parallel()
 					const role = "act-held-drain"
 					rig := newRoleActRig(t)
 					rig.claim(t, holder, role)
@@ -567,16 +615,17 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 						if err != nil || result.end != roleKeepLaneDrained || result.forwarded != 1 {
 							t.Fatalf("the walk ended %d having forwarded %d, error %v; want its one copy forwarded", result.end, result.forwarded, err)
 						}
-						rig.awaitForward(t, holder, item, time.Second)
+						rig.awaitForward(t, holder, item)
 						return
 					}
 					if !errors.Is(err, errRoleBucketReadFailed) || result.end != roleKeepDrainFailed || result.forwarded != 0 || failed.Load() == 0 {
 						t.Fatalf("the walk ended %d having forwarded %d after %d claim reads, error %v; want it failed on the claim read with nothing forwarded",
 							result.end, result.forwarded, failed.Load(), err)
 					}
-					rig.requireNoForward(t, 0)
+					rig.requireNoForward(t, role)
 				})
 				t.Run("handover", func(t *testing.T) {
+					t.Parallel()
 					const role = "act-held-handover"
 					rig := newRoleActRig(t)
 					rig.claim(t, holder, role)
@@ -586,21 +635,22 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 						failed = failRoleClaimReads(t, rig.harness.registry)
 					}
 
-					elapsed, err := rig.handOver(t, role)
+					end, _ := rig.handOver(t, role, clocktest.New(time.Now()))
 
 					if !reads.fail {
-						if err != nil {
-							t.Fatalf("the handover of role %s reported %v", role, err)
+						if end.paused || end.err != nil {
+							t.Fatalf("the handover of role %s armed a pause of %s: %v, and reported %v (its clock held %v); want it ended with nothing reported",
+								role, roleKeepDrainRetryPause, end.paused, end.err, end.armed)
 						}
-						rig.awaitForward(t, holder, item, time.Second)
+						rig.awaitForward(t, holder, item)
 						requireLeftLines(t, rig.harness.logs.String(), role, 0, nil, "")
 						return
 					}
-					if err != nil || elapsed >= roleKeepDrainRetryPause || failed.Load() == 0 {
-						t.Fatalf("the handover of role %s ended %s in after %d claim reads, reporting %v; want it ended at its first resolution with nothing reported, leaving the lane to the sweep",
-							role, elapsed, failed.Load(), err)
+					if end.paused || end.err != nil || failed.Load() == 0 {
+						t.Fatalf("the handover of role %s armed its first pause of %s to resolve the holder again: %v, after %d claim reads, reporting %v (its clock held %v); want it ended at its first resolution with nothing reported and no pause armed, leaving the lane to the sweep",
+							role, roleKeepDrainRetryPause, end.paused, failed.Load(), end.err, end.armed)
 					}
-					rig.requireNoForward(t, time.Second)
+					rig.requireNoForward(t, role)
 					// Nothing reported is not nothing said: the handover says at WARN that it left the
 					// lane to the role's next claim, naming the resolution that failed.
 					requireLeftLines(t, rig.harness.logs.String(), role, 1, map[string]any{
@@ -610,6 +660,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					}, errRoleBucketReadFailed.Error())
 				})
 				t.Run("sweep", func(t *testing.T) {
+					t.Parallel()
 					const role = "act-held-sweep"
 					rig := newRoleActRig(t)
 					rig.claim(t, holder, role)
@@ -619,16 +670,14 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 						failed = failRoleClaimReads(t, rig.harness.registry)
 					}
 					laneReads := keptLaneHeadReads(t, rig.harness.client, role)
-					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					defer cancel()
 
-					sweepOnce(ctx, rig.cfg)
+					sweepOnce(testwait.Context(t), rig.cfg)
 
 					if !reads.fail {
-						rig.awaitForward(t, holder, item, 30*time.Second)
+						rig.awaitForward(t, holder, item)
 						return
 					}
-					rig.requireNoForward(t, 0)
+					rig.requireNoForward(t, role)
 					if got := laneReads(); got == 0 || failed.Load() == 0 {
 						t.Fatalf("the sweep read role %s's kept lane %d times and its handover made %d claim reads; want the lane handed over and held on the claim read that failed",
 							role, got, failed.Load())
@@ -640,6 +689,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 			})
 
 			t.Run("registration", func(t *testing.T) {
+				t.Parallel()
 				const role = "act-held-registration"
 				rig := newRoleClaimRenewalRig(t)
 				seeded := rig.seed(role, lapsedClaim(holder, holdingProcess))
@@ -713,6 +763,6 @@ func TestARoleCopySurplusClaimGetsNoRoleDelivery(t *testing.T) {
 	item := rig.deliver(t, role, "act-copy-surplus")
 
 	waitForKeptRoleMessage(t, rig.harness.client, role, item.EventID)
-	rig.requireNoForward(t, time.Second)
+	rig.requireNoForward(t, role)
 	noException(t, probe)
 }

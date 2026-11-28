@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
@@ -191,6 +192,56 @@ type listenerDeliveryHandlerConfig struct {
 	// must cross a copy's hour moves this clock rather than waiting the hour out, since the store
 	// time is the stream's own and no caller chooses it.
 	now func() time.Time
+	// clock is what the delivery paths' own bounds and pauses are measured on: the role
+	// holder's read bound (roleHolderReadTimeout) of each claim and session read the role lane,
+	// the kept lane and the takeover passes make, the agent delivery's session read
+	// (deliverySessionReadTimeout), and the pauses a kept-lane handover waits between its walks
+	// (roleKeepDrainBackoff, bus.KeptRoleClaimWindow). It is nil in main.go and in every test
+	// that does not drive time, and clk reads it as clock.Real then. A test that asserts one of
+	// those bounds or pauses sets a clocktest.Fake here before it wires the role forwarder
+	// (wireRoleForwarder copies the configuration), waits for the deadline armed on it
+	// (clocktest.Fake.AwaitArmedAt) and moves the fake past it, rather than waiting it out on
+	// the machine's clock. A copy's age is measured on now, not on this clock.
+	clock clock.Clock
+	// keptScanMax is how many copies one walk of a role's kept lane reads (walkKeptRole), one
+	// takeover pass reads from the previous holder's agent subject (runTakeoverPass), and the
+	// sweep's read for a copy that wakes a role reads (raiseKeptRoleWake). At or below zero it
+	// is roleKeepScanMax (keptScanBound), which main.go and every configuration that does not
+	// set it hold. A test that must walk past the bound sets a few here rather than storing
+	// hundreds of copies.
+	keptScanMax int
+	// keptDrainMax is how many kept copies one walk forwards (walkKeptRole). At or below zero it
+	// is roleKeepDrainMax (keptDrainBound). A test that must hand over a lane longer than one
+	// walk sets a few here.
+	keptDrainMax int
+}
+
+// clk is the clock cfg's own bounds and pauses are measured on: the one a test set, and
+// clock.Real for a configuration built without one, which main.go's and every test's that does
+// not drive time is.
+func (cfg listenerDeliveryHandlerConfig) clk() clock.Clock {
+	if cfg.clock == nil {
+		return clock.Real()
+	}
+	return cfg.clock
+}
+
+// keptScanBound is how many copies one read of a kept lane or a takeover pass reads under cfg:
+// keptScanMax where a test set one, and roleKeepScanMax otherwise.
+func (cfg listenerDeliveryHandlerConfig) keptScanBound() int {
+	if cfg.keptScanMax > 0 {
+		return cfg.keptScanMax
+	}
+	return roleKeepScanMax
+}
+
+// keptDrainBound is how many kept copies one walk forwards under cfg: keptDrainMax where a test
+// set one, and roleKeepDrainMax otherwise.
+func (cfg listenerDeliveryHandlerConfig) keptDrainBound() int {
+	if cfg.keptDrainMax > 0 {
+		return cfg.keptDrainMax
+	}
+	return roleKeepDrainMax
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -565,17 +616,20 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 }
 
 // roleLaneClaims is the claim side of the role lane's resolution (roles.ClaimStore): the claim
-// reads of claims, each bounded by roleHolderReadTimeout on its own. The lane resolves under no
-// deadline of its own (resolveCoreRoleHolder), so a bound on the claim read alone leaves the
-// holder's session read the whole of its own bound (roleHolderSessions.Holder), where one bound
-// around the resolution would leave the session read only what the claim read had not spent: a
-// claim read answering late would fail a session read that would have answered in time, which
-// the lane reports delivery_failed with the message neither forwarded nor kept.
-type roleLaneClaims struct{ claims roles.ClaimStore }
+// reads of claims, each bounded by roleHolderReadTimeout on its own, timed on clock. The lane
+// resolves under no deadline of its own (resolveCoreRoleHolder), so a bound on the claim read
+// alone leaves the holder's session read the whole of its own bound (roleHolderSessions.Holder),
+// where one bound around the resolution would leave the session read only what the claim read had
+// not spent: a claim read answering late would fail a session read that would have answered in
+// time, which the lane reports delivery_failed with the message neither forwarded nor kept.
+type roleLaneClaims struct {
+	claims roles.ClaimStore
+	clock  clock.Timeouts
+}
 
 // RoleClaim reads role's claim within ctx and roleHolderReadTimeout, whichever ends first.
 func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
-	readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+	readCtx, cancel := withRoleHolderReadBound(ctx, c.clock)
 	defer cancel()
 	return c.claims.RoleClaim(readCtx, role)
 }
@@ -614,7 +668,7 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // context.Background(), and each of its two reads is bounded on its own by roleHolderReadTimeout:
 // the claim read by roleLaneClaims and the holder's session read by roleHolderSessions.Holder.
 func resolveCoreRoleHolder(cfg listenerDeliveryHandlerConfig, item contracts.Envelope, role string) (string, session.SessionEntry, bool) {
-	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry}, roleHolderSessions{cfg.sessions}, role)
+	resolved, err := roles.ResolveHolder(context.Background(), roleLaneClaims{cfg.registry, cfg.clk()}, roleHolderSessions{cfg.sessions, cfg.clk()}, role)
 	sessionID := resolved.Holder
 	// Every error the resolution returns is a *roles.ReadError naming the read that failed.
 	// One that is not would still be a read that failed, so it is logged as the claim read with
@@ -918,7 +972,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// nats.ErrKeyNotFound is the bucket's own word that no record exists, and the answer for a
 	// record past the gone horizon (notGone). Any other error is a read that did not answer: it
 	// says nothing about the session, so it is neither a record nor the lack of one.
-	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
+	_, _, readErr := liveSessionEntry(context.Background(), cfg.clk(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	// A read that did not answer is logged here at WARN, at each delivery that made it, with the
 	// bound it was given and its error: the message's own line of it (unreadAgentDelivery) is
 	// logged once however many deliveries the failing read spans, and a message another

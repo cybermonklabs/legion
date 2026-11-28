@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -99,7 +100,7 @@ func benchmarkReap(b *testing.B, n int) {
 		b.Fatalf("session cache holds %d sessions, want %d", got, n)
 	}
 
-	isAlive := func(id string) (bool, error) { return sessionMayBeLive(sessions, id) }
+	isAlive := func(id string) (bool, error) { return sessionMayBeLive(clock.Real(), sessions, id) }
 	b.ReportAllocs()
 	for b.Loop() {
 		reaped, err := registry.Reap(isAlive, 10*time.Minute)

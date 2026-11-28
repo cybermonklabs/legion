@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -129,7 +130,8 @@ func (s requestSender) mayRead(held contracts.Envelope) bool {
 // so neither answers its own envelope for a copy its sender may read, or names another sender's
 // words: a route answers *item. It publishes through publishPastInProcess, so a refusal of the
 // publish as still in process under an earlier one is made again until the stream names that
-// one's copy.
+// one's copy. The pause before each such send is waited on the real clock (clock.Real), on which
+// the route's own window already runs.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
@@ -149,7 +151,7 @@ func (s requestSender) mayRead(held contracts.Envelope) bool {
 // stored, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and its 503 says
 // maybe_stored as every answer that may have stored the message does (mayHaveStored).
 func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, record *requestRecord, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
-	ack, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) { return publish(ctx, *item) })
+	ack, err := publishPastInProcess(ctx, clock.Real(), func() (bus.StoredAck, error) { return publish(ctx, *item) })
 	record.charge.published(ack, err)
 	if err != nil || !ack.Duplicate {
 		return false, err

@@ -559,7 +559,7 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		// The send judges the holder it resolves on the record its resolution reads
 		// (roleHolderSessions.Holder, which reads the bucket for a holder past the live window) through
 		// edgeScope.holderConfirmed, so the guard reads the record and judges it the same way.
-		read, err := roleHolderSessions{rig.deps.sessions}.Holder(context.Background(), movedTo)
+		read, err := roleHolderSessions{rig.deps.sessions, rig.deps.clk()}.Holder(context.Background(), movedTo)
 		if err != nil {
 			t.Fatalf("UNKNOWN: the resolution's read of %s: %v", movedTo, err)
 		}

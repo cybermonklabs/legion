@@ -148,7 +148,7 @@ func (crossed crossedHolderRole) requireReachedHolder(t *testing.T, holder, even
 	if heard := testwait.Receive(t, "the live holder "+holder+" to receive the role message "+eventID, crossed.heardHolder); heard.EventID != eventID {
 		t.Fatalf("the live holder %s received %s, want the role message %s", holder, heard.EventID, eventID)
 	}
-	leader, err := bucketSessionEntry(context.Background(), crossed.deps.sessions, holder, roleHolderReadTimeout)
+	leader, err := bucketSessionEntry(context.Background(), crossed.deps.clk(), crossed.deps.sessions, holder, roleHolderReadTimeout)
 	if err != nil {
 		t.Fatalf("read %s from the leader: %v", holder, err)
 	}

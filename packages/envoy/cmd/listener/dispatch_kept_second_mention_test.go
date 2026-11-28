@@ -119,7 +119,7 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	// The second mentioned session, not the first, is the one that claims the role.
 	lane.register(t, second)
 	lane.claim(t, second, role)
-	handed := lane.await(t, 1, 30*time.Second)
+	handed := lane.await(t, 1)
 
 	if handed[0].holder != second {
 		t.Fatalf("the copy reached %s, want the role's next holder %s", handed[0].holder, second)

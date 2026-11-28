@@ -11,10 +11,12 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -25,7 +27,10 @@ func noSessionPublish(role, message string) string {
 }
 
 // requireDeliveredTo fails unless the publish was answered 200 naming holder with no kept field,
-// the holder's stand-in was forwarded the answered event once, and nothing was kept for role.
+// the holder's stand-in was forwarded the answered event once, and nothing was kept for role. The
+// route answers once the stream has stored its forward, so the holder's agent subject then holds
+// every forward the publish made, and a marker published after them on the client the route
+// forwards on reaches the stand-in before any frame they did not send.
 func requireDeliveredTo(t *testing.T, d *listenerDeps, frames <-chan contracts.Envelope, role, holder, body string) {
 	t.Helper()
 	recorder, answer := publishToRole(t, d, role, body)
@@ -33,15 +38,20 @@ func requireDeliveredTo(t *testing.T, d *listenerDeps, frames <-chan contracts.E
 		t.Fatalf("the publish with no source session answered %d %s, want 200 naming the live holder %s with nothing kept",
 			recorder.Code, recorder.Body.String(), holder)
 	}
-	if frame := expectFrames(t, frames, 1, 250*time.Millisecond)[0]; frame.EventID != answer.EventID {
+	if frame := expectFrames(t, frames, 1, 0)[0]; frame.EventID != answer.EventID {
 		t.Fatalf("the holder was forwarded event %s, want the answered %s", frame.EventID, answer.EventID)
 	}
+	if count := storedForwards(t, d.client, contracts.LegacyAgentSubject(holder)); count != 1 {
+		t.Fatalf("the stream holds %d messages on %s's agent subject, want the one forward of the publish", count, holder)
+	}
+	noFurtherFrame(t, d.client.Conn, holder, frames)
 	assertNothingKept(t, d.client, role)
 }
 
 // A role a live session holds is delivered a publish that names no source session exactly as one
 // that names a session: 200 naming the holder, the forward on its agent subject, nothing kept.
 func TestAPublishWithNoSourceSessionToAHeldRoleIsDelivered(t *testing.T) {
+	t.Parallel()
 	d, _ := keptRoleDeps(t)
 	const role, holder = "no-session-held", "ses_no_session_held"
 	claimRoleFor(t, d.registry, d.sessions, holder, role, nil)
@@ -58,6 +68,7 @@ func TestAPublishWithNoSourceSessionToAHeldRoleIsDelivered(t *testing.T) {
 // and says why nothing was kept. The refusal's exception goes out as a keep: false refusal's does,
 // and a lapsed holder's claim stands.
 func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		role   string
@@ -94,6 +105,7 @@ func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d, client := keptRoleDeps(t)
 			tc.register(t, d, tc.holder)
 			if tc.holder != "" {
@@ -124,7 +136,7 @@ func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.
 			if strings.Contains(recorder.Body.String(), `"kept"`) {
 				t.Fatalf("the refusal %s carries a kept field, want none", recorder.Body.String())
 			}
-			message, err := probe.NextMsg(5 * time.Second)
+			message, err := probe.NextMsgWithContext(testwait.Context(t))
 			if err != nil {
 				t.Fatalf("the refusal raised no exception: %v", err)
 			}
@@ -147,6 +159,7 @@ func TestAPublishWithNoSourceSessionToARoleWithNoLiveHolderIsRefused(t *testing.
 // role's next live holder and answered 202: the dead letter of a copy that expires reaches that
 // session.
 func TestAPublishWithASourceSessionToARoleWithNoLiveHolderIsStillKept(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	const role = "no-session-control-kept"
 	recorder, answer := publishToRole(t, d, role,
@@ -184,7 +197,9 @@ func (kv claimlessRoleKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // publish is delivered to that holder. Control, in each row: the copy is behind for the row (a
 // direct get answers no claim, or no registration).
 func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehind(t *testing.T) {
+	t.Parallel()
 	t.Run("the role bucket's copy holds no claim", func(t *testing.T) {
+		t.Parallel()
 		d, _ := keptRoleDeps(t)
 		const role, holder = "no-session-claim-behind", "ses_no_session_claim_behind"
 		claimRoleFor(t, d.registry, d.sessions, holder, role, nil)
@@ -199,6 +214,7 @@ func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehin
 	})
 
 	t.Run("the session bucket's copy holds no registration", func(t *testing.T) {
+		t.Parallel()
 		d, _ := keptRoleDeps(t)
 		const role, holder = "no-session-session-behind", "ses_no_session_session_behind"
 		// The cache stops following the bucket, so it never holds the registration below, and the
@@ -232,6 +248,7 @@ func TestAPublishWithNoSourceSessionReadsTheHolderFromTheLeaderWhileACopyIsBehin
 // Controls: the cache reads the old registration live before the clock moves, and the leader's
 // registration is live at the resolution's time.
 func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
+	t.Parallel()
 	var armed atomic.Bool
 	var reads atomic.Int64
 	start := time.Now().Truncate(time.Millisecond)
@@ -253,13 +270,18 @@ func TestANoSessionResolutionNeverJudgesTheCachedHolder(t *testing.T) {
 	if entry, state := harness.sessions.Lookup(holder); entry.UpdatedAt != cachedAt.UnixMilli() || state != session.Live {
 		t.Fatalf("UNKNOWN: the cache holds %+v in state %s, not the old registration live, so the row tests nothing", entry, state)
 	}
+	// The holder's session reads keep their bound, roleHolderReadTimeout, on a clock the test never
+	// moves, so a read a loaded machine makes slow is not ended by it; the shared wait's context
+	// bounds every read here.
+	bounds := clocktest.New(time.Now())
+	ctx := testwait.Context(t)
 	armed.Store(true)
-	result, err := roles.ResolveHolder(context.Background(), leaderRoleClaims{harness.registry}, leaderHolderSessions{harness.sessions}, role)
+	result, err := roles.ResolveHolder(ctx, leaderRoleClaims{harness.registry}, leaderHolderSessions{harness.sessions, bounds}, role)
 	armed.Store(false)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", role, err)
 	}
-	leader, err := bucketSessionEntry(context.Background(), harness.sessions, holder, roleHolderReadTimeout)
+	leader, err := bucketSessionEntry(ctx, bounds, harness.sessions, holder, roleHolderReadTimeout)
 	if err != nil {
 		t.Fatalf("read %s from the leader: %v", holder, err)
 	}

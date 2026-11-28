@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -343,7 +344,7 @@ func crashReapedBeforeAnyPass(t *testing.T) {
 		}
 		ageRoleClaim(rig.t, rig.deps, role, 2*session.LiveWindow)
 		isAlive := func(sessionID string) bool {
-			return roleHolderMayBeLive(rig.harness.config.logger, rig.harness.sessions, sessionID)
+			return roleHolderMayBeLive(rig.harness.config.logger, clock.Real(), rig.harness.sessions, sessionID)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -895,7 +896,7 @@ func crashRecordAheadOfAKeptCopy(t *testing.T) {
 	t.Logf("the takeover records ahead of the kept lane: %+v", rig.records(role, a))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if wakes, err := keptLaneWakesItsRole(ctx, rig.harness.client, role, 1, time.Now()); err != nil || wakes {
+	if wakes, err := keptLaneWakesItsRole(ctx, rig.harness.client, role, 1, time.Now(), roleKeepScanMax); err != nil || wakes {
 		t.Fatalf("the wake scan of role %s's kept lane, which holds no copy: %v, %v; want no wake", role, wakes, err)
 	}
 	kept := rig.publish(role, "kept behind a takeover record")
@@ -903,7 +904,7 @@ func crashRecordAheadOfAKeptCopy(t *testing.T) {
 		t.Fatalf("publish to the unclaimed role %s: status %d %s; want 202 kept", role, kept.status, kept.raw)
 	}
 	waitForKeptRoleMessage(t, rig.harness.client, role, kept.EventID)
-	if wakes, err := keptLaneWakesItsRole(ctx, rig.harness.client, role, 1, time.Now()); err != nil || !wakes {
+	if wakes, err := keptLaneWakesItsRole(ctx, rig.harness.client, role, 1, time.Now(), roleKeepScanMax); err != nil || !wakes {
 		t.Fatalf("the wake scan of role %s's kept lane, which holds the kept copy: %v, %v; want a wake", role, wakes, err)
 	}
 	cursor, err := rig.harness.client.ReadKeptRoleCursor(ctx, role)

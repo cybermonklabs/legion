@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/kvwatch"
@@ -971,7 +972,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// entry within the gone horizon is not gone to this route while the known-session store
 		// holds its record, which it answers from memory: only a session neither store knows is
 		// the 404 a sender routes around the pane on.
-		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendSessionReadTimeout, notGone, d.sessions.Refresh)
+		target, recipientState, err := liveSessionEntry(ctx, d.clk(), d.sessions, targetSession, sendSessionReadTimeout, notGone, d.sessions.Refresh)
 		// At the edge a target is one only while the token that registered it lists one of the
 		// sender's projects and the stream's leader confirms that record is a writer's
 		// (edgeScope.showsConfirmed). Any other target, and one no entry stands for, whose record
@@ -1875,7 +1876,7 @@ const sessionRegistrationView = "registration"
 // session.Gone as the state a session with no record is in. Every other error is a read that did
 // not answer, the bus-unavailable 503 with Retry-After: 1.
 func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *http.Request, d *listenerDeps, sessionID string) {
-	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
+	entry, err := bucketSessionEntry(ctx, d.clk(), d.sessions, sessionID, roleHolderReadTimeout)
 	hidden, hideErr := edgeScopeOf(r, nil).hidesConfirmed(ctx, d.sessions, sessionID, entry, err)
 	switch {
 	case errors.Is(err, bus.ErrRefused):
@@ -1946,10 +1947,10 @@ func writeUnshownSession(ctx context.Context, w http.ResponseWriter, scope *edge
 // bus-unavailable 503, so a hiccup never wipes a session's projects. clearForged is true when the
 // cached entry names sessionID but the stream leader holds no writer's record for it (the RePublish
 // case above): its non-project fields may be a RePublish's too, so the caller carries back none of
-// them.
-func claimRefreshProjects(ctx context.Context, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) (projects []string, clearForged bool, err error) {
+// them. The confirmation read is bounded by roleHolderReadTimeout, timed on clk.
+func claimRefreshProjects(ctx context.Context, clk clock.Timeouts, sessions *session.SessionRegistry, r *http.Request, sessionID string, entry session.SessionEntry) (projects []string, clearForged bool, err error) {
 	if entry.SessionID == sessionID {
-		readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+		readCtx, cancel := withRoleHolderReadBound(ctx, clk)
 		confirmed, ok, readErr := sessions.StoredByWriter(readCtx, sessionID)
 		cancel()
 		if readErr != nil {
@@ -2029,7 +2030,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout, accept, d.sessions.Refresh)
+		entry, state, err := liveSessionEntry(ctx, d.clk(), d.sessions, sessionID, roleHolderReadTimeout, accept, d.sessions.Refresh)
 		// At the edge a session of none of the token's projects is answered as one no listener
 		// has heard of, and a shown session's roles and topics are those projects' alone.
 		scope := edgeScopeOf(r, d.repositories)
@@ -2485,7 +2486,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// refreshed here and the one the predecessor rule falls back to. A read that does not
 		// answer keeps the cache's entry and goes on, so this claim is never worse off than it
 		// was without the bucket read.
-		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
+		if fresh, freshErr := bucketSessionEntry(ctx, d.clk(), d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
 			entry = fresh
 		}
 		// The process this claim is made by is the one the request states, and the claim records
@@ -2515,7 +2516,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// projects (registeringProjects) otherwise, so a forged record's projects are never written
 		// back as this session's own. A confirmation read that did not answer is the bus-unavailable
 		// 503, so a hiccup never wipes a session's projects.
-		projects, clearForged, projectsErr := claimRefreshProjects(ctx, d.sessions, r, body.SessionID, entry)
+		projects, clearForged, projectsErr := claimRefreshProjects(ctx, d.clk(), d.sessions, r, body.SessionID, entry)
 		if projectsErr != nil {
 			writeStoreError(ctx, w, projectsErr, http.StatusServiceUnavailable)
 			return
@@ -2636,7 +2637,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				if claimantInstance == "" {
 					claimantInstance = registeredInstanceID
 				}
-				verdict, err = roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstance)
+				verdict, err = roleSupersessionVerdict(ctx, d.clk(), d.sessions, holder, previous, claimantInstance)
 			}
 			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor {
 				supersedable = append(supersedable, holder)
@@ -2918,7 +2919,7 @@ func roleGetHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		scope := edgeScopeOf(r, nil)
-		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, role)
+		result, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions, d.clk()}, role)
 		if errors.Is(err, store.ErrMalformedRoleClaim) {
 			writeRoleClaimUnreadable(w, role, err)
 			return

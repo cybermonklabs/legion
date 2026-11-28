@@ -448,12 +448,12 @@ func handOverTakenRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 
 // runTakeoverPasses runs passes of each of records that is not finished, each record's until one
 // reads to the end of the previous holder's subject or copies nothing for the reason a pass gives
-// (runTakeoverPass), fails, or ctx ends. A pass reads at most roleKeepScanMax messages and writes
-// the record with the sequence it reached, so the next goes on from there, here or on any
-// listener. A failed pass is logged at WARN, except a read of the previous holder's floor that this
-// listener's NATS user may not make (bus.ErrConsumerNotGranted), which is logged at debug and ends
-// every pass of records: the records came from passRecords, so the grant went away since, and
-// every other record's first pass would be refused the same.
+// (runTakeoverPass), fails, or ctx ends. A pass reads at most the configuration's scan bound
+// (keptScanBound) of messages and writes the record with the sequence it reached, so the next goes
+// on from there, here or on any listener. A failed pass is logged at WARN, except a read of the
+// previous holder's floor that this listener's NATS user may not make (bus.ErrConsumerNotGranted),
+// which is logged at debug and ends every pass of records: the records came from passRecords, so
+// the grant went away since, and every other record's first pass would be refused the same.
 func runTakeoverPasses(ctx context.Context, cfg listenerDeliveryHandlerConfig, records []bus.StoredTakeoverRecord) {
 	for _, stored := range records {
 		for !stored.Record.Finished && ctx.Err() == nil {
@@ -521,14 +521,14 @@ const takeoverRecordRefresh = 15 * time.Minute
 // deletes a consumer and creates it again within moments - the first message stored roleKeepWindow
 // before the record's base time: the claim's time, or the last time a pass found the previous
 // holder holding the role again (HolderSeenAt) where that is later, since it read its messages
-// until then. It then reads the previous holder's agent subject from there, at most
-// roleKeepScanMax messages, and copies each role message of the record's role stored roleKeepWindow
-// before that base time or later to the role's kept lane (keepTakenRoleFrame). Such a pass writes
-// the record when it changed it (a new sequence, a missed floor, the record finished), or once
-// the record's last write is takeoverRecordRefresh old (settle), so the stream's age limit never
-// removes a record a pass still needs, and the next pass reads only what is new; the first pass
-// that starts more than takeoverRecordLife after the claim's time and reads to the end marks it
-// finished.
+// until then. It then reads the previous holder's agent subject from there, at most the
+// configuration's scan bound (keptScanBound) of messages, and copies each role message of the
+// record's role stored roleKeepWindow before that base time or later to the role's kept lane
+// (keepTakenRoleFrame). Such a pass writes the record when it changed it (a new sequence, a missed
+// floor, the record finished), or once the record's last write is takeoverRecordRefresh old
+// (settle), so the stream's age limit never removes a record a pass still needs, and the next pass
+// reads only what is new; the first pass that starts more than takeoverRecordLife after the
+// claim's time and reads to the end marks it finished.
 //
 // A handover record (bus.HandoverSubject, the claim of a session that named the one it replaces)
 // is passed the same way, with five differences.
@@ -689,7 +689,7 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 		}
 		return nil
 	}
-	for range roleKeepScanMax {
+	for range cfg.keptScanBound() {
 		message, err := cfg.client.NextStoredMessage(ctx, agent, next)
 		if errors.Is(err, nats.ErrMsgNotFound) {
 			reachedEnd = true
@@ -904,7 +904,7 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 	kept := item
 	kept.DedupeKey = takenFrameDedupeKey(key, seq)
 	msgID := takenFrameMsgID(key, role, seq)
-	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	if _, err := publishPastInProcess(ctx, cfg.clk(), func() (bus.StoredAck, error) {
 		return cfg.keepPublish(ctx, bus.KeptRoleSubject(role), kept, msgID)
 	}); err != nil {
 		return fmt.Errorf("copy role %s's message %s to its kept lane: %w", role, item.EventID, err)
@@ -1003,7 +1003,7 @@ func withdrawLateForward(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 	var failed error
 	for attempt := range 2 {
 		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), roleForwardTimeout)
-		ack, err := publishPastInProcess(publishCtx, func() (bus.StoredAck, error) {
+		ack, err := publishPastInProcess(publishCtx, cfg.clk(), func() (bus.StoredAck, error) {
 			if faults.withdrawPublish != nil {
 				if err := faults.withdrawPublish(role); err != nil {
 					return bus.StoredAck{}, err

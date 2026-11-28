@@ -429,7 +429,7 @@ func sessionLiveNow(ctx context.Context, cfg listenerDeliveryHandlerConfig, sess
 	if cfg.sessions == nil {
 		return false, errors.New("this listener holds no session registry")
 	}
-	_, _, err := liveSessionEntry(ctx, cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
+	_, _, err := liveSessionEntry(ctx, cfg.clk(), cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return false, nil
@@ -471,7 +471,7 @@ func handOverDirectFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 		handed.EventID = handedOverEventID(previous, seq)
 	}
 	msgID := handedOverMsgID(successor, handed.EventID)
-	if _, err := publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+	if _, err := publishPastInProcess(ctx, cfg.clk(), func() (bus.StoredAck, error) {
 		return cfg.keepPublish(ctx, handed.Topic, handed, msgID)
 	}); err != nil {
 		return fmt.Errorf("hand %s's message %s over to %s: %w", previous, handed.EventID, successor, err)

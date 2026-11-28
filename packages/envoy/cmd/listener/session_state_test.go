@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -227,7 +228,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 	// A live window of zero, so the claim's own renewal keeps nothing: what must keep it here
 	// is the holder, which is unresponsive rather than gone.
 	sweep, err := d.registry.ReapRoleClaims(context.Background(), func(sessionID string) bool {
-		return roleHolderMayBeLive(logger, d.sessions, sessionID)
+		return roleHolderMayBeLive(logger, clock.Real(), d.sessions, sessionID)
 	}, live, 0)
 	if err != nil || sweep.Reaped != 0 {
 		t.Fatalf("the role reaper released %+v, %v; want none while the holder is only unresponsive", sweep, err)

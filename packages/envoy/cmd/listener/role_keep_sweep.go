@@ -231,7 +231,7 @@ func takenRoles(ctx context.Context, cfg listenerDeliveryHandlerConfig) map[stri
 func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, from uint64) {
 	now := cfg.now()
 	readCtx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
-	wakes, err := keptLaneWakesItsRole(readCtx, cfg.client, role, from, now)
+	wakes, err := keptLaneWakesItsRole(readCtx, cfg.client, role, from, now, cfg.keptScanBound())
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil {
@@ -247,20 +247,21 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 }
 
 // keptLaneWakesItsRole reports whether role's kept lane holds, from the copy stored at from on and
-// within roleKeepScanMax copies, a copy the listener kept (any kind but bus.KeptCopyOutbox) whose
-// age at now is at most roleKeepWakeAge - a copy of Dispatch's delivery of a post the publish
-// route kept (bus.KeptCopyDispatchDelivery) among them, whose keep raised the role's wake as every
-// keep of the route does. The read goes forward because the stream reads no message before a
-// sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
-// the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
-// whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it, nor does a
-// withdrawal mark (isWithdrawnFrame), which the walk ends and forwards to no one. A copy is read
-// field by field, as the walk reads it (roleFrame.envelope), so a copy the walk forwards wakes the
-// role, an expects_reply word this build does not know among it.
-func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
+// within scanMax copies, the configuration's scan bound (keptScanBound), a copy the listener kept
+// (any kind but bus.KeptCopyOutbox) whose age at now is at most roleKeepWakeAge - a copy of
+// Dispatch's delivery of a post the publish route kept (bus.KeptCopyDispatchDelivery) among them,
+// whose keep raised the role's wake as every keep of the route does. The read goes forward because
+// the stream reads no message before a sequence; a lane's copies grow younger along it, so the read
+// ends at the first copy that wakes the role. An outbox copy wakes nothing, as the outbox's own
+// keep raises no report, and a copy whose role no read can tell (readRoleFrame) wakes nothing
+// either, as the walk ends it, nor does a withdrawal mark (isWithdrawnFrame), which the walk ends
+// and forwards to no one. A copy is read field by field, as the walk reads it
+// (roleFrame.envelope), so a copy the walk forwards wakes the role, an expects_reply word this
+// build does not know among it.
+func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time, scanMax int) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from
-	for range roleKeepScanMax {
+	for range scanMax {
 		stored, err := client.NextStoredMessage(ctx, subject, next)
 		if errors.Is(err, nats.ErrMsgNotFound) {
 			return false, nil
