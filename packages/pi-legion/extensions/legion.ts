@@ -1032,21 +1032,34 @@ export default function legionExtension(pi: PiApi): void {
     return undefined;
   });
   pi.on("agent_end", async (event, context) => {
+    // Whether the host holds a message to go on with, read at once, before any await, as the
+    // host answers it at this end: a steered run's non-terminal end sets no `willContinue` and
+    // reads as this instead (`AgentEndEvent` in `@legion/pi-shared/pi-types`), and the host takes
+    // the message for its next turn without waiting on this handler, so a later read can find
+    // the message gone and this end taken for a closed turn.
+    const pendingMessages = context.hasPendingMessages?.() === true;
     const sessionID = context.sessionManager.getSessionId();
     // A subagent's run is no turn of this session's: it takes no mark off and sends no activity
     // report.
     const subagent = subagentEvent(context);
     const passReported = !subagent && reportingStopPasses.delete(sessionID);
-    // The host closed the turn — it goes on with nothing, and waits on no background job's
-    // result, which starts the next run and gets the pass the host defers until then — and no
-    // pass reported it.
+    // The host closed the turn — it goes on with nothing, holds no message, and waits on no
+    // background job's result, which starts the next run and gets the pass the host defers until
+    // then — and no pass reported it. A turn whose end finds a message waiting has not ended: the
+    // host goes on with the message, and the run's terminal end, whose pass reports the turn,
+    // comes after it.
     const closedWithNoPass =
-      !subagent && !passReported && event.willContinue !== true && event.awaitingAsyncWork !== true;
+      !subagent &&
+      !passReported &&
+      event.willContinue !== true &&
+      event.awaitingAsyncWork !== true &&
+      !pendingMessages;
     // With the line session_stop logs, this tells a turn the host closed with no session_stop
     // pass, which this end reports (`closedWithNoPass`), from one whose pass ran.
     logger.debug("legion: a turn ended", {
       willContinue: event.willContinue === true,
       awaitingAsyncWork: event.awaitingAsyncWork === true,
+      pendingMessages,
       closedWithNoPass,
     });
     // Side by side: the outcome's send is retried for as long as the daemon restarts, and the

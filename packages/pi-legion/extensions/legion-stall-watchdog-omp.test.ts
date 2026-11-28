@@ -552,10 +552,10 @@ test.skipIf(skip)(
 
     // **And the close at that end is a choice.** An extension is told which end it is: the host
     // answers `ctx.hasPendingMessages()` true at the non-terminal end and false at the terminal
-    // one that follows, which is what this pane's own steering extension records. The entry
-    // reads none of it and closes the run's calls at either end, because the host writes every
-    // call's `tool_execution_end` before a run's `turn_end` and `agent_end` — so no call of the
-    // run is open at that point — and because the turn after it is a turn of its own, which a
+    // one that follows, which is what this pane's own steering extension records. The stall
+    // watch reads none of it and closes the run's calls at either end, because the host writes
+    // every call's `tool_execution_end` before a run's `turn_end` and `agent_end` — so no call of
+    // the run is open at that point — and because the turn after it is a turn of its own, which a
     // ladder judging the ended run's calls would abort (`legion.ts`'s `agent_end` handler, and
     // the case in `legion.test.ts` that drives `willContinue`).
     const ends = await pane.until("the two run ends this session reported", async () => {

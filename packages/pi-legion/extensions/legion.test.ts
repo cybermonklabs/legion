@@ -2368,6 +2368,28 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(activityReports(architect)).toEqual([]);
     });
 
+    // A steered run's non-terminal end sets neither flag: the host holds the steered message,
+    // which `ctx.hasPendingMessages()` answers, and goes on with it, so the turn ends at the
+    // run's terminal end, whose pass reports it, once. Red when an end at which the host holds a
+    // message is taken for a turn closed with no pass and sends a report of its own, after a
+    // phase worker's settle: work done at no turn's end, and with it in place CI's run of the
+    // real host's steering case (legion-stall-watchdog-omp.test.ts) found the message gone by
+    // the time the pane's next `agent_end` handler read it.
+    test("an end at which the host holds a message to go on with sends no activity report", async () => {
+      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
+      await architect.starts();
+
+      await hook(architect.handlers, "agent_end")(endedOn("Reading the steer."), {
+        ...architect.context,
+        hasPendingMessages: () => true,
+      });
+      expect(activityReports(architect)).toEqual([]);
+
+      await architect.settles("Answered the steer.");
+      await architect.ends(endedOn("Answered the steer."));
+      expect(activityReports(architect)).toEqual([reportOf(architect, null)]);
+    });
+
     // A phase worker's turn closed with no pass settles its reminder at its `agent_end`, so the
     // report carries the wake that settle armed, as the pass's report would: here the quiet wait
     // a WAITING reply buys. Red when `agent_end` settles nothing, or reports before it settles.
@@ -9384,7 +9406,7 @@ describe("the stall watch the plugin's entry arms", () => {
     // The other road of the same handler: a run of this session that is not the last, because
     // the host has something to go on with — a background job's follow-up, which arrives with
     // `willContinue` and `awaitingAsyncWork` set, or a steering delivery it took while the turn
-    // ran, at whose end `ctx.hasPendingMessages()` is true. The entry reads neither and closes
+    // ran, at whose end `ctx.hasPendingMessages()` is true. The watch reads neither and closes
     // the run's calls at either end, which is what this case holds. That is a choice and not
     // the host's doing: it is right because the host writes every call's `tool_execution_end`
     // before a run's `turn_end` and `agent_end`, so no call of the run is open at this point,

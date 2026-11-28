@@ -1129,6 +1129,7 @@ func TestConfigCheckPrintsEachProjectsWatchedWorkflows(t *testing.T) {
 // reads, and refuses a guidance file boot would refuse; a file that sets no `plan_guidance` prints
 // no such line, which every other expectation here holds.
 func TestConfigCheckPrintsThePlanGuidance(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	t.Run("a guidance file beside the configuration", func(t *testing.T) {
 		legionState(t)
 		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
