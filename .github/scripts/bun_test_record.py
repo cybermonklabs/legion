@@ -230,11 +230,11 @@ def read_report(path: Path, report: str):
                                       "writes with no line")
                 try:
                     seconds, line = float(case.get("time")), int(case.get("line"))
-                    if not math.isfinite(seconds):
-                        raise ValueError
                 except ValueError:
                     return None, [], (f"the report does not parse: its test {' > '.join(names)!r} has time "
                                       f"{case.get('time')!r} and line {case.get('line')!r}, not numbers")
+                if not math.isfinite(seconds):
+                    return None, [], f"its test {' > '.join(names)!r} has time {case.get('time')!r}, which is not finite"
                 rows.append({"file": rooted(case.get("file")), "name": " > ".join(names),
                              "status": status_of(case, " ".join(names), pattern), "seconds": seconds, "line": line})
     except ReportNestingError as error:

@@ -11,14 +11,13 @@ with bun's exit status. The report is `$RUNNER_TEMP/bun-test-reports/<the workin
 GITHUB_WORKSPACE>/<name>.xml`. Before bun starts it writes `<report>.run` and, for a -t
 (--test-name-pattern) pattern on the command line or in the script `bun run` runs, `<report>.t`;
 once bun has ended, or could not start, it writes `<report>.exit`. bun's standard output reaches
-the step as bun writes it. This script copies each piece of standard error as it comes and reads
-the count of errors from the ` N error` line in bun's last summary block. The block ends with
+the step as bun writes it. The wrapper copies bun's standard error byte for byte. It records the
+error count from bun's last summary block if it reads that block whole, or null otherwise.
+Earlier or later output outside that block does not change the count. The block ends with
 `Ran N tests across M files.` and can also hold bun's `snapshots: ` line.
 bun's report leaves out a file that did not load and an error between tests. When bun has ended,
 the copy goes on for at most DRAIN_SECONDS more, for a process that still holds bun's standard
 error.
-The copy keeps bun's summary count even if later output fills the buffer, before or after the
-wrapper reaps bun.
 
 When bun exits 0 and its run breaks a clause of bun_test_record.py's rule (bun 1.4.4 exits 0 and
 writes no report when it cannot write its outfile, and when a test calls process.exit), this
@@ -62,10 +61,13 @@ from bun_test_record import (  # noqa: E402
 PATTERN_FLAGS = ("-t", "--test-name-pattern")
 # One `bun test` command with no shell operator: the only script `bun run` may run here.
 ONE_BUN_TEST = re.compile(r"bun[ \t]+test(?:[ \t]+[^\s;&|<>()`$'\"\\]+)*")
-SUMMARY_END = re.compile(r"Ran \d+ tests? across \d+ files?\.")
+SUMMARY_END = re.compile(r"Ran [0-9]+ tests? across [0-9]+ files?\.")
 SUMMARY_LINE = re.compile(r"\s*\d+ \S.*|snapshots: .*")
 ERRORS = re.compile(r"\s*(\d+) errors?\s*")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+SUMMARY_END_BYTES = re.compile(rb"^(?:" + ANSI.pattern.encode() + rb")*" + SUMMARY_END.pattern.encode(), re.MULTILINE)
+# Allow both counts to have 20 digits and the line to start with a color code.
+SUMMARY_END_OVERLAP = 128
 TAIL_BYTES = 64 * 1024
 DRAIN_SECONDS = 5
 
@@ -112,20 +114,25 @@ def bun_words(command: list):
     return shlex.split(script) + command[3:], None
 
 
-def summary_errors(text: str):
-    """The count of errors in bun's last summary, 0 when it has no error line, None when the text
-    holds no summary."""
+def summary_errors(text: str, whole: bool) -> int | None:
+    """Return the last summary block's error count, or None if the block is missing or cut."""
     lines = ANSI.sub("", text).splitlines()
-    ends = [at for at, line in enumerate(lines) if SUMMARY_END.match(line)]
-    if not ends:
+    for at in range(len(lines) - 1, -1, -1):
+        if SUMMARY_END.match(lines[at]):
+            break
+    else:
         return None
-    at = ends[-1] - 1
-    while at >= 0 and SUMMARY_LINE.fullmatch(lines[at]):
-        counted = ERRORS.fullmatch(lines[at])
-        if counted:
-            return int(counted.group(1))
+    # In a trimmed tail the first line may have lost its start.
+    first_whole_line = 0 if whole else 1
+    errors = None
+    at -= 1
+    while at >= first_whole_line and SUMMARY_LINE.fullmatch(lines[at]):
+        if errors is None and (counted := ERRORS.fullmatch(lines[at])):
+            errors = int(counted.group(1))
         at -= 1
-    return 0
+    if at < first_whole_line and not whole:
+        return None
+    return 0 if errors is None else errors
 
 
 def main(argv: list) -> int:
@@ -171,38 +178,23 @@ def main(argv: list) -> int:
         write_exit(ended, 127, None, start=str(error))
         print(f"::error::bun_test_run.py: bun could not start: {error}", file=sys.stderr)
         return 127
-    tail = bytearray()
-    tail_lock = threading.Lock()
     last_errors = None
-    summary_end_suffix = re.compile(rb" files?\.")
 
     def copy() -> None:
         nonlocal last_errors
-        frozen = False
-        check_freeze = True
+        tail = bytearray()
+        whole = True
         while chunk := os.read(bun.stderr.fileno(), 65536):
             sys.stderr.buffer.write(chunk)
             sys.stderr.buffer.flush()
-            if frozen:
-                continue
-            with tail_lock:
-                # wait() may return before the copy reads bun's summary. Check once after the
-                # reap, and check again only if another read finds a summary.
-                if check_freeze and bun.returncode is not None:
-                    check_freeze = False
-                    if summary_errors(tail.decode(errors="replace")) is not None:
-                        frozen = True
-                        continue
-                # Search only for a suffix ending in this chunk. Include enough old bytes for
-                # " files." to straddle the read, and parse before trimming can remove the count.
-                start = max(0, len(tail) - len(b" files"))
-                tail.extend(chunk)
-                if summary_end_suffix.search(tail, start):
-                    errors = summary_errors(tail.decode(errors="replace"))
-                    if errors is not None:
-                        last_errors = errors
-                        check_freeze = True
+            old_end = len(tail)
+            tail.extend(chunk)
+            start = max(0, old_end - SUMMARY_END_OVERLAP)
+            if any(match.end() > old_end for match in SUMMARY_END_BYTES.finditer(tail, start)):
+                last_errors = summary_errors(tail.decode(errors="replace"), whole)
+            if len(tail) > TAIL_BYTES:
                 del tail[:-TAIL_BYTES]
+                whole = False
 
     copier = threading.Thread(target=copy, daemon=True)
     copier.start()
@@ -215,11 +207,7 @@ def main(argv: list) -> int:
     status = bun.wait()
     copier.join(DRAIN_SECONDS)
     status = 128 - status if status < 0 else status
-    with tail_lock:
-        errors = summary_errors(tail.decode(errors="replace"))
-        if errors is None:
-            errors = last_errors
-    write_exit(ended, status, errors)
+    write_exit(ended, status, last_errors)
     if status == 0:
         _, reasons = read_run(report, report.name)
         for reason in reasons:

@@ -33,7 +33,30 @@ wrap() {
   local temp=$1 package=$2
   shift 2
   set +e
-  wrap_log=$(cd "$ws/packages/$package" && PATH="${WRAP_PATH:-$PATH}" RUNNER_TEMP="$temp" "$python" "$wrapper" "$@" 2>&1)
+  wrap_log=$(
+    cd "$ws/packages/$package" || exit
+    export PATH="${WRAP_PATH:-$PATH}" RUNNER_TEMP="$temp"
+    if [ -n "${WRAP_STDERR_HANDOFF_AT:-}" ]; then
+      "$python" -c '
+import os, subprocess, sys, time
+
+# Leave only one page in the step pipe so the copier can fall behind bun.
+with subprocess.Popen([sys.executable, *sys.argv[1:]], stdin=subprocess.PIPE,
+                      stderr=subprocess.PIPE, pipesize=4096) as run:
+    first = run.stderr.read(int(os.environ["WRAP_STDERR_HANDOFF_AT"]))
+    sys.stdout.buffer.write(first)
+    # Let the copier finish handling these bytes while bun still waits.
+    time.sleep(0.2)
+    run.stdin.write(b"\n")
+    run.stdin.close()
+    time.sleep(float(os.environ.get("WRAP_STDERR_DELAY", "0")))
+    sys.stdout.buffer.write(run.stderr.read())
+    sys.exit(run.wait())
+' "$wrapper" "$@"
+    else
+      "$python" "$wrapper" "$@" 2>&1
+    fi
+  )
   wrapped=$?
   set -e
 }
@@ -285,6 +308,12 @@ cat > "$work/standin/bun" <<'EOF'
 for word in "$@"; do case $word in --reporter-outfile=*) out=${word#*=} ;; esac; done
 if [ -n "${STANDIN_REPORT:-}" ]; then cp "$STANDIN_REPORT" "$out"; fi
 printf '%b' "${STANDIN_STDERR:-}" >&2
+if [ -n "${STANDIN_STDERR_FILE:-}" ]; then cat "$STANDIN_STDERR_FILE" >&2; fi
+if [ -n "${WRAP_STDERR_HANDOFF_AT:-}" ]; then
+  # Wait until the step reader has received the initial stderr.
+  read -r
+  printf '%b' "${STANDIN_STDERR_TRAILER:-}" >&2
+fi
 if [ "${STANDIN_LATE_STDERR:-}" = yes ]; then
   # The child waits for the wrapper to reap bun, writes once, then exits and closes the pipe.
   python3 -c '
@@ -354,6 +383,47 @@ set -e
 check "the wrapper exits 0, bun's status, despite the child's output" "$(is "$flood_status" 0)"
 check "and kept bun's summary, not the child's output, in the exit status" \
   "$(is "$(exit_of "$work/t-flood/bun-test-reports/packages/flood/test.xml")" '{"status": 0, "errors": 0}')"
+
+cat > "$work/failed.xml" <<'EOF'
+<testsuites tests="1"><testsuite name="src/test.ts" file="src/test.ts">
+  <testcase name="fails" file="src/test.ts" line="1" time="0.1"><failure /></testcase>
+</testsuite></testsuites>
+EOF
+
+echo "case: 65,499 bytes after a summary do not change its error count"
+summary_error=$'\n 0 pass\n 1 fail\n 1 error\nRan 1 test across 1 file. [0.10s]\n'
+printf -v padding '%0*d\n' 65498 0
+first_stderr="$summary_error$padding"
+WRAP_STDERR_HANDOFF_AT=${#first_stderr} \
+  standin "$work/t-summary-tail" test "$work/failed.xml" "$first_stderr" 1
+check "the exit record keeps bun's one error after 65,499 bytes" \
+  "$(is "$(exit_of "$work/t-summary-tail/bun-test-reports/packages/ok/test.xml")" '{"status": 1, "errors": 1}')"
+
+echo "case: a later 'Removed 2 files.' line does not change the summary's error count"
+printf -v padding '%0*d\n' 65499 0
+first_stderr="$summary_error$padding"
+WRAP_STDERR_HANDOFF_AT=${#first_stderr} STANDIN_STDERR_TRAILER='Removed 2 files.\n' \
+  standin "$work/t-removed-files" test "$work/failed.xml" "$first_stderr" 1
+check "the exit record keeps bun's one error after the removal line" \
+  "$(is "$(exit_of "$work/t-removed-files/bun-test-reports/packages/ok/test.xml")" '{"status": 1, "errors": 1}')"
+
+echo "case: the last summary supplies the error count when the stderr reader is slow"
+earlier_summary=$' 0 pass\n 2 errors\nRan 0 tests across 1 file. [0.10s]\n'
+# The reader receives the earlier block, then pauses. The trailer fills the step's pipe,
+# but bun can write its own summary into the copier's input pipe and exit.
+printf -v trailer '%08191d\n%b' 0 "$summary_ok"
+WRAP_STDERR_HANDOFF_AT=${#earlier_summary} WRAP_STDERR_DELAY=2 STANDIN_STDERR_TRAILER=$trailer \
+  standin "$work/t-slow-stderr" test "$honest" "$earlier_summary" 0
+check "the wrapper exits 0 and records the last summary's zero errors" \
+  "$(is "$wrapped:$(exit_of "$work/t-slow-stderr/bun-test-reports/packages/ok/test.xml")" '0:{"status": 0, "errors": 0}')"
+
+echo "case: a summary that reaches the start of a trimmed buffer has an unknown error count"
+# More than two 64 KiB reads, so the first count line cannot fit in the buffer when Ran arrives.
+printf '%*s%b' 140000 '' "$summary_ok" > "$work/long-summary"
+STANDIN_STDERR_FILE="$work/long-summary" \
+  standin "$work/t-cut-summary" test "$honest" "" 0
+check "the wrapper fails the step and records an unknown count for the cut summary" \
+  "$(is "$wrapped:$(exit_of "$work/t-cut-summary/bun-test-reports/packages/ok/test.xml")" '1:{"status": 0, "errors": null}')"
 
 echo "case: clause 2 (a report bun 1.4.4 writes): bun exits 0 and leaves a report that does not parse"
 standin "$work/t-cut" test "$work/cut.xml" "$summary_ok" 0
@@ -447,7 +517,7 @@ else:
 EOF
   case $fault in
     oversized-count) reason="the report's test count is longer than 64 characters\"}" ;;
-    nan|inf) reason="the report does not parse: its test 'passes' has time '$fault'.*not numbers" ;;
+    nan|inf) reason="its test 'passes' has time '$fault', which is not finite\"}" ;;
     *) reason="the report does not parse:" ;;
   esac
   set +e
