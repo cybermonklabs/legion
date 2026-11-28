@@ -40,10 +40,14 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   Where work merged into an integration branch, the default branch uses that branch's newest recorded landing whose final head holds the work's merge.
   The newest counting result chooses the commit whose verdicts decide the check.
   A pass and a fail at that commit leave the check not known until one is retracted.
+  For a live check (`subject` `production` or `graph`), the newest result at its program's deploy decides, a fail after a pass included, so you retract neither.
 
 - Write `subject` and `program` only where `dispatch deploys --repo <the issue's repository>` lists that program.
   Where it lists none, or Dispatch refuses either attribute, write the check without both.
   A live check's result names the commit that `dispatch results` gives as its program's deploy, and counts only for that deploy.
+  A pass needs that deploy to hold the merge.
+  Where production does not carry the merge, or `dispatch results` names no deploy of the program, a fail names the merge commit, as for any other check.
+  Dispatch then reads the check as not known, and the production check's report carries the fail.
 
 ## The rules every phase's evidence follows
 

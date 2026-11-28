@@ -127,9 +127,17 @@ func (e *Engine) startLook(ctx context.Context, tx pgx.Tx, issue record.Issue, c
 // task by this line (the phase tasks open with their `Working copy:` line), and a test pins it.
 const checkTaskLead = "Production check of "
 
-// liveCheckCommit is what the pass clause and the fail clause of checkTask both add after "at the
-// merge commit": the commit a check with subject production or graph records its result at.
+// liveCheckCommit is what the pass clause of checkTask adds after "at the merge commit": the
+// commit a check with subject production or graph records its pass at.
 const liveCheckCommit = "(for a check with subject production or graph, at the commit dispatch results names as its program's deploy, which must hold the merge)"
+
+// liveCheckFailCommit is what the fail clause of checkTask adds after "at the merge commit": a
+// check with subject production or graph records its fail at its program's deploy where that
+// deploy holds the merge. Where production does not carry the merge, or Dispatch names no deploy
+// of the program, it records the fail at the merge commit, as every other check does. Dispatch
+// then reads the check as not known (deploy_not_merged, no_deploy), and the report carries the
+// fail.
+const liveCheckFailCommit = "(for a check with subject production or graph, at the commit dispatch results names as its program's deploy where that deploy holds the merge, and otherwise, where production does not carry the merge or dispatch results names no deploy of the program, at the merge commit: Dispatch then reads the check as not known, and your report carries the fail)"
 
 // checkTask is what the check's role is told at a look of the closed issue's production check. The
 // session it reaches may be fresh — a woken pod after a lost volume — so the text stands on its
@@ -166,7 +174,7 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
 		"Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: " +
 		"pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit " + liveCheckCommit + ", its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; " +
-		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none: a dispatch comment on that controller's report issue with --mention role:<that controller's role token>, and that controller files it; a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, is a dispatch ask, whose reference you then publish to the controller topic so that the controller follows the ask and files what the answer asks for (skill://legion-worker/references/findings.md, Tell the controller about the ask). Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit " + liveCheckCommit + ", and name the comment or the ask in its observed, in the line you put in the pull request body and in the summary.")
+		"fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller of the project that repository maps to, or to your own project's controller, the one your Legion addressing line names, when Dispatch maps it to none: a dispatch comment on that controller's report issue with --mention role:<that controller's role token>, and that controller files it; a defect that needs a person's decision, a deploy window or work much larger than your own, and any other finding that needs a person's authority, taste or risk appetite, is a dispatch ask, whose reference you then publish to the controller topic so that the controller follows the ask and files what the answer asks for (skill://legion-worker/references/findings.md, Tell the controller about the ask). Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit " + liveCheckFailCommit + ", and name the comment or the ask in its observed, in the line you put in the pull request body and in the summary.")
 	if last {
 		text.WriteString(" Report pending only for an issue with none of those requirements, the summary naming what you could not drive, with no result recorded. This last look's pending carries no wake_at and closes the check as not run: " +
 			"before reporting it, write on the pull request why the check did not run within the bound.")

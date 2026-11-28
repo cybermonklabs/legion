@@ -1,5 +1,5 @@
 kind: Fixed
-body: 'The issue page reads a check that reads production or the graph after the merge by the server''s answer for its program''s deploy: it shows Cannot tell where the results route answers not known, and a result the route does not count reads Out of date, where the page used to show Passed. The README now says that only an after_merge or default_branch check reads the deploy.'
+body: 'The issue page reads a check that reads production or the graph after the merge by the server''s answer for its program''s deploy: it shows Cannot tell where the results route answers not known, where the page used to show Passed; a result the route does not count reads Out of date and names no commit for the page; and results recorded before the issue''s pull request merged read Out of date, not No result. The README now says that only an after_merge or default_branch check reads the deploy.'
 time: 2026-11-28T10:45:25.2551936Z
 custom:
     Issue: pr6031

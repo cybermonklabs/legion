@@ -738,8 +738,9 @@ deployment instructions say (the merge commit published to your deploy role, wit
 awaited), reads whether production carries the merge, and ends one of three ways: `pass`, once
 the agent drove the change in production through a user's own access path, drove each
 requirement of the issue only the deploy can show as the requirement names it, and recorded the
-result of the issue's `after_merge` check, naming the merge commit and what woke the look, with
-that result's line on the pull request; `pending`,
+result of the issue's `after_merge` check, naming the merge commit (for a check with `subject`
+`production` or `graph`, the commit `dispatch results` names as its program's deploy, which holds
+the merge) and what woke the look, with that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
 look whether or not production carries the merge, or a defect, naming the issue, the pull
