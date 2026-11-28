@@ -24,28 +24,19 @@ import (
 
 // mergerClaimAt records LEGION-208's merger claim at launch (claims.generation) in state, as the
 // claim store holds it, under the token the daemon addresses the merger by (addressRoles): the
-// issue's project token (claim.ProjectToken), then the issue and the role. A suspended claim is a
-// released one (supervise.SuspendedByReleased), which a message wakes.
+// issue's project token (wakeProjectToken), then the issue and the role (wakeToken). A suspended
+// claim is a released one (supervise.SuspendedByReleased), which a message wakes.
 func mergerClaimAt(t *testing.T, pool *pgxpool.Pool, launch uint64, state supervise.ClaimState) {
 	t.Helper()
-	issue := storedIssue(t, pool, "LEGION-208")
-	projectToken, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(projectToken, issue.Key, claim.RoleMerger)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var by supervise.SuspendSource
 	if state == supervise.StateSuspended {
 		by = supervise.SuspendedByReleased
 	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-		values ($1, $2, $3, $4, 'merger', $5, 'ses', '/sessions/ses.jsonl', $6, 0, 0, 0, 0, $7)`,
-		string(token), projectToken, issue.Tree, issue.Key, int64(launch), string(state), string(by)); err != nil {
-		t.Fatalf("seed the merger claim of %s: %v", issue.Key, err)
+		values ($1, $2, 'LEGION-208', 'LEGION-208', 'merger', $3, 'ses', '/sessions/ses.jsonl', $4, 0, 0, 0, 0, $5)`,
+		string(wakeToken(t, claim.RoleMerger)), wakeProjectToken(t), int64(launch), string(state), string(by)); err != nil {
+		t.Fatalf("seed the merger claim of LEGION-208: %v", err)
 	}
 }
 

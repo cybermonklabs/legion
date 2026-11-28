@@ -585,12 +585,12 @@ Legion uses GitHub's own review mechanisms rather than labels:
   holding the phase is told to stop writing the workspace and not to complete its phase at the old
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
   merger is asked: the merge is its own, and it resolves the conflict itself. Each launch of the
-  merger is told the merge forward it owes one time: at the ready of a later launch, and at a move
-  back into `merging` after its message ended while the issue stood outside `merging`. The
-  architect is told once with a `checks-red` notice naming the phase the issue stays in and the
-  role asked. In `implementing` only the implementer is told. A parent that waits in
-  `awaiting_children` is asked nothing, and once it is back in a phase this rule reads it as any
-  other issue.
+  merger is told the merge forward it owes one time, a launch that comes up in `merging` and the
+  launch that is up when the issue moves back into `merging` after its message ended outside
+  `merging` alike. The architect is told once with a `checks-red` notice naming the phase the
+  issue stays in and the role asked. In `implementing` only the implementer is told. A parent
+  that waits in `awaiting_children` is asked nothing, and once it is back in a phase this rule
+  reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a

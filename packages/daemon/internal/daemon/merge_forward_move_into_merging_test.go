@@ -85,7 +85,7 @@ func storedMergerClaim(t *testing.T, pool *store.Pool) (uint64, supervise.ClaimS
 // retroCompletes is the implementer's completion of LEGION-208's retro at owedAskHead, applied
 // through the engine as the daemon applies a fact, which moves the issue into merging. It fails
 // the test unless the completion was taken and the issue stands in merging after it.
-func retroCompletes(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine) {
+func retroCompletes(t *testing.T, pool *store.Pool, engine *workflow.Engine) {
 	t.Helper()
 	result, err := intake.ApplyFact(context.Background(), pool, "api", "retro-LEGION-208", intake.HandoffComplete{Generation: 1,
 		Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: mustClaimToken(t, "LEGION-208", claim.RoleImplementer),
@@ -93,13 +93,9 @@ func retroCompletes(t *testing.T, pool *store.Pool, records record.Store, engine
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply retro's completion = %+v, %v; want it taken", result.Refusal, err)
 	}
-	var issue *record.Issue
-	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		issue, err = records.Issue(ctx, tx, "LEGION-208")
-		return err
-	}); err != nil || issue == nil {
-		t.Fatalf("read LEGION-208 after retro's completion: %+v, %v", issue, err)
+	issue := readIssue(t, pool, "LEGION-208")
+	if issue == nil {
+		t.Fatal("after retro's completion the record holds no LEGION-208")
 	}
 	if issue.Phase != phase.Merging {
 		t.Fatalf("after retro's completion LEGION-208 is in %s, want merging", issue.Phase)
@@ -136,16 +132,11 @@ func TestTheMoveIntoMergingTellsTheMergersLaunchTheAskItOwes(t *testing.T) {
 		}
 		publisher.holdBy(func() string { return machine.View().Claim.Session })
 
-		retroCompletes(t, pool, runner.records, engine)
+		retroCompletes(t, pool, engine)
 		drainAt(t, runner, 0, "the attempts after the move into merging")
 		drainAt(t, runner, 10*time.Minute, "a later attempt")
 		askToldOnce(t, pool, publisher, mergersOwedAsk, 1)
-		var asked []map[string]any
-		for _, line := range loggedLines(t, logs.String(), mergerAskedAtEntryText) {
-			if line["msg"] == mergerAskedAtEntryText {
-				asked = append(asked, line)
-			}
-		}
+		asked := loggedMessages(t, logs.String(), mergerAskedAtEntryText)
 		if len(asked) != 1 || asked[0]["launch"] != float64(1) {
 			t.Fatalf("the engine logged %v, want one %q line naming launch 1", asked, mergerAskedAtEntryText)
 		}
@@ -159,7 +150,7 @@ func TestTheMoveIntoMergingTellsTheMergersLaunchTheAskItOwes(t *testing.T) {
 			t.Fatalf("before the move the store holds the merger %s at launch %d, want it released at launch 1", state, launch)
 		}
 
-		retroCompletes(t, pool, runner.records, engine)
+		retroCompletes(t, pool, engine)
 		drainAt(t, runner, 0, "the attempts after the move into merging")
 		machine.Wait()
 		if held := machine.Claim(); held.Released() || held.Generation < 2 {

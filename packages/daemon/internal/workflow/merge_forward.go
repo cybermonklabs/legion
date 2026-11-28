@@ -399,11 +399,7 @@ const mergerAskedAtEntryLine = "workflow: a merge forward still owed is asked ag
 // launch is told twice, never zero times, as with every row of a merge-forward ask (the daemon's
 // deliverHeld).
 func (e *Engine) askMergerAtEntry(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	projectToken, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return err
-	}
-	token, err := claim.NewToken(projectToken, issue.Key, claim.RoleMerger)
+	token, err := stepClaim(issue, issue.Key, claim.RoleMerger)
 	if err != nil {
 		return err
 	}

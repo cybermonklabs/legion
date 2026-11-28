@@ -4732,11 +4732,13 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
-// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
-// check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
-// holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
-// It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
-// supervise row of every issue that owes a start, once per admission pass.
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart; the outbox's
+// check_look row after a project's pause, internal/daemon's lookBoundAfterPause; the workflow's
+// move into merging, which reads the merger's launch, workflow's askMergerAtEntry; and the owner
+// walk's read of the architect claims of a tree's issues, ArchitectRuns). A token the store holds
+// no claim for is absent from the answer, which is the nil claim RoleRuns reports for it. It saves
+// admit's caller RoleRuns' first statement, which selects and strictly decodes every supervise row
+// of every issue that owes a start, once per admission pass.
 //
 // Nothing of the ordering RoleRuns sets out is given up, and admit's caller leans on it: these
 // claims must be read after the owed rows they are judged against, so that a stop made between
