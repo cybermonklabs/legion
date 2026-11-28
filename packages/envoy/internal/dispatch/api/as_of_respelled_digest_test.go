@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestARespelledChecksDigestAtACutReadsAsItReadThen: a check whose text another renderer version
@@ -94,9 +95,24 @@ func TestADigestAReindexChangedBeforeACutReadsAsItReadThenAfterALaterVersion(t *
 	if _, err := database.Pool.Exec(t.Context(), `update document_block_versions set version = null where artifact_id = $1`, document); err != nil {
 		t.Fatalf("owe the document its block index: %v", err)
 	}
-	if _, err := served.deps.Docs.(*docs.Service).ReconcileBlockIndex(t.Context(), docs.BlockIndexCursors{}, nil); err != nil {
-		t.Fatalf("reconcile the block index: %v", err)
-	}
+	// A tick skips a document that owes its settlement while its live text differs from its stored
+	// version (indexOwedDocument's liveAhead), as this one does until the upload's settlement has
+	// run, and leaves it owed for a later tick, as the server's own loop runs them
+	// (RunBlockIndexReconciliation). So the test runs ticks until one has indexed the version.
+	documents := served.deps.Docs.(*docs.Service)
+	testwait.Until(t, "a block-index tick to index version "+strconv.Itoa(number)+" of document "+document, func() (docs.BlockIndexTick, bool) {
+		tick, err := documents.ReconcileBlockIndex(t.Context(), docs.BlockIndexCursors{}, nil)
+		if err != nil {
+			t.Fatalf("reconcile the block index: %v", err)
+		}
+		var indexed bool
+		if err := database.Pool.QueryRow(t.Context(),
+			`select coalesce((select version = $2 from document_block_versions where artifact_id = $1), false)`,
+			document, number).Scan(&indexed); err != nil {
+			t.Fatalf("read the block index version: %v", err)
+		}
+		return tick, indexed
+	})
 	requireIndexedAt(t, database, document, number)
 	then := checkOf(t, readResults(t, handler, issue.Key), "k1")
 	if then.Version != number || then.SHA256 == before {
