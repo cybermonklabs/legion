@@ -3038,11 +3038,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr, len(open) > 0); err != nil {
 			return err
 		}
-		if record.AcceptedPhase(record.StandsAt(issue)) {
-			if carried, err = e.carryReturn(ctx, tx, issue); err != nil {
-				return err
-			}
-		}
 	}
 	if trigger == TriggerReviewRejected {
 		if err := e.recordRound(ctx, tx, issue, w.Task, pr, open); err != nil {
