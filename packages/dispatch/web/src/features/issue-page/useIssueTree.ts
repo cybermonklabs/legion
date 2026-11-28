@@ -14,7 +14,6 @@ import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import {
   buildIssueTree,
   type DocumentBlocks,
@@ -22,9 +21,9 @@ import {
   nodeWords,
   type TreeAsk,
   type TreeNode,
-  targetNaming,
 } from "./issue-tree";
-import { citedReferences } from "./row-references";
+import { addAskedReference, citedReferences } from "./row-references";
+import { NO_TARGET_NAMING, targetNaming } from "./target-naming";
 import { askState } from "./tree-drafts";
 
 /** The issue's tree, and how far the reads it is built from have got. */
@@ -150,39 +149,24 @@ export function treeDocumentIds(issue: IssueDetails): string[] {
  */
 function treeReferences(root: TreeNode, asks: readonly TreeAsk[] = []): string[] {
   const refs = new Set<string>();
-  const add = (reference: string): void => {
-    refs.add(reference);
-    const route = parseNodeReference(reference);
-    if (route?.kind === "spec" && route.block === undefined) {
-      refs.add(buildDispatchReference({ key: route.key, kind: "issue" }));
-    }
-  };
   const walk = (node: TreeNode): void => {
-    if (node.reference !== undefined) add(node.reference);
-    for (const chip of [...node.chips, ...node.alsoUnder]) add(chip.ref);
-    for (const reference of citedReferences(nodeWords(node))) add(reference);
-    for (const reference of citedReferences(node.answer?.text ?? "")) add(reference);
+    if (node.reference !== undefined) addAskedReference(refs, node.reference);
+    for (const chip of [...node.chips, ...node.alsoUnder]) addAskedReference(refs, chip.ref);
+    for (const reference of citedReferences(nodeWords(node))) addAskedReference(refs, reference);
+    for (const reference of citedReferences(node.answer?.text ?? "")) {
+      addAskedReference(refs, reference);
+    }
     for (const child of node.children) walk(child);
   };
   walk(root);
   for (const ask of asks) {
     if (askState(ask) !== "declined") continue;
-    for (const reference of citedReferences(ask.resolution?.reason ?? "")) add(reference);
+    for (const reference of citedReferences(ask.resolution?.reason ?? "")) {
+      addAskedReference(refs, reference);
+    }
   }
   return [...refs];
 }
-
-/** What the page publishes of the batched name read until it answers: no target read, and the
- *  same empty value on every render, so no surface beside the tree draws again for a read that
- *  names nothing. */
-const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
-  ambiguous: new Set(),
-  deleted: new Map(),
-  edited: new Set(),
-  gone: new Set(),
-  readings: new Map(),
-  unnamed: new Set(),
-};
 
 /** The set of addresses the batched names read is given until the gate first opens: none, and
  *  the same empty set on every render, so the read's options are made once meanwhile. */

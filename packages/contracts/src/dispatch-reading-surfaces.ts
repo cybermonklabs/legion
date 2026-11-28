@@ -70,6 +70,7 @@ export type DispatchReadingSurface =
   | "issue-decision"
   | "decision-heading-words"
   | "decision-change-quote"
+  | "decision-statement-line"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -538,6 +539,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: [
       "packages/dispatch/web/src/features/issue-page/RowText.tsx",
       "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsRow.tsx",
+      "packages/dispatch/web/src/features/issue-page/threads/RecordEntry.tsx",
     ],
     proof: [
       {
@@ -551,6 +553,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       {
         file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
         test: "a declined ask's note is drawn from the reading the asks read sends",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/threads/ThreadRecord.test.tsx",
+        test: "an opened record draws an entry through the outline's renderer, a reference in it read as its target's name",
       },
     ],
     reach: "/issues/<ISSUE> with the new issue page on, a comment's row in the outline",
@@ -573,11 +579,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // Plan chart's needs and serves, and on a check's "Also under" line in the Verification view.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
-    proof: {
-      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
-      test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
-    },
+    files: [
+      "packages/dispatch/web/src/features/issue-page/node-line.tsx",
+      "packages/dispatch/web/src/features/issue-page/threads/ThreadRow.tsx",
+    ],
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+        test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/threads/ThreadRow.test.tsx",
+        test: "a row's first line reads a reference in its root's words as its target's name",
+      },
+    ],
     reach: "/issues/<ISSUE> with the new issue page on, a folded branch's one line",
     reason: `A folded branch is one line, its node's first line, cut by R1's first-line rule with its ellipsis and drawn beside the count of what it holds. ${PLAIN_WORDS_REASON}`,
     record: true,
@@ -691,23 +706,25 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "approval-review-reason",
   },
-  // The ask card, which the Inbox and a document's decision block both draw.
+  // The ask card, which the Inbox and a document's decision block both draw. The ask body's
+  // texts are drawn by its caller's renderer (R17), whose default for today's surfaces is
+  // `ask-body/ask-text.tsx`: each row below is a mount there.
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/ask-text.tsx"],
     reach: "/, an ask card's question",
     record: true,
     rendered: true,
     surface: "ask-card-question",
   },
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/ask-text.tsx"],
     reach: "/, an ask card's edit history",
     record: true,
     rendered: true,
     surface: "ask-edit-history",
   },
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/ask-text.tsx"],
     reach: "/, an ask card's earlier answers",
     record: true,
     rendered: true,
@@ -717,7 +734,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // carries: it may name an option the ask has since renamed or removed.
   {
     files: [
-      "packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx",
+      "packages/dispatch/web/src/features/ask-body/ask-text.tsx",
       "packages/dispatch/web/src/features/activity/EventBody.tsx",
     ],
     reach:
@@ -727,14 +744,14 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "earlier-chosen-option",
   },
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/ask-text.tsx"],
     reach: "/, an answered ask's question and answer",
     record: true,
     rendered: true,
     surface: "answered-ask",
   },
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskCompletionCard.tsx"],
+    files: ["packages/dispatch/web/src/features/ask-body/ask-text.tsx"],
     reach: "/, a resolved ask's question and resolution reason",
     record: true,
     rendered: true,
@@ -743,7 +760,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An ask's options, on its card and under its question on the new issue page's row.
   {
     files: [
-      "packages/dispatch/web/src/features/inbox/AskOptionRow.tsx",
+      "packages/dispatch/web/src/features/ask-body/ask-text.tsx",
       "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
     ],
     reach: "/, an ask option's label and description",
@@ -821,8 +838,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // The issue's Decisions panel, which names the decisions document by its artifact id: a
   // decision's heading and paragraphs, and the open questions. A link to a spec block a decision
-  // shaped draws no stored text: it names the block by its id, in the panel's own words, since
-  // the decisions read sends none of the block's text (`refs.BlockLinks`).
+  // shaped is the decision card's statement line (`decision-statement-line`), which reads the
+  // block's own text and no stored text of the decisions read.
   {
     files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
     reach: "/issues/<ISSUE>/decisions, a decision's heading and paragraphs",
@@ -895,6 +912,26 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "decision-change-quote",
   },
+  // A statement a decision shaped, as a link by its first line on the decision card: on the
+  // Decisions tab, in the margin and wherever the card is drawn. The link's words are the
+  // statement's own, read as plain words, never by its block's id.
+  {
+    cannotCarry: {
+      forms: ["question-id"],
+      why: "The card is handed the statement's block and none of its document, so no question map is read for the line and a `#id` in it is drawn as written.",
+    },
+    files: ["packages/dispatch/web/src/features/decision-card/DecisionCard.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/decision-card/DecisionCard.test.tsx",
+      test: "a statement's link reads its first line as plain words",
+    },
+    reach:
+      "/issues/<ISSUE>/decisions, a decision's statement link; /issues/<ISSUE>/spec, a margin decision card's statement link",
+    reason: `A statement a decision shaped is a link, worded with the first line of the block's text. ${PLAIN_WORDS_REASON} ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "decision-statement-line",
+  },
   // A requirement's line in the spec's Requirements list.
   {
     files: ["packages/dispatch/web/src/features/issue/SpecRequirements.tsx"],
@@ -928,7 +965,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/doc/ChangeView.tsx",
       "packages/dispatch/web/src/features/artifacts/ArtifactDetails.tsx",
       "packages/dispatch/web/src/features/doc/ProofDocument.tsx",
-      "packages/dispatch/web/src/features/inbox/EarlierApproval.tsx",
+      "packages/dispatch/web/src/features/ask-body/EarlierApproval.tsx",
     ],
     reach: "/projects/<PROJECT>/documents/<SLUG>, Compare between two versions",
     reason:
@@ -1006,17 +1043,18 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: [
       "packages/dispatch/web/src/features/margin/ThreadCard.tsx",
-      "packages/dispatch/web/src/features/inbox/AskAnchorLink.tsx",
+      "packages/dispatch/web/src/features/ask-body/AskAnchorLink.tsx",
       "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
       "packages/dispatch/web/src/features/conversation/MentionComposer.tsx",
       "packages/dispatch/web/src/features/conversation/KeptDraftOffers.tsx",
       "packages/dispatch/web/src/features/margin/CommentsTab.tsx",
-      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/decision-card/DecisionCard.tsx",
       "packages/dispatch/web/src/features/activity/activity-model.ts",
+      "packages/dispatch/web/src/features/issue-page/threads/ThreadRecord.tsx",
     ],
     reach: "/projects/<PROJECT>/documents/<SLUG>, the quote over a thread card's comment",
     reason:
-      "An anchor's quote is the document's own words at the place a comment or an ask was left, not a text anyone wrote for this surface: the server matches and stores it as the document's flattened text, never its markdown (`pmdoc.FindQuote`), so a mention in the document is already the words it reads as there, and nothing in the quote is markdown to render. It is shown as the characters it is. One quote is not those words: a decision the Decisions panel draws from an answer that carried no reading of its text, during a rolling deploy, quotes its first block's markdown, which the server finds only where that block holds no markup, and a Change sent with a quote it cannot find is refused and stores nothing.",
+      "An anchor's quote is the document's own words at the place a comment or an ask was left, not a text anyone wrote for this surface: the server matches and stores it as the document's flattened text, never its markdown (`pmdoc.FindQuote`), so a mention in the document is already the words it reads as there, and nothing in the quote is markdown to render. It is shown as the characters it is. A decision's quote is the words of its first block's reading, whichever reading it was read by, so it is those words here too.",
     record: false,
     rendered: false,
     surface: "anchor-quote",
@@ -1341,7 +1379,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       "packages/dispatch/web/src/features/inbox/question-label.ts",
       "packages/dispatch/web/src/features/inbox/useAskAnswerForm.ts",
       "packages/dispatch/web/src/features/inbox/AskThread.tsx",
-      "packages/dispatch/web/src/features/inbox/DeclineControl.tsx",
+      "packages/dispatch/web/src/features/ask-body/DeclineControl.tsx",
       "packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx",
     ],
     proof: {
