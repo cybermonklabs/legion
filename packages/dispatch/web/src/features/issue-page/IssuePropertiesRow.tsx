@@ -126,12 +126,11 @@ export function IssuePropertiesRow({
   // Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the count is right
   // on every view that holds an outline read.
   useReadUnloadedPages(issue, () => waiting.unread > 0);
-  // Once the count has drawn its "+", it holds the "+"'s width after the "+" goes, so the count's
-  // box, and every control after it in the line, keeps its place as the tree read answers
-  // (decision 583 (1), amended; dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
-  const plusDrawn = useRef(false);
-  if (waiting.mayWait > 0) plusDrawn.current = true;
-  const heldGlyphs = countHeldGlyphs(waiting.total, waiting.mayWait > 0, plusDrawn.current);
+  // The count holds the width of "(00+)" whether it draws a "+" or not, as the place held before
+  // its reads answer does, so the count's box, and every control after it in the line, keeps its
+  // place as those reads and the tree read answer (decision 583 (1), amended;
+  // dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02).
+  const heldGlyphs = countHeldGlyphs(waiting.total, waiting.mayWait > 0);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -339,10 +338,11 @@ const WAITING_CHIP_BOX =
 /**
  * The place the properties line holds for the count of what waits on the reader while the reads
  * it is counted from are out (R3, "The places held" row 2): the count's own box, its dot and its
- * words with a count of two digits, drawn invisible and hidden from assistive technology, so the
- * count drawn in its place once the reads answer takes the box it held and moves nothing after
- * it. A count of more or fewer digits, the agents' turn in its place, or no count at all once the
- * reads answer, changes the line by that difference alone.
+ * words with a count of two digits and its "+", "(00)+", drawn invisible and hidden from assistive
+ * technology, so the count drawn in its place once the reads answer, which holds that same width
+ * (`countHeldGlyphs`), takes the box it held and moves nothing after it. A count of three digits
+ * or more, the agents' turn in its place, or no count at all once the reads answer, changes the
+ * line by that difference alone.
  */
 function WaitingSlot(): ReactNode {
   return (
@@ -353,28 +353,26 @@ function WaitingSlot(): ReactNode {
       {...pageChrome}
     >
       <span className="size-2 shrink-0 rounded-full" />
-      <span>{PROPERTY_LABELS.waiting_on_you} (00)</span>
+      <span>{PROPERTY_LABELS.waiting_on_you} (00)+</span>
     </span>
   );
 }
 
-/** How many digits the count of what waits on the reader holds a place for once it has drawn
- *  its "+", as the place the line holds for it before its reads answer does
- *  (`WaitingSlot`'s "(00)"). */
+/** How many digits the count of what waits on the reader holds a place for, as the place the
+ *  line holds for it before its reads answer does (`WaitingSlot`'s "(00)+"). */
 const HELD_COUNT_DIGITS = 2;
 
 /**
  * The glyphs the count of what waits on the reader holds past its own, so its box keeps its
  * width while the count may still change (decision 583 (1), amended;
- * dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02): none until the count has
- * drawn its "+", since a count drawn with no "+" is final; from then on, a "0" for each digit the
- * number lacks of two, and the "+" once it has gone. So a count drawn as "(9+)" while the tree
- * read is out holds "0", and the "(20)" its answer brings holds "+": both are the width of
- * "(00+)", and nothing after the count moves. A count of three digits or more changes the line
- * by that difference alone, as the place held before its reads answer does.
+ * dispatch://INFRA-5939/comment/4dd365f7-6a58-4cca-ac93-b64298f71d02): a "0" for each digit the
+ * number lacks of two, and a "+" where the count draws none. So the place held while the reads
+ * are out ("(00)+", `WaitingSlot`), a count drawn as "(9+)" while the tree read is out, which
+ * holds "0", and the "(20)" its answer brings, which holds "+", are each as wide as "(00+)", in
+ * whatever order the reads answer, and nothing after the count moves. A count of three digits or
+ * more changes the line by that difference alone, as the place held before its reads answer does.
  */
-export function countHeldGlyphs(total: number, plus: boolean, plusDrawn: boolean): string {
-  if (!plusDrawn) return "";
+export function countHeldGlyphs(total: number, plus: boolean): string {
   const digits = Math.max(0, HELD_COUNT_DIGITS - String(total).length);
   return `${"0".repeat(digits)}${plus ? "" : "+"}`;
 }

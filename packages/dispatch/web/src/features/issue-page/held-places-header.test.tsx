@@ -4,7 +4,14 @@ import { act, cleanup, type RenderResult, render, waitFor } from "@testing-libra
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Ask, AuthenticatedUser, IssueChild, IssueDetails, Project } from "../../api/types";
+import type {
+  Ask,
+  AuthenticatedUser,
+  IssueChild,
+  IssueDecisions,
+  IssueDetails,
+  Project,
+} from "../../api/types";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import {
@@ -290,14 +297,54 @@ function countGlyphs(count: Element | null): string {
   return [...text.replace(/\d/gu, "0")].sort().join("");
 }
 
-test("the count holds two digits and its + once it has drawn a +, and holds nothing before", () => {
-  expect(countHeldGlyphs(9, true, false), "a count drawn with no + yet holds a place").toBe("");
-  expect(countHeldGlyphs(20, false, false), "a count that never drew a + holds a place").toBe("");
-  expect(countHeldGlyphs(9, true, true)).toBe("0");
-  expect(countHeldGlyphs(20, false, true)).toBe("+");
-  expect(countHeldGlyphs(1, false, true)).toBe("0+");
-  expect(countHeldGlyphs(12, true, true)).toBe("");
-  expect(countHeldGlyphs(100, false, true), "three digits hold a place for a fourth").toBe("+");
+test("the count holds the width of two digits and a +, whether it draws its + or not", () => {
+  expect(countHeldGlyphs(9, true)).toBe("0");
+  expect(countHeldGlyphs(20, false)).toBe("+");
+  expect(countHeldGlyphs(1, false)).toBe("0+");
+  expect(countHeldGlyphs(12, true)).toBe("");
+  expect(countHeldGlyphs(100, false), "three digits hold a place for a fourth").toBe("+");
+});
+
+// Row 2, the place the line holds while the count's own reads are out: the slot holds the glyphs
+// the count draws in its place, "(00)+", so the count drawn with its "+" once they answer, while
+// the tree read is still out, takes the slot's width and the approval control does not move.
+test("the place held for the count is as wide as the count drawn in it, with its +", async () => {
+  const decisions = Promise.withResolvers<IssueDecisions>();
+  stubs.push(
+    spyOn(api, "getIssueDecisions").mockImplementation(() => decisions.promise),
+    spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead(["r1"]))
+  );
+  await act(async () => whoami.resolve({ event_head: "0", kind: "user", login: READER }));
+  await act(async () => projects.resolve([]));
+  const view = drawPage();
+  const line = await propertiesLine(view);
+  const slot = await waitFor(() => {
+    const held = line.querySelector("[data-whose-turn-slot]");
+    expect(held, "the line held no place for the count while its reads were out").not.toBeNull();
+    return held;
+  });
+  const slotGlyphs = countGlyphs(slot);
+  const approval = [...line.children].find((item) => item.textContent === "Not requested") ?? null;
+  const approvalAt = placeIn(line, approval);
+
+  await act(async () =>
+    decisions.resolve(decisionsRead([decision("asked", { links: [shaped(specRef("r1"))] })]))
+  );
+  const count = await waitFor(() => {
+    const drawn = line.querySelector('[data-testid="issue-whose-turn"]');
+    expect(drawn?.textContent, "the count took no + while the tree read was out").toBe(
+      "Waiting on you (1+)"
+    );
+    return drawn;
+  });
+  expect(countGlyphs(count), "the count is not as wide as the place held for it").toBe(slotGlyphs);
+  expect(boxClasses(count), "the count's box is not the box its place held").toEqual(
+    boxClasses(slot)
+  );
+  expect(
+    [...line.children].includes(approval as Element) && placeIn(line, approval),
+    "the approval control after the count moved in the line, or was drawn again"
+  ).toBe(approvalAt);
 });
 
 // Row 3. A root of a gated project draws its approval steps once the projects read answers; until
