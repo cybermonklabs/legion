@@ -72,15 +72,14 @@
 #                                  hold is left to its next look (part 5); no text that release left
 #                                  reaches a connection, the look's new task does once the tester
 #                                  registers on this change's contract, and a report with its look id
-#                                  is taken, one with a stale id refused 409. Beside the eight parts
-#                                  c-upgrade names, two more on a root that ran again while the way
-#                                  back ran, which kept its look's id: once the root has left the
-#                                  workflow and its tester holds this change's task of the look in a
-#                                  delivery that holds no look id, the boot gives the look a new id
-#                                  and a new task, and a report with the kept id is refused 409 and
-#                                  records nothing (part 9); while the root still runs, the boot
-#                                  keeps the id and sends no task of the look, and the tester's report
-#                                  with that id is taken (part 10)
+#                                  is taken, one with a stale id refused 409. Parts 9 and 10 run on a
+#                                  root that ran again while the way back ran, which kept its look's
+#                                  id: once the root has left the workflow and its tester holds this
+#                                  change's task of the look in a delivery that holds no look id, the
+#                                  boot gives the look a new id and a new task, and a report with the
+#                                  kept id is refused 409 and records nothing (part 9); while the root
+#                                  still runs, the boot keeps the id and sends no task of the look,
+#                                  and the tester's report with that id is taken (part 10)
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
 #                                  of an answer to a report, each read before a look's task is sent,
