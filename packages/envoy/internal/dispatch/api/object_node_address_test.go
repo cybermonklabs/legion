@@ -12,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -324,7 +323,7 @@ func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID stri
 
 // earlierBuildRemoval removes the untouched document as a build before this one does, in one
 // transaction: the document's owner lock first, as every writer of the store takes it
-// (events.LockOwnerRows, the order a settlement of the document takes it in), then the rows
+// (store.OwnerOf and store.LockOwner, as a settlement of the document takes it), then the rows
 // removeArtifact clears and the artifact row, and no node written.
 func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID string) error {
 	return pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -332,14 +331,8 @@ func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID 
 		if err != nil {
 			return fmt.Errorf("read document %s: %w", artifactID, err)
 		}
-		owners := events.OwnerRows{}
-		var issue string
-		if artifact.IssueKey != nil {
-			issue = *artifact.IssueKey
-		}
-		owners.Add(issue, artifact.ID)
-		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-			return err
+		if err := store.LockOwner(ctx, tx, *store.OwnerOf(artifact.IssueKey, &artifact.ID)); err != nil {
+			return fmt.Errorf("lock the owner of document %s: %w", artifactID, err)
 		}
 		return deleteArtifactRows(ctx, tx, artifact)
 	})

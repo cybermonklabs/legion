@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The Dispatch OpenAPI document declares `session` on `GET /api/v1/delivery/timeline` and `GET /api/v1/delivery/measures` as a list of session ids, the facet the Delivery page filters by, in place of the one-value `session` parameter every other route takes.
+  The generated types carry `session?: string[]` on those two operations.
+time: 2026-11-18T11:11:52.000000000Z
+custom:
+    Issue: pr3142

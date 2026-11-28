@@ -897,24 +897,48 @@ against a stand-in Dispatch that reads at a fixed rate, with the 20 s bound: at 
 upload was cut off 20 s after its last read, 0.88 MiB of its 12 MiB short of the stand-in, and at
 64 KiB/s 20 s after a read part way through, 9.88 MiB short. Once an attempt was cut off for
 silence or answered `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed
-layer finishes that run whatever the client does, so the write keeps asking every 3 s at most
-(`inFlightPauseMs`; a longer `Retry-After` is still waited),
-with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
-answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
-its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
-repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there; a caller with a bound of its own names it as
-the client's `deadlineMs`, and an `inFlightWithinMs` inside it, as `dispatch result --project`
-does (`ResultBound`). The credential is given that budget less the request's reserve
+layer finishes that run whatever the client does, so the
+write keeps asking under its key until the run's stored answer comes back: every 3 s at most
+(`inFlightPauseMs`; a longer `Retry-After` is still waited) until 55 s after the client was made
+(`inFlightWithinMs`), then every 10 s (`runPauseMs`), until Dispatch's run limit and one lease
+(`IDEMPOTENCY_RUN_LIMIT_MS` and `IDEMPOTENCY_LEASE_MS` in `@legion/contracts`, 11 minutes,
+`runWithinMs`) after the attempt that could have started the run: the latest one Dispatch had not
+answered `409 KEY_IN_FLIGHT` when the write began to wait, or the first where it answered every one
+so. Dispatch renews a run's lease until that limit and no further, so past it no run holds the key.
+The window is read once, so a Dispatch that never answers holds the write one window and no more.
+A write that takes Dispatch ten minutes, or two silent attempts in a row, still ends in its answer.
+The client's default deadline (`DISPATCH_TOOL_DEADLINE_MS`, 60 s) does not end such a write; a
+deadline or a `signal` its maker named still does. A write a named deadline (`deadlineMs`) ends
+there is no failure: it is `DispatchWriteUnsettledError` with `running` set, whose message says
+the write is still running on Dispatch where Dispatch answered `409 KEY_IN_FLIGHT` (`toldRunning`),
+or that it may still be running where only an attempt cut off for silence put it in the wait, and
+that the same request under its key, which it names, returns the write's outcome once Dispatch's
+run ends. Every caller inside an agent's process that
+writes names a deadline of its own, since an agent's turn, the listener's delivery path or a queue
+of the session's writes waits on it: the delivery replies (`postDeliveryReply`) and AskGate's
+decision records name `DISPATCH_IN_PROCESS_DEADLINE_MS` (60 s), and the accept of a person's turn
+a shorter one of its own. The client
+tells its maker once, with the key, the longest wait and whether Dispatch said it is running the
+write (`onRunWait`), and the `dispatch` command, which names no deadline and waits for the run,
+prints that on stderr, so the agent that ran it does not stop it as hung. An upload (a body of a
+megabyte or more) keeps the
+five-attempt schedule, since each repeat sends its whole body again. A call whose row stores
+nothing (`rowStores`: the markdown and file round trips, the related-item check and a dry run) has
+no run to wait for, so it never waits: it keeps the schedule and the client's deadline. Until
+Dispatch may be running a write, no attempt of it starts more than 55 s after the client was made,
+since its 60 s deadline counts from there; a caller with a bound of its own names it as the
+client's `deadlineMs`, and an `inFlightWithinMs` inside it, as `dispatch result --project` does
+(`ResultBound`), which also sets `runWithinMs` to 0, so the wait for Dispatch's run never outlasts
+that bound. The credential is given that budget less the request's reserve
 (`#credentialSignal`), so a request's wait on a broker credential's trade ends inside it; the
 trade itself runs under its own 30 s bound, and goes on for every other request that shares it.
-The numbers come from the 3,612 `dispatch`
-write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
-(p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
-Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
-that.
+The numbers come from the 3,612 `dispatch` write commands that
+succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole (p50 1.8 s, p95
+19.6 s, p99 45.5 s). So a Dispatch that refuses connections or fails every attempt at once holds a
+`dispatch` command, and the session waiting on it, no longer than the 60 s deadline, and one that
+takes requests and never answers them holds it about 11 minutes.
 How a write ends is one transition table (`write-outcome.ts`, `writeStep`), and the write
-loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
+loop (`#sendWrite`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx, a 408 (`mayHaveReachedServer`: a hop in
 front of Dispatch can answer 408 after it forwarded the write) or `409 KEY_IN_FLIGHT`, was cut off
 for silence (an upload's included), failed in transport after it went out (a reset after Dispatch
@@ -949,9 +973,10 @@ before the key claim echoes no key (a 401, a 403, a 413, `400 REQUEST_BODY_UNREA
 neither does a build without the keyed layer, so each leaves the write unsettled. The key decides
 only how a final answer reads; every retry goes regardless.
 Each clause holds only once every replica runs `b1c42d1d7d` (below). Every resend starts within
-55 s of the first attempt, far below the 24 h `IdempotencyKeyTTL`
-(`packages/envoy/internal/contracts/generated.go`), after which Dispatch deletes a key and claims
-a later request under it fresh. A 2xx that is no answer of Dispatch
+55 s of the first attempt, or, for a write Dispatch may still be running, within its run window
+(above: 11 minutes after the attempt that could have started the run), far below the 24 h
+`IdempotencyKeyTTL` (`packages/envoy/internal/contracts/generated.go`), after which Dispatch
+deletes a key and claims a later request under it fresh. A 2xx that is no answer of Dispatch
 settles nothing from either state: one whose body is empty or not typed JSON (a captive portal's
 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever key it names back,
 and one that names no key back, or another request's key, whatever its body (a proxy's page, a
@@ -981,7 +1006,9 @@ and the write ends unsettled with its key; before that, a repeat reaches no hand
 new identity. One change no identity sees is the broker binding another person to the same sign-in
 between two trades of one write; the broker does not do that today. When the write ends unsettled,
 the error says Dispatch finishes an attempt it received, and to read the write back before sending
-it again, since a new command sends it under a new key. A conversion that writes nothing (the
+it again, since a new command sends it under a new key; where a deadline its maker named ended the
+wait for the write's run, it says instead that the write is, or may be, still running, and that
+the same request under its key returns the outcome (above). A conversion that writes nothing (the
 markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 
 The write-state table (`write-outcome.ts`) uses declared answer rows (`dispatch-write-rows.ts`). Each POST or PATCH declares the row its callers read and whether it stores anything. The markdown round trip, related-item check and result dry run store nothing. A successful answer is usable only when the table settles on it (it names this call's key back, and its body, read whole, is JSON or a bodiless 204 or 205) and it matches the row; extra members from a newer server are allowed. Such a 2xx proves commitment even when its JSON is not the row, or it carries no body where the row needs one: it is `DispatchWriteLandedError` with `ANSWER_LOST`, not a retry. An echoed `KEY_COMMITTED` or replayed `ANSWER_NOT_KEPT` is also a landing. A non-storing route instead reports `DispatchAnswerMissingError`. A 2xx without the matching key cannot settle a storing write.
@@ -991,7 +1018,8 @@ Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every `POST` an
 therefore always sends the same key and encoded body again, without probing `/healthz` or keeping
 process or session memory of a server capability. A transport failure, a silence cut, a gateway or
 Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the write's pacing and
-deadline. `dispatch-keyed-resend.test.ts` uses a Bun stand-in that stores one comment for a retry
+deadline, which the run window above stretches for a write Dispatch may still be running.
+`dispatch-keyed-resend.test.ts` uses a Bun stand-in that stores one comment for a retry
 under its key while `/healthz` is unavailable. `dispatch-keyed-resend-live.test.ts` starts a real
 Dispatch whose first caller lookup answers 503 before it stores anything, then proves the client's
 same-key resend stores one comment. `dispatch-write-outcomes.test.ts` drives every (state, event)
@@ -1330,8 +1358,9 @@ presentation was dead (`stale(session, presented)`), presents the credential aga
 request one more time. The credential drops that dead token alone, from the client that presented
 it: a session the host moved to in between keeps its live token, and a token the client traded
 since is kept; the next presentation uses the token the client holds now, trading at the broker
-where it holds none. A keyed write, a named command's (`#write`), goes again under the same
-`Idempotency-Key`. A read does this once for each send, and a keyed write once for the call: a
+where it holds none. A keyed write (`#sendWrite`: a named command's, and an upload's through
+`#form`) goes again under the same `Idempotency-Key`. A read does this once for each send, and a
+keyed write once for the call: a
 second such answer is a refusal Dispatch's auth made before its keyed layer ran, so it is the
 write's refusal while nothing may have landed and the write is `DispatchWriteUnsettledError` once
 something may have (`write-outcome.ts`). If the broker refuses the new trade, the call fails in

@@ -97,9 +97,9 @@ func TestSearchKeywordsOnlyAnswersTheKeywordHits(t *testing.T) {
 	}
 }
 
-// TestSearchRefusesAnUnreadableKeywordsOnly refuses every value that is neither true nor false,
-// and a repeated parameter, under a code of its own, exactly as the project and the page
-// parameters beside it are refused.
+// TestSearchRefusesAnUnreadableKeywordsOnly refuses every value that is neither true nor false
+// under a code of its own, exactly as the project and the page parameters beside it are refused,
+// and a repeated parameter in the one wording every repeated key gets (refuseRepeatedQueryKeys).
 func TestSearchRefusesAnUnreadableKeywordsOnly(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -109,7 +109,6 @@ func TestSearchRefusesAnUnreadableKeywordsOnly(t *testing.T) {
 		"a word that is neither": {"q": {"astrolabe"}, "keywords_only": {"yes"}},
 		"an empty value":         {"q": {"astrolabe"}, "keywords_only": {""}},
 		"the number one":         {"q": {"astrolabe"}, "keywords_only": {"1"}},
-		"repeated":               {"q": {"astrolabe"}, "keywords_only": {"true", "false"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := searchRequest(t, handler, query.Encode())
@@ -124,6 +123,12 @@ func TestSearchRefusesAnUnreadableKeywordsOnly(t *testing.T) {
 			}
 		})
 	}
+	t.Run("repeated", func(t *testing.T) {
+		repeated := url.Values{"q": {"astrolabe"}, "keywords_only": {"true", "false"}}
+		if why := notTheRepeatRefusal(searchRequest(t, handler, repeated.Encode()), "keywords_only"); why != "" {
+			t.Fatalf("search with a repeated keywords_only %s", why)
+		}
+	})
 }
 
 // TestSearchKeywordsOnlyKeepsTheFiltersAndThePage proves the parameter rides beside the rest of

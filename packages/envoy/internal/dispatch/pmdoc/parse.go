@@ -260,8 +260,8 @@ func ParseWrittenAsReplacement(markdown string) (*Node, WrittenReadBack, error) 
 // stored as (WrittenReadBack), or the refusal of a document that reads back otherwise
 // (RefuseMisreadDocument), which ParseWritten and ParseWrittenAsReplacement share.
 func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
-	read, misread, refused, err := documentMisread(doc)
-	if err := refuseMisread(misread, refused, err); err != nil {
+	read, found, refused, err := documentMisread(doc)
+	if err := refuseMisread(found, refused, err); err != nil {
 		return nil, WrittenReadBack{}, err
 	}
 	return doc, read, nil

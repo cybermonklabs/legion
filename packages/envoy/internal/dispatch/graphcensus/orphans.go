@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,7 +69,7 @@ var ErrNotOrphaned = errors.New("the node is not an orphaned document's")
 // its issue naming the address, and at the sentinel where there is none. Only who states it
 // differs, the block-index tick (sweepActor), since the person who removed it is the event's.
 //
-// It takes the store's lock order: the issue's owner lock first (events.LockOwnerRows), as the
+// It takes the store's lock order: the issue's owner lock first (store.LockOwner), as the
 // removal and every create of a document of that issue take it, then the node's row `for
 // update`, and only under that lock reads whether a row stands at the address. A create of this
 // build writes the node and then the row in one transaction under that owner lock, so a create
@@ -90,10 +89,8 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		if !isIssue {
 			return fmt.Errorf("%w: %s is no issue's document", ErrNotOrphaned, ref)
 		}
-		owners := events.OwnerRows{}
-		owners.Add(issue, "")
-		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-			return err
+		if err := store.LockOwner(ctx, tx, store.IssueOwner(issue)); err != nil {
+			return fmt.Errorf("lock the owner of %s: %w", ref, err)
 		}
 		var state string
 		switch err := tx.QueryRow(ctx, `select state from graph_nodes where kind = $1 and id = $2 for update`,

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
 // gateNames are the comment words this test holds to the code: the names of the checks a route
@@ -32,7 +34,7 @@ var gateNames = regexp.MustCompile(`\b((?:refuse|within)[A-Z][A-Za-z0-9]*)\b`)
 // judgment, and a person or an agent reading the two together is what catches it.
 func TestEveryGateNameACommentNamesExists(t *testing.T) {
 	t.Parallel()
-	declared, err := declaredGateNames(repositoryRoot(t))
+	declared, err := declaredGateNames(sqlscan.Root(t))
 	if err != nil {
 		t.Fatalf("read the repository's declarations: %v", err)
 	}

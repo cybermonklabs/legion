@@ -1,4 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +19,7 @@ import {
   DISPATCH_READ_ONLY_TOKEN,
   dispatchToolSpecs,
   IDEMPOTENCY_KEY_HEADER,
+  IDEMPOTENCY_KEY_IN_FLIGHT,
   MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
   TEXT_REFUSAL_HEADER,
@@ -25,6 +35,7 @@ import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../d
 import { DRY_RUN_HELP } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { readFileText } from "../dispatch-file-text";
+import { DISPATCH_WRITE_RETRY } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
@@ -2426,6 +2437,107 @@ describe("the dispatch CLI", () => {
     const second = await run(message, omp);
     expect(first.stdout).toContain("DSP-1 is still in triage");
     expect(second.stdout).not.toContain("is still in triage");
+  });
+
+  // A write Dispatch says it is still running is waited on past the command's usual minute, for
+  // as long as Dispatch can still finish it. The command says so once on stderr, naming the key
+  // and the longest wait, so the agent that ran it does not stop it as hung: Dispatch's run limit
+  // and a lease after the first attempt, and a silence bound for the last ask's answer.
+  test("a write Dispatch says it is still running is waited on, and stderr says so once", async () => {
+    const keys: string[] = [];
+    const fetchImpl = keyedLayer(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const { pathname } = new URL(request.url);
+        const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+        if (message) keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+        return message && keys.length === 1
+          ? Response.json(
+              {
+                code: IDEMPOTENCY_KEY_IN_FLIGHT,
+                error: "an earlier request with this key is still running",
+              },
+              { status: 409, headers: { "Retry-After": "1" } }
+            )
+          : fetch(request);
+      },
+      { judged: () => true }
+    ) as typeof fetch;
+
+    const { code, stderr } = await run(
+      ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+      omp,
+      "",
+      { fetchImpl }
+    );
+
+    expect(code, stderr).toBe(0);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0] ?? "");
+    expect(stderr).toBe(
+      `dispatch: Dispatch is still running this write under key ${keys[0]}, so this command ` +
+        "waits up to 11 min 20 s for its outcome. Do not stop it: Dispatch finishes the write " +
+        "either way, and a stopped command cannot tell whether it landed.\n"
+    );
+  });
+
+  // An attempt cut off for silence puts the write in that wait as well, though Dispatch never said
+  // it holds the write: the line says it may still be running, and that Dispatch finishes an
+  // attempt it received, which is all the command knows.
+  test("a write whose attempt went silent may still be running, and stderr says that much once", async () => {
+    jest.useFakeTimers();
+    try {
+      const keys: string[] = [];
+      const fetchImpl = keyedLayer(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const request = new Request(input, init);
+          const { pathname } = new URL(request.url);
+          const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+          if (message) keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+          if (message && keys.length === 1) {
+            // No answer: the fake clock runs out the attempt's silence bound, which cuts it off.
+            const { promise, reject } = Promise.withResolvers<Response>();
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+              once: true,
+            });
+            jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.silenceMs);
+            return await promise;
+          }
+          return fetch(request);
+        },
+        { judged: () => true }
+      ) as typeof fetch;
+      let stderr = "";
+
+      const code = await runDispatchCli(
+        ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+        environment(omp),
+        {
+          stdout: () => undefined,
+          stderr: (text) => {
+            stderr += text;
+            // The pause before the next attempt starts on the fake clock as the line is written:
+            // run it out once it has.
+            queueMicrotask(() => jest.advanceTimersByTime(DISPATCH_WRITE_RETRY.pausesMs[0] ?? 0));
+          },
+          readText: (path) => readFileSync(path, "utf-8"),
+          cwd: stateDir,
+          fetchImpl,
+        }
+      );
+
+      expect(code, stderr).toBe(0);
+      expect(keys).toHaveLength(2);
+      expect(keys[1]).toBe(keys[0] ?? "");
+      expect(stderr).toBe(
+        `dispatch: Dispatch may still be running this write under key ${keys[0]}, so this ` +
+          "command waits up to 11 min for its outcome. Do not stop it: Dispatch finishes an " +
+          "attempt of the write it received either way, and a stopped command cannot tell " +
+          "whether it landed.\n"
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   // Every `dispatch` command is a process of its own, and its write whose attempt fails is asked

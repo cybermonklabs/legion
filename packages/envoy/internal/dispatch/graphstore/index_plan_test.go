@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // The nodes the reads under test are taken on. probe is one node among tens of thousands, whose
@@ -1314,9 +1315,13 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 	declared := map[string][]declaredIndex{}
 	graphNodesTable := ""
 	for _, file := range files {
+		// The migrations write their reasoning in comments: one of them spells out `create index
+		// concurrently` in prose, and reading the prose as a declaration would hold the tree to an
+		// index nobody built. The comments go, so whether the file runs outside the runner's
+		// transaction is read off its own first line.
 		raw := readMigration(t, file)
 		firstLine, _, _ := strings.Cut(raw, "\n")
-		body := withoutLineComments(raw)
+		body := pgmigrate.WithoutComments(raw)
 		for _, index := range indexesOf(file, body, firstLine) {
 			declared[index.name] = append(declared[index.name], index)
 		}
@@ -1566,13 +1571,6 @@ var indexPredicateStart = regexp.MustCompile(`(?is)\)\s*where\b`)
 // graphNodesCreateTable matches the create table of graph_nodes and captures its body, which is
 // where its primary key is declared.
 var graphNodesCreateTable = regexp.MustCompile(`(?is)\bcreate\s+table\s+graph_nodes\s*\((.*?)\n\);`)
-
-// lineComment matches a whole line of SQL comment, which the migrations write their reasoning
-// in: one of them spells out `create index concurrently` in prose, and reading the prose as a
-// declaration would hold the tree to an index nobody built.
-var lineComment = regexp.MustCompile(`(?m)^[ \t]*--.*$`)
-
-func withoutLineComments(body string) string { return lineComment.ReplaceAllString(body, "") }
 
 // indexesOf is every index one migration file declares, with its key list and predicate written
 // the way requiredGraphIndexes writes them, its name and its table as Postgres reads them

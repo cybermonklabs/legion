@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -237,7 +238,7 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Acto
 	}
 	coverage, err := s.issueCoverage(ctx, q, who, *artifact.IssueKey, nil)
 	if err != nil {
-		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
+		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", docs.LoggedError(err))
 		return []string{}, true, nil
 	}
 	return missingCheckGaps(coverage), false, nil

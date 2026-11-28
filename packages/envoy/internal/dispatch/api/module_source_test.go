@@ -1,12 +1,13 @@
 // The toolkit the package's source scans share: the module's parsed source, the string
-// constants a statement is assembled from, and the text of such a statement. It carries no
-// build tag and declares no test of its own, and each of those is deliberate.
+// constants a statement is assembled from, and the text of such a statement. It walks the module
+// and reads its string literals and `+` chains through the tree's one scanner (internal/sqlscan).
+// It carries no build tag and declares no test of its own, and each of those is deliberate.
 //
 // No tag, because its callers are on both sides of one. The nine static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
 // race job (lock_level_test.go's header says what), while two tests of this package use its
-// declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
-// migration's SQL with sqlWhitespace, and item_writer_census_test.go's
+// declarations untagged and run in the race job: ask_asked_of_test.go's TestAskAskedOf
+// normalises a migration's SQL with sqlWhitespace, and item_writer_census_test.go's
 // TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus, which the text-check job does not run, walks
 // the module (moduleSources, sqlStatementsByFunction). A tagged toolkit drops both from the race
 // build and the package's test binary stops compiling.
@@ -23,14 +24,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
 	"maps"
-	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
 // sqlWhitespace collapses the whitespace of a statement, so a clause written across several
@@ -57,10 +57,11 @@ const moduleRoot = "../../.."
 // for the sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
 
-// moduleSources reads and parses every non-test Go file of the envoy module, not just the
-// Dispatch server: the broker's owner locks live in internal/events, and a future caller could
-// lock one of these rows from anywhere. Test sources hold these strings deliberately - the
-// upload regressions and the sabotage copies a red proof makes - so they are skipped.
+// moduleSources reads and parses every non-test Go file of the envoy module (sqlscan.GoFiles), not
+// just the Dispatch server: the broker's owner locks live in internal/events, and a future caller
+// could lock one of these rows from anywhere. Test sources hold these strings deliberately - the
+// upload regressions and the sabotage copies a red proof makes - so they are skipped, as are the
+// fixtures under testdata, which no build of the module compiles.
 func moduleSources(t *testing.T) []moduleSource {
 	t.Helper()
 	sources, err := sharedModuleSources()
@@ -71,23 +72,18 @@ func moduleSources(t *testing.T) []moduleSource {
 }
 
 func scanModuleSources(root string) ([]moduleSource, error) {
+	paths, err := sqlscan.GoFiles(root)
+	if err != nil {
+		return nil, err
+	}
 	fileSet := token.NewFileSet()
-	var sources []moduleSource
-	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
+	sources := make([]moduleSource, 0, len(paths))
+	for _, path := range paths {
 		file, err := parser.ParseFile(fileSet, path, nil, 0)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		sources = append(sources, moduleSource{path: path, file: file, positions: fileSet})
-		return nil
-	}); err != nil {
-		return nil, err
 	}
 	return sources, nil
 }
@@ -272,14 +268,8 @@ func sqlStatementsByFunction(file *ast.File, constants map[string]string) []loca
 func literalText(expression ast.Expr, pkg string, constants map[string]string) (string, bool) {
 	switch node := expression.(type) {
 	case *ast.BasicLit:
-		if node.Kind != token.STRING {
-			return "", false
-		}
-		text, err := strconv.Unquote(node.Value)
-		if err != nil {
-			return "", false
-		}
-		return text, true
+		_, text, ok := sqlscan.StringLiteral(node)
+		return text, ok
 	case *ast.Ident:
 		text, known := constants[pkg+"."+node.Name]
 		return text, known
@@ -296,46 +286,55 @@ func literalText(expression ast.Expr, pkg string, constants map[string]string) (
 		if node.Op != token.ADD {
 			return "", false
 		}
-		left, leftOK := literalText(node.X, pkg, constants)
-		right, rightOK := literalText(node.Y, pkg, constants)
-		if !leftOK && !rightOK {
-			return "", false
-		}
+		// The chain is read left to right, each operand joined to what the operands before it
+		// made, as Go groups a + b + c: (a + b) + c. What is made so far is no text while no
+		// operand of it has resolved.
+		//
 		// An operand that resolves to nothing - a call, a runtime value, a constant whose
 		// name is ambiguous - contributes its own string literals instead, joined by a
 		// space, so a clause they spell is still part of the statement rather than a gap
 		// that hides it: strings.Join([]string{"for update"}, "") reds, and so does
-		// []string{"for", "update"}, which no single literal spells.
+		// []string{"for", "update"}, which no single literal spells. While what is made so far
+		// is no text, it is that: every literal of the operands before, joined by a space.
 		// A spliced gap is padded on both sides, so a fragment can never weld itself to the
 		// operand beyond it. Nothing is inserted when both operands resolve, so a keyword
 		// split across a concatenation ("for upd" + "ate") stays one word and is refused.
-		if !leftOK {
-			left = " " + literalsWithin(node.X) + " "
+		parts := sqlscan.Concatenation(node, nil)
+		text, ok := literalText(parts[0], pkg, constants)
+		before := literalsWithin(parts[0])
+		for _, part := range parts[1:] {
+			right, rightOK := literalText(part, pkg, constants)
+			literals := literalsWithin(part)
+			switch {
+			case !ok && rightOK:
+				text, ok = " "+strings.Join(before, " ")+" "+right, true
+			case ok && !rightOK:
+				text += " " + strings.Join(literals, " ") + " "
+			case ok && rightOK:
+				text += right
+			}
+			before = append(before, literals...)
 		}
-		if !rightOK {
-			right = " " + literalsWithin(node.Y) + " "
-		}
-		return left + right, true
+		return text, ok
 	}
 	return "", false
 }
 
-// literalsWithin renders every string literal inside an expression the scan could not resolve,
-// so the words of a clause built at runtime still reach the statement. It is deliberately loose,
-// and that looseness is the second false-positive shape the lock-level check's own doc names: a
-// literal that never reaches the query still lands in the scanned text, so it can supply either
-// half of a match - the keyword or an owner table's name. Such a red is told apart the way that
-// test's doc describes it: it reads as a word the statement did not spell.
-func literalsWithin(expression ast.Expr) string {
+// literalsWithin is every string literal inside an expression the scan could not resolve, in
+// order, so the words of a clause built at runtime still reach the statement. It is deliberately
+// loose, and that looseness is the second false-positive shape the lock-level check's own doc
+// names: a literal that never reaches the query still lands in the scanned text, so it can supply
+// either half of a match - the keyword or an owner table's name. Such a red is told apart the way
+// that test's doc describes it: it reads as a word the statement did not spell.
+func literalsWithin(expression ast.Expr) []string {
 	var parts []string
 	ast.Inspect(expression, func(node ast.Node) bool {
-		literal, ok := node.(*ast.BasicLit)
-		if ok && literal.Kind == token.STRING {
-			if text, err := strconv.Unquote(literal.Value); err == nil {
+		if literal, ok := node.(*ast.BasicLit); ok {
+			if _, text, ok := sqlscan.StringLiteral(literal); ok {
 				parts = append(parts, text)
 			}
 		}
 		return true
 	})
-	return strings.Join(parts, " ")
+	return parts
 }

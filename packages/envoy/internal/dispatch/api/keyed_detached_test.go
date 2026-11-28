@@ -208,9 +208,10 @@ func lapseRequestKeyLease(t *testing.T, rig *keyedRig, key string) {
 }
 
 // The handler's context is the server's, not the client's: the client's cancellation mid-run does
-// not reach it, and the server's own bound, keyedHandlerLimit, does. The bound is read as the
-// deadline the server set: keyedHandlerLimit after a moment between the request's start and the
-// handler's entry, which the server's own start of the run lies between, however long either took.
+// not reach it, and the server's own bound, contracts.IdempotencyRunLimit, does. The bound is read
+// as the deadline the server set: contracts.IdempotencyRunLimit after a moment between the
+// request's start and the handler's entry, which the server's own start of the run lies between,
+// however long either took.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 	t.Parallel()
 	running, proceed := make(chan struct{}), make(chan struct{})
@@ -252,10 +253,10 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 		t.Fatalf("a run whose client went away mid-run: context error %v, status %d, want it run to its answer",
 			observed.err, response.Code)
 	}
-	if earliest, latest := began.Add(keyedHandlerLimit), observed.entered.Add(keyedHandlerLimit); !observed.bounded ||
+	if earliest, latest := began.Add(contracts.IdempotencyRunLimit), observed.entered.Add(contracts.IdempotencyRunLimit); !observed.bounded ||
 		observed.deadline.Before(earliest) || observed.deadline.After(latest) {
 		t.Fatalf("the handler's deadline is %v (set: %v), want the server's %v bound from the run's start, between %v and %v",
-			observed.deadline, observed.bounded, keyedHandlerLimit, earliest, latest)
+			observed.deadline, observed.bounded, contracts.IdempotencyRunLimit, earliest, latest)
 	}
 }
 
@@ -339,8 +340,8 @@ func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
 	arm(700)
 	// Each armed run is held to its arm as the hook records the wait it made (slowWriteRunsOn, read
 	// on each side of the run), not by a clock around the request, which a run that skipped its
-	// delay on a slow machine would pass. keyedHandlerLimit is ten minutes, so load cannot turn an
-	// armed run into a 503 either.
+	// delay on a slow machine would pass. contracts.IdempotencyRunLimit is ten minutes, so load
+	// cannot turn an armed run into a 503 either.
 	for _, key := range []string{"slow-1", "slow-2"} {
 		_, before := served.slowWriteRunsOn(http.MethodPost + " " + path)
 		if created := keyedRequest(t, handler, http.MethodPost, path, map[string]any{"body": key}, "alice", key); created.Code != http.StatusCreated {

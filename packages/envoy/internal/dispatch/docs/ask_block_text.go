@@ -428,7 +428,10 @@ func writeDecidedWording(node *pmdoc.Node, ask model.Ask) (bool, error) {
 		return false, err
 	}
 	if !reads.asks(decided) {
-		return false, fmt.Errorf("the block reads back as %q, not the wording its ask was decided on", reads.question)
+		// The error reaches only the operator's log (ask_blocks.go), so it names no wording: the
+		// question is a person's text, which a log line, read by whoever reads the server's logs,
+		// does not carry.
+		return false, errors.New("the block does not read back as the wording its ask was decided on")
 	}
 	node.Attrs, node.Children = written.Attrs, written.Children
 	return true, nil

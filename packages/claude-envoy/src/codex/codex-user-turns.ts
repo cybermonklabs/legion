@@ -23,7 +23,8 @@ import type { CodexInboxItem } from "./codex-inbox"
  * Everything else keeps the card it renders as. A write Dispatch made and gave no copy of its
  * answer for (`DispatchWriteLandedError`: an accept, a reply, a BTW answer) is said as made, in
  * the words `../user-turn-router` says it in (`acceptLanded`, `replyWarning`, `btwAnswerWarning`
- * through `answerBtw`).
+ * through `answerBtw`), and a BTW answer Dispatch is still running when its deadline ends is
+ * left to land, with nothing posted over it (`answerBtw`).
  */
 export interface CodexUserTurnOptions {
   readonly sessionId: () => string
@@ -54,7 +55,8 @@ export function createCodexUserTurnRouter(options: CodexUserTurnOptions): UserTu
   const { state, warn } = options
 
   /** A BTW answer Dispatch made and gave no copy of its answer for answered the attempt, so no
-   *  error reply follows it, and the line says it landed (`answerBtw`). */
+   *  error reply follows it, and the line says it landed; one Dispatch is still running settles
+   *  the attempt when it lands, so no error reply follows it either (`answerBtw`). */
   const runBtw = (delivery: DispatchDelivery): void => {
     answerBtw(delivery, options.ask, options.reply, warn)
   }

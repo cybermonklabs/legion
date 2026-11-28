@@ -108,7 +108,7 @@ export interface RequestCredential {
    * the sign-in this machine holds and the session its caller acts as, each of which can change
    * between two presentations. Dispatch keys a write per login, the person or the service
    * (`requestKeyLogin`, packages/envoy/internal/dispatch/api/request_keys.go), and a write that
-   * may have landed is never sent again as another identity (`DispatchClient`'s `#write`). An
+   * may have landed is never sent again as another identity (`DispatchClient`'s `#sendWrite`). An
    * identity may be stricter than Dispatch's login: two identities can be one person, where the
    * credential cannot tell that they are. A credential that presents as one holder only, a
    * bearer, has none.

@@ -106,13 +106,15 @@ func TestSearchByKindRanksAndCountsThatKindAlone(t *testing.T) {
 }
 
 // A repeated kind names a set: both kinds' rows are ranked, counted and paged, and no other
-// kind's are.
+// kind's are. The set is asked of GET /api/v1/search/results, the route that declares kind a
+// list and the one a client sends a kind to: GET /api/v1/search declares no kind, so a repeat of
+// it there is refused as every undeclared key's is (refuseRepeatedQueryKeys).
 func TestSearchByTwoKindsRanksBothAndNoOther(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedKindSearchCorpus(t, handler, "KIND", "Astrolabe survey")
 
-	body := searchResponse(t, handler, "q=astrolabe&kind=issue&kind=message")
+	body := searchResponseOn(t, handler, searchResultsPath, "q=astrolabe&kind=issue&kind=message")
 	want := []string{"issue", "message"}
 	if !slices.Equal(resultKinds(body.Results), want) || body.Total != 2 || body.Reachable != 2 {
 		t.Fatalf("kinds=%v total=%d reachable=%d, want %v, 2 and 2",
@@ -232,7 +234,7 @@ func TestSearchRefusesAKindItDoesNotIndex(t *testing.T) {
 		"q=astrolabe&kind=issues",
 	} {
 		t.Run(query, func(t *testing.T) {
-			response := searchRequest(t, handler, query)
+			response := searchRequestOn(t, handler, searchResultsPath, query)
 			body := decodeBody[struct {
 				Code  string `json:"code"`
 				Error string `json:"error"`

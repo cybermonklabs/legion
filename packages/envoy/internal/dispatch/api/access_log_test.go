@@ -477,8 +477,11 @@ func TestEachSearchParameterMovesTheKey(t *testing.T) {
 			url.Values{"q": {"lighthouse"}, asOfParameter: {later.String()}},
 			url.Values{"q": {"lighthouse"}, asOfParameter: {later.Time().In(time.FixedZone("", 2*60*60)).Format(time.RFC3339Nano)}}},
 	} {
-		_, first := sendSearch(t, handler, logged, "/api/v1/search", same.first, false)
-		_, second := sendSearch(t, handler, logged, "/api/v1/search", same.second, false)
+		// Sent to GET /api/v1/search/results, which declares kind a list: GET /api/v1/search
+		// declares no kind and refuses a repeated one (refuseRepeatedQueryKeys). The two routes
+		// run one handler, and the key is made of the request's parameters (searchRequestKey).
+		_, first := sendSearch(t, handler, logged, searchResultsPath, same.first, false)
+		_, second := sendSearch(t, handler, logged, searchResultsPath, same.second, false)
 		if first != second {
 			t.Errorf("%s: the two spellings were named %s and %s, want one key", same.name, first, second)
 		}

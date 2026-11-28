@@ -1,0 +1,5 @@
+kind: Fixed
+body: An edit that deletes a block of a typed block in a tight list item now stores the canonical render of what its text reads back as (the item loose), so the room and the stored text agree; an insert of table rows takes the column alignment the table's delimiter row gives; the markdown writer writes two bold or italic runs that differ only in their marker as one run, and the read-back no longer compares a marker it never writes; and a settlement's line about content only a newer build reads names the unknown elements and the version that holds them again.
+time: 2026-11-21T03:51:31.515936479Z
+custom:
+    Issue: pr3142

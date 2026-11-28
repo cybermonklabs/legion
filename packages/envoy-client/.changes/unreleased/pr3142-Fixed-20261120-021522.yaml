@@ -1,0 +1,5 @@
+kind: Fixed
+body: A keyed write that Dispatch says it is still running (409 KEY_IN_FLIGHT, or an attempt cut off for silence) is asked again until Dispatch's run limit and one lease have passed, past the client's default 60 s deadline, so the caller learns the write's outcome rather than a failure for a write that lands. The dispatch command says on stderr once that it waits, and how long at most. A deadline the caller names still ends the write.
+time: 2026-11-20T02:15:22.102627127Z
+custom:
+    Issue: pr3142

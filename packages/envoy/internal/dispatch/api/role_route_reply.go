@@ -97,10 +97,11 @@ func (s *server) callerPrincipal(r *http.Request) string {
 // Any other route, an attempt that names actor, and a listener that answers that another session
 // holds the role, or none does, or that names actor among no successors, or names it for another
 // principal than the one actor's credential acts for (actsFor, callerPrincipal), are no reply it
-// allows. A
-// lookup the listener did not answer (dispatchenvoy.ErrUnavailable) is the error, which the route
-// answers 503 ENVOY_UNAVAILABLE: whether this session may answer is the listener's to say, and a
-// refusal would end a reply its host could make again.
+// allows. A lookup the listener did not answer (dispatchenvoy.ErrUnavailable) is the error, which
+// the route answers 503 ENVOY_UNAVAILABLE: whether this session may answer is the listener's to
+// say, and a refusal would end a reply its host could make again. The error names the route, or
+// the session the attempt was made for, and not the actor: no error message of this API carries a
+// signed-in person's login or session.
 func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemptSession *string, actor model.Actor, actsFor string) (roleHolderReply, error) {
 	verdict := roleHolderReply{route: route}
 	parsed, err := model.ParseRoute(route)
@@ -112,7 +113,7 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 		holder, err := s.deps.Envoy.Role(ctx, parsed.ID)
 		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
-				"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether %s may answer this delivery: %s", route, actor.ID, err.Error())
+				"the Envoy listener did not say who holds %s, so Dispatch cannot tell whether this session may answer this delivery: %s", route, err.Error())
 		}
 		verdict.named = err == nil && holder.SessionID == actor.ID && holder.State == dispatchenvoy.StateLive
 	case "session":
@@ -122,7 +123,7 @@ func (s *server) lookUpRoleHolderReply(ctx context.Context, route string, attemp
 		successors, err := s.deps.Envoy.Successors(ctx, *attemptSession)
 		if errors.Is(err, dispatchenvoy.ErrUnavailable) {
 			return verdict, errorf(http.StatusServiceUnavailable, "ENVOY_UNAVAILABLE",
-				"the Envoy listener did not say which sessions replaced %s, so Dispatch cannot tell whether %s may answer this delivery: %s", *attemptSession, actor.ID, err.Error())
+				"the Envoy listener did not say which sessions replaced %s, so Dispatch cannot tell whether this session may answer this delivery: %s", *attemptSession, err.Error())
 		}
 		verdict.named = err == nil && slices.Contains(successors.Successors, actor.ID) && actsForSuccessorPrincipal(actor, actsFor, successors.Principal)
 	}

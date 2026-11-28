@@ -17,6 +17,7 @@ import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   type DispatchClientOptions,
+  type DispatchRunWait,
   type DispatchWriteRetry,
 } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
@@ -75,6 +76,10 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** Told once for each write that enters the wait for a run Dispatch may still be making of it,
+   *  which can outlast the client's own deadline (`DispatchClient`); the `dispatch` command prints
+   *  it on stderr, so its caller does not take the wait for a hang. */
+  readonly onRunWait?: (wait: DispatchRunWait) => void;
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
@@ -354,9 +359,9 @@ export interface SessionContext {
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
    * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
-   * session's own (its signal, its write pacing and its sleep), for a request that runs under a
-   * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
-   * within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
+   * session's own (its signal, its write pacing, its run-wait notice and its sleep), for a request
+   * that runs under a budget of its own: the call of `dispatch artifact` asks its check of a
+   * Markdown file once, within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
    */
   newClient(options?: DispatchClientOptions): DispatchClient;
 }
@@ -406,14 +411,18 @@ export type ReadingContext<C extends SessionContext> = C & { readonly reading: R
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /** One `DispatchClient` of `input`'s server, credential and fetch, with its signal, its write
- *  pacing and its sleep, and `options` laid over them. */
+ *  pacing, its run-wait notice and its sleep, and `options` laid over them. */
 export function dispatchClientFor(
-  input: Pick<ExecuteDispatchToolInput, "config" | "fetchImpl" | "signal" | "writeRetry" | "sleep">,
+  input: Pick<
+    ExecuteDispatchToolInput,
+    "config" | "fetchImpl" | "signal" | "writeRetry" | "onRunWait" | "sleep"
+  >,
   options: DispatchClientOptions = {}
 ): DispatchClient {
   return new DispatchClient(input.config.url, input.config.credential, input.fetchImpl ?? fetch, {
     signal: input.signal,
     writeRetry: input.writeRetry,
+    onRunWait: input.onRunWait,
     sleep: input.sleep,
     ...options,
   });

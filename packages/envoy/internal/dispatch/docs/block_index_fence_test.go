@@ -322,7 +322,7 @@ func currentPartOf(t *testing.T, database *store.Store, address string) graphsto
 // holds to it - a version's write, which a person's edit runs through NamedVersion and an upload
 // through reference_excerpts.go, the reconciliation tick and the backfill command - decides
 // whether it wins the fence in its read phase, under the owner's advisory lock (store.LockOwner,
-// through lockArtifactOwner or events.LockOwnerRows), and its write phase writes only what that
+// through lockArtifactOwner or store.LockOwners), and its write phase writes only what that
 // decision let it. Nothing can store a newer revision between that decision and the write: every
 // writer of the revision takes the owner's lock before it reads the revision it writes against - a
 // version's own index, the trigger a version insert fires, the tick and the backfill, as

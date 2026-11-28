@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  Every route of Dispatch's API refuses a request that names one query key more than once, with `400 INVALID_QUERY` naming the key, unless the route declares that key a list.
+  The server used to answer such a request for the key's first value, which is an answer to a question other than the one asked.
+  One layer of the route chain does it, before the route's own handler, so a route added later is held to the same rule once it declares its query parameters.
+  A repeated `limit`, `offset`, `status`, `author`, `updated_since` or `keywords_only` is now answered `INVALID_QUERY` too, in place of each route's own code for a repeat.
+  The delivery timeline and measures reads declare `session` as a list, as the Delivery page already sends it; on every other route `session` names the session a caller acts for, and naming it twice is refused.
+time: 2026-11-18T11:11:52.000000000Z
+custom:
+    Issue: pr3142

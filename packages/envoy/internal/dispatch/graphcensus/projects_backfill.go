@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -40,9 +39,9 @@ type objectKind struct {
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
 	// owners answers, for a kind some writer deletes rows of, the owner each row of the ids $1
-	// stands under, as (issue, document id): the owner whose lock that writer takes before anything
-	// else (api's removeArtifact takes its document's issue's). It is empty for a kind no writer
-	// deletes a row of.
+	// stands under, as (issue key, null for a row no issue owns; document id): the owner whose lock
+	// that writer takes before anything else (api's removeArtifact takes its document's issue's). It
+	// is empty for a kind no writer deletes a row of.
 	owners string
 }
 
@@ -109,7 +108,7 @@ var objectKinds = []objectKind{
 		  and ` + unmarkedDocument("a") + `
 		order by a.ref_key limit $2`,
 		rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
-		owners: `select coalesce(issue_key, ''), id::text from artifacts where ref_key = any($1::text[])`},
+		owners: `select issue_key, id::text from artifacts where ref_key = any($1::text[])`},
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
 		       case when coalesce(i.project_key, a.project_key) is null then a.session_id end, null::jsonb, null::text, null::bigint, k.id::text
@@ -706,22 +705,23 @@ func partiesRefused(parties []string) bool {
 	return err != nil
 }
 
-// lockObjectOwners takes the owner lock each row of ids stands under (objectKind.owners), each
-// once and in owner key order (events.LockOwnerRows, store.LockOwners).
+// lockObjectOwners takes the owner lock each row of ids stands under (objectKind.owners) in one
+// statement (store.LockOwners): its issue or, for a document no issue owns, the document itself
+// (store.OwnerOf), each lock once and in the one order of their lock keys in which every
+// transaction that locks several owners takes them.
 func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []string) error {
 	rows, err := tx.Query(ctx, kind.owners, ids)
 	if err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
-	owners := events.OwnerRows{}
-	var issue, document string
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &document}, func() error {
-		owners.Add(issue, document)
-		return nil
-	}); err != nil {
+	owners, err := documentOwners(rows)
+	if err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
-	return events.LockOwnerRows(ctx, tx, owners)
+	if err := store.LockOwners(ctx, tx, owners...); err != nil {
+		return fmt.Errorf("lock the owners of %d %s rows: %w", len(owners), kind.kind, err)
+	}
+	return nil
 }
 
 // scopeKinds are the kinds whose writers stored nodes before a node named its project, each with

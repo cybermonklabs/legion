@@ -14,7 +14,9 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 	const at = "2025-01-01T00:00:00.000000Z"
 	const id = "ab000000-0000-4000-8000-000000000001"
 	// Each refusal says whole which parameter it refuses and every value that parameter takes:
-	// must refuses a value the page cannot read, absent a page parameter sent without order.
+	// must refuses a value the page cannot read, absent a page parameter sent without order. A key
+	// named twice is refused before the page reads it, in the one wording every repeated key gets
+	// (refuseRepeatedQueryKeys).
 	const (
 		limit  = "one integer from 1 to 100"
 		before = "one position: a UTC timestamp with six fractional digits and Z, a comma, and a lower-case UUID"
@@ -27,9 +29,8 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 	type refusalCase struct{ query, message string }
 	common := []refusalCase{
 		{"order=created", must("order", "activity")}, {"order=", must("order", "activity")},
-		{"order=activity&order=activity", must("order", "activity")},
 		{"order=activity&limit=0", must("limit", limit)}, {"order=activity&limit=101", must("limit", limit)},
-		{"order=activity&limit=abc", must("limit", limit)}, {"order=activity&limit=20&limit=20", must("limit", limit)},
+		{"order=activity&limit=abc", must("limit", limit)},
 		{"limit=20", absent("limit", limit)},
 		{"before=" + at + "," + id, absent("before", before)},
 		{"order=activity&before=yesterday", must("before", before)},
@@ -38,9 +39,14 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 		{"order=activity&before=2025-01-01T00:00:00.000000%2B00:00," + id, must("before", before)},
 		{"order=activity&before=2025-01-01T00:00:00.0000000Z," + id, must("before", before)},
 		{"order=activity&before=" + at + "," + strings.ToUpper(id), must("before", before)},
-		{"order=activity&before=" + at + "," + id + "&before=" + at + "," + id, must("before", before)},
 		{"author=x", absent("author", author)}, {"order=activity&author=", must("author", author)},
-		{"order=activity&author=x&author=x", must("author", author)},
+	}
+	repeated := []struct{ query, key string }{
+		{"order=activity&order=activity", "order"},
+		{"order=activity&limit=20&limit=20", "limit"},
+		{"order=activity&before=" + at + "," + id + "&before=" + at + "," + id, "before"},
+		{"order=activity&author=x&author=x", "author"},
+		{"order=activity&person=in&person=in", "person"},
 	}
 	for _, route := range []struct{ name, person string }{
 		{"comments", "one value: in"},
@@ -48,9 +54,7 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 		{"asks", "absent (this route does not take a person filter)"},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			cases := append(slices.Clone(common),
-				refusalCase{"order=activity&person=out", must("person", route.person)},
-				refusalCase{"order=activity&person=in&person=in", must("person", route.person)})
+			cases := append(slices.Clone(common), refusalCase{"order=activity&person=out", must("person", route.person)})
 			switch route.name {
 			case "asks":
 				cases = append(cases, refusalCase{"order=activity&person=in", must("person", route.person)})
@@ -68,6 +72,14 @@ func TestThreadPageRefusesAQueryItCannotAnswerExactly(t *testing.T) {
 					refusal := decodeBody[map[string]any](t, response)
 					if refusal["code"] != "INVALID_QUERY" || refusal["error"] != c.message || len(refusal) != 2 {
 						t.Fatalf("refusal = %v, want INVALID_QUERY saying %q, without threads", refusal, c.message)
+					}
+				})
+			}
+			for _, repeat := range repeated {
+				t.Run(repeat.query, func(t *testing.T) {
+					response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/"+route.name+"?"+repeat.query, nil, "alice")
+					if why := notTheRepeatRefusal(response, repeat.key); why != "" {
+						t.Fatal(why)
 					}
 				})
 			}

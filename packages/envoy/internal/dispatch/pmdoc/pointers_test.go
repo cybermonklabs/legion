@@ -114,6 +114,7 @@ func TestABlockPointerSchemaDeclaresANameAndTargets(t *testing.T) {
 // attribute's own rule (parentCount), on the attribute it names.
 func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 	t.Parallel()
+	const typeName = "plan_task"
 	attr := BlockAttributeSchema{Kind: "block[]", Targets: []string{"requirement"}}
 	for _, row := range sharedPointerRows(t) {
 		parsed, err := ParseBlockPointerValue(row.Value)
@@ -148,7 +149,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 		if row.Attribute != "" {
 			problem = row.Problem
 		}
-		_, err = parseTypedAttributeValue(name, attr, row.Value)
+		_, err = parseTypedAttributeValue(typeName, name, attr, row.Value)
 		if (err == nil) != row.OK || err != nil && !strings.Contains(err.Error(), problem) {
 			t.Errorf("parseTypedAttributeValue(%s, %q) (%s) = %v, want accepted %t, a refusal saying %q", name, row.Value, row.Why, err, row.OK, problem)
 		}
@@ -159,7 +160,7 @@ func TestABlockPointerAttributeDecidesTheSharedCorpus(t *testing.T) {
 				items = append(items, item)
 			}
 		}
-		err = validateAttributeValue(name, attr, items)
+		err = validateAttributeValue(typeName, name, attr, items)
 		if (err == nil) != row.OK || err != nil && !strings.Contains(err.Error(), problem) {
 			t.Errorf("validateAttributeValue(%s, %q) (%s) = %v, want accepted %t, a refusal saying %q", name, items, row.Why, err, row.OK, problem)
 		}

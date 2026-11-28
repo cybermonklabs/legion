@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -85,9 +84,7 @@ func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact mode
 	}
 	var removal int64
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		owners := events.OwnerRows{}
-		owners.Add(*artifact.IssueKey, artifact.ID)
-		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+		if err := store.LockOwner(ctx, tx, store.IssueOwner(*artifact.IssueKey)); err != nil {
 			return err
 		}
 		if err := deleteArtifactRows(ctx, tx, artifact); err != nil {

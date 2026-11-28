@@ -3,6 +3,7 @@ package docs
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -76,6 +77,10 @@ type NewerContentError struct {
 	// whatever the chain that answered the request wrapped it in, the caller's own identity
 	// among it. newerContent fills it wherever this error is made.
 	Elements []string
+	// Version is the number of the stored version that holds the elements where the refusal is of
+	// a version a write read beside the document (skipUnreadableVersion), and 0 where it is of the
+	// document's own tree.
+	Version int
 }
 
 // newerContent is cause, a refusal of an element this build does not know, as the error every
@@ -93,6 +98,23 @@ func (e *NewerContentError) Error() string {
 func (e *NewerContentError) Is(target error) bool { return target == ErrDocNewerContent }
 
 func (e *NewerContentError) Unwrap() error { return e.Cause }
+
+// newerContentLine is args, a log line's own attributes, followed by what the line names of err, a
+// refusal of an element this build does not know: its class (LoggedError), as every line of a
+// refusal names it; the elements, as pmdoc.UnknownElements names them and as the API's line names
+// them (handler_errors.go) - a node's, a mark's or an attribute's own name, and an enum value by
+// its block and attribute, so none quotes the document's text; and, where they stand in a stored
+// version rather than in the document's own tree, that version (NewerContentError.Version). So a
+// reader of the line learns which element a newer build wrote, and where, without the refusal's
+// message, which LoggedError keeps out of the line.
+func newerContentLine(err error, args ...any) []any {
+	args = append(args, "error", LoggedError(err), "elements", pmdoc.UnknownElements(err))
+	var newer *NewerContentError
+	if errors.As(err, &newer) && newer.Version > 0 {
+		args = append(args, "held_in", fmt.Sprintf("version %d", newer.Version))
+	}
+	return args
+}
 
 // documentSchemaError classifies err from reading, rendering or walking the tree a document holds -
 // a walk inside a write's transaction included, since a peer can have deepened that tree past the
@@ -121,6 +143,41 @@ func producedSchemaError(err error) error {
 		return fmt.Errorf("%w: the write left it outside: %v", ErrDocSchema, outside.Cause)
 	}
 	return err
+}
+
+// refusalClasses are this package's refusals that LoggedError and RefusalClass count among
+// refusals of a document beside pmdoc's own, the most particular first. Three are types, whose
+// messages quote the ask or the block they refuse, and an ask's question or a block's attribute
+// can hold a person's address: ErrInvalidAskBlock's message is its reason's (pmdoc.AskContentError
+// quotes the question), ErrAskBlockUnrepresentable's reason quotes the question, the options and
+// the markdown a block holds, and ErrInvalidCICheck's names the block's ci_check. Each is named by
+// words of this package's own, and they come before the wrappers, since an ask's refusal can
+// wrap a schema refusal and is the more particular (joinedSchemaError). The rest are this
+// package's own wrappers of a schema refusal: ErrDocSchema and ErrInvalidMarkdown carry the
+// refusal's message in theirs, and ErrDocNewerContent its cause's.
+var refusalClasses = []pmdoc.Refusal{
+	pmdoc.TypeRefusal[*ErrInvalidAskBlock]("the write would leave an ask block unreadable"),
+	pmdoc.TypeRefusal[*ErrAskBlockUnrepresentable]("the ask block cannot carry the text unchanged"),
+	pmdoc.TypeRefusal[*ErrInvalidCICheck]("the write leaves a check block whose ci_check breaks a rule"),
+	pmdoc.SentinelRefusal(ErrDocSchema),
+	pmdoc.SentinelRefusal(ErrInvalidMarkdown),
+	pmdoc.SentinelRefusal(ErrDocNewerContent),
+}
+
+// LoggedError is err as a log line carries it (pmdoc.LoggedError), counting this package's own
+// refusals among refusals of a document (refusalClasses). A refusal is logged by its class alone,
+// since its message quotes the document or the ask, which can hold a person's address; any other
+// error is logged as it is. The error a caller is answered with keeps the whole message.
+func LoggedError(err error) slog.Value {
+	return pmdoc.LoggedError(err, refusalClasses...)
+}
+
+// RefusalClass is the class LoggedError logs err by when err refuses a document
+// (pmdoc.RefusalClass), and "" when it refuses none. A line that only ever logs a refusal logs it
+// by this rather than by LoggedError, so that line carries a class's own words and never the
+// error: nothing the refusal quotes, nor anything a request wrapped it in, can reach it.
+func RefusalClass(err error) string {
+	return pmdoc.RefusalClass(err, refusalClasses...)
 }
 
 // ErrDocumentTooLarge is the refusal of a write that would leave a document larger than the server

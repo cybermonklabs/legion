@@ -25,7 +25,7 @@ const zedDocumentID = "00000000-0000-4000-8000-0000000000d3"
 
 // requireTheObjectBatchLockOrder holds writeObjectBatch to its steps over documents, the kind a
 // writer deletes rows of (objectKind.owners). The batch first takes the owner lock of each of its
-// documents (lockObjectOwners), each once and in ascending owner key (events.LockOwnerRows), and
+// documents (lockObjectOwners), each once and in lock key order (store.LockOwners), and
 // reads under them which rows still stand and the nodes the store holds of them. It then writes
 // its nodes in runs of consecutive nodes of one cause, each run through graphstore.PlanUncaused
 // and graphstore.QueueNodes, which takes the run's node rows in ascending (kind, id), and

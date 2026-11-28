@@ -1,9 +1,9 @@
 // packages/envoy-client/src/write-outcome.ts
 //
 // The outcome of a Dispatch write, as one transition table. `DispatchClient`'s write loop
-// (`dispatch-http.ts`, `#write`) reads every presentation, attempt and answer body, every wait it
-// is stopped in, and the end of its asking as one `WriteEvent`, asks `writeStep` what follows, and
-// does only that: settle on the answer, ask again (on the write's pacing, at once after a dead
+// (`dispatch-http.ts`, `#sendWrite`) reads every presentation, attempt and answer body, every wait
+// it is stopped in, and the end of its asking as one `WriteEvent`, asks `writeStep` what follows,
+// and does only that: settle on the answer, ask again (on the write's pacing, at once after a dead
 // token, or on the rolling-release schedule after no route), or end. No other code decides how a
 // write ends.
 //

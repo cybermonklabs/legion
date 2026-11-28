@@ -85,6 +85,66 @@ type lineCandidate struct {
 	prefix string
 }
 
+// markRun is a delimiter run the marks of an inline run wrote beside a text: where it stands in the
+// markdown, and whether it closes marks, opens them, or both, a fused run.
+type markRun struct {
+	start, end    int
+	opens, closes bool
+}
+
+// recordMarkRuns records the delimiter runs that the marks written from from to the markdown's end,
+// their closers ending at closed, wrote beside a text: the run they begin with and the run they end
+// with, where each is a run of `*` or `~`. A run between two of their links' or code spans' syntax
+// has punctuation on both sides, which lets it open and close alike.
+func (r *renderer) recordMarkRuns(from, closed int) {
+	written := r.b.Bytes()
+	to := len(written)
+	if from == to {
+		return
+	}
+	if char := written[from]; char == '*' || char == '~' {
+		end := from
+		for end < to && written[end] == char {
+			end++
+		}
+		r.markRuns = append(r.markRuns, markRun{start: from, end: end, closes: from < closed, opens: end > closed})
+		if end == to {
+			return
+		}
+	}
+	if char := written[to-1]; char == '*' || char == '~' {
+		start := to - 1
+		for start > from && written[start-1] == char {
+			start--
+		}
+		r.markRuns = append(r.markRuns, markRun{start: start, end: to, closes: start < closed, opens: to > closed})
+	}
+}
+
+// misflanked reports whether a delimiter run the marks of the inline run written from from wrote
+// beside a text (markRun) cannot open or close where it must: CommonMark and GFM let a run open
+// only where it is left-flanking and close only where it is right-flanking, which the characters
+// on its two sides decide, the start and end of a line counting as whitespace. A run whose first
+// writing holds one is read back, so finalResorts can write it again where it reads back otherwise.
+func (r *renderer) misflanked(from int) bool {
+	written := r.b.Bytes()
+	for _, run := range r.markRuns {
+		before, after := ' ', ' '
+		if run.start > from {
+			before, _ = utf8.DecodeLastRune(written[:run.start])
+		}
+		if run.end < len(written) {
+			after, _ = utf8.DecodeRune(written[run.end:])
+		}
+		left := !util.IsSpaceRune(after) && (!util.IsPunctRune(after) || flankingNeutral(before))
+		right := !util.IsSpaceRune(before) && (!util.IsPunctRune(before) || flankingNeutral(after))
+		if run.opens && !left || run.closes && !right {
+			return true
+		}
+	}
+	return false
+}
+
 // closesAfterPunctuation reports whether the markdown written so far ends in a delimiter run with
 // whitespace or punctuation before it, or nothing: a run that closes only before one of them.
 func (r *renderer) closesAfterPunctuation() bool {
@@ -114,6 +174,55 @@ func opensBeforePunctuation(nodes []*Node, index int, next, following []Mark) bo
 		}
 	}
 	return flankingNeutral(firstRune(nodes[index+1].Text))
+}
+
+// fusesRuns reports whether a text written under after, right after one written under before, is
+// written behind one fused delimiter run: the marks of before past shared close and those of after
+// past shared open, and the outermost of each, the last closed and the first opened, are written
+// with the same delimiter character, which the parser reads as one run.
+func fusesRuns(before, after []Mark, shared int) bool {
+	return shared < len(before) && shared < len(after) && markDelimiter(before[shared]) != 0 && markDelimiter(before[shared]) == markDelimiter(after[shared])
+}
+
+// writtenWith reports whether every one of marks is written with the delimiter run of delimiter,
+// so that the marks write one run of that character and nothing else.
+func writtenWith(marks []Mark, delimiter byte) bool {
+	for _, mark := range marks {
+		if markDelimiter(mark) != delimiter {
+			return false
+		}
+	}
+	return true
+}
+
+// fusesBeforePunctuation reports whether the text nodes[index], written under next, ends right
+// before a fused delimiter run (fusesRuns) that the text after it, written under following, opens
+// with whitespace or punctuation after it: the next text's own first character, or the syntax of
+// another mark opened inside the run. Such a run closes and opens only after whitespace or
+// punctuation too (flankingFused).
+func fusesBeforePunctuation(nodes []*Node, index int, next, following []Mark) bool {
+	if index+1 >= len(nodes) || nodes[index+1].Type != "text" {
+		return false
+	}
+	shared := sharedMarks(next, following)
+	if !fusesRuns(next, following, shared) || !writtenWith(next[shared:], markDelimiter(next[shared])) {
+		return false
+	}
+	return !writtenWith(following[shared:], markDelimiter(next[shared])) || flankingNeutral(firstRune(nodes[index+1].Text))
+}
+
+// delimiterRunAfter reports whether the markdown written right after the text nodes[index],
+// written under next, begins with a delimiter run: the innermost mark the text closes there, or,
+// where it closes none, the first mark the text after it, written under following, opens.
+func delimiterRunAfter(nodes []*Node, index int, next, following []Mark) bool {
+	if index+1 >= len(nodes) || nodes[index+1].Type != "text" {
+		return len(next) > 0 && markDelimiter(next[len(next)-1]) != 0
+	}
+	shared := sharedMarks(next, following)
+	if shared < len(next) {
+		return markDelimiter(next[len(next)-1]) != 0
+	}
+	return shared < len(following) && markDelimiter(following[shared]) != 0
 }
 
 // opensLabel reports whether a `[` is written right after a text written under marks, the node
@@ -158,12 +267,17 @@ func (r *renderer) wwwMayFollow() bool {
 // raw HTML holds and a tag holds only inside a quoted value.
 //
 // A spelling that orders marks otherwise than as written is never kept once it fuses a delimiter
-// run, so its writing is thrown away here and in the search (inlineWithEscapes).
+// run, so its writing is thrown away here and in the search (inlineWithEscapes) - except where the
+// run's segments are recorded (runSegments), whose search reads each segment the writing fused
+// nothing in back on its own, and except a spelling of finalResorts, which is kept fused, so the
+// writing is finished.
 func (r *renderer) writeInlineRun(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	from := r.b.Len()
 	r.openers = r.openers[:0]
+	r.markRuns = r.markRuns[:0]
+	r.segments.reset(from)
 	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
-	if r.err != nil || fused && spelling.order != marksAsWritten {
+	if r.err != nil || fused && spelling.order != marksAsWritten && !spelling.flankingFused && r.segments == nil {
 		return fused
 	}
 	written := r.b.Bytes()
@@ -179,6 +293,8 @@ func (r *renderer) writeInlineRun(nodes []*Node, prefix string, context inlineCo
 	}
 	r.b.Truncate(from)
 	r.escapedOpeners = escaped
+	r.markRuns = r.markRuns[:0]
+	r.segments.reset(from)
 	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
 	r.escapedOpeners = nil
 	return fused
@@ -344,17 +460,31 @@ func (r *renderer) escapesOpener(node *Node, offset int) bool {
 }
 
 // writeInlineNodes writes nodes in spelling for writeInlineRun, recording each text `<` it writes
-// as it is (angleOpener).
+// as it is (angleOpener), and, where the run's segments are recorded (runSegments), where it writes
+// each cut and in which segment it fuses two delimiter runs; where the run is written by segments,
+// each segment is written in its own spelling rather than in spelling.
 func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	escapePipes := context.tableCell
 	var active []Mark
 	position := inlinePosition{atLineStart: context.startsLine, atTextStart: true}
+	// segment is the segment of the run the next node begins in.
+	segment := 0
 	for index, n := range nodes {
 		if r.err != nil {
 			return fused
 		}
 		switch n.Type {
 		case "text":
+			// A text holding cuts is written from each cut on in the spelling of the segment after
+			// it, so its first character can be written in another spelling than its last: every
+			// cut stands in a text no mark is written over (runCutsOf), so the text's marks, and
+			// those it opens or closes beside the next node, are judged in its last character's
+			// spelling, and only its first character's flanking in the first's.
+			cuts := r.segments.cutsIn(index, segment)
+			first := r.segments.spellingOf(segment, spelling)
+			spelling = r.segments.spellingOf(segment+len(cuts), spelling)
+			textSegment := segment
+			segment += len(cuts)
 			wwwBare := !spelling.angleURLs
 			// A www link is written bare only where the character written before it is one a www
 			// URL may follow (wwwMayFollow); elsewhere its marks are written again with the link.
@@ -368,18 +498,29 @@ func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inline
 			for {
 				next, following = orderMarks(active, spelledMarks(n, escapePipes, bareHere, spelling), nodes, index, escapePipes, wwwBare, spelling)
 				common = sharedMarks(active, next)
+				marksFrom := r.b.Len()
 				for i := len(active) - 1; i >= common; i-- {
 					r.closeInlineMark(active[i], escapePipes)
 				}
-				if common < len(active) && common < len(next) && markDelimiter(active[common]) != 0 && markDelimiter(active[common]) == markDelimiter(next[common]) {
+				closed := r.b.Len()
+				if fusesRuns(active, next, common) {
 					fused = true
+					r.segments.fuse(textSegment)
 				}
 				// A delimiter run the marks just closed, with nothing opened after it, stands
-				// before this text's first character.
-				flankFirst = spelling.flanking && len(active) != common && len(next) == common && r.closesAfterPunctuation() && !flankingNeutral(firstRune(n.Text))
+				// before this text's first character; and so does a fused run that closes some
+				// and opens others, where it opens only marks written with its own character.
+				afterRun := len(active) != common && len(next) == common && first.flanking ||
+					fusesRuns(active, next, common) && writtenWith(next[common:], markDelimiter(next[common])) && first.flankingFused
+				flankFirst = afterRun && r.closesAfterPunctuation() && !flankingNeutral(firstRune(n.Text))
 				for _, mark := range next[common:] {
-					r.openInlineMark(mark, nodes, index)
+					r.openInlineMark(mark, nodes, index, spelling.codeAlone)
 				}
+				r.recordMarkRuns(marksFrom, closed)
+				// Every letter beside a delimiter run the marks just wrote is a reference
+				// (flankingAll).
+				wroteRun := r.b.Len() > marksFrom && (r.endsWith('*') || r.endsWith('~'))
+				flankFirst = flankFirst || first.flankingAll && wroteRun && !flankingNeutral(firstRune(n.Text))
 				if position.atLineStart && (len(active) != common || len(next) != common) {
 					position.afterMarker = true
 				}
@@ -413,32 +554,33 @@ func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inline
 				position.atLineStart, position.atTextStart, position.afterMarker = false, false, false
 				continue
 			}
-			flankLast := spelling.flanking && opensBeforePunctuation(nodes, index, next, following) && !flankingNeutral(lastRune(n.Text))
+			beforeRun := spelling.flanking && opensBeforePunctuation(nodes, index, next, following) ||
+				spelling.flankingFused && fusesBeforePunctuation(nodes, index, next, following) ||
+				spelling.flankingAll && delimiterRunAfter(nodes, index, next, following)
+			flankLast := beforeRun && !flankingNeutral(lastRune(n.Text))
 			// The brackets rule follows the marks actually written, not hasLink: an autolink's
 			// link mark is stripped above. The verdict itself was taken when the link opened.
 			label := labelBracketsNone
 			if containsMark(next, "link") {
 				label = r.labelBrackets
 			}
-			r.writeInlineText(n, &position, prefix, escapeContext{
+			text := escapeContext{
 				footnoteLabels: r.footnoteLabels,
 				tableCell:      escapePipes,
-				schemeColons:   spelling.schemeColons && !hasLink || bareURL,
-				wwwDots:        spelling.wwwDots && !hasLink,
-				ats:            spelling.ats && !hasLink,
 				label:          label,
 				followed:       index+1 < len(nodes) || len(next) > 0,
 				beforeLabel:    index+1 < len(nodes) && opensLabel(next, following, nodes[index+1]),
-				delimiters:     spelling.escapes,
 				heading:        context.heading,
 				marked:         len(next) > 0,
 				opener:         adjacentDelimiter(next[common:]),
 				closer:         adjacentDelimiter(next[sharedMarks(next, following):]),
 				flankFirst:     flankFirst,
 				flankLast:      flankLast,
-				pairBackslash:  spelling.pairBackslash,
-				tildeBackslash: spelling.tildeBackslash,
-			})
+				cuts:           cuts,
+				segment:        textSegment,
+			}
+			text.spell(first, hasLink, bareURL)
+			r.writeInlineText(n, &position, prefix, text)
 		case "hardbreak":
 			r.closeMarks(active, escapePipes)
 			active = nil
@@ -525,25 +667,43 @@ func (r *renderer) endLine(continues bool) {
 	r.b.Truncate(candidate.at)
 	r.b.WriteString(escape)
 	r.b.WriteString(tail)
-	// The openers after the escaped character are on its line, the last ones recorded.
+	// The openers, cuts and mark runs after the escaped character are on its line, the last ones
+	// recorded.
 	for index := len(r.openers) - 1; index >= 0 && r.openers[index].at > candidate.at; index-- {
 		r.openers[index].at += len(escape) - width
 	}
+	for index := len(r.markRuns) - 1; index >= 0 && r.markRuns[index].start > candidate.at; index-- {
+		r.markRuns[index].start += len(escape) - width
+		r.markRuns[index].end += len(escape) - width
+	}
+	r.segments.shift(candidate.at, len(escape)-width)
 }
 
+// closeMarks closes marks, recording the delimiter run they end the text before them with
+// (recordMarkRuns).
 func (r *renderer) closeMarks(marks []Mark, escapePipes bool) {
+	from := r.b.Len()
 	for i := len(marks) - 1; i >= 0; i-- {
 		r.closeInlineMark(marks[i], escapePipes)
 	}
+	r.recordMarkRuns(from, r.b.Len())
 }
 
-func (r *renderer) openInlineMark(mark Mark, nodes []*Node, index int) {
+// openInlineMark opens mark over the text nodes[index]. A code span's fence and padding are sized
+// to the text of every code node from there (inlineCodeFence), as the writer has always sized
+// them, or, where alone says so (runSpelling.codeAlone), to the node's own text, which is all the
+// span holds: the marks of two code nodes side by side differ, and a code mark is opened innermost
+// (codeInnermost), so the span closes where they change.
+func (r *renderer) openInlineMark(mark Mark, nodes []*Node, index int, alone bool) {
 	if mark.Type == "link" {
 		r.labelBrackets = linkLabelBrackets(linkLabel(nodes, index, mark))
 	}
 	if mark.Type != "inlineCode" {
 		r.writeSyntax(openMark(mark))
 		return
+	}
+	if alone {
+		nodes, index = nodes[index:index+1], 0
 	}
 	r.inlineCodeFence, r.inlineCodePadded = inlineCodeFence(nodes, index)
 	r.writeSyntax(r.inlineCodeFence)
@@ -687,6 +847,13 @@ func (r *renderer) writeInlineText(node *Node, position *inlinePosition, prefix 
 		textLineStart = 0
 	}
 	for byteOffset, char := range value {
+		if len(context.cuts) > 0 && context.cuts[0].offset == byteOffset {
+			// A cut's space is written as it is (runCutsOf), and the segment after it is written
+			// from it on in its own spelling.
+			context.segment++
+			r.segments.cutAt(r.b.Len()+byteOffset-segmentStart, context.segment, &context)
+			context.cuts = context.cuts[1:]
+		}
 		width := utf8.RuneLen(char)
 		context.textLineStart = textLineStart
 		context.afterMarker = position.afterMarker

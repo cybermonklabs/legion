@@ -1,0 +1,5 @@
+kind: Added
+body: 'IDEMPOTENCY_RUN_LIMIT_MS: how long Dispatch runs a keyed write after its client has gone, 10 minutes. Dispatch''s server and its clients read this one value.'
+time: 2026-11-20T02:15:19.18055535Z
+custom:
+    Issue: pr3142

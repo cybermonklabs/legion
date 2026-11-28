@@ -528,7 +528,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     (graphstore's queueNodes), so two such writes cannot each hold what the other waits for;
 //  5. a writer under the revision fence (R23 of this change: the version write, the
 //     block index reconciliation tick and the backfill) takes the document's owner lock, through
-//     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
+//     lockArtifactOwner or store.LockOwners, then the document's document_block_versions row
 //     `for no key update` (indexOwedDocument, refs' queueStand, graphcensus's
 //     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
 //     the asks the settlement opens are followed), before it writes a node, a tuple or a

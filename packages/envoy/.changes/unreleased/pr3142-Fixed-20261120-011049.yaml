@@ -1,0 +1,5 @@
+kind: Fixed
+body: Dispatch's migration runner refuses a database connection whose schema is not public before it applies any migration, and names the schema it found. It used to apply most migrations in that schema and then fail, which left the database half migrated.
+time: 2026-11-20T01:10:49.146312585Z
+custom:
+    Issue: pr3142

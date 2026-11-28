@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // slowWriteInput is the body of POST /api/v1/writes/_test/slow.
@@ -46,7 +48,7 @@ func (s *server) armSlowWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !keyedMethod(input.Method) || !strings.HasPrefix(input.Path, "/") ||
-		input.DelayMS < 0 || input.DelayMS > keyedHandlerLimit.Milliseconds() {
+		input.DelayMS < 0 || input.DelayMS > contracts.IdempotencyRunLimit.Milliseconds() {
 		writeError(w, "INVALID_BODY", http.StatusBadRequest,
 			"want {method: POST or PATCH, path: a request path, delay_ms: 0 to disarm, at most the keyed handler's limit}")
 		return

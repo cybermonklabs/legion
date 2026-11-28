@@ -78,6 +78,26 @@ type escapeContext struct {
 	// reference is written `\\`, and tildeBackslash whether an escaped tilde is written `\~`
 	// (runSpelling).
 	pairBackslash, tildeBackslash bool
+	// cuts is each cut (runCut) of a run whose segments are recorded (runSegments) that stands in
+	// the text, in order, and segment the segment of the run the text is being written in: each
+	// cut moves it on to the next, and the text after the cut is written in that segment's
+	// spelling (spell).
+	cuts    []runCut
+	segment int
+}
+
+// spell sets what spelling decides of a text's escapes: the delimiters it escapes, the colons of
+// URL schemes, the dots after `www` and the `@`s it escapes outside a link (a bare URL written
+// with its scheme colon escaped, bareURL, escapes that colon in any spelling), and how it writes a
+// backslash before a flanking reference and an escaped tilde. hasLink reports whether the text is
+// written inside a link.
+func (c *escapeContext) spell(spelling runSpelling, hasLink, bareURL bool) {
+	c.schemeColons = spelling.schemeColons && !hasLink || bareURL
+	c.wwwDots = spelling.wwwDots && !hasLink
+	c.ats = spelling.ats && !hasLink
+	c.delimiters = spelling.escapes
+	c.pairBackslash = spelling.pairBackslash
+	c.tildeBackslash = spelling.tildeBackslash
 }
 
 // needsInlineEscape decides one character from the text alone.

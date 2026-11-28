@@ -18,12 +18,17 @@
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
 import { mayHaveReachedServer } from "@legion/contracts/http-status"
-import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
+import {
+  type DispatchDelivery,
+  type RenderInboundResult,
+  replyStillRunning,
+} from "@legion/envoy-client/delivery"
 import {
   type DispatchClient,
   DispatchServiceError,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
+  stillRunningText,
 } from "@legion/envoy-client/dispatch-http"
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures"
 import { messageFor } from "@legion/envoy-client/errors"
@@ -160,9 +165,12 @@ export function btwAnswerWarning(messageId: string, error: unknown): string {
  *  post Dispatch refused or that never reached it, is answered with the error that stopped it,
  *  and that error reply is all that is said of it. A reply Dispatch made and gave no copy of its
  *  answer for (`DispatchWriteLandedError`) answered the attempt, so no error reply follows it.
- *  Stderr gets a line (`btwAnswerWarning`) only where the last post made for the BTW ended in an
- *  error: that landed reply, or an error reply that failed too. Every host of this package
- *  answers a BTW through it (`./codex/codex-user-turns`). */
+ *  A reply still running on Dispatch, or that may be, when its deadline ends settles the attempt
+ *  when it lands: an error posted over it, under a key of its own, could settle the attempt first
+ *  with words the person would read in place of the answer, so none is posted, and stderr names
+ *  its key (`replyStillRunning`). Otherwise stderr gets a line (`btwAnswerWarning`) only where
+ *  the last post made for the BTW ended in an error: that landed reply, or an error reply that
+ *  failed too. Every host of this package answers a BTW through it (`./codex/codex-user-turns`). */
 export function answerBtw(
   delivery: DispatchDelivery,
   ask: (question: string) => Promise<string>,
@@ -177,6 +185,12 @@ export function answerBtw(
       await reply(delivery, { body: await ask(delivery.body) })
     } catch (error) {
       if (error instanceof DispatchWriteLandedError) throw error
+      if (replyStillRunning(error)) {
+        warn(
+          `a BTW's reply to message ${delivery.id} ${stillRunningText(error.toldRunning)} on Dispatch under key ${error.key}; nothing more is posted`,
+        )
+        return
+      }
       await reply(delivery, { error: messageFor(error) })
     }
   })().catch((error: unknown) => {

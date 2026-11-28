@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Dispatch''s log lines no longer carry a document''s text: a refusal of a write that reads back otherwise names the block and the kind of difference, a refusal of a stored document names the class of refusal, and an enum value this build does not list is named by its block and attribute, so a person''s address or other text in a document does not reach the server''s logs. The errors returned to the writer still say what reads back otherwise.'
+time: 2026-11-20T07:30:28.67734597Z
+custom:
+    Issue: pr3142

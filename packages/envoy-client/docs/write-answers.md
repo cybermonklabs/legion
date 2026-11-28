@@ -104,11 +104,15 @@ Once an attempt may have reached a handler, a call without a definitive keyed an
 It carries the write's key as `key` and the last safe error as `last` and `cause`.
 It is deliberately not a `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
 The message gives the last answer, attempt count and possible effect, and says to read the write back before a new command sends a new key.
+A deadline its maker named (`deadlineMs`) can end the wait for a run Dispatch may still be making of the write, which an attempt answered `409 KEY_IN_FLIGHT` or cut off for silence puts it in.
+The error then has `running` set, and its message says instead that the write is still running on Dispatch, where Dispatch answered `409 KEY_IN_FLIGHT` (`toldRunning`), or that it may still be running, where only a silence cut put it in that wait.
+It adds that the same request sent again under the key returns the write's outcome once Dispatch's run ends, and gives no advice to read the write back.
 
 A write that ends with no answer at all is a `DispatchWriteUnsettledError` too, and its message names the request.
 The client cut off its last attempt for silence ("made no progress for 20 s, so it was cut off").
 Or the call's deadline ended it, while an attempt was out or after one that may have reached Dispatch.
 The message then says that the write "had no definitive answer when its deadline ended it".
+Where a deadline its maker named ended the wait for a run, it says instead that the write "is still running" or "may still be running" on Dispatch, "and its deadline ended the wait for its outcome", as above.
 Its `last` is the cut or the timeout.
 The client does not send an attempt that the deadline ends before it goes out.
 Neither that attempt nor a credential that could not present counts as an attempt that may have reached Dispatch.

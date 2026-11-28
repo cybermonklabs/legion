@@ -306,7 +306,7 @@ An entry that is not an absolute http(s) URL with no path, query, fragment or us
 A proof naming an origin that none of these settings names, a former address included, is refused as any wrong target is, and a proof is spent once whichever origin it names.
 That list is the one setting of its own this credential takes.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, the service a read entry names, or the identity a job entry lists), and `actor` in the body does not decide that session:
-absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
+absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH`, which names no session and points the caller at `GET /api/v1/whoami` for the one the token carries, since an error that names a writer can reach a server log line.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
 A read-only token names no project, unless it narrows a token scoped to one project, and then it names that project as the one it reads as and writes none.
@@ -5198,6 +5198,46 @@ the `403` a cookie request from another origin gets (a cookie write at a former 
 A fourth answer, the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written, is given before any route runs and writes one line, with the route `refused`.
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
+
+## Handler error lines
+
+A request whose handler fails with a fault of the server's writes one more line beside its access-log line, at ERROR: `dispatch: API handler failed`, for a `500 INTERNAL` and for a `500` the handler named, whose line carries that answer's `code`.
+A document the server cannot serve writes one too, at WARN: `dispatch: API document outside Proof schema` for a stored tree outside the schema (`409 DOC_SCHEMA`; at ERROR for a tree a write produced, which answers `500`), `dispatch: API document history cannot load` (`409 DOCUMENT_UNLOADABLE`) and `dispatch: API refused a document too large to store` (`413 CAP_EXCEEDED`).
+A document holding an element this build cannot read writes `dispatch: API document holds an element this build cannot read`, which names those elements alone (`409 DOC_NEWER_CONTENT`).
+
+```
+time=2026-11-20T10:02:41.118Z level=ERROR msg="dispatch: API handler failed" error.sqlstate=23505 error.constraint=comments_pkey error.types="[*fmt.wrapError *pgconn.PgError]" site=api.(*server).createComment:412 route=/api/v1/issues/{key}/comments
+```
+
+The line carries no text of the error's message.
+A document's text, which can hold a person's address, travels in the messages of the refusals that quote it, and no wrapper can be trusted to keep the chain that would let the line tell such a refusal apart: one wrapped with `%v`, or quoted in a message a handler wrote, reads as any other error.
+So the line names the error by words of the server's own code, each only where the error has it, and says where the error came from:
+
+- `error.refusal`
+
+  The class of the document refusal the error is, such as `outside Proof schema`.
+
+- `error.sentinel`
+
+  The message of each known error the error is, such as `context canceled` or `document service unavailable`, joined by `; `.
+
+- `error.sqlstate` and `error.constraint`
+
+  A Postgres error's SQLSTATE and the name of the constraint it names: the schema's words, never a row's values.
+
+- `error.types`
+
+  The Go type of each error in the error's chain, the outermost first.
+
+- `site`
+
+  The function and line that answered the error, past the helpers that only pass it on, so two failures of one route are told apart.
+
+- `route`
+
+  The route's own pattern, the `route` of the request's access-log line.
+
+The request itself, with its caller, path, status and time, is that access-log line's (Access log), which the `route` and the time find.
 
 ## Reads at a past time
 

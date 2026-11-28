@@ -1,0 +1,5 @@
+kind: Fixed
+body: A doc-edit is refused, as an upload of the same text is, when the text Dispatch would store for it reads back otherwise; only a block that already read back otherwise the same way before the edit is excused, and each such block is logged by its id. One edit renders the document once and reads each block it changes back once, where 14 replaces in one large paragraph used to read it back 28 times.
+time: 2026-11-20T03:09:33.673304828Z
+custom:
+    Issue: pr3142

@@ -294,9 +294,11 @@ func namedDocumentsApproved(ctx context.Context, q Queryer, documents []model.As
 }
 
 // latestReviewBy is the newest review of artifactID a person gave, in any state, by his canonical
-// login (model.CanonicalLogin), or nil when he has reviewed the document at no version.
+// login (model.CanonicalLogin), or nil when he has reviewed the document at no version. The read's
+// error names no login: a caller logs a failure's error on a line that does not mean to name
+// anyone.
 func latestReviewBy(ctx context.Context, q Queryer, artifactID, login string) (*model.ArtifactReview, error) {
-	return newestReview(ctx, q, fmt.Sprintf("latest review by %q", login), latestReviewByQuery, artifactID, login)
+	return newestReview(ctx, q, "the latest review a person gave", latestReviewByQuery, artifactID, login)
 }
 
 // changesRequestedSince reports whether anyone requested changes on review's document after

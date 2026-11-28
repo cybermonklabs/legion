@@ -14,15 +14,34 @@ import (
 )
 
 // asWritten shares the input's nodes wherever it writes them as they are, and must give exactly
-// what the pipeline it replaced gave: StripAnchorMarks, then each textblock's line breaks written
-// (oracleWriteLineBreaksIn), then each U+0000 written as U+FFFD (oracleWriteNulsAsReplacement).
-// The two oracle functions are that pipeline's, kept here as they were.
+// what the pipeline it replaced gave: StripAnchorMarks, then the texts whose marks differ only in
+// attributes the rendering does not write merged (oracleMergeWrittenAlike), then each textblock's
+// line breaks written (oracleWriteLineBreaksIn), then each U+0000 written as U+FFFD
+// (oracleWriteNulsAsReplacement). The last two oracle functions are that pipeline's, kept here as
+// they were; the merge is the one step asWritten has taken since.
 
 func oracleAsWritten(doc *Node) *Node {
 	out := StripAnchorMarks(doc)
+	oracleMergeWrittenAlike(out)
 	oracleWriteLineBreaksIn(out)
 	oracleWriteNulsAsReplacement(out)
 	return out
+}
+
+// oracleMergeWrittenAlike merges each run of adjacent texts under node whose marks differ only in
+// attributes the rendering does not write (sameWrittenMarks) into the first of them, which keeps
+// its own marks.
+func oracleMergeWrittenAlike(node *Node) {
+	kept := node.Children[:0]
+	for _, child := range node.Children {
+		if last := len(kept) - 1; last >= 0 && kept[last].Type == "text" && child.Type == "text" && sameWrittenMarks(kept[last].Marks, child.Marks) {
+			kept[last].Text += child.Text
+			continue
+		}
+		oracleMergeWrittenAlike(child)
+		kept = append(kept, child)
+	}
+	node.Children = kept
 }
 
 func oracleWriteNulsAsReplacement(node *Node) {
@@ -95,6 +114,8 @@ func writtenCases() map[string]*Node {
 		"empty text":             doc(paragraph(text("a", strong), text("", emphasis), text("b", strong)), paragraph(text(""))),
 		"text with attributes":   doc(paragraph(&Node{Type: "text", Text: "x", Attrs: Attrs{"note": "y"}}, text("z"))),
 		"empty attributes":       doc(paragraph(&Node{Type: "text", Text: "x", Attrs: Attrs{}, Marks: []Mark{}}), &Node{Type: "hr", Attrs: Attrs{}}),
+		"runs differing in a marker": doc(paragraph(text("a", Mark{Type: "strong", Attrs: Attrs{"marker": "_"}}), text("b", Mark{Type: "strong", Attrs: Attrs{"marker": "*"}}),
+			text("c", strong), text(" "), text("d", Mark{Type: "emphasis", Attrs: Attrs{"marker": "_"}}), text("e", emphasis))),
 		"hard breaks": doc(paragraph(text("a"), inlineBreak(), text("b"),
 			&Node{Type: "hardbreak", Attrs: Attrs{"isInline": false}}, text("c"), &Node{Type: "hardbreak"}, text("d"))),
 		"line feed before text":       doc(paragraph(text("one\ntwo"), text(" three", strong))),

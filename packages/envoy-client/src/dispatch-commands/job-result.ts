@@ -138,6 +138,9 @@ export async function jobResultCommand(
       ...DISPATCH_WRITE_RETRY,
       withinMs: Math.min(DISPATCH_WRITE_RETRY.withinMs, bound.totalMs - bound.reserveMs),
       inFlightWithinMs: bound.totalMs - bound.reserveMs,
+      // No run window: a write Dispatch may still be running is asked again only until its last
+      // ask, `inFlightWithinMs` after the client was made, so no ask starts in the reserve.
+      runWithinMs: 0,
     },
   });
   for (;;) {

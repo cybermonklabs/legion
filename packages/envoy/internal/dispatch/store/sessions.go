@@ -10,7 +10,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 )
 
-// PgSessionStore records the generation used to revoke signed browser sessions.
+// PgSessionStore records the generation used to revoke signed browser sessions. Its errors say
+// what failed and never whose login it was, as PgPeopleStore's do: a caller logs them on lines
+// that do not mean to name anyone, and a log line is read by whoever reads the server's logs.
 type PgSessionStore struct {
 	pool *Pool
 }
@@ -36,14 +38,14 @@ func (s *PgSessionStore) EnsureSession(ctx context.Context, login string) (int64
 		return generation, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("ensure session for %q: %w", login, err)
+		return 0, fmt.Errorf("ensure a login's session: %w", err)
 	}
 	generation, found, err := s.CurrentSessionGeneration(ctx, login)
 	if err != nil {
 		return 0, err
 	}
 	if !found {
-		return 0, fmt.Errorf("ensure session for %q: session row disappeared", login)
+		return 0, errors.New("ensure a login's session: session row disappeared")
 	}
 	return generation, nil
 }
@@ -59,7 +61,7 @@ func (s *PgSessionStore) CurrentSessionGeneration(ctx context.Context, login str
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, false, nil
 		}
-		return 0, false, fmt.Errorf("read session generation for %q: %w", login, err)
+		return 0, false, fmt.Errorf("read a login's session generation: %w", err)
 	}
 	return generation, true, nil
 }
@@ -80,7 +82,7 @@ func (s *PgSessionStore) RevokeSessions(ctx context.Context, login string) error
 		return errors.New("revoke sessions: Postgres pool required")
 	}
 	if _, err := s.pool.Exec(ctx, revokeSessionsSQL, login); err != nil {
-		return fmt.Errorf("revoke sessions for %q: %w", login, err)
+		return fmt.Errorf("revoke a login's sessions: %w", err)
 	}
 	return nil
 }

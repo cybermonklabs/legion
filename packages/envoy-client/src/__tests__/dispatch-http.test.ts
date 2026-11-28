@@ -1362,7 +1362,8 @@ describe("DispatchClient", () => {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
       retryNoRoute: false,
     });
-    // An attempt that hears nothing until the client cuts it off for silence.
+    // An attempt that hears nothing until the client cuts it off for silence, and no ask after it:
+    // no time left in the client's window, and no run window to wait out.
     const silent = (async (_input: RequestInfo | URL, init?: RequestInit) => {
       const { promise, reject } = Promise.withResolvers<Response>();
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
@@ -1374,6 +1375,7 @@ describe("DispatchClient", () => {
         pausesMs: [],
         withinMs: 0,
         inFlightWithinMs: 0,
+        runWithinMs: 0,
         silenceMs: 20,
       },
     });

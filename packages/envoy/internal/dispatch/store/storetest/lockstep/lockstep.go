@@ -183,8 +183,7 @@ func RequireStoppedAt(t testing.TB, ctx context.Context, database *store.Store, 
 //   - the project of the event last;
 //   - several rows of one step in ascending order: node rows in ascending (kind, id), and owner
 //     locks in ascending owner key and fence rows in document id order, the order every writer of
-//     several documents takes them in (graphcensus's lockBlockDocuments, events.LockOwnerRows,
-//     store.LockOwners).
+//     several documents takes them in (graphcensus's lockBlockDocuments, store.LockOwners).
 //
 // The third invariant, the event before the tuples it causes, holds of a writer with nothing to
 // read: the backfill appends no event, and every cause its tuples carry is an event the log

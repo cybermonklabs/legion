@@ -754,6 +754,9 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 			)
 			continue
 		}
+		// A search that names kinds goes to GET /api/v1/search/results, which declares kind a
+		// list: GET /api/v1/search declares no kind and refuses a repeated one
+		// (refuseRepeatedQueryKeys). The two routes run one handler.
 		kinds := searchKindsAsked(set)
 		query := func(more url.Values) url.Values {
 			more["q"], more["kind"] = []string{"lighthouse"}, kinds
@@ -764,9 +767,9 @@ func TestEverySearchStatementRunsInsideItsBoundedTransaction(t *testing.T) {
 			searchShape{name + ", keyword, keywords only",
 				over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), own.keyword, 1, false, false},
 			searchShape{name + ", meaning, every project",
-				over("/api/v1/search", query(url.Values{})), own.meaningEvery, 1, false, false},
+				over("/api/v1/search/results", query(url.Values{})), own.meaningEvery, 1, false, false},
 			searchShape{name + ", meaning, one project with the fill done",
-				over("/api/v1/search", query(url.Values{"project": {"BOUND"}})), own.meaningScoped, 1, false, false},
+				over("/api/v1/search/results", query(url.Values{"project": {"BOUND"}})), own.meaningScoped, 1, false, false},
 			searchShape{name + ", meaning, joined for a filtered search",
 				over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), own.meaningJoined, 1, false, false},
 		)
@@ -1043,6 +1046,9 @@ func TestEverySearchStatementAtACutRunsInsideItsBoundedTransaction(t *testing.T)
 			}
 			continue
 		}
+		// A search that names kinds goes to GET /api/v1/search/results, which declares kind a
+		// list: GET /api/v1/search declares no kind and refuses a repeated one
+		// (refuseRepeatedQueryKeys). The two routes run one handler.
 		kinds := searchKindsAsked(set)
 		query := func(more url.Values) url.Values {
 			more["q"], more["kind"] = []string{"lighthouse"}, kinds
@@ -1051,7 +1057,7 @@ func TestEverySearchStatementAtACutRunsInsideItsBoundedTransaction(t *testing.T)
 		searches = append(searches,
 			searchAtACut{name(readings[0]), over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}})), textOf(set, readings[0])},
 			searchAtACut{name(readings[1]), over("/api/v1/search/results", query(url.Values{"keywords_only": {"true"}, "author": {"alice"}})), textOf(set, readings[1])},
-			searchAtACut{name(readings[2]), over("/api/v1/search", query(url.Values{})), textOf(set, readings[2])},
+			searchAtACut{name(readings[2]), over("/api/v1/search/results", query(url.Values{})), textOf(set, readings[2])},
 			searchAtACut{name(readings[3]), over("/api/v1/search/results", query(url.Values{"author": {"alice"}})), textOf(set, readings[3])},
 		)
 	}

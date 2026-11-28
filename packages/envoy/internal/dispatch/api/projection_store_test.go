@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/sqlscan"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -200,33 +201,20 @@ type projectionSources struct {
 // graph with the projection writes in it.
 func readProjectionWriters(t *testing.T) *projectionSources {
 	t.Helper()
-	root := repositoryRoot(t)
+	root := sqlscan.Root(t)
 	sources := &projectionSources{functions: map[string]*sourceFunction{}, byCall: map[string][]string{}}
 	fset := token.NewFileSet()
-	skipped := map[string]struct{}{"node_modules": {}, "vendor": {}, "testdata": {}, ".git": {}, ".jj": {}, "dist": {}, "build": {}}
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if _, skip := skipped[entry.Name()]; skip {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		file, err := parser.ParseFile(fset, path, nil, 0)
-		if err != nil {
-			return fmt.Errorf("parse %s: %w", path, err)
-		}
-		sources.files++
-		sources.read(fset, file, mustRelative(t, root, path))
-		return nil
-	})
+	paths, err := sqlscan.GoFiles(root)
 	if err != nil {
 		t.Fatalf("read the repository's Go sources: %v", err)
+	}
+	for _, path := range paths {
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("read the repository's Go sources: parse %s: %v", path, err)
+		}
+		sources.files++
+		sources.read(fset, file, sqlscan.Path(t, root, path))
 	}
 	if sources.files < 100 {
 		t.Fatalf("the scan read %d Go source, which is no repository: it is looking in the wrong place", sources.files)
@@ -266,6 +254,7 @@ func (s *projectionSources) read(fset *token.FileSet, file *ast.File, name strin
 		s.byCall[index] = append(s.byCall[index], key)
 		// A concatenation is read once, from its outermost +; its inner ones are marked here.
 		inner := map[*ast.BinaryExpr]bool{}
+		markInner := func(binary *ast.BinaryExpr) { inner[binary] = true }
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			switch found := node.(type) {
 			case *ast.CallExpr:
@@ -278,24 +267,15 @@ func (s *projectionSources) read(fset *token.FileSet, file *ast.File, name strin
 				}
 			case *ast.BinaryExpr:
 				if found.Op == token.ADD && !inner[found] {
-					s.runtime = append(s.runtime, concatenatedTableWrites(fset, concatenation(found, inner), name, key)...)
+					s.runtime = append(s.runtime, concatenatedTableWrites(fset, sqlscan.Concatenation(found, markInner), name, key)...)
 				}
 			case *ast.BasicLit:
-				if found.Kind != token.STRING {
+				literal, text, ok := sqlscan.StringLiteral(found)
+				if !ok {
 					return true
 				}
-				// A parsed literal always unquotes; its quoted form is read if one ever did not.
-				literal, err := strconv.Unquote(found.Value)
-				if err != nil {
-					literal = found.Value
-				}
-				for _, clause := range projectionClauses(literal) {
-					// A raw literal spans lines, so a statement in it is named by the line its head
-					// is on; an interpreted literal is one line.
-					line := fset.Position(found.Pos()).Line
-					if strings.HasPrefix(found.Value, "`") {
-						line += strings.Count(literal[:clause.offset], "\n")
-					}
+				for _, clause := range projectionClauses(text) {
+					line := sqlscan.LiteralLine(fset, literal, text, clause.offset)
 					write := projectionWrite{
 						table: clause.table, file: name, line: line,
 						clause: clause.text, inside: key, held: clause.held,
@@ -592,44 +572,12 @@ var statementGoesOn = map[string]*regexp.Regexp{
 	"insert into": regexp.MustCompile(`(?is)^(?:\s+as\s+\w+)?\s*(?:\(|\b(?:select|values|default\s+values|overriding|with)\b)`),
 }
 
-// concatenation flattens the + chain at expression into its parts, marking each inner + of it.
-func concatenation(expression ast.Expr, inner map[*ast.BinaryExpr]bool) []ast.Expr {
-	binary, ok := expression.(*ast.BinaryExpr)
-	if !ok || binary.Op != token.ADD {
-		return []ast.Expr{expression}
-	}
-	inner[binary] = true
-	return append(concatenation(binary.X, inner), concatenation(binary.Y, inner)...)
-}
-
-// stringLiteral answers a string literal and its text, and false for any other expression.
-func stringLiteral(expression ast.Expr) (*ast.BasicLit, string, bool) {
-	literal, ok := expression.(*ast.BasicLit)
-	if !ok || literal.Kind != token.STRING {
-		return nil, "", false
-	}
-	text, err := strconv.Unquote(literal.Value)
-	if err != nil {
-		text = literal.Value
-	}
-	return literal, text, true
-}
-
-// literalLine is the line of the text at offset in literal: a raw literal spans lines.
-func literalLine(fset *token.FileSet, literal *ast.BasicLit, text string, offset int) int {
-	line := fset.Position(literal.Pos()).Line
-	if strings.HasPrefix(literal.Value, "`") {
-		line += strings.Count(text[:offset], "\n")
-	}
-	return line
-}
-
 // concatenatedTableWrites finds each write in a concatenation whose table is the part after a
 // literal ending at a write's head: `update ` + tables.state + ` set ...`.
 func concatenatedTableWrites(fset *token.FileSet, parts []ast.Expr, file, inside string) []runtimeTableWrite {
 	var found []runtimeTableWrite
 	for index := range len(parts) - 1 {
-		literal, text, ok := stringLiteral(parts[index])
+		literal, text, ok := sqlscan.StringLiteral(parts[index])
 		if !ok {
 			continue
 		}
@@ -639,7 +587,7 @@ func concatenatedTableWrites(fset *token.FileSet, parts []ast.Expr, file, inside
 		}
 		var rest strings.Builder
 		for _, part := range parts[index+2:] {
-			if _, text, ok := stringLiteral(part); ok {
+			if _, text, ok := sqlscan.StringLiteral(part); ok {
 				rest.WriteString(text)
 			} else {
 				rest.WriteString("{" + types.ExprString(part) + "}")
@@ -650,7 +598,7 @@ func concatenatedTableWrites(fset *token.FileSet, parts []ast.Expr, file, inside
 			continue
 		}
 		found = append(found, runtimeTableWrite{
-			file: file, inside: inside, line: literalLine(fset, literal, text, head[0]),
+			file: file, inside: inside, line: sqlscan.LiteralLine(fset, literal, text, head[0]),
 			verb: verb, table: types.ExprString(parts[index+1]), rest: rest.String(),
 		})
 	}
@@ -663,7 +611,7 @@ func formattedTableWrites(fset *token.FileSet, call *ast.CallExpr, file, inside 
 	if len(call.Args) == 0 {
 		return nil
 	}
-	literal, format, ok := stringLiteral(call.Args[0])
+	literal, format, ok := sqlscan.StringLiteral(call.Args[0])
 	if !ok {
 		return nil
 	}
@@ -675,31 +623,15 @@ func formattedTableWrites(fset *token.FileSet, call *ast.CallExpr, file, inside 
 			continue
 		}
 		table := "an argument the call does not pass"
-		if argument := 1 + formatVerbs(format[:head[1]-2]); argument < len(call.Args) {
+		if argument := 1 + sqlscan.NextArgument(format[:head[1]-2]); argument < len(call.Args) {
 			table = types.ExprString(call.Args[argument])
 		}
 		found = append(found, runtimeTableWrite{
-			file: file, inside: inside, line: literalLine(fset, literal, format, head[0]),
+			file: file, inside: inside, line: sqlscan.LiteralLine(fset, literal, format, head[0]),
 			verb: verb, table: table, rest: rest,
 		})
 	}
 	return found
-}
-
-// formatVerbs counts the verbs of a format, each of which takes one argument; %% takes none.
-func formatVerbs(format string) int {
-	verbs := 0
-	for index := 0; index < len(format); index++ {
-		if format[index] != '%' {
-			continue
-		}
-		if index+1 < len(format) && format[index+1] == '%' {
-			index++
-			continue
-		}
-		verbs++
-	}
-	return verbs
 }
 
 // runtimeTableWrites holds every write the sources build their table for at runtime to
@@ -2058,35 +1990,4 @@ func readStrings(ctx context.Context, q graphstore.Queryer, sql string, args ...
 		answers = append(answers, answer)
 	}
 	return answers, rows.Err()
-}
-
-// repositoryRoot is the directory the repository's sources start at, found by climbing out of
-// the package this test runs in.
-func repositoryRoot(t *testing.T) string {
-	t.Helper()
-	here, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatalf("read the test's own directory: %v", err)
-	}
-	for directory := here; ; {
-		for _, marker := range []string{".git", ".jj"} {
-			if _, err := os.Stat(filepath.Join(directory, marker)); err == nil {
-				return directory
-			}
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			t.Fatalf("no repository root above %s", here)
-		}
-		directory = parent
-	}
-}
-
-func mustRelative(t *testing.T, root, path string) string {
-	t.Helper()
-	relative, err := filepath.Rel(root, path)
-	if err != nil {
-		t.Fatalf("name %s under %s: %v", path, root, err)
-	}
-	return relative
 }
