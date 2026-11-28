@@ -1012,6 +1012,18 @@ type ClaimView struct {
 	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
 	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
+	// Readies is how many readies of its agent the store took in this machine's life: each ready
+	// whose write succeeded (finishReady), the first ready of a launch and each ready the agent
+	// sends again (reready) alike. A session sends its ready again each time it takes its Envoy
+	// role back (the plugin's onRoleRegained), and that ready moves neither the claim's state nor
+	// its LastReady, so this count is how a reader of the view tells that it came. A ready that
+	// ends in a suspension held until it (suspendHeld), and one whose write the store refused, are
+	// not counted. It is memory only (Machine.readies): every machine, one the daemon restores at
+	// boot included, starts at 0, so a restart moves it for no claim. A move of it is the claim's
+	// ready to a reader of the claim's changes (claimChanged, Deps.ClaimChanged): the daemon makes
+	// due at once, once for each ready, the outbox rows that wait for the claim's ready
+	// (dispatch://INFRA-4131/spec#b-r-wait-ready).
+	Readies uint64
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -1454,12 +1466,13 @@ type Deps struct {
 	// ClaimChanged is told each change of the claim that a row of the daemon's outbox waiting for
 	// that claim waits on (internal/daemon's claimChanged, dispatch://INFRA-4131/spec#b-r-wait-ready
 	// and #b-r-wait-event), with the view the change replaced and the view it published (claimChanged
-	// names them): the state, the launch (Generation), the ready (LastReady), the turn's start
-	// (LastTurnStart), the pending delivery (another delivery, or its confirmation), the end of a
-	// send in flight (ClaimView.SendInFlight), the end of a suspension that holds (RuleHolds), and a
-	// caller that waits for no decision refused the machine's lock while the decision held it
-	// (PublishUpdateAsk's ErrMachineBusy). A decision that changed none of them, a turn's tool step
-	// among them, tells nothing.
+	// names them): the state, the launch (Generation), the ready (ClaimView.Readies, each ready the
+	// store took, a ready the agent sends again when its session takes its Envoy role back among
+	// them), the turn's start (LastTurnStart), the pending delivery (another delivery, or its
+	// confirmation), the end of a send in flight (ClaimView.SendInFlight), the end of a suspension
+	// that holds (RuleHolds), and a caller that waits for no decision refused the machine's lock
+	// while the decision held it (PublishUpdateAsk's ErrMachineBusy). A decision that changed none of
+	// them, a turn's tool step among them, tells nothing.
 	//
 	// It is told at the end of the decision that made the change, once the machine's lock is
 	// released (unlock), never inside the decision: a reader woken inside it would read the claim as
@@ -1467,13 +1480,14 @@ type Deps struct {
 	// claims after the decision (internal/daemon's wakeIssue). So the callback may read the machine,
 	// Claim included. It is called on the goroutine that made the decision, so it returns at once.
 	// The daemon also tells its own hook of each machine it makes while it runs (internal/daemon's
-	// supervisor.Create), and of none it restores at boot, which is no change of its claim. nil
-	// tells no one.
+	// supervisor.Create), and of none it restores at boot, which is no change of its claim: a
+	// restored machine's count of readies starts at 0, as every machine's does, so no ready of it
+	// is told before its agent's next. nil tells no one.
 	//
 	// The two views are the machine's published views themselves, shared rather than copied, as
 	// Published shares one: publish stores a view built fresh and nothing writes a stored one again.
 	// They are read-only: a callback that would write either copies it first. The daemon's hook
-	// reads the token, the trees, the state and the ready.
+	// reads the token, the trees, the state and the count of readies.
 	ClaimChanged func(before, after ClaimView)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
@@ -2168,6 +2182,10 @@ type Machine struct {
 	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
 	// never waits on mu.
 	turnsEnded atomic.Uint64
+	// readies counts the readies of the claim's agent the store took (ClaimView.Readies): finishReady
+	// raises it by one once a ready's write succeeded, and publish puts it on the view. It is written
+	// and read under mu, and memory only, so a restored machine starts at 0.
+	readies uint64
 	// told is the view the last decision published at its end (unlock), or the one NewMachine
 	// published: what the next decision's change of the claim is read against (claimChanged). A
 	// view a decision publishes at a write in its middle (persist) is not it, since a change that
@@ -3047,7 +3065,7 @@ func StoredClaim(c Claim) Claim {
 // (dispatch://INFRA-5297's decision; the start and load-end lines are its record). The caller
 // holds mu.
 func (m *Machine) publish() {
-	view := &publishedView{ClaimView: ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}}
+	view := &publishedView{ClaimView: ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil, Readies: m.readies}}
 	if w := m.pacedWake(); w != nil {
 		view.place, view.WakeWaiting = w.place, &WakeWaiting{Kind: w.kind}
 	}
@@ -3147,13 +3165,16 @@ func (m *Machine) tellChanged(before, after *publishedView) {
 // claimChanged is whether the claim as after shows it differs from before in what a row of the
 // daemon's outbox waiting for the claim waits on (Deps.ClaimChanged,
 // dispatch://INFRA-4131/spec#b-r-wait-ready and #b-r-wait-event): its state, its launch
-// (Generation), its ready (LastReady), its turn's start (LastTurnStart), its pending delivery or
-// that delivery's confirmation, the end of its send in flight, or the end of a suspension that
-// holds (RuleHolds). A send or a hold that begins ends no row's wait, and a decision that records
-// a turn's tool step alone (toolStepped) changes none of these.
+// (Generation), its ready (Readies, each ready the store took, a ready the agent sends again
+// among them), its turn's start (LastTurnStart), its pending delivery or that delivery's
+// confirmation, the end of its send in flight, or the end of a suspension that holds (RuleHolds).
+// A ready is read by its count alone: the first ready of a launch also moves LastReady, but always
+// with the state, which it moves out of registered, and a ready sent again (reready) moves
+// neither. A send or a hold that begins ends no row's wait, and a decision that records a turn's
+// tool step alone (toolStepped) changes none of these.
 func claimChanged(before, after ClaimView) bool {
 	return before.State != after.State || before.Generation != after.Generation ||
-		!before.LastReady.Equal(after.LastReady) || !before.LastTurnStart.Equal(after.LastTurnStart) ||
+		before.Readies != after.Readies || !before.LastTurnStart.Equal(after.LastTurnStart) ||
 		pendingChanged(before.Pending, after.Pending) ||
 		before.SendInFlight && !after.SendInFlight || before.RuleHolds() && !after.RuleHolds()
 }

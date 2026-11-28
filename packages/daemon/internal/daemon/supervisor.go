@@ -224,11 +224,13 @@ func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.Ste
 // A machine restored is no change of its claim, so the daemon's claim-change hook is told nothing
 // of it (supervise.Deps.ClaimChanged, which Create tells): the claim the store held is the one an
 // outbox row's wait was read against, and a restart is no ready of it. Told the zero view, the
-// hook would read a ready in every ready, working or idle claim and make due at once, its step
-// back at 0, every row that waits for that claim or its ready, which then publishes again from the
-// backoff's first step at each restart (dispatch://INFRA-4131/spec#b-r-capped). A row's wait reads
-// back across the restart (its wait_step and next_at), and the claim's next change or ready makes
-// it due as it would have.
+// hook would read a change in every claim and make due at once, its step back at 0, every row that
+// waits for that claim or its tree, which then publishes again from the backoff's first step at
+// each restart (dispatch://INFRA-4131/spec#b-r-capped). It would read no ready: a restored
+// machine's count of its claim's readies starts at 0, as the zero view's is
+// (supervise.ClaimView.Readies), and moves only at its agent's next ready. A row's wait reads back
+// across the restart (its wait_step and next_at), and the claim's next change or ready makes it
+// due as it would have.
 func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]claim.Token, error) {
 	var unfinished []claim.Token
 	live := supervise.LiveStates()

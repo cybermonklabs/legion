@@ -3000,20 +3000,26 @@ func (w *workflowRuntime) promoteAfterHoldClears(ctx context.Context) error {
 // at once the outbox rows that wait for them (supervise's Deps.ClaimChanged, which says which
 // changes it tells, and a machine this daemon makes while it runs, supervisor.Create): the claim's
 // own key (record.WaitForClaim), the key of each tree the claim is of before and after the change
-// (record.WaitForTreeClaims), and, where the change moved the claim's LastReady and left it in a
-// state that said it is ready (supervise.SaidReady), its ready's key (record.WaitForReady), which
-// no other change makes happen (dispatch://INFRA-4131/spec#b-r-wait-event).
+// (record.WaitForTreeClaims), and, where the change moved the count of the claim's readies the
+// store took (supervise.ClaimView.Readies) and left it in a state that said it is ready
+// (supervise.SaidReady), its ready's key (record.WaitForReady), which no other change makes
+// happen (dispatch://INFRA-4131/spec#b-r-wait-event).
 //
 // It is the one way a ready of any role releases the rows that wait for it
 // (dispatch://INFRA-4131/spec#b-r-wait-ready): the end of the ready's decision tells it, before the
 // ready route answers the agent, and the route's own hook releases nothing (claimReadyHook), so one
-// ready makes those rows due once. An agent that sends its ready again moves no LastReady
-// (supervise's reready), so its retry records no ready's key: the first ready already made those
-// rows due. A ready that landed in a suspension held until it is not one records no ready's key
-// either: the rows that wait for that ready wait for the claim's next launch. A machine the daemon
-// restores at boot is no change of its claim, and is not told (supervisor.restore). The machine
-// calls it once its decision has ended, on the goroutine that made it, so it only records the keys
-// and wakes the release.
+// ready makes those rows due once. The count moves at the first ready of a launch and at each ready
+// the agent sends again (supervise's reready) alike, so each releases those rows once. A session
+// sends its ready again each time it takes its Envoy role back, and the rows that waited while it
+// had lost that role are due at once at that ready: a publish refused because no session held the
+// role, and a controller notice that its read of the role's holder held (outbox.controllerHolds),
+// which waits for any change of the controller's claim. A ready that landed in a suspension held
+// until it moves no count and records no ready's key: the rows that wait for that ready wait for
+// the claim's next launch. Nor does a ready whose write the store refused: the agent's plugin asks
+// it again, and that retry, once the store takes it, is the ready counted. A machine the daemon
+// restores at boot is no change of its claim, and is not told (supervisor.restore); its count
+// starts at 0, so a restart releases no ready. The machine calls it once its decision has ended,
+// on the goroutine that made it, so it only records the keys and wakes the release.
 func (w *workflowRuntime) claimChanged(before, after supervise.ClaimView) {
 	w.changed.add(record.WaitForClaim(after.Token))
 	for _, tree := range []string{before.Tree, after.Tree} {
@@ -3021,7 +3027,7 @@ func (w *workflowRuntime) claimChanged(before, after supervise.ClaimView) {
 			w.changed.add(record.WaitForTreeClaims(tree))
 		}
 	}
-	if !after.LastReady.Equal(before.LastReady) && supervise.SaidReady(after.State) {
+	if after.Readies != before.Readies && supervise.SaidReady(after.State) {
 		w.changed.add(record.WaitForReady(after.Token))
 	}
 }

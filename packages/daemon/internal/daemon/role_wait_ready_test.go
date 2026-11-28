@@ -82,14 +82,15 @@ func (h *roleWaitHarness) routeReady(c supervise.Claim) {
 
 // releaseReadies runs runner's release of the readies of tokens' claims as the daemon runs it,
 // for a test whose claims say nothing themselves: each claim's ready, from a launch that had not
-// said it was ready to that launch ready now, is told to the workflow's claim-change hook
+// said it was ready to that launch ready now, its first ready the store took
+// (supervise.ClaimView.Readies), is told to the workflow's claim-change hook
 // (workflowRuntime.claimChanged), which records the claim's key and its ready's, and what it
 // recorded is released in one pass (outbox.releaseChanged), on the caller's goroutine under ctx.
 func releaseReadies(ctx context.Context, runner *outbox, tokens ...claim.Token) error {
 	w := &workflowRuntime{outbox: runner, changed: newWakeSet[string]()}
 	for _, token := range tokens {
 		w.claimChanged(supervise.ClaimView{Claim: supervise.Claim{Token: token, State: supervise.StateRegistered}},
-			supervise.ClaimView{Claim: supervise.Claim{Token: token, State: supervise.StateReady, LastReady: runner.now()}})
+			supervise.ClaimView{Claim: supervise.Claim{Token: token, State: supervise.StateReady, LastReady: runner.now()}, Readies: 1})
 	}
 	keys, _ := w.changed.take(context.Background())
 	return runner.releaseChanged(ctx, keys)
@@ -597,6 +598,124 @@ func TestRoleWaitReadyCapHoldsAcrossARestoreOfTheClaim(t *testing.T) {
 					next.Sub(due), nextStep, record.RoleWaitBackoffMost, step+1)
 			}
 		})
+	}
+}
+
+// releasedAtTheReady fails the test unless rig's row is due at readyAt, the moment of a ready of
+// h's claim, with its step back at 0, and the release of that ready wrote its one line naming
+// that claim and that row alone.
+func releasedAtTheReady(t *testing.T, h *roleWaitHarness, rig *roleWaitRig, readyAt time.Time) {
+	t.Helper()
+	if due, step, _, _ := rowWait(t, h.pool, rig.id); !due.Equal(readyAt) || step != 0 {
+		t.Fatalf("after the ready sent again the row is due %s after it, at step %d; want it due at the ready, at step 0", due.Sub(readyAt), step)
+	}
+	// The release writes its line once its transaction has committed, after the row it made due
+	// reads as due.
+	lines := testwait.Until(t, "the ready's release line", func() ([]map[string]any, bool) {
+		lines := loggedMessages(t, rig.logs.String(), wantReadyReleasedLine)
+		return lines, len(lines) > 0
+	})
+	if len(lines) != 1 || !slices.Equal(lines[0]["claims"].([]any), []any{string(h.token)}) ||
+		!slices.Equal(lines[0]["rows"].([]any), []any{float64(rig.id)}) {
+		t.Fatalf("release lines %v, want one naming claim %s and row %d", lines, h.token, rig.id)
+	}
+}
+
+// S7 (R1): a ready the agent sends again is a ready of its claim. A session sends its ready again
+// each time it takes its Envoy role back (supervise's reready, which a working or idle claim takes,
+// its state and its LastReady left as they were), and every row that waits for the claim's ready
+// is due at once at it, as at the first. A row on the capped waits of a refusal while its claim
+// said it was ready (record.WaitForReady), at the cap, is due at the ready sent again with its step
+// back at 0, the release writes its one line naming the claim and the row, and the first run after
+// that ready publishes. One ready sent again makes the row due once: refused at that run, the row
+// waits the backoff's first step after the ready, and no second release of the ready makes it
+// due again.
+func TestRoleWaitReadySentAgainMakesTheWaitingRowDueOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range roleWaitCases {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			t.Parallel()
+			for _, state := range []supervise.ClaimState{supervise.StateWorking, supervise.StateIdle} {
+				t.Run(string(state), func(t *testing.T) {
+					t.Parallel()
+					h := newRoleWaitHarness(t, tc, refusalError("unresponsive"))
+					rig := h.queue()
+					w := h.readyHooks()
+					machine := h.claim(state, nil)
+					h.release(w)
+					rig.runTo(10)
+					due, step, key, _ := rowWait(t, h.pool, rig.id)
+					if step != 10 || key != record.WaitForReady(h.token) || !due.Equal(h.clock.Now().Add(record.RoleWaitBackoffMost)) {
+						t.Fatalf("after 10 refusals the row is due %s on, at step %d, waiting for %q; want the cap (%s), step 10, %q",
+							due.Sub(h.clock.Now()), step, key, record.RoleWaitBackoffMost, record.WaitForReady(h.token))
+					}
+
+					said := machine.View()
+					readyAt := h.ready(machine)
+					if again := machine.View(); again.State != state || !again.LastReady.Equal(said.LastReady) {
+						t.Fatalf("the ready sent again left the claim %s, its ready dated %s; want it still %s, its ready still dated %s",
+							again.State, again.LastReady, state, said.LastReady)
+					}
+					h.release(w)
+					releasedAtTheReady(t, h, rig, readyAt)
+
+					before := len(publishesOf(h.publisher.publishes, rig.id, h.start))
+					rig.run()
+					h.release(w)
+					if got := publishesOf(h.publisher.publishes, rig.id, h.start); len(got) != before+1 || got[before] != readyAt.Sub(h.start) {
+						t.Fatalf("the row published at %v after the ready sent again, want one publish more, at that ready (%s)", got[before:], readyAt.Sub(h.start))
+					}
+					if due, step, _, _ := rowWait(t, h.pool, rig.id); step != 1 || !due.Equal(readyAt.Add(record.RoleWaitBackoff(0))) {
+						t.Fatalf("after its refusal at the ready sent again the row is due %s after that ready, at step %d; want the first step's wait (%s), at step 1",
+							due.Sub(readyAt), step, record.RoleWaitBackoff(0))
+					}
+					if lines := loggedMessages(t, rig.logs.String(), wantReadyReleasedLine); len(lines) != 1 {
+						t.Fatalf("the ready sent again wrote %d release lines (%v), want one: it makes the row due once", len(lines), lines)
+					}
+				})
+			}
+		})
+	}
+}
+
+// S7 (R1): a controller notice under `controller: daemon` that its read of the role's holder held
+// (outbox.controllerHolds) while the controller's session did not hold the controller's role waits
+// for any change of the controller's claim (record.WaitForClaim), its backoff at the cap, and
+// publishes nothing. When that session takes its role back and sends its ready again to its idle
+// claim (supervise's reready), as the plugin does at each regain of its role, the notice is due at
+// once, its step back at 0, the release writes its one line naming the controller's claim and the
+// row, and the first run after that ready publishes the notice once.
+func TestRoleWaitReadySentAgainMakesDueAControllerNoticeItsHolderHeld(t *testing.T) {
+	t.Parallel()
+	tc := roleWaitCase{kind: record.OutboxKindControllerNotice, role: claim.RoleController, controllerLaunched: true}
+	h := newRoleWaitHarness(t, tc, nil)
+	rig := h.queue()
+	w := h.readyHooks()
+	machine := h.claim(supervise.StateIdle, nil)
+	h.release(w)
+	// The controller's session lost its role (a NATS reconnect, a lapsed heartbeat): the listener
+	// names no holder of it.
+	h.publisher.free(string(h.token))
+	rig.runTo(10)
+	if got := h.publisher.count(); got != 0 {
+		t.Fatalf("the controller notice published %d times while no session held the controller's role, want none", got)
+	}
+	due, step, key, _ := rowWait(t, h.pool, rig.id)
+	if step != 10 || key != record.WaitForClaim(h.token) || !due.Equal(h.clock.Now().Add(record.RoleWaitBackoffMost)) {
+		t.Fatalf("after 10 waits the controller notice is due %s on, at step %d, waiting for %q; want the cap (%s), step 10, %q",
+			due.Sub(h.clock.Now()), step, key, record.RoleWaitBackoffMost, record.WaitForClaim(h.token))
+	}
+
+	h.publisher.holds(string(h.token), machine.View().Session)
+	readyAt := h.ready(machine)
+	if again := machine.View(); again.State != supervise.StateIdle {
+		t.Fatalf("the ready sent again left the controller's claim %s, want it still idle", again.State)
+	}
+	h.release(w)
+	releasedAtTheReady(t, h, rig, readyAt)
+	rig.endsAtItsNextRun()
+	if got, want := publishOffsets(h.publisher.publishes, h.start), []time.Duration{readyAt.Sub(h.start)}; !slices.Equal(got, want) {
+		t.Fatalf("the controller notice published at %v, want once, at the ready sent again (%v)", got, want)
 	}
 }
 

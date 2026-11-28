@@ -57,13 +57,15 @@ func (c *claimChanges) step() []toldChange {
 
 // A claim's machine tells the daemon each change of the claim that a row waiting for that claim
 // waits on (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-wait-event): its state, its launch
-// (Generation), its ready (LastReady), its turn start (LastTurnStart), its pending delivery (the
-// delivery itself, or its confirmation), the end of a send in flight, and a caller refused the
-// machine's lock while a decision held it (PublishUpdateAsk's ErrMachineBusy). It tells each
-// after the decision that made it, with the lock released, so the callback reads the machine's
-// claim without waiting on anything; and it tells nothing for a decision that changed none of
-// them, a turn's tool step. A ready writes one Info line, `supervise: ready`, naming the claim
-// and its generation, which a reader of the daemon's log counts the claim's readies by.
+// (Generation), its ready (the count of its readies, Readies, which a ready the agent sends again
+// moves too, its state and its LastReady left as they were), its turn start (LastTurnStart), its
+// pending delivery (the delivery itself, or its confirmation), the end of a send in flight, and a
+// caller refused the machine's lock while a decision held it (PublishUpdateAsk's ErrMachineBusy).
+// It tells each after the decision that made it, with the lock released, so the callback reads
+// the machine's claim without waiting on anything; and it tells nothing for a decision that
+// changed none of them, a turn's tool step. A ready writes one Info line, `supervise: ready`,
+// naming the claim and its generation, which a reader of the daemon's log counts the claim's
+// readies by.
 func TestClaimChangedIsToldAfterEachDecision(t *testing.T) {
 	h := newBareHarness(t)
 	changes := &claimChanges{}
@@ -114,7 +116,8 @@ func TestClaimChangedIsToldAfterEachDecision(t *testing.T) {
 	h.advance(time.Second)
 	h.ready()
 	told("the ready", func(before, after ClaimView) bool {
-		return after.State == StateReady && !after.LastReady.Equal(before.LastReady) && after.LastReady.Equal(h.clock.Now())
+		return after.State == StateReady && !after.LastReady.Equal(before.LastReady) && after.LastReady.Equal(h.clock.Now()) &&
+			after.Readies == before.Readies+1
 	})
 	readies := h.records.of("supervise: ready")
 	if len(readies) != 1 || readies[0].level != slog.LevelInfo {
@@ -155,6 +158,15 @@ func TestClaimChangedIsToldAfterEachDecision(t *testing.T) {
 	h.must(StreamTurnEnd{Claim: h.token})
 	told("the turn's end", func(before, after ClaimView) bool { return before.State == StateWorking && after.State == StateIdle })
 
+	// The agent sends its ready again, as its session does when it takes its Envoy role back:
+	// the idle claim stays idle and its ready keeps its date, and the count of its readies moves.
+	h.advance(time.Second)
+	h.ready()
+	told("the ready sent again", func(before, after ClaimView) bool {
+		return before.State == StateIdle && after.State == StateIdle && after.LastReady.Equal(before.LastReady) &&
+			after.Readies == before.Readies+1
+	})
+
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
 	told("the operator's suspension", func(before, after ClaimView) bool { return after.State == StateSuspended && after.RuleHolds() })
 	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
@@ -185,10 +197,11 @@ func TestClaimChangedIsToldAfterEachDecision(t *testing.T) {
 
 // claimChanged names, on its own, each change of the claim a row waiting for that claim waits on
 // (Deps.ClaimChanged): with the state the same on both sides, a launch (Generation), a ready
-// (LastReady), a turn's start alone (LastTurnStart, as busyTurnBegun moves it), a pending delivery
-// queued, retired or replaced, its confirmation given or taken back, the end of a send in flight,
-// and the end of a suspension that holds; and it names none of a send that begins, a hold that
-// begins, or a turn's tool step, which writes nothing of the view.
+// (Readies, as a ready the agent sends again moves it alone), a turn's start alone
+// (LastTurnStart, as busyTurnBegun moves it), a pending delivery queued, retired or replaced, its
+// confirmation given or taken back, the end of a send in flight, and the end of a suspension that
+// holds; and it names none of a send that begins, a hold that begins, or a turn's tool step, which
+// writes nothing of the view.
 func TestClaimChangedNamesEachChangeOnItsOwn(t *testing.T) {
 	t.Parallel()
 	at := time.Date(2026, 11, 28, 12, 0, 0, 0, time.UTC)
@@ -209,7 +222,7 @@ func TestClaimChangedNamesEachChangeOnItsOwn(t *testing.T) {
 		want          bool
 	}{
 		{"a launch", working(nil), working(func(v *ClaimView) { v.Generation = 2 }), true},
-		{"a ready", working(nil), working(func(v *ClaimView) { v.LastReady = at.Add(time.Second) }), true},
+		{"a ready", working(nil), working(func(v *ClaimView) { v.Readies = 1 }), true},
 		{"a turn's start alone", working(nil), working(func(v *ClaimView) { v.LastTurnStart = at.Add(time.Second) }), true},
 		{"a delivery queued", working(func(v *ClaimView) { v.Pending = nil }), working(nil), true},
 		{"a delivery retired", working(nil), working(func(v *ClaimView) { v.Pending = nil }), true},

@@ -451,8 +451,10 @@ func launchedController(ctx context.Context, st *store.Store, project string) (s
 // every other ready goes nowhere, and a daemon with no keeper (`controller: operator`) has no hook.
 // It releases no outbox row. The rows that wait for a ready, the controller's notices among them,
 // are released by the ready's own decision, whose end tells the claims' change hook before the
-// route calls this one (workflow's claimChanged, outbox.releaseChanged), and a second release here
-// would make the same rows due a second time (dispatch://INFRA-4131/spec#b-r-wait-ready).
+// route calls this one (workflow's claimChanged, outbox.releaseChanged), once for each ready the
+// store took, a ready the agent sends again when its session takes its Envoy role back among them
+// (supervise's reready); a second release here would make the same rows due a second time
+// (dispatch://INFRA-4131/spec#b-r-wait-ready).
 //
 // So the controller notices waiting for the controller can be made due before its keeper hands it
 // the start message, and nothing in this order holds them behind it. What holds each notice is
